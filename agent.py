@@ -1,7 +1,10 @@
 import os
 from google import genai
 from google.genai import types
-from config import GEMINI_API_KEY
+try:
+    from config import GEMINI_API_KEY
+except ImportError:
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 from law_api import search_law_data, get_law_content
 
 # 1. Gemini 클라이언트 및 모델 설정
