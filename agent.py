@@ -15,9 +15,46 @@ from law_api import (
     search_industry_code
 )
 
-# 1. Gemini 클라이언트 및 모델 설정
+# 1. Gemini 클라이언트 및 기본/심층 모델 설정
 client = genai.Client(api_key=GEMINI_API_KEY)
-MODEL_ID = "gemini-3.8-flash"
+FLASH_MODEL_ID = "gemini-3.8-flash"
+PRO_MODEL_ID = "gemini-3.8-pro"
+
+# 고난도 법리 검토 키워드 목록
+DEEP_KEYWORDS = [
+    "합병", "분할", "세무조사", "조세심판", "부당행위", "가업승계", "계약서",
+    "실질과세", "법인격", "명의신탁", "주식평가", "사기나 그 밖의 부정한", "조세범",
+    "뇌물", "외국환", "비거주자", "조세조약", "고정사업장", "이전가격", "불균등",
+    "증여의제", "과점주주", "청산", "해산", "자본거래", "심층", "정밀", "종합검토"
+]
+
+# 복합 세액 계산 및 시뮬레이션 키워드 목록
+CALC_KEYWORDS = [
+    "시뮬레이션", "시나리오", "비교", "절세효과", "실효세율", "한도초과", "세무조정",
+    "퇴직소득", "할인율", "현재가치", "가지급금 인정이자", "대손충당금", "감가상각"
+]
+
+def select_optimal_model(user_query: str, has_file: bool = False) -> tuple[str, str]:
+    """
+    질문 내용과 파일 첨부 여부를 분석하여 최적의 모델(Flash vs Pro)과 전환 사유를 반환합니다.
+    분석이 끝나면 다음 질문에서는 다시 기본 상태(Flash)에서 새로 판단합니다.
+    """
+    # 조건 1: 엑셀, PDF, 워드 등 첨부파일이 있는 경우 무조건 Pro 전환
+    if has_file:
+        return PRO_MODEL_ID, "🧠 **[Pro 심층 모드 자동 전환]** 첨부 문서 정밀 분석 및 법령 교차 검증"
+
+    # 조건 2: 고난도 심층 키워드가 포함된 경우 Pro 전환
+    matched_deep = [kw for kw in DEEP_KEYWORDS if kw in user_query]
+    if matched_deep:
+        return PRO_MODEL_ID, f"🧠 **[Pro 심층 모드 자동 전환]** 고난도 쟁점 감지 ({', '.join(matched_deep[:3])})"
+
+    # 조건 3: 질문 길이가 길거나(250자 이상) 복합 계산 키워드가 2개 이상 결합된 경우 Pro 전환
+    matched_calc = [kw for kw in CALC_KEYWORDS if kw in user_query]
+    if len(user_query.strip()) >= 250 or (len(user_query.strip()) >= 120 and len(matched_calc) >= 2):
+        return PRO_MODEL_ID, "🧠 **[Pro 심층 모드 자동 전환]** 장문·복합 계산 시뮬레이션 감지"
+
+    # 평상시 기본값: 토큰 절약을 위해 Flash 모델 사용
+    return FLASH_MODEL_ID, "⚡ **[Flash 빠른 검토 모드]** 일반 법령·통계·업종코드 신속 조회"
 
 # 2. Gemini 도구 정의 (법제처 원문 + 한국은행 ECOS + 국세청 업종코드 검색 도구 통합)
 def search_law_for_gemini(keyword: str, target: str = "law") -> str:
@@ -134,34 +171,59 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
   * 국세청 홈택스(업종코드 조회): https://www.hometax.go.kr
 """
 
-# 웹 인터페이스(app.py) 연동을 위해 수정된 메인 함수
-def run_agent(user_input: str) -> str:
-    """웹에서 전달받은 질문(user_input)을 처리하고 결과 텍스트를 반환합니다."""
-    print(f"🤖 [시스템] 웹 요청 처리 중: {user_input}")
+# 웹 인터페이스(app.py) 연동을 위해 수정된 메인 함수 (스마트 모델 자동 전환 적용)
+def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> str:
+    """
+    웹에서 전달받은 질문을 분석하여 평소에는 Flash로,
+    특정 조건(파일 첨부, 고난도 키워드, 장문·복합 계산)일 때만 Pro로 자동 전환하여 실행합니다.
+    """
+    query_for_routing = raw_query if raw_query else user_input
+    selected_model, mode_badge = select_optimal_model(query_for_routing, has_file)
+    
+    print(f"🤖 [시스템] 선택된 모델: {selected_model} | 사유: {mode_badge}")
     
     today_str = datetime.now().strftime("%Y년 %m월 %d일")
     dynamic_prompt = f"[시스템 기준일 안내: 오늘 날짜는 {today_str}입니다. 질문에 등장하는 연도와 날짜의 과거/현재 여부를 반드시 오늘 날짜({today_str}) 기준으로 판단하세요.]\n\n" + SYSTEM_PROMPT
     
+    tools_list = [
+        search_law_for_gemini, 
+        get_law_details_for_gemini,
+        search_exchange_rate_for_gemini,
+        search_base_rate_for_gemini,
+        search_industry_code_for_gemini
+    ]
+    
     try:
         chat = client.chats.create(
-            model=MODEL_ID,
+            model=selected_model,
             config=types.GenerateContentConfig(
-                tools=[
-                    search_law_for_gemini, 
-                    get_law_details_for_gemini,
-                    search_exchange_rate_for_gemini,
-                    search_base_rate_for_gemini,
-                    search_industry_code_for_gemini
-                ],
+                tools=tools_list,
                 temperature=0.2,
                 system_instruction=dynamic_prompt
             )
         )
         
         response = chat.send_message(user_input)
-        return response.text
+        return f"> {mode_badge}\n\n" + response.text
         
     except Exception as e:
+        # 만약 Pro 모델 호출 중 일시적 서버 지연 등이 발생하면 즉시 Flash 모델로 안전하게 폴백(Fallback)
+        if selected_model == PRO_MODEL_ID:
+            print(f"⚠️ Pro 모델 응답 지연으로 Flash 모델로 자동 전환하여 재시도합니다: {e}")
+            try:
+                fallback_chat = client.chats.create(
+                    model=FLASH_MODEL_ID,
+                    config=types.GenerateContentConfig(
+                        tools=tools_list,
+                        temperature=0.2,
+                        system_instruction=dynamic_prompt
+                    )
+                )
+                response = fallback_chat.send_message(user_input)
+                return f"> ⚡ **[Flash 백업 모드]** (Pro 서버 응답 지연으로 자동 전환됨)\n\n" + response.text
+            except Exception as e2:
+                return f"❌ 실행 중 오류가 발생했습니다: {str(e2)}"
+        
         error_msg = f"❌ 실행 중 오류가 발생했습니다: {str(e)}"
         print(error_msg)
         return error_msg
