@@ -2,3 +2,8 @@ google-genai
 requests
 python-dotenv
 streamlit
+pandas
+openpyxl
+xlrd
+pypdf
+python-docx
