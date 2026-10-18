@@ -20,34 +20,48 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 FLASH_MODEL_ID = "gemini-3.8-flash"
 PRO_MODEL_ID = "gemini-3.8-pro"
 
-# 고난도 법리 검토 키워드 목록
+# 사용자가 명시적으로 Pro를 원할 때 쓰는 호출어
+FORCE_PRO_TRIGGERS = ["[프로]", "[정밀검토]", "[심층검토]", "프로모드"]
+
+# 진짜 고난도 구조화·불복 쟁점 키워드 (일상적인 세무 단어는 제외하여 남발 방지)
 DEEP_KEYWORDS = [
-    "합병", "분할", "세무조사", "조세심판", "부당행위", "가업승계", "계약서",
-    "실질과세", "법인격", "명의신탁", "주식평가", "사기나 그 밖의 부정한", "조세범",
-    "뇌물", "외국환", "비거주자", "조세조약", "고정사업장", "이전가격", "불균등",
-    "증여의제", "과점주주", "청산", "해산", "자본거래", "심층", "정밀", "종합검토"
+    "합병", "분할", "세무조사", "조세심판", "부당행위계산", "가업승계",
+    "실질과세", "법인격", "명의신탁", "사기나 그 밖의 부정한", "조세범",
+    "뇌물방지법", "조세조약", "고정사업장", "이전가격", "불균등증자", "불균등감자"
 ]
 
-# 복합 세액 계산 및 시뮬레이션 키워드 목록
+# 복합 세액 시뮬레이션 키워드
 CALC_KEYWORDS = [
-    "시뮬레이션", "시나리오", "비교", "절세효과", "실효세율", "한도초과", "세무조정",
-    "퇴직소득", "할인율", "현재가치", "가지급금 인정이자", "대손충당금", "감가상각"
+    "시뮬레이션", "시나리오별", "실효세율 비교", "20년 플랜", "30년 플랜"
 ]
 
-def select_optimal_model(user_query: str, has_file: bool = False) -> tuple[str, str]:
-    """질문 내용과 파일 첨부 여부를 분석하여 최적의 모델(Flash vs Pro)과 전환 사유를 반환합니다."""
-    if has_file:
-        return PRO_MODEL_ID, "🧠 **[Pro 심층 모드 자동 전환]** 첨부 문서 정밀 분석 및 법령 교차 검증"
+def select_optimal_model(user_query: str, has_file: bool = False, full_input_len: int = 0) -> tuple[str, str]:
+    """
+    평소 95% 이상의 상황에서는 Flash를 사용하여 토큰을 아끼고,
+    초대형 문서이거나 복합 고난도 쟁점일 때만 제한적으로 Pro를 호출합니다.
+    """
+    # 조건 1: 사용자가 질문에 직접 '[프로]' 또는 '[정밀검토]'라고 명시한 경우 (수동 스위치)
+    for trigger in FORCE_PRO_TRIGGERS:
+        if trigger in user_query:
+            return PRO_MODEL_ID, f"🧠 **[Pro 심층 모드]** 사용자 지정 정밀 검토 ({trigger})"
 
+    # 조건 2: 첨부파일이 있더라도 15,000자 미만의 일반 문서는 Flash로 처리하고,
+    # 15,000자 이상의 초대형 보고서/원장일 때만 Pro로 전환
+    if has_file and full_input_len >= 15000:
+        return PRO_MODEL_ID, f"🧠 **[Pro 심층 모드 자동 전환]** 대용량 문서({full_input_len:,}자) 정밀 분석"
+
+    # 조건 3: 고난도 키워드가 '2개 이상' 동시에 결합된 복합 쟁점일 때만 Pro 전환 (단순 1개 언급은 Flash 처리)
     matched_deep = [kw for kw in DEEP_KEYWORDS if kw in user_query]
-    if matched_deep:
-        return PRO_MODEL_ID, f"🧠 **[Pro 심층 모드 자동 전환]** 고난도 쟁점 감지 ({', '.join(matched_deep[:3])})"
+    if len(matched_deep) >= 2:
+        return PRO_MODEL_ID, f"🧠 **[Pro 심층 모드 자동 전환]** 복합 고난도 쟁점 감지 ({', '.join(matched_deep[:3])})"
 
+    # 조건 4: 질문 자체가 500자 이상으로 매우 길고 복합 시뮬레이션 키워드가 포함된 경우
     matched_calc = [kw for kw in CALC_KEYWORDS if kw in user_query]
-    if len(user_query.strip()) >= 250 or (len(user_query.strip()) >= 120 and len(matched_calc) >= 2):
-        return PRO_MODEL_ID, "🧠 **[Pro 심층 모드 자동 전환]** 장문·복합 계산 시뮬레이션 감지"
+    if len(user_query.strip()) >= 500 and len(matched_calc) >= 1:
+        return PRO_MODEL_ID, "🧠 **[Pro 심층 모드 자동 전환]** 초장문 복합 시뮬레이션 감지"
 
-    return FLASH_MODEL_ID, "⚡ **[Flash 빠른 검토 모드]** 일반 법령·통계·업종코드 신속 조회"
+    # 그 외 모든 일반 상황 및 중·소형 첨부파일 검토: 무조건 Flash 모델 사용 (토큰 절약)
+    return FLASH_MODEL_ID, "⚡ **[Flash 빠른 검토 모드]** 실무 표준 검토 (토큰 절약 모드)"
 
 # 2. Gemini 도구 정의 (법제처 원문 + 한국은행 ECOS + 국세청 업종코드 검색 도구 통합)
 def search_law_for_gemini(keyword: str, target: str = "law") -> str:
@@ -169,10 +183,12 @@ def extract_safe_text(response) -> str:
     """Gemini 응답 객체에서 NoneType 오류 없이 안전하게 텍스트를 추출합니다."""
     if not response:
         return ""
-    if getattr(response, "text", None):
-        return response.text
+    try:
+        if getattr(response, "text", None):
+            return response.text
+    except Exception:
+        pass
     
-    # response.text가 None인 경우 내부 candidates -> parts에서 텍스트 조각 직접 결합
     extracted_parts = []
     try:
         for cand in getattr(response, "candidates", []) or []:
@@ -188,11 +204,15 @@ def extract_safe_text(response) -> str:
 # 웹 인터페이스(app.py) 연동을 위해 수정된 메인 함수
 def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> str:
     """
-    웹에서 전달받은 질문을 분석하여 평소에는 Flash로,
-    특정 조건(파일 첨부, 고난도 키워드, 장문·복합 계산)일 때만 Pro로 자동 전환하여 실행합니다.
+    웹에서 전달받은 질문을 분석하여 평소에는 무조건 Flash로 처리하고,
+    초대형 문서(15,000자 이상) 또는 복합 고난도 쟁점(키워드 2개 이상)일 때만 Pro로 전환합니다.
     """
     query_for_routing = raw_query if raw_query else user_input
-    selected_model, mode_badge = select_optimal_model(query_for_routing, has_file)
+    selected_model, mode_badge = select_optimal_model(
+        user_query=query_for_routing,
+        has_file=has_file,
+        full_input_len=len(user_input)
+    )
     
     print(f"🤖 [시스템] 선택된 모델: {selected_model} | 사유: {mode_badge}")
     
@@ -207,7 +227,6 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> s
         search_industry_code_for_gemini
     ]
     
-    # 형사법(뇌물방지법 등)·조세범처벌법 용어로 인한 오작동 차단 해제
     safety_settings = [
         types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
         types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
@@ -224,7 +243,7 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> s
                 system_instruction=dynamic_prompt,
                 safety_settings=safety_settings,
                 automatic_function_calling=types.AutomaticFunctionCallingConfig(
-                    maximum_remote_calls=15
+                    maximum_remote_calls=12
                 )
             )
         )
@@ -232,7 +251,6 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> s
         response = chat.send_message(user_input)
         final_text = extract_safe_text(response)
         
-        # 만약 도구만 15번 연속 호출하고 최종 요약 텍스트를 아직 안 쓴 경우, 즉시 최종 보고서 작성을 지시
         if not final_text:
             follow_up = chat.send_message("지금까지 조회한 법령·판례 데이터와 첨부 문서 내용을 바탕으로 즉시 [A. 사전 3줄 크로스체크]와 [B. 최종 답변]을 작성해 주세요.")
             final_text = extract_safe_text(follow_up)
@@ -254,7 +272,7 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> s
                         system_instruction=dynamic_prompt,
                         safety_settings=safety_settings,
                         automatic_function_calling=types.AutomaticFunctionCallingConfig(
-                            maximum_remote_calls=15
+                            maximum_remote_calls=12
                         )
                     )
                 )
