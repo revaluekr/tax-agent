@@ -35,25 +35,18 @@ CALC_KEYWORDS = [
 ]
 
 def select_optimal_model(user_query: str, has_file: bool = False) -> tuple[str, str]:
-    """
-    질문 내용과 파일 첨부 여부를 분석하여 최적의 모델(Flash vs Pro)과 전환 사유를 반환합니다.
-    분석이 끝나면 다음 질문에서는 다시 기본 상태(Flash)에서 새로 판단합니다.
-    """
-    # 조건 1: 엑셀, PDF, 워드 등 첨부파일이 있는 경우 무조건 Pro 전환
+    """질문 내용과 파일 첨부 여부를 분석하여 최적의 모델(Flash vs Pro)과 전환 사유를 반환합니다."""
     if has_file:
         return PRO_MODEL_ID, "🧠 **[Pro 심층 모드 자동 전환]** 첨부 문서 정밀 분석 및 법령 교차 검증"
 
-    # 조건 2: 고난도 심층 키워드가 포함된 경우 Pro 전환
     matched_deep = [kw for kw in DEEP_KEYWORDS if kw in user_query]
     if matched_deep:
         return PRO_MODEL_ID, f"🧠 **[Pro 심층 모드 자동 전환]** 고난도 쟁점 감지 ({', '.join(matched_deep[:3])})"
 
-    # 조건 3: 질문 길이가 길거나(250자 이상) 복합 계산 키워드가 2개 이상 결합된 경우 Pro 전환
     matched_calc = [kw for kw in CALC_KEYWORDS if kw in user_query]
     if len(user_query.strip()) >= 250 or (len(user_query.strip()) >= 120 and len(matched_calc) >= 2):
         return PRO_MODEL_ID, "🧠 **[Pro 심층 모드 자동 전환]** 장문·복합 계산 시뮬레이션 감지"
 
-    # 평상시 기본값: 토큰 절약을 위해 Flash 모델 사용
     return FLASH_MODEL_ID, "⚡ **[Flash 빠른 검토 모드]** 일반 법령·통계·업종코드 신속 조회"
 
 # 2. Gemini 도구 정의 (법제처 원문 + 한국은행 ECOS + 국세청 업종코드 검색 도구 통합)
@@ -118,18 +111,19 @@ def search_industry_code_for_gemini(keyword: str) -> str:
     """
     프로젝트 내 마스터 데이터('industry_codes.xlsx' 또는 '.csv')에서 국세청 6자리 기준경비율 업종코드, 세세분류명, 적용범위를 검색합니다.
     업종코드나 사업자등록 업태·종목, 창업감면 대상 업종코드 질문 시 반드시 이 도구를 먼저 호출하세요.
-    - keyword: 검색할 핵심 업종 키워드 또는 6자리 코드 (예: '전자상거래', '소프트웨어', '음식점', '525101')
+    - keyword: 검색할 핵심 업종 키워드 또는 6자리 코드 (예: '전자상거래', '소프트웨어', '컨설팅', '741400')
     """
     print(f"\n[시스템] 🏢 국세청 업종코드 검색 도구 가동: '{keyword}'")
     return search_industry_code(keyword)
 
-# 3. 에이전트 시스템 프롬프트 템플릿 (사전 3줄 크로스체크 선출력 + API 연동 결합본)
+# 3. 에이전트 시스템 프롬프트 템플릿
 SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문 에이전트입니다.
 앞으로의 질문에 답변할 때는 반드시 먼저 제공된 도구(API)들을 사용하여 실제 원문 데이터와 통계를 확인한 뒤, 아래의 **[자료 검토 기준]**을 엄격히 준수하고, 반드시 **[A. 사전 3줄 크로스체크]**를 먼저 출력한 뒤 **[B. 최종 답변]**을 작성해줘.
 
-[필수 도구 호출 원칙]
+[필수 도구 호출 원칙 및 효율성 제한]
 - 법령·판례·예규 확인: 'search_law_for_gemini'로 ID를 찾은 뒤 'get_law_details_for_gemini'로 실제 조문·본문을 읽을 것.
-- 환율·기준금리 확인: 날짜의 과거/미래 여부를 예단하지 말고 반드시 'search_exchange_rate_for_gemini' 또는 'search_base_rate_for_gemini'를 호출할 것 (주말/공휴일 대비 대상일 직전 5~7일 구간 조회 필수).
+- ⚠️ [다수 법령·판례 문서 검토 시 주의]: 첨부된 문서에 이미 법령 조문과 판례 요지가 상세히 수록되어 있는 경우, 모든 조문을 중복 조회하느라 도구 호출 횟수를 소진하지 말고 가장 핵심적인 쟁점 법령·판례 3~5건만 선별하여 빠르게 실존 및 정합성을 크로스체크한 뒤 즉시 최종 답변을 작성할 것.
+- 환율·기준금리 확인: 날짜의 과거/미래 여부를 예단하지 말고 반드시 'search_exchange_rate_for_gemini' 또는 'search_base_rate_for_gemini'를 호출할 것.
 - 국세청 업종코드 확인: 업종코드 질문 시 반드시 'search_industry_code_for_gemini'를 호출하여 데이터에서 확인된 6자리 코드만 안내하고, 도구에서 조회되지 않는 코드는 절대 임의로 숫자를 조합해 생성하지 말 것.
 
 1. 자료 검토 우선순위 및 기준
@@ -171,7 +165,27 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
   * 국세청 홈택스(업종코드 조회): https://www.hometax.go.kr
 """
 
-# 웹 인터페이스(app.py) 연동을 위해 수정된 메인 함수 (스마트 모델 자동 전환 적용)
+def extract_safe_text(response) -> str:
+    """Gemini 응답 객체에서 NoneType 오류 없이 안전하게 텍스트를 추출합니다."""
+    if not response:
+        return ""
+    if getattr(response, "text", None):
+        return response.text
+    
+    # response.text가 None인 경우 내부 candidates -> parts에서 텍스트 조각 직접 결합
+    extracted_parts = []
+    try:
+        for cand in getattr(response, "candidates", []) or []:
+            content = getattr(cand, "content", None)
+            if content:
+                for part in getattr(content, "parts", []) or []:
+                    if getattr(part, "text", None):
+                        extracted_parts.append(part.text)
+    except Exception:
+        pass
+    return "\n".join(extracted_parts).strip()
+
+# 웹 인터페이스(app.py) 연동을 위해 수정된 메인 함수
 def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> str:
     """
     웹에서 전달받은 질문을 분석하여 평소에는 Flash로,
@@ -193,34 +207,63 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> s
         search_industry_code_for_gemini
     ]
     
+    # 형사법(뇌물방지법 등)·조세범처벌법 용어로 인한 오작동 차단 해제
+    safety_settings = [
+        types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
+        types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
+        types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
+        types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
+    ]
+    
     try:
         chat = client.chats.create(
             model=selected_model,
             config=types.GenerateContentConfig(
                 tools=tools_list,
                 temperature=0.2,
-                system_instruction=dynamic_prompt
+                system_instruction=dynamic_prompt,
+                safety_settings=safety_settings,
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                    maximum_remote_calls=15
+                )
             )
         )
         
         response = chat.send_message(user_input)
-        return f"> {mode_badge}\n\n" + response.text
+        final_text = extract_safe_text(response)
+        
+        # 만약 도구만 15번 연속 호출하고 최종 요약 텍스트를 아직 안 쓴 경우, 즉시 최종 보고서 작성을 지시
+        if not final_text:
+            follow_up = chat.send_message("지금까지 조회한 법령·판례 데이터와 첨부 문서 내용을 바탕으로 즉시 [A. 사전 3줄 크로스체크]와 [B. 최종 답변]을 작성해 주세요.")
+            final_text = extract_safe_text(follow_up)
+            
+        if not final_text:
+            raise ValueError("모델이 빈 응답을 반환했습니다.")
+            
+        return f"> {mode_badge}\n\n" + final_text
         
     except Exception as e:
-        # 만약 Pro 모델 호출 중 일시적 서버 지연 등이 발생하면 즉시 Flash 모델로 안전하게 폴백(Fallback)
         if selected_model == PRO_MODEL_ID:
-            print(f"⚠️ Pro 모델 응답 지연으로 Flash 모델로 자동 전환하여 재시도합니다: {e}")
+            print(f"⚠️ Pro 모델 처리 중 예외 발생으로 Flash 모델로 자동 전환하여 재시도합니다: {e}")
             try:
                 fallback_chat = client.chats.create(
                     model=FLASH_MODEL_ID,
                     config=types.GenerateContentConfig(
                         tools=tools_list,
                         temperature=0.2,
-                        system_instruction=dynamic_prompt
+                        system_instruction=dynamic_prompt,
+                        safety_settings=safety_settings,
+                        automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                            maximum_remote_calls=15
+                        )
                     )
                 )
                 response = fallback_chat.send_message(user_input)
-                return f"> ⚡ **[Flash 백업 모드]** (Pro 서버 응답 지연으로 자동 전환됨)\n\n" + response.text
+                final_text = extract_safe_text(response)
+                if not final_text:
+                    follow_up = fallback_chat.send_message("조회된 내용을 바탕으로 즉시 최종 답변 양식에 맞춰 보고서를 출력해 주세요.")
+                    final_text = extract_safe_text(follow_up)
+                return f"> ⚡ **[Flash 백업 모드]** (Pro 처리 전환됨)\n\n" + (final_text or "응답을 생성하지 못했습니다.")
             except Exception as e2:
                 return f"❌ 실행 중 오류가 발생했습니다: {str(e2)}"
         
