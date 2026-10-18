@@ -16,15 +16,35 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------
-# 헬퍼 함수 1: 업로드된 파일(Excel, PDF, Word) 텍스트 추출 (대용량 50,000자 한도 확대)
+# 0. 멀티 대화방(10개 세션) 및 파일 캐시 메모리 초기화
 # ---------------------------------------------------------
-MAX_DOC_CHARS = 50000  # 장문 종합 검토 보고서도 잘리지 않도록 50,000자로 확대
+ROOM_IDS = [f"검토방 {i}" for i in range(1, 11)]
+
+if "chat_rooms" not in st.session_state:
+    st.session_state.chat_rooms = {r_id: [] for r_id in ROOM_IDS}
+
+# 각 방의 사용자 지정 별명(메모) 저장용 (예: 검토방 1 -> 인도네시아 건)
+if "room_titles" not in st.session_state:
+    default_titles = {r_id: "빈 대화방" for r_id in ROOM_IDS}
+    default_titles["검토방 1"] = "메인 검토"
+    st.session_state.room_titles = default_titles
+
+# 방 이동 시 첨부파일을 매번 다시 읽지 않도록 잡아주는 고속 캐시 메모리
+if "room_files" not in st.session_state:
+    st.session_state.room_files = {r_id: {"name": None, "text": ""} for r_id in ROOM_IDS}
+
+if "current_room" not in st.session_state:
+    st.session_state.current_room = ROOM_IDS[0]
+
+# ---------------------------------------------------------
+# 헬퍼 함수 1: 업로드된 파일(Excel, PDF, Word) 텍스트 추출 (대용량 50,000자 한도)
+# ---------------------------------------------------------
+MAX_DOC_CHARS = 50000
 
 def extract_file_content(uploaded_file) -> str:
     """업로드된 엑셀, CSV, PDF, 워드(.docx) 파일에서 텍스트와 표 데이터를 추출합니다."""
     filename = uploaded_file.name.lower()
     try:
-        # 1) 엑셀 파일 (.xlsx, .xls)
         if filename.endswith((".xlsx", ".xls")):
             excel_file = pd.ExcelFile(uploaded_file)
             text_parts = [f"[첨부 엑셀 파일명: {uploaded_file.name}]"]
@@ -34,7 +54,6 @@ def extract_file_content(uploaded_file) -> str:
                 text_parts.append(df.head(500).to_string(index=False))
             return "\n".join(text_parts)[:MAX_DOC_CHARS]
 
-        # 2) CSV 파일 (.csv) - 한글 인코딩 자동 감지
         elif filename.endswith(".csv"):
             for enc in ["utf-8-sig", "utf-8", "cp949", "euc-kr"]:
                 try:
@@ -45,7 +64,6 @@ def extract_file_content(uploaded_file) -> str:
                     continue
             return "❌ CSV 파일의 한글 인코딩을 읽을 수 없습니다. 엑셀(.xlsx)로 저장 후 다시 올려주세요."
 
-        # 3) PDF 파일 (.pdf) - 최대 50페이지, 50,000자 추출
         elif filename.endswith(".pdf"):
             reader = PdfReader(uploaded_file)
             text_parts = [f"[첨부 PDF 파일명: {uploaded_file.name} (총 {len(reader.pages)}페이지)]"]
@@ -54,7 +72,6 @@ def extract_file_content(uploaded_file) -> str:
                 text_parts.append(f"\n--- {idx+1}페이지 ---\n{page_text}")
             return "\n".join(text_parts)[:MAX_DOC_CHARS]
 
-        # 4) 워드 파일 (.docx) - 본문 문단 및 표(Table) 전체 추출 (50,000자 한도)
         elif filename.endswith(".docx"):
             doc = Document(uploaded_file)
             text_parts = [f"[첨부 워드 파일명: {uploaded_file.name}]"]
@@ -154,53 +171,100 @@ def create_printable_html(report_text: str) -> bytes:
     return html_str.encode("utf-8-sig")
 
 # ---------------------------------------------------------
-# 2. 왼쪽 사이드바 제어판 및 파일 업로드 UI 구성
+# 2. 왼쪽 사이드바 제어판 (10개 대화방 드롭다운 + 방 이름 메모 + 캐시 파일 업로더)
 # ---------------------------------------------------------
 with st.sidebar:
     st.title("⚙️ 에이전트 제어판")
-    st.markdown("실시간 법제처·한국은행·업종코드 DB 연동 및 **Flash ↔ Pro 자동 전환** 시스템입니다.")
     
-    if st.button("🔄 대화 내용 초기화", use_container_width=True):
-        st.session_state.messages = []
+    st.subheader("🗂️ 멀티 대화방 선택 (1~10번)")
+    
+    # 드롭다운 목록에 [방 번호 - 방 제목 (대화 건수)] 형태로 직관적으로 표시
+    def format_room_label(r_id: str) -> str:
+        title = st.session_state.room_titles.get(r_id, "")
+        q_cnt = len(st.session_state.chat_rooms[r_id]) // 2
+        file_mark = "📎" if st.session_state.room_files[r_id]["name"] else ""
+        return f"💬 {r_id} [{title}] ({q_cnt}건) {file_mark}"
+
+    selected_room = st.selectbox(
+        "진행 중인 프로젝트별로 방을 나누어 관리하세요.",
+        options=ROOM_IDS,
+        index=ROOM_IDS.index(st.session_state.current_room),
+        format_func=format_room_label
+    )
+    st.session_state.current_room = selected_room
+    
+    # 현재 선택된 방의 이름(메모)을 직접 수정할 수 있는 입력칸
+    new_title = st.text_input(
+        "✏️ 현재 대화방 주제(메모) 설정",
+        value=st.session_state.room_titles[selected_room],
+        placeholder="예: 인도네시아 자문, A사 세무조사 등",
+        key=f"title_input_{selected_room}"
+    )
+    if new_title != st.session_state.room_titles[selected_room]:
+        st.session_state.room_titles[selected_room] = new_title
         st.rerun()
+    
+    col_del1, col_del2 = st.columns(2)
+    with col_del1:
+        if st.button("🗑️ 현재 방 비우기", use_container_width=True):
+            st.session_state.chat_rooms[selected_room] = []
+            st.session_state.room_files[selected_room] = {"name": None, "text": ""}
+            st.rerun()
+    with col_del2:
+        if st.button("🔄 10개 방 전체 초기화", use_container_width=True):
+            st.session_state.chat_rooms = {r_id: [] for r_id in ROOM_IDS}
+            st.session_state.room_files = {r_id: {"name": None, "text": ""} for r_id in ROOM_IDS}
+            st.rerun()
         
     st.divider()
     
-    # 📂 파일 업로드 섹션 (엑셀, PDF, 워드 지원 - 50,000자 대용량 지원)
-    st.subheader("📂 검토 자료 업로드 (선택)")
+    # 📂 방별 독립 파일 업로드 (캐시 적용으로 방 전환 시 재로딩 지연 0초!)
+    st.subheader(f"📂 [{selected_room}] 전용 자료 업로드")
     uploaded_file = st.file_uploader(
-        "엑셀, PDF, 워드 파일을 올리면 자동으로 Pro 심층 모드가 가동되어 법령과 대조합니다.",
-        type=["xlsx", "xls", "csv", "pdf", "docx"]
+        "이 대화방에서만 사용할 엑셀, PDF, 워드 파일을 올려주세요.",
+        type=["xlsx", "xls", "csv", "pdf", "docx"],
+        key=f"uploader_{selected_room}"
     )
     
-    extracted_doc_text = ""
     if uploaded_file is not None:
-        with st.spinner("대용량 문서 내용을 읽는 중..."):
-            extracted_doc_text = extract_file_content(uploaded_file)
-        st.success(f"✅ '{uploaded_file.name}' 로드 완료! (총 {len(extracted_doc_text):,}자 추출됨)")
+        # 새로 올린 파일이거나 파일명이 바뀐 경우에만 텍스트 추출 수행 (캐싱)
+        if st.session_state.room_files[selected_room]["name"] != uploaded_file.name:
+            with st.spinner("문서 내용을 읽고 메모리에 캐싱하는 중..."):
+                extracted_text = extract_file_content(uploaded_file)
+                st.session_state.room_files[selected_room] = {
+                    "name": uploaded_file.name,
+                    "text": extracted_text
+                }
+        cached_name = st.session_state.room_files[selected_room]["name"]
+        cached_text = st.session_state.room_files[selected_room]["text"]
+        st.success(f"✅ '{cached_name}' 유지 중 ({len(cached_text):,}자)")
         with st.expander("📄 추출된 파일 내용 미리보기"):
-            st.text(extracted_doc_text[:1000] + ("\n...(중략)..." if len(extracted_doc_text) > 1000 else ""))
+            st.text(cached_text[:1000] + ("\n...(중략)..." if len(cached_text) > 1000 else ""))
+    else:
+        # 파일 업로더에서 X를 눌러 지운 경우 캐시도 비움
+        st.session_state.room_files[selected_room] = {"name": None, "text": ""}
 
     st.divider()
-    st.subheader("🤖 스마트 라우팅 작동 기준")
+    st.subheader("🤖 스마트 라우팅 & 방어벽")
     st.markdown("""
-    - **⚡ Flash 모드 (기본)**: 일반 세법·환율·업종코드 조회 (토큰 절약)
+    - **⚡ Flash 모드 (기본)**: 일반 질의 및 중소형 문서 (토큰 절약)
     - **🧠 Pro 모드 (자동 전환)**:
-      1. 엑셀·PDF·워드 파일 첨부 시
-      2. 고난도 키워드(합병·세무조사·실질과세·외국환 등) 포함 시
-      3. 장문·복합 세액 시뮬레이션 질의 시
+      1. 15,000자 이상 대용량 문서 첨부 시
+      2. 고난도 키워드 2개 이상 결합 시
+      3. 질문에 **`[프로]`** 또는 **`[정밀검토]`** 입력 시
     """)
 
 # ---------------------------------------------------------
-# 3. 메인 화면 및 채팅창 구성
+# 3. 메인 화면 및 현재 선택된 대화방 렌더링
 # ---------------------------------------------------------
-st.title("⚖️ 세무·법령·회계 검토 자율 에이전트")
-st.markdown("평소에는 **Flash**로 빠르게 작동하며, 문서 첨부 및 고난도 쟁점 시 **Pro**로 자동 전환되어 **3단계 팩트체크 보고서**를 작성합니다.")
+current_messages = st.session_state.chat_rooms[selected_room]
+current_room_title = st.session_state.room_titles[selected_room]
+current_file_info = st.session_state.room_files[selected_room]
 
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+st.title(f"⚖️ 세무·법령·회계 자율 에이전트 — [{selected_room}: {current_room_title}]")
+st.markdown("10개의 독립된 검토방에서 거래처·주제별로 대화를 누적 관리할 수 있습니다. *(⚠️ 주의: 브라우저 창을 완전히 닫거나 앱을 재부팅하면 임시 대화 내역은 초기화되므로 중요한 보고서는 하단 버튼으로 꼭 다운로드해 두세요!)*")
 
-for idx, message in enumerate(st.session_state.messages):
+for idx, message in enumerate(current_messages):
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
         if message["role"] == "assistant":
@@ -209,53 +273,70 @@ for idx, message in enumerate(st.session_state.messages):
                 st.download_button(
                     label="📘 워드 다운로드 (.docx)",
                     data=create_word_docx(message["content"]),
-                    file_name=f"세무법령_검토보고서_{idx}.docx",
+                    file_name=f"검토보고서_{selected_room}_{current_room_title}_{idx}.docx",
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    key=f"docx_{idx}",
+                    key=f"docx_{selected_room}_{idx}",
                     use_container_width=True
                 )
             with col2:
                 st.download_button(
                     label="🖨️ 인쇄용 문서 (.html/PDF)",
                     data=create_printable_html(message["content"]),
-                    file_name=f"세무법령_검토보고서_{idx}.html",
+                    file_name=f"검토보고서_{selected_room}_{current_room_title}_{idx}.html",
                     mime="text/html",
-                    key=f"print_{idx}",
+                    key=f"print_{selected_room}_{idx}",
                     use_container_width=True
                 )
             with col3:
                 st.download_button(
                     label="📝 마크다운 다운로드 (.md)",
                     data=message["content"].encode("utf-8-sig"),
-                    file_name=f"세무법령_검토보고서_{idx}.md",
+                    file_name=f"검토보고서_{selected_room}_{current_room_title}_{idx}.md",
                     mime="text/markdown",
-                    key=f"md_{idx}",
+                    key=f"md_{selected_room}_{idx}",
                     use_container_width=True
                 )
 
-# 4. 사용자 질문 입력 및 첨부 파일 결합 처리
-if prompt := st.chat_input("검토가 필요한 세무·법령·회계 이슈를 입력하세요"):
-    has_attached_file = (uploaded_file is not None and bool(extracted_doc_text))
-    display_prompt = f"📎 **[첨부파일: {uploaded_file.name}]**\n\n{prompt}" if has_attached_file else prompt
+# 4. 사용자 질문 입력 및 이전 대화 맥락(Context) + 첨부 파일 결합 처리
+if prompt := st.chat_input(f"[{selected_room}: {current_room_title}]에 검토할 이슈를 입력하세요"):
+    has_attached_file = bool(current_file_info["name"] and current_file_info["text"])
+    display_prompt = f"📎 **[첨부파일: {current_file_info['name']}]**\n\n{prompt}" if has_attached_file else prompt
     
-    st.session_state.messages.append({"role": "user", "content": display_prompt})
+    # 첫 질문이고 방 제목이 기본값('빈 대화방')이면 첫 질문 앞 12글자로 방 제목을 자동 세팅해주는 센스 기능!
+    if st.session_state.room_titles[selected_room] in ["빈 대화방", "메인 검토"] and not current_messages:
+        auto_title = prompt.strip().replace("\n", " ")[:12]
+        st.session_state.room_titles[selected_room] = auto_title
+        current_room_title = auto_title
+
+    # 현재 방의 직전 대화 맥락(최근 6개 메시지 = 3턴) 요약 추출
+    history_context = ""
+    if current_messages:
+        recent_msgs = current_messages[-6:]
+        history_lines = ["[이 대화방의 직전 대화 맥락 (참고용)]"]
+        for m in recent_msgs:
+            role_label = "사용자" if m["role"] == "user" else "에이전트"
+            history_lines.append(f"- {role_label}: {m['content'][:1500]}")
+        history_context = "\n".join(history_lines) + "\n\n"
+
+    current_messages.append({"role": "user", "content": display_prompt})
     with st.chat_message("user"):
         st.markdown(display_prompt)
 
     if has_attached_file:
         full_input_for_agent = (
-            f"사용자 질문: {prompt}\n\n"
-            f"아래는 사용자가 업로드한 첨부파일({uploaded_file.name})의 전체 데이터입니다. "
-            f"이 데이터와 관련 법령·예규·판례·환율을 정밀 대조하여 검토 보고서를 작성하세요:\n"
+            f"{history_context}"
+            f"[현재 사용자 질문]: {prompt}\n\n"
+            f"아래는 사용자가 현재 대화방에 업로드한 첨부파일({current_file_info['name']})의 데이터입니다. "
+            f"직전 대화 맥락과 이 파일 데이터를 바탕으로 관련 법령·예규·판례·환율을 정밀 대조하여 답변하세요:\n"
             f"========================================\n"
-            f"{extracted_doc_text}\n"
+            f"{current_file_info['text']}\n"
             f"========================================"
         )
     else:
-        full_input_for_agent = prompt
+        full_input_for_agent = f"{history_context}[현재 사용자 질문]: {prompt}" if history_context else prompt
 
     with st.chat_message("assistant"):
-        with st.spinner("🔍 질문 난이도 분석 및 최적 모델(Flash/Pro) 자동 배정 후 3단계 크로스체크 중입니다..."):
+        with st.spinner(f"🔍 [{selected_room}] 맥락 분석 및 3단계 크로스체크 중입니다..."):
             response = run_agent(
                 user_input=full_input_for_agent,
                 raw_query=prompt,
@@ -263,34 +344,34 @@ if prompt := st.chat_input("검토가 필요한 세무·법령·회계 이슈를
             )
             st.markdown(response)
             
-            new_idx = len(st.session_state.messages)
+            new_idx = len(current_messages)
             col1, col2, col3 = st.columns(3)
             with col1:
                 st.download_button(
                     label="📘 워드 다운로드 (.docx)",
                     data=create_word_docx(response),
-                    file_name="세무법령_검토보고서_최신.docx",
+                    file_name=f"검토보고서_{selected_room}_{current_room_title}_최신.docx",
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    key=f"docx_new_{new_idx}",
+                    key=f"docx_new_{selected_room}_{new_idx}",
                     use_container_width=True
                 )
             with col2:
                 st.download_button(
                     label="🖨️ 인쇄용 문서 (.html/PDF)",
                     data=create_printable_html(response),
-                    file_name="세무법령_검토보고서_최신.html",
+                    file_name=f"검토보고서_{selected_room}_{current_room_title}_최신.html",
                     mime="text/html",
-                    key=f"print_new_{new_idx}",
+                    key=f"print_new_{selected_room}_{new_idx}",
                     use_container_width=True
                 )
             with col3:
                 st.download_button(
                     label="📝 마크다운 다운로드 (.md)",
                     data=response.encode("utf-8-sig"),
-                    file_name="세무법령_검토보고서_최신.md",
+                    file_name=f"검토보고서_{selected_room}_{current_room_title}_최신.md",
                     mime="text/markdown",
-                    key=f"md_new_{new_idx}",
+                    key=f"md_new_{selected_room}_{new_idx}",
                     use_container_width=True
                 )
             
-    st.session_state.messages.append({"role": "assistant", "content": response})
+    current_messages.append({"role": "assistant", "content": response})
