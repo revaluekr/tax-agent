@@ -1,5 +1,9 @@
+import os
 import requests
-from config import LAW_OPEN_API_KEY
+try:
+    from config import LAW_OPEN_API_KEY
+except ImportError:
+    LAW_OPEN_API_KEY = os.getenv("LAW_OPEN_API_KEY")
 
 SEARCH_URL = "https://www.law.go.kr/DRF/lawSearch.do"
 SERVICE_URL = "https://www.law.go.kr/DRF/lawService.do"
