@@ -1,5 +1,6 @@
 import os
 import requests
+import pandas as pd
 
 try:
     from config import LAW_OPEN_API_KEY, BOK_API_KEY
@@ -141,7 +142,6 @@ def get_bok_exchange_rate(start_date: str, end_date: str, currency: str = "USD")
     if not BOK_API_KEY:
         return "❌ 한국은행 API 키(BOK_API_KEY)가 설정되지 않았습니다."
     
-    # 날짜 문자열에서 하이픈(-) 제거 안전장치
     s_date = start_date.replace("-", "").replace(".", "").strip()
     e_date = end_date.replace("-", "").replace(".", "").strip()
     
@@ -191,3 +191,61 @@ def get_bok_base_rate(start_date: str, end_date: str) -> str:
             return "해당 기간의 기준금리 데이터가 없습니다."
     except Exception as e:
         return f"❌ 한국은행 기준금리 조회 오류: {e}"
+
+# ---------------------------------------------------------
+# 3. 국세청 업종코드 전용 검색 도구 (외부 마스터 파일 전용)
+# ---------------------------------------------------------
+def search_industry_code(keyword: str) -> str:
+    """
+    프로젝트 내 'industry_codes.xlsx' 또는 'industry_codes.csv' 마스터 파일에서
+    업종명, 키워드 또는 6자리 코드로 국세청 기준경비율 업종코드를 정밀 검색합니다.
+    """
+    kw_list = [k.strip() for k in keyword.strip().split() if k.strip()]
+    if not kw_list:
+        return "검색할 업종 키워드를 입력해 주세요."
+
+    target_files = ["industry_codes.xlsx", "industry_codes.xls", "industry_codes.csv"]
+    found_file = None
+    for f in target_files:
+        if os.path.exists(f):
+            found_file = f
+            break
+
+    if not found_file:
+        return (
+            "⚠️ [시스템 안내]: 현재 프로젝트 폴더에 국세청 업종코드 데이터 파일('industry_codes.xlsx' 또는 'industry_codes.csv')이 업로드되어 있지 않습니다.\n"
+            "⚠️ [절대 준수 지침]: 확인되지 않은 6자리 업종코드 숫자를 절대 임의로 추측하여 답변에 적지 마세요! "
+            "코드 번호는 생략하고, 국세청 홈택스(조회/발급 > 기타조회 > 기준·단순경비율(업종코드))에서 검색할 수 있는 정확한 업종 키워드와 세법상 업종 분류 기준만 안내하세요."
+        )
+
+    try:
+        if found_file.endswith((".xlsx", ".xls")):
+            df = pd.read_excel(found_file, dtype=str)
+        else:
+            for enc in ["utf-8-sig", "utf-8", "cp949", "euc-kr"]:
+                try:
+                    df = pd.read_csv(found_file, dtype=str, encoding=enc)
+                    break
+                except Exception:
+                    continue
+
+        # 모든 키워드 토큰이 행 전체 텍스트 내에 포함되어 있는지 검사 (AND 검색)
+        def match_row(row):
+            row_text = " ".join(row.dropna().astype(str)).lower()
+            return all(k.lower() in row_text for k in kw_list)
+
+        mask = df.apply(match_row, axis=1)
+        matched_df = df[mask].head(15)
+
+        if not matched_df.empty:
+            return (
+                f"📊 [국세청 업종코드 데이터 검색 결과 (키워드: '{keyword}', 총 {len( df[mask] )}건 중 상위 {len(matched_df)}건)]\n"
+                + matched_df.to_string(index=False)
+            )
+        else:
+            return (
+                f"조회 결과: 업종코드 데이터 파일('{found_file}')에서 '{keyword}' 키워드와 일치하는 항목을 찾지 못했습니다. "
+                f"더 짧은 핵심 단어(예: '전자상거래', '소프트웨어', '음식점' 등)로 다시 검색해 보거나, 확인되지 않은 6자리 코드는 임의 생성하지 말고 생략하세요."
+            )
+    except Exception as e:
+        return f"❌ 업종코드 데이터 파일 읽기 오류: {e}"
