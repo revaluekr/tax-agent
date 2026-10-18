@@ -7,6 +7,11 @@ except ImportError:
     LAW_OPEN_API_KEY = os.getenv("LAW_OPEN_API_KEY")
     BOK_API_KEY = os.getenv("BOK_API_KEY")
 
+# 공공기관 해외 서버(Streamlit Cloud) 차단 방지용 브라우저 헤더
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+}
+
 # ---------------------------------------------------------
 # 1. 법제처 국가법령정보센터 API 함수 (목록 검색 + 본문 정밀 조회)
 # ---------------------------------------------------------
@@ -22,11 +27,10 @@ def search_law_data(keyword: str, target: str = "law"):
         "query": keyword
     }
     try:
-        response = requests.get(SEARCH_URL, params=params, timeout=10)
+        response = requests.get(SEARCH_URL, params=params, headers=HEADERS, timeout=10)
         response.raise_for_status()
         data = response.json()
         
-        # 검색 대상별 JSON 루트 키 매핑
         root_keys = {
             "law": "LawSearch",
             "prec": "PrecSearch",
@@ -45,12 +49,7 @@ def search_law_data(keyword: str, target: str = "law"):
         return []
 
 def get_law_content(doc_id: str, target: str = "law", query_filter: str = "") -> str:
-    """
-    일련번호(ID)를 이용해 법령 조문, 판례 요지, 행정규칙(예규/고시), 법령해석례의 실제 본문을 가져옵니다.
-    - doc_id: 검색 목록에서 확인한 일련번호
-    - target: 'law'(법령), 'prec'(판례), 'admrul'(행정규칙/예규), 'expc'(법령해석례)
-    - query_filter: 법령 본문 내 특정 키워드(예: '업무용승용차', '제27조')만 발췌하고 싶을 때 입력
-    """
+    """일련번호(ID)를 이용해 법령 조문, 판례 요지, 행정규칙(예규/고시), 법령해석례의 실제 본문을 가져옵니다."""
     params = {
         "OC": LAW_OPEN_API_KEY,
         "target": target,
@@ -62,11 +61,10 @@ def get_law_content(doc_id: str, target: str = "law", query_filter: str = "") ->
         params["ID"] = doc_id
 
     try:
-        response = requests.get(SERVICE_URL, params=params, timeout=15)
+        response = requests.get(SERVICE_URL, params=params, headers=HEADERS, timeout=15)
         response.raise_for_status()
         data = response.json()
 
-        # 1) 현행 법령(law) 조문 텍스트 추출
         if target == "law" and "법령" in data:
             law_data = data["법령"]
             info = law_data.get("기본정보", {})
@@ -79,7 +77,6 @@ def get_law_content(doc_id: str, target: str = "law", query_filter: str = "") ->
             extracted = []
             for art in articles:
                 art_content = str(art.get("조문내용", "")).strip()
-                # 항/호/목 세부 내용 결합
                 hangs = art.get("항", [])
                 if isinstance(hangs, dict):
                     hangs = [hangs]
@@ -95,18 +92,16 @@ def get_law_content(doc_id: str, target: str = "law", query_filter: str = "") ->
                         if ho_text:
                             art_content += f"\n    {ho_text}"
                 
-                # 키워드 필터가 있으면 해당 키워드가 포함된 조문만 추출
                 if not query_filter or (query_filter in art_content):
                     if art_content:
                         extracted.append(art_content)
             
             if not extracted and query_filter:
-                return header + f"'{query_filter}' 키워드가 포함된 조문을 찾지 못했습니다. 키워드 없이 다시 조회하거나 다른 키워드를 입력해 보세요."
+                return header + f"'{query_filter}' 키워드가 포함된 조문을 찾지 못했습니다."
             
-            body = "\n\n".join(extracted[:15])  # 토큰 초과 방지를 위해 핵심 조문 최대 15개 반환
+            body = "\n\n".join(extracted[:15])
             return (header + "\n" + body)[:10000]
 
-        # 2) 대법원 등 판례(prec) 본문 추출
         elif target == "prec" and "PrecService" in data:
             p = data["PrecService"]
             return (
@@ -116,7 +111,6 @@ def get_law_content(doc_id: str, target: str = "law", query_filter: str = "") ->
                 f"■ [참조조문]: {p.get('참조조문')}"
             )[:10000]
 
-        # 3) 국세청 예규·훈령·고시 등 행정규칙(admrul) 본문 추출
         elif target == "admrul" and "AdmRulService" in data:
             a = data["AdmRulService"]
             info = a.get("행정규칙기본정보", {})
@@ -126,7 +120,6 @@ def get_law_content(doc_id: str, target: str = "law", query_filter: str = "") ->
                 f"■ [본문 내용]:\n{body}"
             )[:10000]
 
-        # 4) 법령해석례(expc) 본문 추출
         elif target == "expc" and "ExpcService" in data:
             e = data["ExpcService"]
             return (
@@ -148,6 +141,10 @@ def get_bok_exchange_rate(start_date: str, end_date: str, currency: str = "USD")
     if not BOK_API_KEY:
         return "❌ 한국은행 API 키(BOK_API_KEY)가 설정되지 않았습니다."
     
+    # 날짜 문자열에서 하이픈(-) 제거 안전장치
+    s_date = start_date.replace("-", "").replace(".", "").strip()
+    e_date = end_date.replace("-", "").replace(".", "").strip()
+    
     item_map = {
         "USD": "0000001",  # 원/미국달러(매매기준율)
         "JPY": "0000002",  # 원/일본엔(100엔)
@@ -155,20 +152,20 @@ def get_bok_exchange_rate(start_date: str, end_date: str, currency: str = "USD")
         "CNY": "0000053"   # 원/위안
     }
     item_code = item_map.get(currency.upper(), "0000001")
-    url = f"https://ecos.bok.or.kr/api/StatisticSearch/{BOK_API_KEY}/json/kr/1/30/731Y001/D/{start_date}/{end_date}/{item_code}"
+    url = f"https://ecos.bok.or.kr/api/StatisticSearch/{BOK_API_KEY}/json/kr/1/30/731Y001/D/{s_date}/{e_date}/{item_code}"
     
     try:
-        response = requests.get(url, timeout=10)
+        response = requests.get(url, headers=HEADERS, timeout=15)
         data = response.json()
         if "StatisticSearch" in data and "row" in data["StatisticSearch"]:
             rows = data["StatisticSearch"]["row"]
-            result_str = f"[{currency.upper()} 매매기준율 조회 결과 ({start_date}~{end_date})]\n"
+            result_str = f"[{currency.upper()} 한국은행 공식 매매기준율 ({s_date}~{e_date})]\n"
             for r in rows:
                 result_str += f"- 일자: {r.get('TIME')} | 환율: {r.get('DATA_VALUE')}원 ({r.get('ITEM_NAME1')})\n"
             return result_str
         else:
-            msg = data.get("RESULT", {}).get("MESSAGE", "해당 일자의 고시 환율 데이터가 없습니다(휴일인 경우 직전 영업일 조회 필요).")
-            return f"조회 결과 없음: {msg}"
+            msg = data.get("RESULT", {}).get("MESSAGE", "데이터 없음")
+            return f"한국은행 응답 안내: {msg} (참고: 주말/공휴일인 경우 직전 영업일로 조회 필요)"
     except Exception as e:
         return f"❌ 한국은행 환율 조회 오류: {e}"
 
@@ -177,14 +174,16 @@ def get_bok_base_rate(start_date: str, end_date: str) -> str:
     if not BOK_API_KEY:
         return "❌ 한국은행 API 키(BOK_API_KEY)가 설정되지 않았습니다."
     
-    url = f"https://ecos.bok.or.kr/api/StatisticSearch/{BOK_API_KEY}/json/kr/1/30/722Y001/D/{start_date}/{end_date}/0101000"
+    s_date = start_date.replace("-", "").replace(".", "").strip()
+    e_date = end_date.replace("-", "").replace(".", "").strip()
+    url = f"https://ecos.bok.or.kr/api/StatisticSearch/{BOK_API_KEY}/json/kr/1/30/722Y001/D/{s_date}/{e_date}/0101000"
     
     try:
-        response = requests.get(url, timeout=10)
+        response = requests.get(url, headers=HEADERS, timeout=15)
         data = response.json()
         if "StatisticSearch" in data and "row" in data["StatisticSearch"]:
             rows = data["StatisticSearch"]["row"]
-            result_str = f"[한국은행 기준금리 조회 결과 ({start_date}~{end_date})]\n"
+            result_str = f"[한국은행 기준금리 조회 결과 ({s_date}~{e_date})]\n"
             for r in rows[-10:]:
                 result_str += f"- 일자: {r.get('TIME')} | 기준금리: 연 {r.get('DATA_VALUE')}%\n"
             return result_str
