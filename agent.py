@@ -9,7 +9,7 @@ from law_api import search_law_data, get_law_content
 
 # 1. Gemini 클라이언트 및 모델 설정
 client = genai.Client(api_key=GEMINI_API_KEY)
-MODEL_ID = "gemini-2.5-flash"
+MODEL_ID = "gemini-3.8-flash"
 
 # 2. Gemini 도구 정의 (법령, 판례, 국세청·노동부 행정규칙/예규, 법령해석례 통합 검색)
 def search_law_for_gemini(keyword: str, target: str = "law") -> str:
