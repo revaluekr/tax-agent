@@ -1,4 +1,5 @@
 import os
+from datetime import datetime
 from google import genai
 from google.genai import types
 try:
@@ -54,7 +55,7 @@ def get_law_details_for_gemini(doc_id: str, target: str = "law", query_filter: s
     검색된 일련번호(ID)를 입력받아 법령 조문, 판례 요지, 행정규칙(예규) 본문, 법령해석례 회답 원문을 상세 조회합니다.
     - doc_id: search_law_for_gemini에서 확인한 ID(일련번호) 문자열
     - target: 'law'(법령), 'prec'(판례), 'admrul'(행정규칙/예규), 'expc'(법령해석례)
-    - query_filter: (선택사항) target이 'law'일 때 특정 조문 번호나 단어(예: '제27조', '업무용승용차', '연차')가 포함된 조문만 정확히 추출하고 싶을 때 입력
+    - query_filter: (선택사항) target이 'law'일 때 특정 조문 번호나 단어(예: '제76조', '업무용승용차')가 포함된 조문만 정확히 추출하고 싶을 때 입력
     """
     print(f"\n[시스템] 📖 원문 정밀 조회 가동: ID '{doc_id}' (대상: {target}, 필터: '{query_filter}')")
     return get_law_content(doc_id, target, query_filter)
@@ -62,7 +63,7 @@ def get_law_details_for_gemini(doc_id: str, target: str = "law", query_filter: s
 def search_exchange_rate_for_gemini(start_date: str, end_date: str, currency: str = "USD") -> str:
     """
     한국은행 ECOS에서 특정 기간의 공식 환율(매매기준율)을 조회합니다.
-    - start_date, end_date: 'YYYYMMDD' 형식 (예: '20251226', '20251231' / 휴일 대비 3~5일 구간 조회 권장)
+    - start_date, end_date: 'YYYYMMDD' 형식 (예: '20251226', '20251231' / 휴일 대비 5~7일 구간 조회 필수)
     - currency: 'USD'(미국 달러), 'JPY'(일본 엔), 'EUR'(유로), 'CNY'(중국 위안)
     """
     print(f"\n[시스템] 💱 한국은행 환율 조회 도구 가동: {currency} ({start_date}~{end_date})")
@@ -75,12 +76,14 @@ def search_base_rate_for_gemini(start_date: str, end_date: str) -> str:
     print(f"\n[시스템] 📈 한국은행 기준금리 조회 도구 가동: ({start_date}~{end_date})")
     return get_bok_base_rate(start_date, end_date)
 
-# 3. 에이전트 시스템 프롬프트 및 실행 로직
+# 3. 에이전트 시스템 프롬프트 템플릿
 SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문 에이전트입니다.
 앞으로의 질문에 답변할 때는 반드시 먼저 제공된 도구들을 사용하여 실제 원문 데이터와 통계를 확인한 뒤, 아래의 **[자료 검토 기준]**과 **[내부 3단계 크로스체크 절차]**를 엄격히 준수하고 화면에는 **[최종 답변 양식]**만 출력하세요.
+
+[필수 도구 호출 원칙]
 - 1단계 (목록 검색): 'search_law_for_gemini'로 관련 법령(law), 판례(prec), 예규·고시(admrul), 해석례(expc)의 일련번호(ID)를 찾습니다.
 - 2단계 (원문 조회): 'get_law_details_for_gemini'에 ID와 검색 키워드(query_filter)를 넣어 실제 조문 텍스트와 판례·예규 본문을 직접 읽어 확인합니다.
-- 3단계 (환율/금리 조회): 외화자산 평가, 수출입 과세표준, 이자율 검토 시 'search_exchange_rate_for_gemini' 또는 'search_base_rate_for_gemini'를 호출합니다 (주말/공휴일 대비 대상일 전후 5일 구간 조회 권장).
+- 3단계 (환율/금리 조회): 외화자산 평가, 수출입 과세표준, 이자율 검토 시 날짜가 과거인지 미래인지 스스로 예단하지 말고 반드시 'search_exchange_rate_for_gemini' 또는 'search_base_rate_for_gemini' 도구를 무조건 호출하여 실제 데이터를 확인하세요. (주말/공휴일 대비 대상일 직전 5~7일 구간으로 넓혀서 조회하고 가장 마지막 고시 환율을 적용할 것)
 
 1. 자료 검토 우선순위 및 기준
 - 1순위 (법령 및 행정규칙): 국가법령정보센터 및 법제처 기준 가장 최근 개정된 [법률 / 시행령 / 시행규칙 / 별표·서식 / 행정규칙(고시·훈령)]을 최우선 기준으로 삼을 것.
@@ -120,6 +123,10 @@ def run_agent(user_input: str) -> str:
     """웹에서 전달받은 질문(user_input)을 처리하고 결과 텍스트를 반환합니다."""
     print(f"🤖 [시스템] 웹 요청 처리 중: {user_input}")
     
+    # 실시간 현재 날짜를 프롬프트 상단에 자동 주입하여 시점 착각(미래 일자 오인) 방지
+    today_str = datetime.now().strftime("%Y년 %m월 %d일")
+    dynamic_prompt = f"[시스템 기준일 안내: 오늘 날짜는 {today_str}입니다. 질문에 등장하는 연도와 날짜의 과거/현재 여부를 반드시 오늘 날짜({today_str}) 기준으로 판단하세요.]\n\n" + SYSTEM_PROMPT
+    
     try:
         chat = client.chats.create(
             model=MODEL_ID,
@@ -131,7 +138,7 @@ def run_agent(user_input: str) -> str:
                     search_base_rate_for_gemini
                 ],
                 temperature=0.2,
-                system_instruction=SYSTEM_PROMPT
+                system_instruction=dynamic_prompt
             )
         )
         
