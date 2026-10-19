@@ -51,7 +51,24 @@ import law_api
 _TOOL_TRACE = contextvars.ContextVar("tool_trace", default=None)
 
 def _new_trace() -> dict:
-    return {"list": [], "detail": [], "articles": set(), "article_texts": {}}
+    return {"list": [], "detail": [], "articles": set(), "article_texts": {}, "counts": {}}
+
+# 질문 1건당 도구 사용 상한 (프롬프트 지시만으로는 지켜지지 않아 코드에서 강제)
+_SEARCH_LIMIT = {"law": 4, "prec": 3, "decc": 3, "expc": 2, "admrul": 2, "ordin": 2}
+_DETAIL_LIMIT = {"law": 8, "prec": 3, "decc": 3, "expc": 2, "admrul": 2, "ordin": 2}
+
+def _over_limit(kind: str, target: str) -> bool:
+    """kind: 'search' 또는 'detail'. 상한을 넘으면 True (넘지 않으면 횟수를 1 늘림)"""
+    trace = _TOOL_TRACE.get()
+    if trace is None:
+        return False
+    table = _SEARCH_LIMIT if kind == "search" else _DETAIL_LIMIT
+    key = f"{kind}:{target}"
+    used = trace["counts"].get(key, 0)
+    if used >= table.get(target, 2):
+        return True
+    trace["counts"][key] = used + 1
+    return False
 
 def _norm(text: str) -> str:
     return re.sub(r"[\s「」『』\"'“”‘’]", "", text or "")
@@ -351,7 +368,7 @@ def _extract_claims(answer: str, trace: dict, max_claims: int = 20) -> tuple[lis
         if label not in src_index:
             sid = f"S{len(src_index) + 1}"
             src_index[label] = sid
-            sources[sid] = (label, text[:3500])
+            sources[sid] = (label, text[:6000])
         return src_index[label]
 
     claims = []
@@ -406,12 +423,12 @@ def _extract_claims(answer: str, trace: dict, max_claims: int = 20) -> tuple[lis
     total = sum(len(t) for _, t in sources.values())
     for key, txt in art_texts.items():
         label = _article_label(key)
-        if label not in src_index and total < 30000:
-            _src_id(label, txt); total += min(len(txt), 3500)
+        if label not in src_index and total < 40000:
+            _src_id(label, txt); total += min(len(txt), 6000)
     for d in details:
         head = d.split("\n", 1)[0][:60]
-        if head not in src_index and total < 30000:
-            _src_id(head, d); total += min(len(d), 3500)
+        if head not in src_index and total < 40000:
+            _src_id(head, d); total += min(len(d), 6000)
     return claims, sources
 
 def _semantic_verify(api_key: str, claims: list, sources: dict) -> dict:
@@ -455,12 +472,19 @@ def _semantic_verify(api_key: str, claims: list, sources: dict) -> dict:
             continue
     return result
 
-def _apply_semantic_results(answer: str, claims: list, verdicts: dict) -> tuple[str, dict]:
+_TRUNC_MARK = ("[※ 원문", "앞부분만 표시", "앞 8개만 표시")
+
+def _apply_semantic_results(answer: str, claims: list, verdicts: dict, sources: dict = None) -> tuple[str, dict]:
     lines = answer.split("\n")
     counts = {"supported": 0, "partial": 0, "unsupported": 0, "unknown": 0}
     to_delete = []
     for n, c in enumerate(claims):
         verdict, reason = verdicts.get(n + 1, ("unknown", ""))
+        # 근거 원문이 길어 잘린 채로 조회됐다면, '원문에 없음'이 잘린 부분 때문일 수 있으므로 삭제 대신 확인 필요로 표시
+        if verdict == "unsupported" and sources:
+            src_texts = [sources[sid][1] for sid in c["sources"] if sid in sources]
+            if any(m in t for t in src_texts for m in _TRUNC_MARK) or any(len(t) >= 5900 for t in src_texts):
+                verdict, reason = "partial", "원문이 길어 일부만 대조됨 – 직접 확인 필요"
         counts[verdict] = counts.get(verdict, 0) + 1
         if verdict == "partial":
             lines[c["line"]] = lines[c["line"]].rstrip() + f" ⚠️*(원문과 일부 불일치: {reason})*"
@@ -516,7 +540,7 @@ def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
 
     # 4) 조문번호로 특정 조문 1개를 조회한 경우 8,000자, 그 외(키워드 조회 등)는 3,500자까지 허용
     #    (시행령 제78조의3처럼 항이 많은 조문이 중간에 잘리지 않도록)
-    limit = 8000 if (qf.startswith("제") and "조" in qf) else 3500
+    limit = 12000 if (qf.startswith("제") and "조" in qf) else 3500
     if len(cleaned) > limit:
         return (cleaned[:limit]
                 + f"\n\n[※ 원문 {len(cleaned):,}자 중 {limit:,}자까지만 표시됨. 필요한 항이 없으면 "
@@ -588,6 +612,10 @@ def search_law_for_gemini(keyword: str, target: str = "law") -> str:
     - target='prec'/'decc'/'expc'는 핵심 주제어(예: '업무무관 가지급금')나 사건번호(예: '2005두9415')로 검색할 것.
       제목에 없으면 본문 검색으로 자동 재시도됨.
     """
+    if _over_limit("search", target):
+        print(f"\n[시스템] ⛔ 검색 한도 도달 → 차단: '{keyword}' (대상: {target})")
+        return (f"[검색 한도 도달] 이번 질문에서 '{target}' 검색은 더 할 수 없습니다. "
+                "지금까지 조회한 원문만으로 답변을 작성하고, 찾지 못한 근거는 '관련 원문을 확인하지 못했다'고 쓰세요.")
     print(f"\n[시스템] 💡 목록 검색 도구 가동: '{keyword}' (대상: {target})")
     results = law_api.search_law_data(keyword, target)
     used_keyword = keyword
@@ -640,6 +668,10 @@ def get_law_details_for_gemini(doc_id: str, target: str = "law", query_filter: s
     """
     검색된 일련번호(ID)로 원문을 조회합니다. 법령('law') 조회 시 반드시 query_filter에 조문번호(예: '제29조의8', '제26조')나 핵심 단어를 넣어 호출하세요.
     """
+    if _over_limit("detail", target):
+        print(f"\n[시스템] ⛔ 원문 조회 한도 도달 → 차단: ID '{doc_id}' (대상: {target})")
+        return (f"[원문 조회 한도 도달] 이번 질문에서 '{target}' 원문 조회는 더 할 수 없습니다. "
+                "이미 조회한 원문만으로 답변을 작성하세요.")
     print(f"\n[시스템] 📖 원문 정밀 조회 가동: ID '{doc_id}' (대상: {target}, 필터: '{query_filter}')")
     raw_text = law_api.get_law_content(doc_id, target, query_filter)
     # 법리 왜곡 없이 개정 연혁 태그와 타 조문 군더더기만 제거하여 토큰 50% 절감
@@ -744,7 +776,7 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
 ### 🔍 [A. 사전 3줄 크로스체크]
 - **1차(쟁점 파악)**: 질문의 핵심 쟁점 및 잘못된 전제 유무 1줄 요약
 - **2차(법령·기준·공시·실거래 대조)**: 적용할 핵심 법령명·조례·회계기준·DART 공시·사업자 과세유형·부동산 실거래가/업종코드/환율 및 단서·예외 요건 1줄 요약
-- **3차(예규·심판례·리스크 검증)**: 상충 예규·심판례 유무 및 가산세·매입세액 불공제·사후관리 등 실무 신고 시 핵심 주의점 1줄 요약
+- **3차(예규·심판례·리스크 검증)**: 조회한 예규·심판례가 있으면 근거 표시와 함께 요지, 없으면 "확인된 예규·심판례 없음"이라고 쓰고, 가산세·사후관리 등 실무 주의점 1줄 요약
 
 ---
 
@@ -825,6 +857,7 @@ def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dy
 
     if not final_text:
         raise ValueError("빈 응답이 반환되었습니다.")
+    final_text = re.sub(r"\s*<br\s*/?>\s*", " / ", final_text)   # 표 안 <br>이 글자로 보이는 문제 정리
 
     # ---------------------------------------------------------
     # 🔒 근거 강제 검증 (도구 기록이 수집된 경우에만)
@@ -882,7 +915,7 @@ def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dy
                 print(f"[시스템] 🧪 의미 검증 가동: 주장 {len(claims)}건 / 원문 {len(sources)}건")
                 try:
                     verdicts = _semantic_verify(api_key, claims, sources)
-                    final_text, cnt = _apply_semantic_results(final_text, claims, verdicts)
+                    final_text, cnt = _apply_semantic_results(final_text, claims, verdicts, sources)
                     citation_note += (f"\n> 🧪 의미 검증 {len(claims)}건: 일치 {cnt['supported']} · "
                                       f"일부 불일치 {cnt['partial']}(⚠️ 표시) · 불일치 {cnt['unsupported']}(삭제)"
                                       + (f" · 판정 누락 {cnt['unknown']}" if cnt.get("unknown") else ""))
@@ -924,6 +957,7 @@ def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dy
     if limit_hit:
         final_text += "\n> ⚠️ 도구 호출 한도에 도달해 조회가 중간에 끊겼습니다. 결론을 원문과 대조해 확인하세요."
     final_text += citation_note
+    final_text = re.sub(r"\s*<br\s*/?>\s*", " / ", final_text)
 
     return final_text
 
