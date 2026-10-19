@@ -41,8 +41,9 @@ def get_live_gemini_key_pool() -> list[tuple[str, str]]:
 
 import law_api
 
-# 1. 기본/심층 모델 설정 및 스마트 라우팅 기준
+# 1. 기본/심층 모델 설정 및 무료 서버 혼잡(503) 우회용 고속 모델
 FLASH_MODEL_ID = "gemini-3.8-flash"
+BACKUP_FREE_FLASH_ID = "gemini-2.5-flash"
 PRO_MODEL_ID = "gemini-3.8-pro"
 
 FORCE_PRO_TRIGGERS = ["[프로]", "[정밀검토]", "[심층검토]", "프로모드"]
@@ -129,14 +130,12 @@ def search_industry_code_for_gemini(keyword: str) -> str:
     return law_api.search_industry_code(keyword)
 
 def search_dart_corp_for_gemini(corp_name: str, bsns_year: str = "2025") -> str:
-    """
-    금융감독원 전자공시시스템(Open DART)에서 특정 기업의 핵심 정보(기업개황, 최근 공시, 재무제표, 최대주주 지분현황, 배당, 타법인 출자현황)를 통합 조회합니다.
-    """
+    """금융감독원 전자공시시스템(Open DART)에서 특정 기업의 6대 핵심 정보를 통합 조회합니다."""
     print(f"\n[시스템] 📊 DART 전자공시 통합 조회 가동: '{corp_name}' ({bsns_year}년)")
     return law_api.get_dart_corp_info(corp_name, bsns_year)
 
 def check_nts_biz_status_for_gemini(biz_numbers: str) -> str:
-    """국세청 API를 통해 사업자등록번호(10자리)의 납세자 상태(계속/휴폐업) 및 과세유형(일반/간이/면세)을 실시간 조회합니다."""
+    """국세청 API를 통해 사업자등록번호(10자리)의 납세자 상태(계속/휴폐업) 및 과세유형을 실시간 조회합니다."""
     print(f"\n[시스템] 🔎 국세청 사업자등록 상태·과세유형 실시간 조회 가동: '{biz_numbers}'")
     return law_api.get_nts_biz_status(biz_numbers)
 
@@ -148,18 +147,14 @@ def verify_nts_biz_info_for_gemini(b_no: str, start_dt: str, p_nm: str, b_nm: st
     return "현재 law_api.py에 진위확인 함수가 없습니다."
 
 def search_real_estate_trade_for_gemini(property_type: str, region: str, deal_ymd: str, filter_keyword: str = "") -> str:
-    """
-    국토교통부 부동산 매매 실거래가 4종(아파트 'apt', 오피스텔 'offi', 상가 'comm', 토지 'land')을 조회합니다.
-    """
+    """국토교통부 부동산 매매 실거래가 4종(아파트 'apt', 오피스텔 'offi', 상가 'comm', 토지 'land')을 조회합니다."""
     print(f"\n[시스템] 🏘️ 국토교통부 부동산 실거래가 조회 가동: 유형={property_type} | 지역={region} | 연월={deal_ymd} | 필터='{filter_keyword}'")
     if hasattr(law_api, "get_molit_real_estate_trade"):
         return law_api.get_molit_real_estate_trade(property_type, region, deal_ymd, filter_keyword)
     return "현재 law_api.py에 부동산 실거래가 조회 함수가 없습니다."
 
 def run_tax_calculator_for_gemini(formula_expression: str, description: str = "") -> str:
-    """
-    세액 계산, 누진세율 구간 계산, 양도세/증여세/상속세/공제액 시뮬레이션 등 모든 수학 계산 시 호출하는 파이썬 정밀 계산기입니다.
-    """
+    """세액 계산, 누진세율 구간 계산, 양도세/증여세/상속세/공제액 시뮬레이션 등 모든 수학 계산 시 호출하는 파이썬 정밀 계산기입니다."""
     print(f"\n[시스템] 🧮 파이썬 정밀 세액 계산기 가동: [{description}] 수식: {formula_expression}")
     allowed_names = {
         "abs": abs, "round": round, "min": min, "max": max, "sum": sum, "pow": pow,
@@ -249,9 +244,8 @@ def extract_safe_text(response) -> str:
 
 def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dynamic_prompt: str, tools_list: list, safety_settings: list) -> str:
     """특정 API 키와 모델로 세션을 열어 대기 지연 없이 빠르게 답변을 받아옵니다."""
-    # 무한 대기 방지를 위해 HTTP 타임아웃(35초) 강제 설정
     try:
-        temp_client = genai.Client(api_key=api_key, http_options={"timeout": 35000})
+        temp_client = genai.Client(api_key=api_key, http_options={"timeout": 25000})
     except Exception:
         temp_client = genai.Client(api_key=api_key)
 
@@ -278,7 +272,7 @@ def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dy
         raise ValueError("빈 응답이 반환되었습니다.")
     return final_text
 
-# 4. 초고속 3단계 방어벽 (무료키 #1 -> 무료키 #2 -> 유료 예비키, 지연 시간 0초 즉시 전환)
+# 4. 503 서버 혼잡 시 무료키 내 백업 차선(2.5-flash)을 먼저 타는 방어벽
 def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> str:
     live_pool = get_live_gemini_key_pool()
     if not live_pool:
@@ -323,14 +317,21 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> s
         for lbl, k in free_keys:
             execution_plan.append((lbl, k, PRO_MODEL_ID, f"{mode_badge} *(🔑 {lbl} Pro 가동)*"))
         for lbl, k in free_keys:
-            execution_plan.append((lbl, k, FLASH_MODEL_ID, f"⚡ **[Flash 무료 방어 모드]** *(🔑 {lbl} Flash 가동)*"))
+            execution_plan.append((lbl, k, FLASH_MODEL_ID, f"⚡ **[Flash 무료 방어 모드]** *(🔑 {lbl} 가동)*"))
+        for lbl, k in free_keys:
+            execution_plan.append((lbl, k, BACKUP_FREE_FLASH_ID, f"⚡ **[Flash 무료 우회 모드]** *(🔑 {lbl} | 2.5-Flash 가동)*"))
         for lbl, k in paid_keys:
             execution_plan.append((lbl, k, PRO_MODEL_ID, f"{mode_badge} *(🔑 {lbl} 가동)*"))
         for lbl, k in paid_keys:
             execution_plan.append((lbl, k, FLASH_MODEL_ID, f"⚡ **[최후 백업 모드]** *(🔑 {lbl} Flash 가동)*"))
     else:
+        # 1차: 무료키 #1, #2로 3.8-flash 시도
         for lbl, k in free_keys:
             execution_plan.append((lbl, k, FLASH_MODEL_ID, f"{mode_badge} *(🔑 {lbl} 가동)*"))
+        # 2차: 3.8 서버가 503 혼잡일 때 유료키로 가기 전 무료키 #1, #2의 2.5-flash로 즉시 우회
+        for lbl, k in free_keys:
+            execution_plan.append((lbl, k, BACKUP_FREE_FLASH_ID, f"{mode_badge} *(🔑 {lbl} | 2.5-Flash 고속우회 가동)*"))
+        # 3차: 최후 유료 예비키
         for lbl, k in paid_keys:
             execution_plan.append((lbl, k, FLASH_MODEL_ID, f"{mode_badge} *(🔑 {lbl} 가동)*"))
 
@@ -353,8 +354,8 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> s
                 diag_header += f"> *(ℹ️ 무료키 건너뜀 사유: {short_diag})*\n"
             return diag_header + "\n" + final_text
         except Exception as e:
-            err_short = str(e).splitlines()[0][:100]
-            diag_notes.append(f"{key_label}: {err_short}")
+            err_short = str(e).splitlines()[0][:90]
+            diag_notes.append(f"{key_label}({target_model}): {err_short}")
             last_error = e
             continue
 
