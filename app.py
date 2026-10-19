@@ -439,7 +439,7 @@ if prompt := st.chat_input(f"[{selected_room}: {current_room_title}]에 검토�
     has_attached_file = bool(current_file_info["name"] and current_file_info["text"])
     display_prompt = f"📎 **[첨부파일: {current_file_info['name']}]**\n\n{prompt}" if has_attached_file else prompt
     
-    if st.session_state.room_titles[selected_room] in ["빈 대화방", "메인 검토"] and not current_messages:
+    if st.session_state.room_titles[selected_room] in ["빈 대화방", "메인 대화"] and not current_messages:
         auto_title = prompt.strip().replace("\n", " ")[:12]
         st.session_state.room_titles[selected_room] = auto_title
         current_room_title = auto_title
