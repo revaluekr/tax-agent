@@ -85,11 +85,50 @@ _CASE_NO_PATTERNS = [
     re.compile(r"조심\s?((?:19|20)\d{2})\s?(서|중|부|광|전|구|인|경|지)\s?(\d{2,6})(?!\d)"),
 ]
 
-# ② 법령 조문: 「법인세법 시행령」 제89조, 소득세법 제33조의2 (법령명이 붙은 경우만 검증)
-_ARTICLE_REF = re.compile(
-    r"(?<![가-힣·])「?([가-힣·]{1,30}?법(?:\s?시행령|\s?시행규칙)?)」?\s*제\s*(\d+)\s*조(?:\s*의\s*(\d+))?"
-)
-_SKIP_LAW_NAMES = ("동법", "같은법", "이법", "법", "본법", "당해법", "해당법")
+# ② 법령 조문: 「상속세 및 증여세법」 제45조의2, 법인세법 시행령 제89조 (법령명이 붙은 경우만 검증)
+#    법령명은 띄어쓰기·'및'이 들어간 정식 명칭이 많아서, '제N조' 앞쪽 글자를 아래 법령명 목록과 뒤에서부터 맞춰 봅니다.
+_ARTICLE_NO = re.compile(r"제\s*(\d+)\s*조(?:\s*의\s*(\d+))?")
+_COMMON_LAWS = [
+    "상속세및증여세법", "조세특례제한법", "국세기본법", "국세징수법", "법인세법", "소득세법", "부가가치세법",
+    "지방세법", "지방세기본법", "지방세특례제한법", "종합부동산세법", "개별소비세법", "교육세법", "농어촌특별세법",
+    "인지세법", "증권거래세법", "국제조세조정에관한법률", "조세범처벌법", "근로기준법", "근로자퇴직급여보장법",
+    "주식회사등의외부감사에관한법률", "상법", "민법", "부동산등기법", "공익법인의설립ㆍ운영에관한법률",
+]
+_LAW_ALIASES = {"상증법": "상속세및증여세법", "조특법": "조세특례제한법", "국기법": "국세기본법",
+                "국징법": "국세징수법", "부가세법": "부가가치세법", "지특법": "지방세특례제한법",
+                "국조법": "국제조세조정에관한법률", "종부세법": "종합부동산세법", "외감법": "주식회사등의외부감사에관한법률"}
+_REF_SKIP_SUFFIX = ("동법", "같은법", "이법", "본법", "당해법", "해당법", "동법시행령", "같은법시행령", "동법시행규칙")
+
+def _known_law_titles(trace: dict = None) -> list[str]:
+    titles = set()
+    for base in _COMMON_LAWS:
+        titles.update({base, base + "시행령", base + "시행규칙"})
+    if trace:
+        titles.update(t for (t, _, _) in trace.get("articles", set()))
+    return sorted(titles, key=len, reverse=True)   # 긴 이름부터 맞춰야 '증여세법'이 '상속세및증여세법'을 가로채지 않음
+
+def _resolve_law_name(prefix: str, titles: list[str]):
+    """'제N조' 바로 앞 글자들(prefix)의 끝부분에서 법령명을 찾아 정식 명칭(공백 제거)으로 돌려줍니다."""
+    tail = _norm(prefix)[-40:]
+    for suf in _REF_SKIP_SUFFIX:
+        if tail.endswith(suf):
+            return None
+    for alias, full in _LAW_ALIASES.items():
+        for ext in ("시행규칙", "시행령", ""):
+            if tail.endswith(alias + ext) or tail.endswith(alias.replace("법", "령")) and ext == "시행령":
+                return full + ext
+    for t in titles:
+        if tail.endswith(t):
+            return t
+    # 정식 명칭 일부만 쓴 경우 (예: '증여세법' → '상속세및증여세법')
+    m = re.search(r"([가-힣ㆍ·]{2,30}?법(?:시행령|시행규칙)?)$", tail)
+    if not m:
+        return None
+    partial = m.group(1)
+    for t in titles:
+        if t.endswith(partial) and len(partial) >= 3:
+            return t
+    return partial   # 목록에 없는 법령명 → 그대로 반환(조회 기록과 대조되어 미조회로 처리됨)
 
 # ③ 집행기준 번호: 33의2-78의3-1, 52-88-3
 _EXEC_STD = re.compile(r"(?<![\d의])(\d{1,3}(?:의\d{1,2})?-\d{1,3}(?:의\d{1,2})?-\d{1,3})(?![\d])")
@@ -130,13 +169,25 @@ def _find_case_numbers(text: str) -> list[str]:
                 cited.append(no)
     return cited
 
-def _find_article_refs(text: str) -> list[tuple]:
+def _find_article_refs(text: str, trace: dict = None) -> list[tuple]:
+    """문장 속 '법령명 + 제N조(의M)'를 (정식법령명, 조, 가지)로 추출합니다. 법령명이 바로 앞에 없으면 건너뜁니다."""
+    text = text or ""
+    titles = _known_law_titles(trace)
     refs = []
-    for m in _ARTICLE_REF.finditer(text or ""):
-        name = _norm(m.group(1))
-        if name in _SKIP_LAW_NAMES or name.startswith(("동법", "같은법", "이법", "법시행")):
+    last_end = 0
+    for m in _ARTICLE_NO.finditer(text):
+        # 바로 앞 조문 참조 이후의 글자만 본다 (예: '법인세법 제28조 및 제52조'에서 제52조 앞은 '및')
+        prefix = text[max(last_end, m.start() - 45):m.start()]
+        last_end = m.end()
+        stripped = re.sub(r"[\s「」『』\[\]:(),·ㆍ]+$", "", prefix)
+        if not stripped or not re.search(r"(법|령|규칙)$", _norm(stripped)):
             continue
-        refs.append((name, int(m.group(2)), int(m.group(3) or 0)))
+        name = _resolve_law_name(stripped, titles)
+        if not name:
+            continue
+        ref = (name, int(m.group(1)), int(m.group(2) or 0))
+        if ref not in refs:
+            refs.append(ref)
     return refs
 
 def _article_label(ref: tuple) -> str:
@@ -185,7 +236,7 @@ def _scan_violations(answer: str, trace: dict) -> list[tuple]:
                 problems.append(f"판례 {no} (조회 기록 없음)")
 
         # ② 법령 조문 (근거 표시 안팎 모두)
-        for ref in _find_article_refs(line):
+        for ref in _find_article_refs(line, trace):
             if ref in fetched:
                 verified_source = True
             else:
@@ -201,7 +252,7 @@ def _scan_violations(answer: str, trace: dict) -> list[tuple]:
         # ④ 근거 표시 자체 검증
         for kind, val in _TAG.findall(line):
             if kind == "조문":
-                refs = _find_article_refs(val)
+                refs = _find_article_refs(val, trace)
                 if not refs:
                     problems.append(f"[조문:{val}] (법령명이 빠져 검증 불가)")
                 # 법령명이 있는 경우는 ②에서 이미 검사됨
@@ -255,11 +306,30 @@ def _redact_lines(answer: str, violations: list[tuple]) -> str:
             skip_indent = None
         if i in bad:
             reasons = [r.split(":")[0] if r.startswith(("출처 표시 없는", "판례 인용문")) else r for r in bad[i]]
-            out.append(" " * indent + f"- 🚫 *(검증되지 않은 근거 삭제: {'; '.join(reasons)[:120]})*")
-            skip_indent = indent
+            reason_txt = "; ".join(dict.fromkeys(reasons))[:120]
+            if line.strip().startswith("|"):
+                # 표의 한 행이면 칸 수를 유지한 채 내용만 비움 (표가 깨지지 않게)
+                n_cols = max(line.strip().strip("|").count("|") + 1, 1)
+                out.append("| 🚫 *(검증되지 않아 삭제)* " + "| " * (n_cols - 1) + "|")
+            else:
+                out.append(" " * indent + f"- 🚫 *(검증되지 않은 근거 삭제: {reason_txt})*")
+                skip_indent = indent
             continue
         out.append(line)
-    return "\n".join(out)
+
+    # 같은 들여쓰기의 삭제 표시가 연달아 나오면 한 줄로 묶음
+    merged = []
+    for line in out:
+        if (merged and "🚫 *(검증되지 않은 근거 삭제" in line and "🚫 *(검증되지 않은 근거" in merged[-1]
+                and not line.strip().startswith("|")
+                and (len(line) - len(line.lstrip(" "))) == (len(merged[-1]) - len(merged[-1].lstrip(" ")))):
+            prev = merged[-1]
+            m = re.search(r"(\d+)건", prev)
+            n = int(m.group(1)) + 1 if m else 2
+            merged[-1] = " " * (len(line) - len(line.lstrip(" "))) + f"- 🚫 *(검증되지 않은 근거 {n}건 삭제)*"
+            continue
+        merged.append(line)
+    return "\n".join(merged)
 
 # ---------------------------------------------------------
 # 🧪 의미 검증 (검증 모델)
@@ -309,7 +379,7 @@ def _extract_claims(answer: str, trace: dict, max_claims: int = 20) -> tuple[lis
         src_ids = []
         for kind, val in tags:
             if kind == "조문":
-                for ref in _find_article_refs(val):
+                for ref in _find_article_refs(val, trace):
                     if ref in art_texts:
                         src_ids.append(_src_id(_article_label(ref), art_texts[ref]))
             else:
@@ -331,6 +401,17 @@ def _extract_claims(answer: str, trace: dict, max_claims: int = 20) -> tuple[lis
             claims.append({"line": i, "text": body[:400], "sources": src_ids})
         if len(claims) >= max_claims:
             break
+
+    # 근거 표시와 다른 조문에 내용이 있을 수 있으므로, 이번에 조회한 다른 원문도 '참고 원문'으로 함께 제공 (총량 제한)
+    total = sum(len(t) for _, t in sources.values())
+    for key, txt in art_texts.items():
+        label = _article_label(key)
+        if label not in src_index and total < 30000:
+            _src_id(label, txt); total += min(len(txt), 3500)
+    for d in details:
+        head = d.split("\n", 1)[0][:60]
+        if head not in src_index and total < 30000:
+            _src_id(head, d); total += min(len(d), 3500)
     return claims, sources
 
 def _semantic_verify(api_key: str, claims: list, sources: dict) -> dict:
@@ -338,11 +419,13 @@ def _semantic_verify(api_key: str, claims: list, sources: dict) -> dict:
     src_block = "\n\n".join(f"[{sid}] {label}\n{text}" for sid, (label, text) in sources.items())
     claim_block = "\n".join(f"{n + 1}. (근거: {', '.join(c['sources'])}) {c['text']}" for n, c in enumerate(claims))
     prompt = (
-        "당신은 세무 답변의 근거를 검증하는 감수자입니다. 아래 [원문]만을 기준으로 각 [주장]이 뒷받침되는지 판정하세요.\n"
-        "- supported: 지정된 원문에 그 내용이 명시되어 있음 (같은 뜻의 요약·의역은 허용)\n"
-        "- partial: 일부만 원문에 있고, 원문에 없는 내용(수치·요건·예외·결론)이 덧붙어 있음\n"
-        "- unsupported: 지정된 원문에서 그 내용을 찾을 수 없음 (일반 지식으로 맞더라도 원문에 없으면 unsupported)\n"
-        "원문 밖의 지식으로 판단하지 마세요. reason은 한국어 30자 이내.\n"
+        "당신은 세무 답변의 근거를 검증하는 감수자입니다. 아래 [원문] 전체를 기준으로 각 [주장]의 '핵심 법적 명제'가 뒷받침되는지 판정하세요.\n"
+        "- supported: 핵심 명제(요건·효과·수치)가 원문(지정 근거 또는 다른 원문)에 있음. 같은 뜻의 요약·의역, 원문에서 직접 도출되는 당연한 결론, "
+        "'실무상 유의' 같은 부수적 권고 문구는 문제 삼지 말 것\n"
+        "- partial: 핵심 명제는 맞지만, 주장에 적힌 **구체적 수치·기간·비율·요건**이 원문에 없거나 원문과 다름\n"
+        "- unsupported: 핵심 명제 자체가 원문 어디에도 없거나 원문과 모순됨 (일반 지식으로 맞더라도 원문에 없으면 unsupported)\n"
+        "원문 밖의 지식으로 판단하지 마세요. 사소한 표현 차이로 partial/unsupported를 주지 마세요. "
+        "reason은 한국어 30자 이내로, 'S1' 같은 번호 대신 법령·판례 이름으로 쓰세요.\n"
         '출력은 JSON 배열만: [{"id": 1, "verdict": "supported", "reason": "..."}]\n\n'
         f"[원문]\n{src_block}\n\n[주장]\n{claim_block}"
     )
@@ -364,7 +447,10 @@ def _semantic_verify(api_key: str, claims: list, sources: dict) -> dict:
             cid = int(item.get("id"))
             verdict = str(item.get("verdict", "")).strip().lower()
             if verdict in ("supported", "partial", "unsupported"):
-                result[cid] = (verdict, str(item.get("reason", ""))[:60])
+                reason = str(item.get("reason", ""))[:60]
+                for sid, (label, _) in sources.items():          # 'S2에 없음' → '법인세법시행령 제44조에 없음'
+                    reason = re.sub(rf"\b{sid}\b", label[:30], reason)
+                result[cid] = (verdict, reason)
         except Exception:
             continue
     return result
@@ -475,6 +561,10 @@ def select_optimal_model(user_query: str, has_file: bool = False, full_input_len
         if trigger in user_query:
             return "PRO", f"🧠 **[Pro 심층 모드]** 사용자 지정 정밀 검토 ({trigger})"
 
+    # 자동 전환은 비용이 크므로 기본 OFF (Secrets에 AUTO_PRO = "on" 을 넣으면 켜짐)
+    if _get_secret_or_env("AUTO_PRO").lower() not in ("on", "true", "1"):
+        return "FLASH", "⚡ **[Flash 빠른 검토 모드]** 실무 표준 검토"
+
     if has_file and full_input_len >= 15000:
         return "PRO", f"🧠 **[Pro 심층 모드 자동 전환]** 대용량 문서({full_input_len:,}자) 정밀 분석"
 
@@ -486,13 +576,13 @@ def select_optimal_model(user_query: str, has_file: bool = False, full_input_len
     if len(user_query.strip()) >= 500 and len(matched_calc) >= 1:
         return "PRO", "🧠 **[Pro 심층 모드 자동 전환]** 초장문 복합 시뮬레이션 감지"
 
-    return "FLASH", "⚡ **[Flash 빠른 검토 모드]** 실무 표준 검토 (토큰 절약 모드)"
+    return "FLASH", "⚡ **[Flash 빠른 검토 모드]** 실무 표준 검토"
 
 # 2. Gemini 도구 정의
 def search_law_for_gemini(keyword: str, target: str = "law") -> str:
     """
     국가법령정보센터에서 법령, 판례, 행정규칙, 법령해석례, 조세심판원 재결례, 지방세 자치법규(조례) 목록과 일련번호(ID)를 검색합니다.
-    - target: 'law'(법령), 'prec'(판례), 'decc'(조세심판원 결정례), 'admrul'(훈령·예규·고시), 'expc'(법령해석례), 'ordin'(지자체 조례)
+    - target: 'law'(법령), 'prec'(판례), 'decc'(조세심판원 결정례 – 내부적으로 ttSpecialDecc 사용), 'admrul'(훈령·예규·고시), 'expc'(법령해석례), 'ordin'(지자체 조례)
     - target='law'일 때 keyword에는 '법령명만' 넣을 것 (예: '소득세법', '소득세법 시행령', '조세특례제한법').
       '업무용승용차' 같은 주제어는 keyword가 아니라 get_law_details_for_gemini의 query_filter(조문번호)로 찾을 것.
     - target='prec'/'decc'/'expc'는 핵심 주제어(예: '업무무관 가지급금')나 사건번호(예: '2005두9415')로 검색할 것.
@@ -629,6 +719,8 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
   * 법령 조문: [조문:법인세법 시행령 제89조] (반드시 정식 법령명 포함. '동법', '같은 법' 사용 금지)
 - **판례·심판례·해석례 인용 규칙**: 판결요지·결정요지를 서술하는 사건은 반드시 get_law_details_for_gemini(target='prec' 등)로 **원문을 조회한 사건만** 쓸 것. 목록 검색에서만 본 사건은 사건번호·선고일만 적고 "(요지 미조회)"로 표시할 것. **도구로 조회하지 않은 사건번호를 기억으로 적지 말 것.**
 - **법령 조문 인용 규칙**: 답변에 법령명과 함께 적는 조문(예: 「법인세법」 제52조)은 반드시 get_law_details_for_gemini로 **그 조문을 조회한 것만** 쓸 것. 조회하지 않은 조문이 필요하면 먼저 조회할 것.
+- **답변에 시스템·도구·검증 절차·삭제 여부에 대한 언급을 절대 쓰지 말 것** (예: "시스템상 미조회 항목은 배제" 같은 문장 금지). 근거가 부족하면 "관련 원문을 확인하지 못했다"고만 쓸 것.
+- **법령명은 반드시 정식 명칭**으로 쓸 것 (예: 「상속세 및 증여세법」, 「조세특례제한법 시행령」).
 - 판례 검색 순서: 주제어로 목록 검색 → 결과 중 관련성 높은 1~2건의 ID로 원문 조회 → 그 내용만 인용. **판례 목록 검색은 질문당 최대 3회, 판례 원문 조회는 최대 3건**까지만 할 것.
 - **근거 표시는 그 문장의 내용이 실제로 해당 원문에 있을 때만** 붙일 것. 한 판례에 없는 내용을 그 판례 근거 표시로 묶지 말 것.
 - **따옴표(“ ”) 인용은 조회한 원문을 글자 그대로 옮길 때만** 사용하고, 요약·의역할 때는 따옴표를 쓰지 말 것. (시스템이 인용문을 원문과 글자 단위로 대조함)
@@ -753,7 +845,8 @@ def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dy
                   "([판례:사건번호], [조문:정식법령명 제N조], [예규:문서명] 등)를 붙여 인용하거나, "
                   "② 조회할 수 없으면 그 근거와 관련 서술을 답변에서 완전히 삭제하세요. "
                   "'대법원은 ~ 판시' 같은 서술에도 반드시 근거 표시가 있어야 합니다. "
-                  "조회하지 않은 근거는 다시 쓰지 말고, 양식([A]→[B])을 유지해 전체 답변을 다시 작성하세요."
+                  "조회하지 않은 근거는 다시 쓰지 말고, 양식([A]→[B])을 유지해 전체 답변을 다시 작성하세요. "
+                  "다시 쓴 답변에는 이 검증 요청이나 삭제 사실, 시스템에 대한 언급을 절대 넣지 마세요."
             )
             trace_token2 = _TOOL_TRACE.set(trace)   # 재작성 중 조회한 원문도 같은 기록에 누적
             try:
