@@ -266,7 +266,6 @@ def search_industry_code(keyword: str) -> str:
 
 # ---------------------------------------------------------
 # 4. 금융감독원 전자공시시스템 (Open DART) 6대 핵심 정보 통합 조회
-#    (기업개황 + 최근 공시 + 주요 재무제표 + 최대주주 지분현황 + 배당 내역 + 타법인 출자현황)
 # ---------------------------------------------------------
 _DART_CORP_CACHE = None
 
@@ -313,10 +312,6 @@ def _load_dart_corp_codes() -> list[dict]:
 
 
 def get_dart_corp_info(corp_name: str, bsns_year: str = "2025") -> str:
-    """
-    DART에서 특정 기업의 1) 기업개황, 2) 최근 공시 목록, 3) 주요 재무제표,
-    4) 최대주주 및 특수관계인 지분현황, 5) 배당에 관한 사항, 6) 타법인 출자현황을 통합 조회합니다.
-    """
     if not DART_API_KEY:
         return "❌ DART_API_KEY가 설정되지 않았습니다."
 
@@ -341,7 +336,6 @@ def get_dart_corp_info(corp_name: str, bsns_year: str = "2025") -> str:
         other_names = ", ".join([f"{c['corp_name']}({c['corp_code']})" for c in candidates[1:5]])
         output.append(f"*(참고 - 동명/유사 법인 후보: {other_names})*")
 
-    # 1) 기업개황
     try:
         info_url = "https://opendart.fss.or.kr/api/company.json"
         info_res = requests.get(info_url, params={"crtfc_key": DART_API_KEY, "corp_code": corp_code}, timeout=10).json()
@@ -356,7 +350,6 @@ def get_dart_corp_info(corp_name: str, bsns_year: str = "2025") -> str:
     except Exception as e:
         output.append(f"\n■ 1. 기업개황 조회 오류: {e}")
 
-    # 2) 최근 주요 공시보고서 목록 (상위 8건)
     try:
         list_url = "https://opendart.fss.or.kr/api/list.json"
         list_res = requests.get(list_url, params={
@@ -374,11 +367,9 @@ def get_dart_corp_info(corp_name: str, bsns_year: str = "2025") -> str:
     except Exception as e:
         output.append(f"\n■ 2. 공시 목록 조회 오류: {e}")
 
-    # 기준 사업연도 자동 탐색 (지정 연도 데이터가 없으면 직전 연도 사업보고서 자동 조회)
     years_to_try = [bsns_year.strip(), str(int(bsns_year.strip()) - 1)] if bsns_year.strip().isdigit() else ["2025", "2024"]
     active_year = years_to_try[0]
 
-    # 3) 주요 재무제표 요약
     fin_found = False
     for yr in years_to_try:
         try:
@@ -408,7 +399,6 @@ def get_dart_corp_info(corp_name: str, bsns_year: str = "2025") -> str:
     if not fin_found:
         output.append(f"\n■ 3. 주요 재무제표 요약: 정기 사업보고서 제출 대상이 아니거나 비상장 외감법인(감사보고서 원문 공시 대상)입니다. 위 2번 공시 목록의 감사보고서 링크를 참고하세요.")
 
-    # 4) 최대주주 및 특수관계인 지분현황 (hyslrSttus.json)
     try:
         sh_url = "https://opendart.fss.or.kr/api/hyslrSttus.json"
         sh_res = requests.get(sh_url, params={
@@ -429,7 +419,6 @@ def get_dart_corp_info(corp_name: str, bsns_year: str = "2025") -> str:
     except Exception:
         pass
 
-    # 5) 배당에 관한 사항 (alotMatter.json)
     try:
         div_url = "https://opendart.fss.or.kr/api/alotMatter.json"
         div_res = requests.get(div_url, params={
@@ -451,7 +440,6 @@ def get_dart_corp_info(corp_name: str, bsns_year: str = "2025") -> str:
     except Exception:
         pass
 
-    # 6) 타법인 출자현황 (otrCprInvstmntSttus.json)
     try:
         inv_url = "https://opendart.fss.or.kr/api/otrCprInvstmntSttus.json"
         inv_res = requests.get(inv_url, params={
@@ -479,7 +467,6 @@ def get_dart_corp_info(corp_name: str, bsns_year: str = "2025") -> str:
 # 5. 국세청 사업자등록 상태조회 및 대표자·개업일 진위확인
 # ---------------------------------------------------------
 def get_nts_biz_status(biz_numbers_text: str) -> str:
-    """사업자등록번호(10자리)로 납세자상태(계속/휴폐업) 및 과세유형(일반/간이/면세)을 조회합니다."""
     if not NTS_API_KEY:
         return "❌ NTS_API_KEY가 설정되지 않았습니다."
 
@@ -541,10 +528,6 @@ def get_nts_biz_status(biz_numbers_text: str) -> str:
 
 
 def verify_nts_biz_info(b_no: str, start_dt: str, p_nm: str, b_nm: str = "") -> str:
-    """
-    사업자등록번호(10자리) + 개업일자(YYYYMMDD) + 대표자성명(필수) + 상호(선택)를 국세청 전산과 대조하여
-    실제 등록된 진위 여부('01': 일치, '02': 불일치)를 검증합니다.
-    """
     if not NTS_API_KEY:
         return "❌ NTS_API_KEY가 설정되지 않았습니다."
 
@@ -600,3 +583,153 @@ def verify_nts_biz_info(b_no: str, start_dt: str, p_nm: str, b_nm: str = "") -> 
         )
     except Exception as e:
         return f"❌ 국세청 사업자 진위확인 중 오류 발생: {e}"
+
+
+# ---------------------------------------------------------
+# 6. 국토교통부 부동산 매매 실거래가 4종 통합 조회 (아파트 / 오피스텔 / 상업업무용 상가·빌딩 / 토지)
+# ---------------------------------------------------------
+_LAWD_CODE_MAP = {
+    # 서울특별시 25개 자치구
+    "종로구": "11110", "중구": "11140", "용산구": "11170", "성동구": "11200", "광진구": "11215",
+    "동대문구": "11230", "중랑구": "11260", "성북구": "11290", "강북구": "11305", "도봉구": "11320",
+    "노원구": "11350", "은평구": "11380", "서대문구": "11410", "마포구": "11440", "양천구": "11470",
+    "강서구": "11500", "구로구": "11530", "금천구": "11545", "영등포구": "11560", "동작구": "11590",
+    "관악구": "11620", "서초구": "11650", "강남구": "11680", "송파구": "11710", "강동구": "11740",
+    # 경기도 및 주요 광역시 핵심 시·군·구
+    "분당구": "41135", "수정구": "41131", "중원구": "41133", "수지구": "41465", "기흥구": "41463",
+    "처인구": "41461", "영통구": "41117", "팔달구": "41115", "권선구": "41113", "장안구": "41111",
+    "과천시": "41290", "광명시": "41210", "하남시": "41450", "고양시 일산동구": "41285", "일산동구": "41285",
+    "일산서구": "41287", "덕양구": "41281", "부천시": "41190", "안양시 동안구": "41173", "동안구": "41173",
+    "만안구": "41171", "화성시": "41590", "평택시": "41220", "남양주시": "41360", "김포시": "41570",
+    "연수구": "28185", "남동구": "28200", "부평구": "28237", "서구": "28260", "해운대구": "26350",
+    "수영구": "26500", "부산진구": "26230", "수성구": "27260", "유성구": "30200", "세종시": "36110"
+}
+
+def _resolve_lawd_cd(region_str: str) -> str:
+    """입력된 문자열에서 5자리 법정동코드(LAWD_CD)를 추출하거나 시군구 이름으로 매핑합니다."""
+    digits = re.sub(r"\D", "", region_str)
+    if len(digits) >= 5:
+        return digits[:5]
+    for name, code in _LAWD_CODE_MAP.items():
+        if name in region_str:
+            return code
+    return ""
+
+def get_molit_real_estate_trade(property_type: str, region: str, deal_ymd: str, filter_keyword: str = "") -> str:
+    """
+    국토교통부 실거래가 API 4종(아파트, 오피스텔, 상가/상업업무용, 토지)을 통합 조회합니다.
+    - property_type: 'apt'(아파트), 'offi'(오피스텔), 'comm'(상업업무용/상가/빌딩), 'land'(토지)
+    - region: 시군구명(예: '강남구', '관악구') 또는 5자리 법정동코드(예: '11680')
+    - deal_ymd: 계약연월 6자리(예: '202609', '202512')
+    - filter_keyword: 법정동명(예: '대치동', '신사동') 또는 아파트/단지명(예: '은마') 필터
+    """
+    if not NTS_API_KEY:
+        return "❌ NTS_API_KEY(공공데이터포털 인증키)가 설정되지 않았습니다."
+
+    lawd_cd = _resolve_lawd_cd(region)
+    if not lawd_cd:
+        return f"❌ '{region}'에 해당하는 5자리 법정동코드를 찾지 못했습니다. 시·군·구 명칭(예: '강남구', '관악구', '분당구')이나 5자리 법정동코드(예: '11680')로 다시 입력해 주세요."
+
+    ymd = re.sub(r"\D", "", deal_ymd)[:6]
+    if len(ymd) != 6:
+        return f"❌ 계약연월('{deal_ymd}')은 'YYYYMM' 6자리 형식(예: '202609')이어야 합니다."
+
+    ptype = property_type.lower().strip()
+    if ptype in ["아파트", "공동주택", "apt"]:
+        endpoint = "https://apis.data.go.kr/1613000/RTMSDataSvcAptTradeDev/getRTMSDataSvcAptTradeDev"
+        fallback_ep = "https://apis.data.go.kr/1613000/RTMSDataSvcAptTrade/getRTMSDataSvcAptTrade"
+        type_label = "아파트(공동주택) 매매"
+    elif ptype in ["오피스텔", "offi", "officetel"]:
+        endpoint = "https://apis.data.go.kr/1613000/RTMSDataSvcOffiTrade/getRTMSDataSvcOffiTrade"
+        fallback_ep = None
+        type_label = "오피스텔 매매"
+    elif ptype in ["상가", "상업업무용", "빌딩", "comm", "commercial"]:
+        endpoint = "https://apis.data.go.kr/1613000/RTMSDataSvcNrgTrade/getRTMSDataSvcNrgTrade"
+        fallback_ep = None
+        type_label = "상업·업무용(상가·오피스·빌딩) 매매"
+    elif ptype in ["토지", "대지", "임야", "land"]:
+        endpoint = "https://apis.data.go.kr/1613000/RTMSDataSvcLandTrade/getRTMSDataSvcLandTrade"
+        fallback_ep = None
+        type_label = "토지 매매"
+    else:
+        endpoint = "https://apis.data.go.kr/1613000/RTMSDataSvcAptTradeDev/getRTMSDataSvcAptTradeDev"
+        fallback_ep = "https://apis.data.go.kr/1613000/RTMSDataSvcAptTrade/getRTMSDataSvcAptTrade"
+        type_label = "아파트(공동주택) 매매"
+
+    encoded_key = NTS_API_KEY if "%" in NTS_API_KEY else urllib.parse.quote(NTS_API_KEY, safe="")
+
+    def _fetch_xml(ep_url: str):
+        full_url = f"{ep_url}?serviceKey={encoded_key}&LAWD_CD={lawd_cd}&DEAL_YMD={ymd}&numOfRows=200&pageNo=1"
+        return requests.get(full_url, timeout=15)
+
+    try:
+        resp = _fetch_xml(endpoint)
+        if (resp.status_code != 200 or "<item>" not in resp.text) and fallback_ep:
+            resp2 = _fetch_xml(fallback_ep)
+            if resp2.status_code == 200 and "<item>" in resp2.text:
+                resp = resp2
+
+        if resp.status_code != 200:
+            return f"❌ 국토교통부 API 호출 실패 (HTTP {resp.status_code}): 공공데이터포털 활용신청 동기화 대기 중이거나 키 오류입니다."
+
+        root = ET.fromstring(resp.text)
+        result_code = (root.findtext(".//resultCode") or "").strip()
+        result_msg = (root.findtext(".//resultMsg") or "").strip()
+
+        if result_code not in ["00", "000", "0000", ""]:
+            return f"❌ 국토부 API 응답 오류 (코드 {result_code}): {result_msg}"
+
+        items = root.findall(".//item")
+        if not items:
+            return f"조회된 [{type_label}] 실거래 내역이 없습니다. (지역코드: {lawd_cd}, 계약연월: {ymd})"
+
+        kw = filter_keyword.strip()
+        parsed_rows = []
+
+        for it in items:
+            data = {child.tag: (child.text or "").strip() for child in it}
+            raw_str = " ".join(data.values())
+            if kw and kw not in raw_str:
+                continue
+
+            umd = data.get("umdNm") or data.get(" 법정동") or data.get("dong") or ""
+            jibun = data.get("jibun") or data.get("지번") or ""
+            deal_amt = data.get("dealAmount") or data.get("거래금액") or "-"
+            deal_day = f"{ymd[:4]}-{ymd[4:6]}-{str(data.get('dealDay') or data.get('일') or '01').zfill(2)}"
+            cdeal_type = data.get("cdealType") or data.get("해제여부") or ""
+            cancel_note = f" [⚠️해제됨:{cdeal_type}]" if cdeal_type and cdeal_type != "-" else ""
+
+            if "아파트" in type_label or "오피스텔" in type_label:
+                bldg_nm = data.get("aptNm") or data.get("offiNm") or data.get("아파트") or data.get("단지") or "명칭미상"
+                exclu_area = data.get("excluUseAr") or data.get("전용면적") or "-"
+                floor = data.get("floor") or data.get("층") or "-"
+                build_yr = data.get("buildYear") or data.get("건축년도") or "-"
+                parsed_rows.append(
+                    f"- [{deal_day}] {umd} {bldg_nm} ({jibun}) | 전용 {exclu_area}㎡ ({floor}층, 건축:{build_yr}년) | 거래가액: {deal_amt}만원{cancel_note}"
+                )
+            elif "상업" in type_label:
+                bldg_use = data.get("buildingUse") or data.get("건물주용도") or "-"
+                land_use = data.get("landUse") or data.get("용도지역") or "-"
+                bldg_ar = data.get("buildingAr") or data.get("건물면적") or "-"
+                plottage_ar = data.get("plottageAr") or data.get("대지면적") or "-"
+                floor = data.get("floor") or data.get("층") or "-"
+                parsed_rows.append(
+                    f"- [{deal_day}] {umd} ({jibun}) | 용도:{bldg_use}({land_use}) | 건물면적:{bldg_ar}㎡ (대지:{plottage_ar}㎡, {floor}층) | 거래가액: {deal_amt}만원{cancel_note}"
+                )
+            else:  # 토지
+                jimok = data.get("jimok") or data.get("지목") or "-"
+                land_use = data.get("landUse") or data.get("용도지역") or "-"
+                deal_ar = data.get("dealArea") or data.get("거래면적") or "-"
+                share_gbn = data.get("shareDealingType") or data.get("지분구분") or ""
+                parsed_rows.append(
+                    f"- [{deal_day}] {umd} ({jibun}) | 지목:{jimok} ({land_use}) | 거래면적:{deal_ar}㎡ {f'({share_gbn})' if share_gbn else ''} | 거래가액: {deal_amt}만원{cancel_note}"
+                )
+
+        if not parsed_rows:
+            return f"지역({lawd_cd})·연월({ymd})의 전체 거래 {len(items)}건 중 '{kw}' 키워드가 포함된 내역이 없습니다. 필터 키워드를 빼거나 동 이름만 입력해 다시 조회하세요."
+
+        header = f"🏘️ [국토교통부 {type_label} 실거래가 조회 결과 | 지역:{region}({lawd_cd}) | 연월:{ymd} | 검색:{kw or '전체'} (총 {len(parsed_rows)}건 중 최근 25건)]"
+        return header + "\n" + "\n".join(parsed_rows[:25])
+
+    except Exception as e:
+        return f"❌ 국토교통부 실거래가 조회 중 오류 발생: {e}"
