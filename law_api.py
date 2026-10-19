@@ -1,5 +1,6 @@
 import os
 import requests
+import xml.etree.ElementTree as ET
 import pandas as pd
 
 try:
@@ -8,244 +9,268 @@ except ImportError:
     LAW_OPEN_API_KEY = os.getenv("LAW_OPEN_API_KEY")
     BOK_API_KEY = os.getenv("BOK_API_KEY")
 
-# 공공기관 해외 서버(Streamlit Cloud) 차단 방지용 브라우저 헤더
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-}
-
 # ---------------------------------------------------------
-# 1. 법제처 국가법령정보센터 API 함수 (목록 검색 + 본문 정밀 조회)
+# 1. 국가법령정보센터 (법령, 판례, 행정규칙, 법령해석례, 조세심판원 재결례, 지자체 조례)
 # ---------------------------------------------------------
-SEARCH_URL = "https://www.law.go.kr/DRF/lawSearch.do"
-SERVICE_URL = "https://www.law.go.kr/DRF/lawService.do"
+def search_law_data(keyword: str, target: str = "law") -> list[dict]:
+    """
+    국가법령정보센터 오픈API를 통해 목록과 일련번호(ID)를 검색합니다.
+    target: 'law'(법령), 'prec'(판례), 'admrul'(행정규칙/예규), 'expc'(법령해석례),
+            'decc'(특별행정심판재결례/조세심판원), 'ordin'(자치법규/지방세조례)
+    """
+    if not LAW_OPEN_API_KEY:
+        return []
 
-def search_law_data(keyword: str, target: str = "law"):
-    """키워드로 법령(law), 판례(prec), 행정규칙(admrul), 법령해석례(expc) 목록을 검색합니다."""
+    url = "http://www.law.go.kr/DRF/lawSearch.do"
     params = {
         "OC": LAW_OPEN_API_KEY,
         "target": target,
-        "type": "JSON",
-        "query": keyword
+        "type": "XML",
+        "query": keyword,
+        "display": 10
     }
+
     try:
-        response = requests.get(SEARCH_URL, params=params, headers=HEADERS, timeout=10)
-        response.raise_for_status()
-        data = response.json()
+        resp = requests.get(url, params=params, timeout=15)
+        resp.encoding = "utf-8"
+        if resp.status_code != 200:
+            return []
+
+        root = ET.fromstring(resp.text)
         
-        root_keys = {
-            "law": "LawSearch",
-            "prec": "PrecSearch",
-            "admrul": "AdmRulSearch",
-            "expc": "Expc"
+        # target별 XML 태그 매핑
+        tag_map = {
+            "law": "law",
+            "prec": "prec",
+            "admrul": "admrul",
+            "expc": "expc",
+            "decc": "decc",
+            "ordin": "law"  # 자치법규(ordin) 목록 검색 시 항목 태그는 <law>로 반환됨
         }
-        root_key = root_keys.get(target, "LawSearch")
-        
-        if root_key in data and target in data[root_key]:
-            return data[root_key][target]
-        elif "LawSearch" in data and target in data["LawSearch"]:
-            return data["LawSearch"][target]
-        return []
+        item_tag = tag_map.get(target, target)
+        items = root.findall(f".//{item_tag}")
+        if not items and target == "ordin":
+            items = root.findall(".//ordin")
+
+        results = []
+        for item in items:
+            row = {}
+            for child in item:
+                row[child.tag] = (child.text or "").strip()
+            if row:
+                results.append(row)
+        return results
     except Exception as e:
-        print(f"❌ 법령 검색 오류 ({target}): {e}")
+        print(f"⚠️ 법제처 목록 검색 오류 ({target}): {e}")
         return []
+
 
 def get_law_content(doc_id: str, target: str = "law", query_filter: str = "") -> str:
-    """일련번호(ID)를 이용해 법령 조문, 판례 요지, 행정규칙(예규/고시), 법령해석례의 실제 본문을 가져옵니다."""
+    """
+    일련번호(ID)를 바탕으로 법령 조문, 판례, 예규, 조세심판례, 지방세 조례 본문을 조회합니다.
+    """
+    if not LAW_OPEN_API_KEY:
+        return "❌ LAW_OPEN_API_KEY가 설정되지 않았습니다."
+
+    url = "http://www.law.go.kr/DRF/lawService.do"
     params = {
         "OC": LAW_OPEN_API_KEY,
         "target": target,
-        "type": "JSON"
+        "ID": doc_id,
+        "type": "XML"
     }
-    if target == "law":
-        params["MST"] = doc_id
-    else:
-        params["ID"] = doc_id
 
     try:
-        response = requests.get(SERVICE_URL, params=params, headers=HEADERS, timeout=15)
-        response.raise_for_status()
-        data = response.json()
+        resp = requests.get(url, params=params, timeout=20)
+        resp.encoding = "utf-8"
+        if resp.status_code != 200:
+            return f"❌ 원문 조회 실패 (HTTP {resp.status_code})"
 
-        if target == "law" and "법령" in data:
-            law_data = data["법령"]
-            info = law_data.get("기본정보", {})
-            header = f"📘 [법령명]: {info.get('법령명_한글')} (시행일자: {info.get('시행일자')})\n"
+        root = ET.fromstring(resp.text)
+
+        # 1) 현행 법령(law) 또는 지자체 자치법규/조례(ordin)
+        if target in ["law", "ordin"]:
+            title_tag = "법령명_한글" if target == "law" else "자치법규명"
+            title = root.findtext(f".//{title_tag}") or root.findtext(".//법령명_한글") or "명칭 미상"
+            articles = root.findall(".//조문단위")
             
-            articles = law_data.get("조문", {}).get("조문단위", [])
-            if isinstance(articles, dict):
-                articles = [articles]
-                
-            extracted = []
+            extracted = [f"📘 [{title}] (ID: {doc_id})"]
             for art in articles:
-                art_content = str(art.get("조문내용", "")).strip()
-                hangs = art.get("항", [])
-                if isinstance(hangs, dict):
-                    hangs = [hangs]
-                for h in hangs:
-                    h_text = str(h.get("항내용", "")).strip()
-                    if h_text:
-                        art_content += f"\n  {h_text}"
-                    hos = h.get("호", [])
-                    if isinstance(hos, dict):
-                        hos = [hos]
-                    for ho in hos:
-                        ho_text = str(ho.get("호내용", "")).strip()
-                        if ho_text:
-                            art_content += f"\n    {ho_text}"
-                
-                if not query_filter or (query_filter in art_content):
-                    if art_content:
-                        extracted.append(art_content)
+                art_body = "".join(art.itertext()).strip()
+                if query_filter:
+                    if query_filter.replace(" ", "") in art_body.replace(" ", ""):
+                        extracted.append(art_body)
+                else:
+                    extracted.append(art_body)
+
+            if len(extracted) == 1 and query_filter:
+                return f"'{title}' 내에서 '{query_filter}' 키워드가 포함된 조문을 찾지 못했습니다. 필터 없이 다시 조회하거나 다른 조문번호를 검색하세요."
             
-            if not extracted and query_filter:
-                return header + f"'{query_filter}' 키워드가 포함된 조문을 찾지 못했습니다."
-            
-            body = "\n\n".join(extracted[:15])
-            return (header + "\n" + body)[:10000]
+            full_text = "\n\n".join(extracted)
+            return full_text[:12000]
 
-        elif target == "prec" and "PrecService" in data:
-            p = data["PrecService"]
-            return (
-                f"⚖️ [사건명]: {p.get('사건명')} ({p.get('사건번호')}, 선고일: {p.get('선고일자')})\n"
-                f"■ [판시사항]:\n{p.get('판시사항')}\n\n"
-                f"■ [판결요지]:\n{p.get('판결요지')}\n\n"
-                f"■ [참조조문]: {p.get('참조조문')}"
-            )[:10000]
+        # 2) 대법원 판례(prec)
+        elif target == "prec":
+            case_name = root.findtext(".//사건명") or ""
+            case_no = root.findtext(".//사건번호") or ""
+            dec_date = root.findtext(".//선고일자") or ""
+            summary = root.findtext(".//판결요지") or ""
+            holding = root.findtext(".//판시사항") or ""
+            ref_law = root.findtext(".//참조조문") or ""
+            body = root.findtext(".//판례내용") or ""
 
-        elif target == "admrul" and "AdmRulService" in data:
-            a = data["AdmRulService"]
-            info = a.get("행정규칙기본정보", {})
-            body = a.get("조문내용", "")
-            return (
-                f"📜 [행정규칙/예규명]: {info.get('행정규칙명')} (발령일: {info.get('발령일자')}, 소관: {info.get('소관부처명')})\n"
-                f"■ [본문 내용]:\n{body}"
-            )[:10000]
+            text = (
+                f"⚖️ [판례 상세] {case_name} ({case_no}, 선고일: {dec_date})\n"
+                f"■ 판시사항:\n{holding}\n\n"
+                f"■ 판결요지:\n{summary}\n\n"
+                f"■ 참조조문:\n{ref_law}\n\n"
+                f"■ 판례본문(발췌):\n{body[:5000]}"
+            )
+            return text[:12000]
 
-        elif target == "expc" and "ExpcService" in data:
-            e = data["ExpcService"]
-            return (
-                f"🔍 [안건명]: {e.get('안건명')} ({e.get('안건번호')}, 회신일: {e.get('회신일자')})\n"
-                f"■ [질의요지]:\n{e.get('질의요지')}\n\n"
-                f"■ [회답]:\n{e.get('회답')}\n\n"
-                f"■ [이유]:\n{e.get('이유')}"
-            )[:10000]
+        # 3) 특별행정심판재결례 - 조세심판원 결정례 등(decc)
+        elif target == "decc":
+            case_name = root.findtext(".//사건명") or ""
+            case_no = root.findtext(".//사건번호") or ""
+            dec_date = root.findtext(".//의결일자") or root.findtext(".//처분일자") or ""
+            agency = root.findtext(".//재결청") or "조세심판원 등"
+            order = root.findtext(".//주문") or ""
+            summary = root.findtext(".//결정요지") or root.findtext(".//재결요지") or ""
+            reason = root.findtext(".//이유") or ""
 
-        return "상세 본문 데이터를 불러올 수 없습니다."
+            text = (
+                f"🏛️ [조세심판원/특별행정심판 결정례] {case_name}\n"
+                f"- 사건번호: {case_no} | 재결청: {agency} | 결정일: {dec_date}\n"
+                f"■ 주문:\n{order}\n\n"
+                f"■ 결정요지:\n{summary}\n\n"
+                f"■ 이유(본문 발췌):\n{reason[:6000]}"
+            )
+            return text[:12000]
+
+        # 4) 행정규칙 - 국세청 훈령·고시·예규 등(admrul)
+        elif target == "admrul":
+            rule_name = root.findtext(".//행정규칙명") or ""
+            ministry = root.findtext(".//소관부처명") or ""
+            issue_date = root.findtext(".//발령일자") or ""
+            body_nodes = [elem.text.strip() for elem in root.iter() if elem.text and elem.text.strip()]
+            body_text = "\n".join(body_nodes)
+            return f"📋 [행정규칙/훈령/고시] {rule_name} ({ministry}, 발령일: {issue_date})\n\n{body_text[:10000]}"
+
+        # 5) 법령해석례 - 기획재정부·국세청·법제처 질의회신(expc)
+        elif target == "expc":
+            title = root.findtext(".//안건명") or ""
+            item_no = root.findtext(".//안건번호") or ""
+            reply_org = root.findtext(".//회신기관명") or ""
+            reply_date = root.findtext(".//회신일자") or ""
+            question = root.findtext(".//질의요지") or ""
+            answer = root.findtext(".//회답") or ""
+            reason = root.findtext(".//이유") or ""
+
+            text = (
+                f"📑 [법령해석례/질의회신] {title} ({item_no}, {reply_org}, 회신일: {reply_date})\n"
+                f"■ 질의요지:\n{question}\n\n"
+                f"■ 회답:\n{answer}\n\n"
+                f"■ 이유:\n{reason[:6000]}"
+            )
+            return text[:12000]
+
+        # 기타 일반 텍스트 추출
+        all_text = "\n".join([t.strip() for t in root.itertext() if t.strip()])
+        return all_text[:10000]
+
     except Exception as e:
-        return f"❌ 본문 상세 조회 오류: {e}"
+        return f"❌ 원문 상세 조회 중 오류 발생: {e}"
+
 
 # ---------------------------------------------------------
-# 2. 한국은행 경제통계시스템(ECOS) API 함수 (환율 & 기준금리)
+# 2. 한국은행 경제통계시스템 (ECOS) 환율 및 기준금리 조회
 # ---------------------------------------------------------
 def get_bok_exchange_rate(start_date: str, end_date: str, currency: str = "USD") -> str:
-    """한국은행 ECOS API를 통해 특정 기간(YYYYMMDD ~ YYYYMMDD)의 주요 통화 매매기준율을 조회합니다."""
+    """한국은행 ECOS API를 통해 특정 기간의 매매기준율을 조회합니다."""
     if not BOK_API_KEY:
-        return "❌ 한국은행 API 키(BOK_API_KEY)가 설정되지 않았습니다."
-    
-    s_date = start_date.replace("-", "").replace(".", "").strip()
-    e_date = end_date.replace("-", "").replace(".", "").strip()
-    
-    item_map = {
-        "USD": "0000001",  # 원/미국달러(매매기준율)
-        "JPY": "0000002",  # 원/일본엔(100엔)
-        "EUR": "0000003",  # 원/유로
-        "CNY": "0000053"   # 원/위안
+        return "❌ BOK_API_KEY가 설정되지 않았습니다."
+
+    curr_map = {
+        "USD": "0000001",
+        "JPY": "0000002",
+        "EUR": "0000003",
+        "CNY": "0000053"
     }
-    item_code = item_map.get(currency.upper(), "0000001")
+    item_code = curr_map.get(currency.upper(), "0000001")
+    s_date = start_date.replace("-", "").strip()
+    e_date = end_date.replace("-", "").strip()
+
     url = f"https://ecos.bok.or.kr/api/StatisticSearch/{BOK_API_KEY}/json/kr/1/30/731Y001/D/{s_date}/{e_date}/{item_code}"
-    
     try:
-        response = requests.get(url, headers=HEADERS, timeout=15)
-        data = response.json()
-        if "StatisticSearch" in data and "row" in data["StatisticSearch"]:
-            rows = data["StatisticSearch"]["row"]
-            result_str = f"[{currency.upper()} 한국은행 공식 매매기준율 ({s_date}~{e_date})]\n"
-            for r in rows:
-                result_str += f"- 일자: {r.get('TIME')} | 환율: {r.get('DATA_VALUE')}원 ({r.get('ITEM_NAME1')})\n"
-            return result_str
-        else:
-            msg = data.get("RESULT", {}).get("MESSAGE", "데이터 없음")
-            return f"한국은행 응답 안내: {msg} (참고: 주말/공휴일인 경우 직전 영업일로 조회 필요)"
+        resp = requests.get(url, timeout=10).json()
+        rows = resp.get("StatisticSearch", {}).get("row", [])
+        if not rows:
+            return f"해당 기간({s_date}~{e_date})의 {currency} 환율 데이터가 없습니다. (휴일인 경우 직전 영업일을 포함해 5~7일 구간으로 조회하세요)"
+        
+        lines = [f"💱 [한국은행 공식 매매기준율 - {currency}]"]
+        for r in rows:
+            lines.append(f"- {r.get('TIME')}: {r.get('DATA_VALUE')} 원")
+        return "\n".join(lines)
     except Exception as e:
-        return f"❌ 한국은행 환율 조회 오류: {e}"
+        return f"❌ 환율 조회 오류: {e}"
+
 
 def get_bok_base_rate(start_date: str, end_date: str) -> str:
-    """한국은행 ECOS API를 통해 특정 기간(YYYYMMDD ~ YYYYMMDD)의 한국은행 기준금리를 조회합니다."""
+    """한국은행 ECOS API를 통해 기준금리를 조회합니다."""
     if not BOK_API_KEY:
-        return "❌ 한국은행 API 키(BOK_API_KEY)가 설정되지 않았습니다."
-    
-    s_date = start_date.replace("-", "").replace(".", "").strip()
-    e_date = end_date.replace("-", "").replace(".", "").strip()
+        return "❌ BOK_API_KEY가 설정되지 않았습니다."
+
+    s_date = start_date.replace("-", "").strip()
+    e_date = end_date.replace("-", "").strip()
     url = f"https://ecos.bok.or.kr/api/StatisticSearch/{BOK_API_KEY}/json/kr/1/30/722Y001/D/{s_date}/{e_date}/0101000"
-    
     try:
-        response = requests.get(url, headers=HEADERS, timeout=15)
-        data = response.json()
-        if "StatisticSearch" in data and "row" in data["StatisticSearch"]:
-            rows = data["StatisticSearch"]["row"]
-            result_str = f"[한국은행 기준금리 조회 결과 ({s_date}~{e_date})]\n"
-            for r in rows[-10:]:
-                result_str += f"- 일자: {r.get('TIME')} | 기준금리: 연 {r.get('DATA_VALUE')}%\n"
-            return result_str
-        else:
-            return "해당 기간의 기준금리 데이터가 없습니다."
+        resp = requests.get(url, timeout=10).json()
+        rows = resp.get("StatisticSearch", {}).get("row", [])
+        if not rows:
+            return f"해당 기간({s_date}~{e_date})의 기준금리 데이터가 없습니다."
+        
+        lines = ["📈 [한국은행 기준금리 조회 결과]"]
+        for r in rows[-10:]:
+            lines.append(f"- {r.get('TIME')}: 연 {r.get('DATA_VALUE')}%")
+        return "\n".join(lines)
     except Exception as e:
-        return f"❌ 한국은행 기준금리 조회 오류: {e}"
+        return f"❌ 기준금리 조회 오류: {e}"
+
 
 # ---------------------------------------------------------
-# 3. 국세청 업종코드 전용 검색 도구 (외부 마스터 파일 전용)
+# 3. 국세청 기준경비율 6자리 업종코드 마스터 엑셀/CSV 검색
 # ---------------------------------------------------------
+_INDUSTRY_DF_CACHE = None
+
 def search_industry_code(keyword: str) -> str:
-    """
-    프로젝트 내 'industry_codes.xlsx' 또는 'industry_codes.csv' 마스터 파일에서
-    업종명, 키워드 또는 6자리 코드로 국세청 기준경비율 업종코드를 정밀 검색합니다.
-    """
-    kw_list = [k.strip() for k in keyword.strip().split() if k.strip()]
-    if not kw_list:
-        return "검색할 업종 키워드를 입력해 주세요."
-
-    target_files = ["industry_codes.xlsx", "industry_codes.xls", "industry_codes.csv"]
-    found_file = None
-    for f in target_files:
-        if os.path.exists(f):
-            found_file = f
-            break
-
-    if not found_file:
-        return (
-            "⚠️ [시스템 안내]: 현재 프로젝트 폴더에 국세청 업종코드 데이터 파일('industry_codes.xlsx' 또는 'industry_codes.csv')이 업로드되어 있지 않습니다.\n"
-            "⚠️ [절대 준수 지침]: 확인되지 않은 6자리 업종코드 숫자를 절대 임의로 추측하여 답변에 적지 마세요! "
-            "코드 번호는 생략하고, 국세청 홈택스(조회/발급 > 기타조회 > 기준·단순경비율(업종코드))에서 검색할 수 있는 정확한 업종 키워드와 세법상 업종 분류 기준만 안내하세요."
-        )
-
+    """프로젝트 폴더 내 industry_codes.xlsx 또는 .csv에서 국세청 6자리 업종코드를 검색합니다."""
+    global _INDUSTRY_DF_CACHE
     try:
-        if found_file.endswith((".xlsx", ".xls")):
-            df = pd.read_excel(found_file, dtype=str)
-        else:
-            for enc in ["utf-8-sig", "utf-8", "cp949", "euc-kr"]:
-                try:
-                    df = pd.read_csv(found_file, dtype=str, encoding=enc)
-                    break
-                except Exception:
-                    continue
+        if _INDUSTRY_DF_CACHE is None:
+            if os.path.exists("industry_codes.xlsx"):
+                _INDUSTRY_DF_CACHE = pd.read_excel("industry_codes.xlsx", dtype=str).fillna("")
+            elif os.path.exists("industry_codes.csv"):
+                for enc in ["utf-8-sig", "cp949", "euc-kr", "utf-8"]:
+                    try:
+                        _INDUSTRY_DF_CACHE = pd.read_csv("industry_codes.csv", encoding=enc, dtype=str).fillna("")
+                        break
+                    except Exception:
+                        continue
+            else:
+                return "⚠️ 프로젝트 폴더에 'industry_codes.xlsx' 파일이 없습니다. 임의로 6자리 코드를 생성하지 마세요."
 
-        # 모든 키워드 토큰이 행 전체 텍스트 내에 포함되어 있는지 검사 (AND 검색)
-        def match_row(row):
-            row_text = " ".join(row.dropna().astype(str)).lower()
-            return all(k.lower() in row_text for k in kw_list)
+        df = _INDUSTRY_DF_CACHE
+        kw = keyword.strip()
+        mask = df.apply(lambda row: kw in " ".join(row.values), axis=1)
+        matched = df[mask]
 
-        mask = df.apply(match_row, axis=1)
-        matched_df = df[mask].head(15)
+        if matched.empty:
+            return f"'{keyword}' 키워드로 검색된 국세청 업종코드가 없습니다. 유사한 다른 단어(예: 도소매, 소프트웨어, 자문 등)로 다시 검색하거나 번호 생성을 생략하세요."
 
-        if not matched_df.empty:
-            return (
-                f"📊 [국세청 업종코드 데이터 검색 결과 (키워드: '{keyword}', 총 {len( df[mask] )}건 중 상위 {len(matched_df)}건)]\n"
-                + matched_df.to_string(index=False)
-            )
-        else:
-            return (
-                f"조회 결과: 업종코드 데이터 파일('{found_file}')에서 '{keyword}' 키워드와 일치하는 항목을 찾지 못했습니다. "
-                f"더 짧은 핵심 단어(예: '전자상거래', '소프트웨어', '음식점' 등)로 다시 검색해 보거나, 확인되지 않은 6자리 코드는 임의 생성하지 말고 생략하세요."
-            )
+        lines = [f"🏢 [국세청 업종코드 마스터 DB 검색 결과: '{keyword}' (총 {len(matched)}건 중 상위 15건)]"]
+        for _, row in matched.head(15).iterrows():
+            row_str = " | ".join([f"{col}: {val}" for col, val in row.items() if str(val).strip()])
+            lines.append(f"- {row_str}")
+        return "\n".join(lines)
     except Exception as e:
-        return f"❌ 업종코드 데이터 파일 읽기 오류: {e}"
+        return f"❌ 업종코드 파일 검색 오류: {e}"
