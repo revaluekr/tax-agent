@@ -99,7 +99,7 @@ def _record_law_articles(text: str) -> None:
 # ① 사건번호: 법원(2005두9415, 99다1234, 2004헌바92, 2014누53591) / 조세심판(조심2020서1234)
 _CASE_NO_PATTERNS = [
     re.compile(r"(?<!\d)((?:19|20)?\d{2})\s?(재두|재다|가합|가단|구합|구단|헌바|헌마|헌가|두|누|다|도|나|후|허|므|구|부|노|고단|고합)\s?(\d{2,6})(?!\d)"),
-    re.compile(r"조심\s?((?:19|20)\d{2})\s?(서|중|부|광|전|구|인|경|지)\s?(\d{2,6})(?!\d)"),
+    re.compile(r"(?:조심|국심)\s?((?:19|20)\d{2})\s?(서|중|부|광|전|구|인|경|지)\s?(\d{2,6})(?!\d)"),
 ]
 
 # ② 법령 조문: 「상속세 및 증여세법」 제45조의2, 법인세법 시행령 제89조 (법령명이 붙은 경우만 검증)
@@ -653,7 +653,9 @@ def search_law_for_gemini(keyword: str, target: str = "law") -> str:
         elif target == "prec":
             summary += f"{i+1}. [판례] 사건명: {item.get('사건명')} | 사건번호: {item.get('사건번호')} | 선고일자: {item.get('선고일자')} | ID: {item.get('판례일련번호')}\n"
         elif target == "decc":
-            summary += f"{i+1}. [조세심판/특별행정심판] 사건명: {item.get('사건명')} | 사건번호: {item.get('사건번호')} | 의결일자: {item.get('의결일자', item.get('처분일자'))} | ID: {item.get('특별행정심판재결례일련번호')}\n"
+            case_no = item.get('사건번호') or item.get('청구번호') or '-'
+            dec_id = item.get('특별행정심판재결례일련번호') or item.get('행정심판재결례일련번호') or item.get('id') or '-'
+            summary += f"{i+1}. [조세심판/특별행정심판] 사건명: {item.get('사건명')} | 청구(사건)번호: {case_no} | 의결일자: {item.get('의결일자') or item.get('처분일자')} | ID: {dec_id}\n"
         elif target == "admrul":
             summary += f"{i+1}. [행정규칙/예규/고시] {item.get('행정규칙명')} | 소관부처: {item.get('소관부처명')} | 발령번호: {item.get('발령번호')} | 발령일: {item.get('발령일자')} | ID: {item.get('행정규칙일련번호')}\n"
         elif target == "expc":
