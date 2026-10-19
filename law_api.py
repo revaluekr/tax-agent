@@ -18,10 +18,19 @@ except ImportError:
 # ---------------------------------------------------------
 # 1. 국가법령정보센터 (법령, 판례, 행정규칙, 법령해석례, 조세심판원 재결례, 지자체 조례)
 # ---------------------------------------------------------
-def search_law_data(keyword: str, target: str = "law") -> list[dict]:
+def search_law_data(keyword: str, target: str = "law", search_mode: int = None) -> list[dict]:
+    """search_mode: None/1 = 제목(법령명·사건명·안건명) 검색, 2 = 본문 검색 (판례·해석례·행정규칙 주제어 검색용)"""
     if not LAW_OPEN_API_KEY:
         return []
 
+    # 'decc'는 API상 행정심판 재결례 → 조세심판원 결정례는 'ttSpecialDecc'(특별행정심판-조세심판원)로 먼저 조회
+    if target == "decc":
+        rows = _search_law_data_raw(keyword, "ttSpecialDecc", search_mode)
+        return rows if rows else _search_law_data_raw(keyword, "decc", search_mode)
+    return _search_law_data_raw(keyword, target, search_mode)
+
+
+def _search_law_data_raw(keyword: str, target: str, search_mode: int = None) -> list[dict]:
     url = "http://www.law.go.kr/DRF/lawSearch.do"
     params = {
         "OC": LAW_OPEN_API_KEY,
@@ -30,6 +39,8 @@ def search_law_data(keyword: str, target: str = "law") -> list[dict]:
         "query": keyword,
         "display": 10
     }
+    if search_mode:
+        params["search"] = search_mode
 
     try:
         resp = requests.get(url, params=params, timeout=15)
@@ -45,6 +56,7 @@ def search_law_data(keyword: str, target: str = "law") -> list[dict]:
             "admrul": "admrul",
             "expc": "expc",
             "decc": "decc",
+            "ttSpecialDecc": "ttSpecialDecc",
             "ordin": "law"
         }
         item_tag = tag_map.get(target, target)
@@ -221,9 +233,10 @@ def get_law_content(doc_id: str, target: str = "law", query_filter: str = "") ->
             return f"❌ 법령 조문 조회 중 오류 발생: {e}"
 
     url = "http://www.law.go.kr/DRF/lawService.do"
+    api_target = "ttSpecialDecc" if target == "decc" else target
     params = {
         "OC": LAW_OPEN_API_KEY,
-        "target": target,
+        "target": api_target,
         "ID": doc_id,
         "type": "XML"
     }
@@ -231,6 +244,10 @@ def get_law_content(doc_id: str, target: str = "law", query_filter: str = "") ->
     try:
         resp = requests.get(url, params=params, timeout=20)
         resp.encoding = "utf-8"
+        if target == "decc" and (resp.status_code != 200 or "사건" not in resp.text):
+            params["target"] = "decc"   # 조세심판원 결정이 아니면 일반 행정심판 재결례로 재조회
+            resp = requests.get(url, params=params, timeout=20)
+            resp.encoding = "utf-8"
         if resp.status_code != 200:
             return f"❌ 원문 조회 실패 (HTTP {resp.status_code})"
 
@@ -282,6 +299,10 @@ def get_law_content(doc_id: str, target: str = "law", query_filter: str = "") ->
             summary = root.findtext(".//결정요지") or root.findtext(".//재결요지") or ""
             reason = root.findtext(".//이유") or ""
 
+            if not (order or summary or reason):
+                # 필드명이 다르게 오는 경우 대비: 본문 전체를 그대로 전달
+                body_all = "\n".join(t.strip() for t in root.itertext() if t.strip())
+                return f"🏛️ [조세심판원/특별행정심판 결정례] {case_name} ({case_no})\n{body_all[:10000]}"
             text = (
                 f"🏛️ [조세심판원/특별행정심판 결정례] {case_name}\n"
                 f"- 사건번호: {case_no} | 재결청: {agency} | 결정일: {dec_date}\n"
