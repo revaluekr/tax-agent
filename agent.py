@@ -148,16 +148,31 @@ def search_law_for_gemini(keyword: str, target: str = "law") -> str:
     """
     국가법령정보센터에서 법령, 판례, 행정규칙, 법령해석례, 조세심판원 재결례, 지방세 자치법규(조례) 목록과 일련번호(ID)를 검색합니다.
     - target: 'law'(법령), 'prec'(판례), 'decc'(조세심판원 결정례), 'admrul'(훈령·예규·고시), 'expc'(법령해석례), 'ordin'(지자체 조례)
+    - target='law'일 때 keyword에는 '법령명만' 넣을 것 (예: '소득세법', '소득세법 시행령', '조세특례제한법').
+      '업무용승용차' 같은 주제어는 keyword가 아니라 get_law_details_for_gemini의 query_filter(조문번호)로 찾을 것.
     """
     print(f"\n[시스템] 💡 목록 검색 도구 가동: '{keyword}' (대상: {target})")
     results = law_api.search_law_data(keyword, target)
+    used_keyword = keyword
+
+    # 결과가 없으면 뒤쪽 단어를 하나씩 빼며 자동 재검색 (예: '소득세법 업무용승용차' → '소득세법')
+    words = keyword.split()
+    while not results and len(words) > 1:
+        words = words[:-1]
+        used_keyword = " ".join(words)
+        print(f"[시스템]    ↳ 결과 없음 → '{used_keyword}'로 자동 재검색")
+        results = law_api.search_law_data(used_keyword, target)
+
     if not results:
-        return f"'{keyword}' (대상: {target}) 검색 결과가 없습니다."
+        return f"'{keyword}' (대상: {target}) 검색 결과가 없습니다. 법령명만 넣어 다시 검색하세요."
 
     if isinstance(results, dict):
         results = [results]
 
-    summary = f"총 {len(results)}건 검색됨 (상위 5건 요약):\n"
+    summary = ""
+    if used_keyword != keyword:
+        summary += f"※ '{keyword}' 검색 결과가 없어 '{used_keyword}'(으)로 재검색한 결과입니다.\n"
+    summary += f"총 {len(results)}건 검색됨 (상위 5건 요약):\n"
     for i, item in enumerate(results[:5]):
         if target == "law":
             summary += f"{i+1}. [법령] {item.get('법령명한글')} | 공포번호: {item.get('공포번호')} | 시행일: {item.get('시행일자')} | ID: {item.get('법령일련번호')}\n"
@@ -182,7 +197,11 @@ def get_law_details_for_gemini(doc_id: str, target: str = "law", query_filter: s
     print(f"\n[시스템] 📖 원문 정밀 조회 가동: ID '{doc_id}' (대상: {target}, 필터: '{query_filter}')")
     raw_text = law_api.get_law_content(doc_id, target, query_filter)
     # 법리 왜곡 없이 개정 연혁 태그와 타 조문 군더더기만 제거하여 토큰 50% 절감
-    return compress_legal_text(raw_text, query_filter)
+    result = compress_legal_text(raw_text, query_filter)
+    # 🔧 진단용: 모델에게 실제로 전달되는 분량과 앞부분을 터미널에 표시
+    preview = result[:150].replace("\n", " ")
+    print(f"[시스템]    ↳ 원문 {len(raw_text or ''):,}자 → 전달 {len(result):,}자 | 앞부분: {preview}")
+    return result
 
 def search_exchange_rate_for_gemini(start_date: str, end_date: str, currency: str = "USD") -> str:
     """한국은행 ECOS에서 특정 기간의 공식 환율(매매기준율)을 조회합니다."""
@@ -243,8 +262,10 @@ def run_tax_calculator_for_gemini(formula_expression: str, description: str = ""
 SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문 에이전트입니다.
 앞으로의 질문에 답변할 때는 반드시 먼저 제공된 도구(API)들을 사용하여 실제 원문 데이터와 통계를 확인한 뒤, 아래의 **[자료 검토 기준]**을 엄격히 준수하고, 반드시 **[A. 사전 3줄 크로스체크]**를 먼저 출력한 뒤 **[B. 최종 답변]**을 작성해줘.
 
-[필수 도구 호출 원칙 및 초고속 핀셋 규칙]
-- ⚡ **[초고속 핵심 핀셋 조회 원칙]**: 도구 호출은 질문당 **최대 2~4회 이내**로 가장 핵심적인 법령 조문(query_filter에 반드시 '제29조의8'처럼 조문번호 입력)과 계산기만 핀셋 호출하고 즉시 최종 답변을 작성할 것!
+[필수 도구 호출 원칙]
+- **[핵심 조문 조회 원칙]**: 세법 질문은 **법률과 시행령의 해당 조문을 모두** 원문으로 조회한 뒤 답변할 것. 도구 호출은 필요한 만큼(보통 4~8회) 하되, **이미 결과를 받은 검색을 같은 검색어로 반복하지 말 것.**
+- 법령 검색(search_law_for_gemini, target='law')의 keyword에는 **법령명만** 넣을 것 (예: '소득세법', '소득세법 시행령'). 주제어는 넣지 말 것.
+- 조회한 원문에서 직접 확인하지 못한 금액·비율·연도는 단정하지 말고 **"(원문 미확인)"**이라고 표시할 것.
 - 법령·판례·심판례·예규·지방세조례 확인: 'search_law_for_gemini'로 ID를 찾은 뒤 'get_law_details_for_gemini'(반드시 query_filter에 조문번호 입력)로 핵심 조문만 읽을 것.
 - 기업 공시·재무·지분·배당·출자 확인: 'search_dart_corp_for_gemini' 호출.
 - 사업자 상태(휴·폐업/과세유형) 및 진위확인: 'check_nts_biz_status_for_gemini' 또는 'verify_nts_biz_info_for_gemini' 호출.
@@ -328,7 +349,7 @@ def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dy
             system_instruction=dynamic_prompt,
             safety_settings=safety_settings,
             automatic_function_calling=types.AutomaticFunctionCallingConfig(
-                maximum_remote_calls=5
+                maximum_remote_calls=10
             )
         )
     )
@@ -343,17 +364,38 @@ def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dy
         raise ValueError("빈 응답이 반환되었습니다.")
 
     # 🔧 진단용: 실제 호출된 도구 목록을 답변 하단에 표시
+    #    (chat 모드에서는 response가 아니라 chat 기록에 도구 호출이 남으므로 둘 다 확인)
+    history = []
+    try:
+        history = chat.get_history(curated=False) or []
+    except Exception:
+        pass
+    if not history:
+        history = getattr(response, "automatic_function_calling_history", None) or []
+
     calls = []
-    for c in (getattr(response, "automatic_function_calling_history", None) or []):
+    for c in history:
         for p in (getattr(c, "parts", None) or []):
             fc = getattr(p, "function_call", None)
-            if fc:
+            if fc and getattr(fc, "name", None):
                 args = ", ".join(f"{k}={v}" for k, v in (fc.args or {}).items())
                 calls.append(f"{fc.name}({args})")
+
+    # 마지막 응답에 아직 function_call이 남아 있으면 호출 한도에 걸려 중간에 끊긴 것
+    limit_hit = False
+    try:
+        for p in (response.candidates[0].content.parts or []):
+            if getattr(p, "function_call", None):
+                limit_hit = True
+    except Exception:
+        pass
+
     if calls:
         final_text += "\n\n---\n> 🛠 도구 호출 " + str(len(calls)) + "회: " + " → ".join(calls)
     else:
         final_text += "\n\n---\n> 🛠 도구 호출 없음 (모델 자체 지식으로 답변)"
+    if limit_hit:
+        final_text += "\n> ⚠️ 도구 호출 한도에 도달해 조회가 중간에 끊겼습니다. 결론을 원문과 대조해 확인하세요."
 
     return final_text
 
