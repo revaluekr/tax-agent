@@ -677,6 +677,14 @@ def get_law_details_for_gemini(doc_id: str, target: str = "law", query_filter: s
     """
     검색된 일련번호(ID)로 원문을 조회합니다. 법령('law') 조회 시 반드시 query_filter에 조문번호(예: '제29조의8', '제26조')나 핵심 단어를 넣어 호출하세요.
     """
+    # 판례·심판례·해석례·예규는 query_filter와 상관없이 같은 원문이 오므로, 같은 문서를 다시 조회하지 않음
+    trace = _TOOL_TRACE.get()
+    if trace is not None and target != "law":
+        seen = trace.setdefault("seen_docs", set())
+        if (target, str(doc_id)) in seen:
+            print(f"\n[시스템] ♻️ 이미 조회한 원문 → 재조회 생략: ID '{doc_id}' (대상: {target})")
+            return "[이미 조회한 원문] 이 문서는 이번 질문에서 이미 전체 원문을 조회했습니다. 앞의 조회 결과를 그대로 참고하세요."
+        seen.add((target, str(doc_id)))
     if _over_limit("detail", target):
         print(f"\n[시스템] ⛔ 원문 조회 한도 도달 → 차단: ID '{doc_id}' (대상: {target})")
         return (f"[원문 조회 한도 도달] 이번 질문에서 '{target}' 원문 조회는 더 할 수 없습니다. "
@@ -967,13 +975,20 @@ def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dy
     except Exception:
         pass
 
+    # 진단 정보(도구 호출·검증 결과)는 기본적으로 화면에 숨기고 터미널/로그에만 남김
+    #   Secrets 또는 .env에 SHOW_DIAGNOSTICS = "on" 을 넣으면 답변 하단에 다시 표시됨
     if calls:
-        final_text += "\n\n---\n> 🛠 도구 호출 " + str(len(calls)) + "회: " + " → ".join(calls)
+        diag = "\n\n---\n> 🛠 도구 호출 " + str(len(calls)) + "회: " + " → ".join(calls)
     else:
-        final_text += "\n\n---\n> 🛠 도구 호출 없음 (모델 자체 지식으로 답변)"
+        diag = "\n\n---\n> 🛠 도구 호출 없음 (모델 자체 지식으로 답변)"
     if limit_hit:
-        final_text += "\n> ⚠️ 도구 호출 한도에 도달해 조회가 중간에 끊겼습니다. 결론을 원문과 대조해 확인하세요."
-    final_text += citation_note
+        diag += "\n> ⚠️ 도구 호출 한도에 도달해 조회가 중간에 끊겼습니다. 결론을 원문과 대조해 확인하세요."
+    diag += citation_note
+
+    if _get_secret_or_env("SHOW_DIAGNOSTICS").lower() in ("on", "true", "1"):
+        final_text += diag
+    else:
+        print("[시스템] 📋 진단 정보(화면 미표시):" + diag.replace("\n> ", "\n   ").replace("\n\n---", ""))
     final_text = re.sub(r"\s*<br\s*/?>\s*", " / ", final_text)
 
     return final_text
@@ -1046,7 +1061,10 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> s
                 )
                 diag_header = f"> {final_badge}\n"
                 if diag_notes:
-                    diag_header += f"> *(ℹ️ 앞선 시도 실패: {' | '.join(diag_notes)})*\n"
+                    if _get_secret_or_env("SHOW_DIAGNOSTICS").lower() in ("on", "true", "1"):
+                        diag_header += f"> *(ℹ️ 앞선 시도 실패: {' | '.join(diag_notes)})*\n"
+                    else:
+                        print("[시스템] ℹ️ 앞선 시도 실패: " + " | ".join(diag_notes))
                 return diag_header + "\n" + final_text
             except Exception as e:
                 if _is_model_not_found(e):
