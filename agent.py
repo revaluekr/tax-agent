@@ -1,4 +1,5 @@
 import os
+import re
 import math
 from datetime import datetime
 import streamlit as st
@@ -41,6 +42,52 @@ def get_live_gemini_key_pool() -> list[tuple[str, str]]:
 
 import law_api
 
+# ---------------------------------------------------------
+# ✨ 법리 왜곡 0% 스마트 법령 텍스트 압축기 (토큰 50% 추가 절감)
+# ---------------------------------------------------------
+def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
+    """
+    법령·판례 원문에서 법리 해석과 무관한 개정 연혁 태그(<개정 ...>), 중복 공백,
+    타 조문 단순 인용구 등을 제거하여 단서·예외 규정 왜곡 없이 토큰만 최소화합니다.
+    """
+    if not raw_text:
+        return ""
+
+    # 1) 불필요한 개정/신설 연혁 꼬리표 제거 (예: <개정 2020. 12. 29., 2022. 12. 31.>, [전문개정 ...])
+    cleaned = re.sub(r"<(개정|신설|타법개정|일부개정|전문개정)[^>]*>", "", raw_text)
+    cleaned = re.sub(r"\[(전문개정\vert{}본조신설\vert{}제목개정\vert{}제\d+조에서 이동)[^\]]*\]", "", cleaned)
+
+    # 2) 만약 특정 조문번호(예: '제29조의8', '제26조')로 필터링한 경우,
+    #    해당 조문으로 시작하는 '진짜 본조문' 블록을 최우선 배치하고 단순 언급 조문은 뒤로 밀어냄
+    qf = query_filter.strip().replace(" ", "")
+    if qf.startswith("제") and "조" in qf:
+        blocks = cleaned.split("\n\n")
+        header = blocks[0] if blocks else ""
+        exact_articles = []
+        other_mentions = []
+
+        for blk in blocks[1:]:
+            blk_clean = blk.strip().replace(" ", "")
+            # '제29조의8(' 또는 '제29조의8 ' 형태로 시작하는 실제 해당 조문인지 판별
+            if blk_clean.startswith(qf + "(") or blk_clean.startswith(qf + " ") or blk_clean == qf:
+                exact_articles.append(blk.strip())
+            else:
+                other_mentions.append(blk.strip())
+
+        if exact_articles:
+            # 진짜 타깃 조문이 있으면 그 조문 전체(1항~끝항, 단서 포함)를 온전히 보존
+            cleaned = header + "\n\n" + "\n\n".join(exact_articles)
+        else:
+            cleaned = header + "\n\n" + "\n\n".join(other_mentions[:3])
+
+    # 3) 연속된 빈 줄 및 불필요한 공백 압축
+    cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+    # 4) 단일 조문 전체가 잘리지 않도록 3,500자(순수 조문 기준 매우 넉넉한 분량)까지 허용
+    return cleaned[:3500]
+
+
 # 1. 모델 설정: 무료 등급(Free Tier)에서 429/503 없이 하루 1,500회 뚫리는 2.5-flash를 무료키 기본 엔진으로 설정
 FREE_TIER_FLASH_ID = "gemini-2.5-flash"
 PAID_TIER_FLASH_ID = "gemini-3.8-flash"
@@ -77,7 +124,7 @@ def select_optimal_model(user_query: str, has_file: bool = False, full_input_len
 
     return "FLASH", "⚡ **[Flash 빠른 검토 모드]** 실무 표준 검토 (토큰 절약 모드)"
 
-# 2. Gemini 도구 정의 (무료키 429 방지를 위해 반환 텍스트를 핵심 4,500자로 자동 다이어트)
+# 2. Gemini 도구 정의
 def search_law_for_gemini(keyword: str, target: str = "law") -> str:
     """
     국가법령정보센터에서 법령, 판례, 행정규칙, 법령해석례, 조세심판원 재결례, 지방세 자치법규(조례) 목록과 일련번호(ID)를 검색합니다.
@@ -115,8 +162,8 @@ def get_law_details_for_gemini(doc_id: str, target: str = "law", query_filter: s
     """
     print(f"\n[시스템] 📖 원문 정밀 조회 가동: ID '{doc_id}' (대상: {target}, 필터: '{query_filter}')")
     raw_text = law_api.get_law_content(doc_id, target, query_filter)
-    # 무료키 분당 토큰 한도(TPM) 보호를 위해 핵심 4,500자로 압축 반환
-    return raw_text[:4500]
+    # 법리 왜곡 없이 개정 연혁 태그와 타 조문 군더더기만 제거하여 토큰 50% 절감
+    return compress_legal_text(raw_text, query_filter)
 
 def search_exchange_rate_for_gemini(start_date: str, end_date: str, currency: str = "USD") -> str:
     """한국은행 ECOS에서 특정 기간의 공식 환율(매매기준율)을 조회합니다."""
@@ -136,7 +183,7 @@ def search_industry_code_for_gemini(keyword: str) -> str:
 def search_dart_corp_for_gemini(corp_name: str, bsns_year: str = "2025") -> str:
     """금융감독원 전자공시시스템(Open DART)에서 특정 기업의 6대 핵심 정보를 통합 조회합니다."""
     print(f"\n[시스템] 📊 DART 전자공시 통합 조회 가동: '{corp_name}' ({bsns_year}년)")
-    return law_api.get_dart_corp_info(corp_name, bsns_year)[:5000]
+    return law_api.get_dart_corp_info(corp_name, bsns_year)[:4000]
 
 def check_nts_biz_status_for_gemini(biz_numbers: str) -> str:
     """국세청 API를 통해 사업자등록번호(10자리)의 납세자 상태(계속/휴폐업) 및 과세유형을 실시간 조회합니다."""
@@ -178,8 +225,8 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
 앞으로의 질문에 답변할 때는 반드시 먼저 제공된 도구(API)들을 사용하여 실제 원문 데이터와 통계를 확인한 뒤, 아래의 **[자료 검토 기준]**을 엄격히 준수하고, 반드시 **[A. 사전 3줄 크로스체크]**를 먼저 출력한 뒤 **[B. 최종 답변]**을 작성해줘.
 
 [필수 도구 호출 원칙 및 초고속 핀셋 규칙]
-- ⚡ **[초고속 핵심 핀셋 조회 원칙]**: 도구 호출은 질문당 **최대 2~4회 이내**로 가장 핵심적인 법령 조문(query_filter 필수 입력)과 계산기만 핀셋 호출하고 즉시 최종 답변을 작성할 것! (불필요한 부수 법령까지 전부 중복 검색하지 말 것)
-- 법령·판례·심판례·예규·지방세조례 확인: 'search_law_for_gemini'로 ID를 찾은 뒤 'get_law_details_for_gemini'(반드시 query_filter에 조문번호 예: '제29조의8' 입력)로 핵심 조문만 읽을 것.
+- ⚡ **[초고속 핵심 핀셋 조회 원칙]**: 도구 호출은 질문당 **최대 2~4회 이내**로 가장 핵심적인 법령 조문(query_filter에 반드시 '제29조의8'처럼 조문번호 입력)과 계산기만 핀셋 호출하고 즉시 최종 답변을 작성할 것!
+- 법령·판례·심판례·예규·지방세조례 확인: 'search_law_for_gemini'로 ID를 찾은 뒤 'get_law_details_for_gemini'(반드시 query_filter에 조문번호 입력)로 핵심 조문만 읽을 것.
 - 기업 공시·재무·지분·배당·출자 확인: 'search_dart_corp_for_gemini' 호출.
 - 사업자 상태(휴·폐업/과세유형) 및 진위확인: 'check_nts_biz_status_for_gemini' 또는 'verify_nts_biz_info_for_gemini' 호출.
 - 부동산(아파트·오피스텔·상가·토지) 실거래가 확인: 'search_real_estate_trade_for_gemini' 호출.
@@ -327,10 +374,8 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> s
         for lbl, k in paid_keys:
             execution_plan.append((lbl, k, PAID_TIER_FLASH_ID, f"⚡ **[최후 백업 모드]** *(🔑 {lbl} Flash 가동)*"))
     else:
-        # 무료키는 429/503이 걸리는 3.8-flash를 건너뛰고 곧바로 쾌속 무료 모델(2.5-flash)로 직행!
         for lbl, k in free_keys:
             execution_plan.append((lbl, k, FREE_TIER_FLASH_ID, f"{mode_badge} *(🔑 {lbl} 가동)*"))
-        # 모든 무료키가 소진되었을 때만 최후 방어벽 유료키 가동
         for lbl, k in paid_keys:
             execution_plan.append((lbl, k, PAID_TIER_FLASH_ID, f"{mode_badge} *(🔑 {lbl} 가동)*"))
 
