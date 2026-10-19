@@ -38,7 +38,7 @@ def search_law_data(keyword: str, target: str = "law") -> list[dict]:
             return []
 
         root = ET.fromstring(resp.text)
-        
+
         tag_map = {
             "law": "law",
             "prec": "prec",
@@ -65,9 +65,160 @@ def search_law_data(keyword: str, target: str = "law") -> list[dict]:
         return []
 
 
+# ---------------------------------------------------------
+# 1-1. 법령 조문 정밀 추출 도우미
+#   - 기존 방식은 조문 XML 전체를 itertext()로 이어 붙여서
+#     ① 조문번호·시행일 등 메타데이터가 본문 앞에 섞이고 ② 항·호 줄바꿈이 사라지고
+#     ③ '제33조의2'를 언급만 한 다른 조문까지 함께 걸려 정작 본조문이 잘리는 문제가 있었음
+#   - 이제 조문번호/가지번호를 정확히 비교해 해당 조문만 뽑고, 항·호·목을 줄 단위로 정리함
+# ---------------------------------------------------------
+_CIRCLED_NUM = {chr(0x2460 + i): i + 1 for i in range(20)}  # ①~⑳ → 1~20
+
+def _parse_article_filter(query_filter: str):
+    """'제33조의2', '제78조의3 제8항' 같은 입력에서 (조, 가지, 항)을 추출합니다. 조문번호가 없으면 None."""
+    m = re.search(r"제\s*(\d+)\s*조(?:\s*의\s*(\d+))?(?:\s*제?\s*(\d+)\s*항)?", query_filter or "")
+    if not m:
+        return None
+    jo = int(m.group(1))
+    gaji = int(m.group(2)) if m.group(2) else 0
+    hang = int(m.group(3)) if m.group(3) else None
+    return jo, gaji, hang
+
+def _hang_number(text: str):
+    t = (text or "").strip()
+    if t and t[0] in _CIRCLED_NUM:
+        return _CIRCLED_NUM[t[0]]
+    d = re.match(r"(\d+)", t)
+    return int(d.group(1)) if d else None
+
+def _to_int(text: str, default: int = 0) -> int:
+    d = re.sub(r"\D", "", text or "")
+    return int(d) if d else default
+
+def _format_article(art, only_hang=None) -> str:
+    """조문단위 XML 하나를 '조문 제목 → 항 → 호 → 목' 순서의 읽기 쉬운 텍스트로 변환합니다."""
+    lines = []
+    jo_content = (art.findtext("조문내용") or "").strip()
+    if jo_content:
+        lines.append(jo_content)
+
+    hangs = art.findall("항")
+    if hangs:
+        for hang in hangs:
+            if only_hang is not None:
+                hn = _hang_number(hang.findtext("항번호")) or _hang_number(hang.findtext("항내용"))
+                if hn != only_hang:
+                    continue
+            for el in hang.iter():
+                if el.tag in ("항내용", "호내용", "목내용") and el.text and el.text.strip():
+                    indent = {"항내용": "", "호내용": "  ", "목내용": "    "}[el.tag]
+                    lines.append(indent + el.text.strip())
+    else:
+        # 항 없이 호가 바로 붙은 조문 대비
+        for el in art.iter():
+            if el.tag in ("호내용", "목내용") and el.text and el.text.strip():
+                lines.append(("  " if el.tag == "호내용" else "    ") + el.text.strip())
+
+    text = "\n".join(lines)
+    eff = re.sub(r"\D", "", art.findtext("조문시행일자") or "")
+    if len(eff) == 8:
+        text += f"\n[조문시행일자: {eff[:4]}.{eff[4:6]}.{eff[6:]}]"
+    return text
+
+def _fetch_xml_root(url: str, params: dict):
+    try:
+        resp = requests.get(url, params=params, timeout=20)
+        resp.encoding = "utf-8"
+        if resp.status_code != 200:
+            return None
+        return ET.fromstring(resp.text)
+    except Exception:
+        return None
+
+def _get_statute_articles(doc_id: str, query_filter: str = "") -> str:
+    """
+    법령 원문에서 조문을 정밀 추출합니다.
+    - 검색 결과의 '법령일련번호'는 lawService.do의 MST 값이므로 MST로 먼저 조회하고,
+      실패하면 ID(법령ID)로 한 번 더 조회합니다.
+    - 조문번호가 주어지면 JO 파라미터(6자리: 조4 + 가지2, 예: 제33조의2 → 003302)로 해당 조문만 요청합니다.
+    """
+    url = "http://www.law.go.kr/DRF/lawService.do"
+    art_filter = _parse_article_filter(query_filter)
+    base = {"OC": LAW_OPEN_API_KEY, "target": "law", "type": "XML"}
+
+    attempts = []
+    if art_filter:
+        jo_code = f"{art_filter[0]:04d}{art_filter[1]:02d}"
+        attempts.append({**base, "MST": doc_id, "JO": jo_code})
+    attempts.append({**base, "MST": doc_id})
+    attempts.append({**base, "ID": doc_id})
+
+    title = "명칭 미상"
+    found_any_law = False
+
+    for params in attempts:
+        root = _fetch_xml_root(url, params)
+        if root is None:
+            continue
+        articles = [
+            a for a in root.findall(".//조문단위")
+            if (a.findtext("조문여부") or "조문").strip() != "전문"   # 장·절 제목 제외
+        ]
+        if not articles:
+            continue
+
+        found_any_law = True
+        title = (root.findtext(".//법령명_한글") or root.findtext(".//법령명한글") or title).strip()
+        law_eff = re.sub(r"\D", "", root.findtext(".//시행일자") or "")
+        eff_note = f" | 법령 시행일자: {law_eff[:4]}.{law_eff[4:6]}.{law_eff[6:]}" if len(law_eff) == 8 else ""
+        header = f"📘 [{title}] (일련번호: {doc_id}{eff_note})"
+
+        # ① 조문번호 지정 조회: 번호가 정확히 일치하는 조문만
+        if art_filter:
+            jo, gaji, hang = art_filter
+            matched = [
+                a for a in articles
+                if _to_int(a.findtext("조문번호")) == jo and _to_int(a.findtext("조문가지번호")) == gaji
+            ]
+            if matched:
+                body = "\n\n".join(_format_article(a, only_hang=hang) for a in matched)
+                return (header + "\n\n" + body)[:15000]
+            continue  # JO 조회가 다른 조문을 줬거나 비었으면 다음 방식으로 재시도
+
+        # ② 키워드 조회: 키워드가 들어간 조문 (최대 8개)
+        if query_filter:
+            kw = query_filter.replace(" ", "")
+            matched = []
+            for a in articles:
+                txt = _format_article(a)
+                if kw in txt.replace(" ", ""):
+                    matched.append(txt)
+            if not matched:
+                return f"'{title}' 내에서 '{query_filter}' 키워드가 포함된 조문을 찾지 못했습니다. 조문번호(예: '제33조의2')로 다시 조회하세요."
+            note = f"\n\n[※ 키워드 포함 조문 {len(matched)}개 중 앞 8개만 표시]" if len(matched) > 8 else ""
+            return (header + "\n\n" + "\n\n".join(matched[:8]))[:12000] + note
+
+        # ③ 필터 없음: 전체 조문 (분량 제한)
+        body = "\n\n".join(_format_article(a) for a in articles)
+        return (header + "\n\n" + body)[:12000] + "\n\n[※ 전체 조문 중 앞부분만 표시. 조문번호를 지정해 다시 조회하세요]"
+
+    if art_filter and found_any_law:
+        jo, gaji, _ = art_filter
+        label = f"제{jo}조" + (f"의{gaji}" if gaji else "")
+        return f"'{title}'에서 {label}를 찾지 못했습니다. 법률/시행령 일련번호를 혼동하지 않았는지 확인하세요."
+    return f"❌ 일련번호 '{doc_id}'로 법령 원문을 불러오지 못했습니다. search_law_for_gemini로 일련번호를 다시 확인하세요."
+
+
 def get_law_content(doc_id: str, target: str = "law", query_filter: str = "") -> str:
     if not LAW_OPEN_API_KEY:
         return "❌ LAW_OPEN_API_KEY가 설정되지 않았습니다."
+
+    # 법령은 정밀 조문 추출기로 처리
+    if target == "law":
+        try:
+            return _get_statute_articles(doc_id, query_filter)
+        except Exception as e:
+            return f"❌ 법령 조문 조회 중 오류 발생: {e}"
 
     url = "http://www.law.go.kr/DRF/lawService.do"
     params = {
@@ -85,11 +236,10 @@ def get_law_content(doc_id: str, target: str = "law", query_filter: str = "") ->
 
         root = ET.fromstring(resp.text)
 
-        if target in ["law", "ordin"]:
-            title_tag = "법령명_한글" if target == "law" else "자치법규명"
-            title = root.findtext(f".//{title_tag}") or root.findtext(".//법령명_한글") or "명칭 미상"
+        if target == "ordin":
+            title = root.findtext(".//자치법규명") or root.findtext(".//법령명_한글") or "명칭 미상"
             articles = root.findall(".//조문단위")
-            
+
             extracted = [f"📘 [{title}] (ID: {doc_id})"]
             for art in articles:
                 art_body = "".join(art.itertext()).strip()
@@ -101,7 +251,7 @@ def get_law_content(doc_id: str, target: str = "law", query_filter: str = "") ->
 
             if len(extracted) == 1 and query_filter:
                 return f"'{title}' 내에서 '{query_filter}' 키워드가 포함된 조문을 찾지 못했습니다. 필터 없이 다시 조회하거나 다른 조문번호를 검색하세요."
-            
+
             full_text = "\n\n".join(extracted)
             return full_text[:12000]
 
@@ -196,7 +346,7 @@ def get_bok_exchange_rate(start_date: str, end_date: str, currency: str = "USD")
         rows = resp.get("StatisticSearch", {}).get("row", [])
         if not rows:
             return f"해당 기간({s_date}~{e_date})의 {currency} 환율 데이터가 없습니다. (휴일인 경우 직전 영업일을 포함해 5~7일 구간으로 조회하세요)"
-        
+
         lines = [f"💱 [한국은행 공식 매매기준율 - {currency}]"]
         for r in rows:
             lines.append(f"- {r.get('TIME')}: {r.get('DATA_VALUE')} 원")
@@ -217,7 +367,7 @@ def get_bok_base_rate(start_date: str, end_date: str) -> str:
         rows = resp.get("StatisticSearch", {}).get("row", [])
         if not rows:
             return f"해당 기간({s_date}~{e_date})의 기준금리 데이터가 없습니다."
-        
+
         lines = ["📈 [한국은행 기준금리 조회 결과]"]
         for r in rows[-10:]:
             lines.append(f"- {r.get('TIME')}: 연 {r.get('DATA_VALUE')}%")
