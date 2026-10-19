@@ -2,6 +2,8 @@ import os
 import re
 import math
 import time
+import contextvars
+import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import streamlit as st
@@ -23,26 +25,366 @@ def _get_secret_or_env(key_name: str) -> str:
     return os.getenv(key_name, "").strip().strip('"').strip("'")
 
 def get_live_gemini_key_pool() -> list[tuple[str, str]]:
-    """무료키 1~5번을 최우선으로 배열하고 유료 예비키를 맨 마지막에 배치합니다."""
+    """
+    유료키만 사용합니다.
+    - 무료 한도는 키가 아니라 프로젝트 단위라 키를 늘려도 효과가 없고,
+      여러 프로젝트로 한도를 늘리는 방식은 '한도 우회'로 제재될 위험이 있어 무료키 사용을 중단했습니다.
+    - GEMINI_PAID_KEY(기본) → GEMINI_API_KEY(예비, 다른 값일 때만) 순서로 사용합니다.
+    """
     pool = []
     seen = set()
-
-    for i in range(1, 6):
-        k = _get_secret_or_env(f"GEMINI_FREE_KEY_{i}")
-        if k and k not in seen:
-            pool.append((f"무료키 #{i}", k))
-            seen.add(k)
-
-    for env_name in ["GEMINI_PAID_KEY", "GEMINI_API_KEY"]:
+    for env_name, lbl in [("GEMINI_PAID_KEY", "💳 유료키"), ("GEMINI_API_KEY", "💳 유료키(예비)")]:
         k = _get_secret_or_env(env_name)
         if k and k not in seen:
-            lbl = "💳 유료 예비키(최후 방어벽)" if pool else "기본키(단독)"
-            pool.append((lbl, k))
+            pool.append((lbl if pool or env_name == "GEMINI_PAID_KEY" else "💳 유료키", k))
             seen.add(k)
-
     return pool
 
 import law_api
+
+# ---------------------------------------------------------
+# 🔎 근거 추적·검증
+#   - 이번 질문에서 도구가 실제로 돌려준 원문(목록/원문/조회한 조문 번호)을 기록하고,
+#   - 답변에 나온 ① 사건번호 ② 법령 조문 ③ 집행기준 번호 ④ [근거 표시] ⑤ 출처 없는 판례·예규 서술을
+#     조회 기록과 줄 단위로 대조합니다.
+# ---------------------------------------------------------
+_TOOL_TRACE = contextvars.ContextVar("tool_trace", default=None)
+
+def _new_trace() -> dict:
+    return {"list": [], "detail": [], "articles": set(), "article_texts": {}}
+
+def _norm(text: str) -> str:
+    return re.sub(r"[\s「」『』\"'“”‘’]", "", text or "")
+
+def _record(kind: str, text: str) -> str:
+    """kind: 'list'(목록 검색 결과) 또는 'detail'(원문 조회 결과)"""
+    trace = _TOOL_TRACE.get()
+    if trace is not None:
+        trace[kind].append(text or "")
+    return text
+
+def _record_law_articles(text: str) -> None:
+    """법령 원문 조회 결과에서 '법령명 + 조문번호'를 뽑아 조회 완료 목록에 추가합니다."""
+    trace = _TOOL_TRACE.get()
+    if trace is None or not text:
+        return
+    m = re.search(r"📘 \[(.+?)\]", text)
+    if not m:
+        return
+    title = _norm(m.group(1))
+    starts = list(re.finditer(r"(?m)^제(\d+)조(?:의(\d+))?\(", text))
+    for n, am in enumerate(starts):
+        key = (title, int(am.group(1)), int(am.group(2) or 0))
+        trace["articles"].add(key)
+        end = starts[n + 1].start() if n + 1 < len(starts) else len(text)
+        trace["article_texts"][key] = text[am.start():end].strip()
+
+# ① 사건번호: 법원(2005두9415, 99다1234, 2004헌바92, 2014누53591) / 조세심판(조심2020서1234)
+_CASE_NO_PATTERNS = [
+    re.compile(r"(?<!\d)((?:19|20)?\d{2})\s?(재두|재다|가합|가단|구합|구단|헌바|헌마|헌가|두|누|다|도|나|후|허|므|구|부|노|고단|고합)\s?(\d{2,6})(?!\d)"),
+    re.compile(r"조심\s?((?:19|20)\d{2})\s?(서|중|부|광|전|구|인|경|지)\s?(\d{2,6})(?!\d)"),
+]
+
+# ② 법령 조문: 「법인세법 시행령」 제89조, 소득세법 제33조의2 (법령명이 붙은 경우만 검증)
+_ARTICLE_REF = re.compile(
+    r"(?<![가-힣·])「?([가-힣·]{1,30}?법(?:\s?시행령|\s?시행규칙)?)」?\s*제\s*(\d+)\s*조(?:\s*의\s*(\d+))?"
+)
+_SKIP_LAW_NAMES = ("동법", "같은법", "이법", "법", "본법", "당해법", "해당법")
+
+# ③ 집행기준 번호: 33의2-78의3-1, 52-88-3
+_EXEC_STD = re.compile(r"(?<![\d의])(\d{1,3}(?:의\d{1,2})?-\d{1,3}(?:의\d{1,2})?-\d{1,3})(?![\d])")
+
+# ④ 근거 표시: [판례:2005두9415] [심판례:조심2020서1234] [해석례:...] [예규:...] [조문:법인세법 제52조]
+_TAG = re.compile(r"\[(판례|심판례|해석례|예규|조문)\s*:\s*([^\]]+)\]")
+
+# ⑤ 출처가 필요한 서술 키워드 / 허용되는 부정·미조회 표현 / 양식 고정 문구
+_AUTHORITY = re.compile(r"대법원|판시|판례|심판원|조세심판|심판례|결정례|헌법재판소|헌재|예규|집행기준|유권해석|해석례|질의회신")
+_NEGATION = re.compile(r"없음|없습니다|없으며|없고|없어|확인되지|확인하지 못|찾지 못|미조회|조회되지|조회하지 못")
+_TEMPLATE_LABELS = ("예규·심판례·리스크 검증", "법령·기준·공시·실거래 대조", "예규·심판례", "예규·판례·심판례")
+
+_QUOTE = re.compile(r"[“\"]([^”\"]{12,})[”\"]")
+
+def _letters(text: str) -> str:
+    """인용문 대조용: 한글·영문·숫자만 남김 (띄어쓰기·문장부호 차이 무시)"""
+    return re.sub(r"[^0-9A-Za-z가-힣]", "", text or "")
+
+def _quote_mismatches(line: str, case_nos: list, details: list) -> list[str]:
+    """따옴표로 인용한 문장이 조회한 판례·심판례 원문에 실제로 있는지 확인합니다."""
+    bad = []
+    pool = [d for d in details if any(n in _norm(d) for n in case_nos)] if case_nos else details
+    pool_letters = [_letters(d) for d in pool]
+    for q in _QUOTE.findall(line):
+        segments = [seg for seg in re.split(r"…|\.\.\.|⋯|중략", q) if len(_letters(seg)) >= 10]
+        for seg in segments:
+            if not any(_letters(seg) in t for t in pool_letters):
+                bad.append("판례 인용문이 조회한 원문과 다름: \"" + q[:25] + "…\"")
+                break
+    return bad
+
+def _find_case_numbers(text: str) -> list[str]:
+    cited = []
+    for pat in _CASE_NO_PATTERNS:
+        for m in pat.finditer(text or ""):
+            no = "".join(m.groups())
+            if no not in cited:
+                cited.append(no)
+    return cited
+
+def _find_article_refs(text: str) -> list[tuple]:
+    refs = []
+    for m in _ARTICLE_REF.finditer(text or ""):
+        name = _norm(m.group(1))
+        if name in _SKIP_LAW_NAMES or name.startswith(("동법", "같은법", "이법", "법시행")):
+            continue
+        refs.append((name, int(m.group(2)), int(m.group(3) or 0)))
+    return refs
+
+def _article_label(ref: tuple) -> str:
+    name, jo, gaji = ref
+    return f"{name} 제{jo}조" + (f"의{gaji}" if gaji else "")
+
+def _scan_violations(answer: str, trace: dict) -> list[tuple]:
+    """답변을 줄 단위로 검사해 [(줄번호, [위반 설명...]), ...]을 돌려줍니다."""
+    detail_blob = _norm(" ".join(trace["detail"]))
+    list_blob = _norm(" ".join(trace["list"]))
+    fetched = trace["articles"]
+
+    violations = []
+    in_refs_section = False
+    parent_stack = []   # (들여쓰기, 이 줄에 검증된 출처가 있는지, 이 줄의 사건번호들)
+
+    for i, line in enumerate(answer.split("\n")):
+        s = line.strip()
+        if not s:
+            continue
+        if s.startswith("#"):
+            in_refs_section = "근거 자료" in s
+            parent_stack = []
+            continue
+        line_cases = []
+
+        indent = len(line) - len(line.lstrip(" "))
+        while parent_stack and parent_stack[-1][0] >= indent:
+            parent_stack.pop()
+        inherited_ok = any(ok for _, ok, _ in parent_stack)
+        parent_cases = [n for _, _, nos in parent_stack for n in nos]
+
+        compact = _norm(line)
+        problems = []
+        verified_source = False
+
+        # ① 사건번호
+        for no in _find_case_numbers(line):
+            if no in detail_blob:
+                verified_source = True
+            elif no in list_blob and "요지미조회" in compact:
+                verified_source = True
+            elif no in list_blob:
+                problems.append(f"판례 {no} (목록만 조회, 판결요지 미조회)")
+            else:
+                problems.append(f"판례 {no} (조회 기록 없음)")
+
+        # ② 법령 조문 (근거 표시 안팎 모두)
+        for ref in _find_article_refs(line):
+            if ref in fetched:
+                verified_source = True
+            else:
+                problems.append(f"{_article_label(ref)} (조문 원문 미조회)")
+
+        # ③ 집행기준 번호
+        for no in _EXEC_STD.findall(line):
+            if _norm(no) in detail_blob:
+                verified_source = True
+            else:
+                problems.append(f"집행기준 {no} (원문 미조회)")
+
+        # ④ 근거 표시 자체 검증
+        for kind, val in _TAG.findall(line):
+            if kind == "조문":
+                refs = _find_article_refs(val)
+                if not refs:
+                    problems.append(f"[조문:{val}] (법령명이 빠져 검증 불가)")
+                # 법령명이 있는 경우는 ②에서 이미 검사됨
+            else:
+                nos = _find_case_numbers(val)
+                if nos:
+                    ok = all(n in detail_blob or (n in list_blob and "요지미조회" in compact) for n in nos)
+                else:
+                    ok = _norm(val) in detail_blob
+                if ok:
+                    verified_source = True
+                elif not nos:   # 번호 있는 경우는 ①에서 이미 지적됨
+                    problems.append(f"[{kind}:{val}] (원문 미조회)")
+
+        # ④-2 따옴표 인용문 대조 (판례·심판례 근거가 걸린 줄, 또는 그 하위 항목)
+        line_cases = _find_case_numbers(line) + [n for k, v in _TAG.findall(line) if k != "조문" for n in _find_case_numbers(v)]
+        if (line_cases or inherited_ok or _TAG.search(line)) and _QUOTE.search(line):
+            problems.extend(_quote_mismatches(line, line_cases or parent_cases, trace["detail"]))
+
+        # ⑤ 출처 없는 판례·예규 서술 (근거 자료 섹션은 제외)
+        if not in_refs_section and not problems:
+            body = line
+            for lbl in _TEMPLATE_LABELS:
+                body = body.replace(lbl, "")
+            if (_AUTHORITY.search(body) and not _TAG.search(line) and not verified_source
+                    and not inherited_ok and not _NEGATION.search(body)):
+                problems.append("출처 표시 없는 판례·예규 서술: \"" + s[:40] + "…\"")
+
+        parent_stack.append((indent, verified_source and not problems, line_cases))
+        if problems:
+            violations.append((i, problems))
+    return violations
+
+def _violation_labels(violations: list[tuple]) -> list[str]:
+    labels = []
+    for _, probs in violations:
+        for p in probs:
+            if p not in labels:
+                labels.append(p)
+    return labels
+
+def _redact_lines(answer: str, violations: list[tuple]) -> str:
+    """위반 줄과 그 하위 항목(더 깊게 들여쓴 줄)을 삭제하고 삭제 사실을 한 줄로 남깁니다."""
+    bad = {i: probs for i, probs in violations}
+    out, skip_indent = [], None
+    for i, line in enumerate(answer.split("\n")):
+        indent = len(line) - len(line.lstrip(" "))
+        if skip_indent is not None:
+            if line.strip() and indent > skip_indent:
+                continue
+            skip_indent = None
+        if i in bad:
+            reasons = [r.split(":")[0] if r.startswith(("출처 표시 없는", "판례 인용문")) else r for r in bad[i]]
+            out.append(" " * indent + f"- 🚫 *(검증되지 않은 근거 삭제: {'; '.join(reasons)[:120]})*")
+            skip_indent = indent
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+# ---------------------------------------------------------
+# 🧪 의미 검증 (검증 모델)
+#   - 기계적 대조로는 못 잡는 것: 조회한 근거 표시를 붙였지만 내용은 원문에 없는 '의역 주장'
+#   - 근거 표시가 붙은 문장(+검증된 판례 항목의 하위 문장)만 골라, 해당 원문과 함께
+#     별도 모델에게 "원문이 이 주장을 뒷받침하는가"를 판정시킵니다.
+#   - 판정: supported(통과) / partial(⚠️ 표시) / unsupported(삭제)
+# ---------------------------------------------------------
+def _strip_md(text: str) -> str:
+    return re.sub(r"[*_`>#]", "", text or "").strip(" -")
+
+def _extract_claims(answer: str, trace: dict, max_claims: int = 20) -> tuple[list, dict]:
+    """검증 대상 문장과 그 근거 원문을 뽑습니다. 반환: (claims, sources)"""
+    details = trace["detail"]
+    art_texts = trace.get("article_texts", {})
+    sources, src_index = {}, {}
+
+    def _src_id(label: str, text: str) -> str:
+        if label not in src_index:
+            sid = f"S{len(src_index) + 1}"
+            src_index[label] = sid
+            sources[sid] = (label, text[:3500])
+        return src_index[label]
+
+    claims = []
+    in_refs = False
+    stack = []  # (indent, case_numbers)
+    for i, line in enumerate(answer.split("\n")):
+        s = line.strip()
+        if not s:
+            continue
+        if s.startswith("#"):
+            in_refs = "근거 자료" in s
+            stack = []
+            continue
+        if in_refs:
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+        parent_cases = [n for _, nos in stack for n in nos]
+
+        tags = _TAG.findall(line)
+        line_cases = [n for n in _find_case_numbers(line) if any(n in _norm(d) for d in details)]
+        stack.append((indent, line_cases))
+
+        src_ids = []
+        for kind, val in tags:
+            if kind == "조문":
+                for ref in _find_article_refs(val):
+                    if ref in art_texts:
+                        src_ids.append(_src_id(_article_label(ref), art_texts[ref]))
+            else:
+                nos = _find_case_numbers(val)
+                for d in details:
+                    nd = _norm(d)
+                    if (nos and any(n in nd for n in nos)) or (not nos and _norm(val) in nd):
+                        src_ids.append(_src_id(f"{kind} {val}", d))
+        body = _strip_md(_TAG.sub("", line))
+        if not tags:
+            # 근거 표시가 없더라도, 검증된 판례 항목의 하위 문장이거나 판례번호와 함께 쓴 긴 서술이면 검증
+            cases = line_cases if (line_cases and len(body) >= 40) else (parent_cases if len(body) >= 15 else [])
+            for n in cases:
+                for d in details:
+                    if n in _norm(d):
+                        src_ids.append(_src_id(f"판례 {n}", d))
+        src_ids = list(dict.fromkeys(src_ids))
+        if src_ids and len(body) >= 15:
+            claims.append({"line": i, "text": body[:400], "sources": src_ids})
+        if len(claims) >= max_claims:
+            break
+    return claims, sources
+
+def _semantic_verify(api_key: str, claims: list, sources: dict) -> dict:
+    """검증 모델 호출. 반환: {claim_id: (verdict, reason)}"""
+    src_block = "\n\n".join(f"[{sid}] {label}\n{text}" for sid, (label, text) in sources.items())
+    claim_block = "\n".join(f"{n + 1}. (근거: {', '.join(c['sources'])}) {c['text']}" for n, c in enumerate(claims))
+    prompt = (
+        "당신은 세무 답변의 근거를 검증하는 감수자입니다. 아래 [원문]만을 기준으로 각 [주장]이 뒷받침되는지 판정하세요.\n"
+        "- supported: 지정된 원문에 그 내용이 명시되어 있음 (같은 뜻의 요약·의역은 허용)\n"
+        "- partial: 일부만 원문에 있고, 원문에 없는 내용(수치·요건·예외·결론)이 덧붙어 있음\n"
+        "- unsupported: 지정된 원문에서 그 내용을 찾을 수 없음 (일반 지식으로 맞더라도 원문에 없으면 unsupported)\n"
+        "원문 밖의 지식으로 판단하지 마세요. reason은 한국어 30자 이내.\n"
+        '출력은 JSON 배열만: [{"id": 1, "verdict": "supported", "reason": "..."}]\n\n'
+        f"[원문]\n{src_block}\n\n[주장]\n{claim_block}"
+    )
+    try:
+        client = genai.Client(api_key=api_key, http_options={"timeout": 60000})
+    except Exception:
+        client = genai.Client(api_key=api_key)
+    resp = client.models.generate_content(
+        model=VERIFIER_MODEL_ID,
+        contents=prompt,
+        config=types.GenerateContentConfig(response_mime_type="application/json"),
+    )
+    raw = extract_safe_text(resp)
+    raw = re.sub(r"^```(?:json)?|```$", "", raw.strip()).strip()
+    data = json.loads(raw)
+    result = {}
+    for item in data if isinstance(data, list) else []:
+        try:
+            cid = int(item.get("id"))
+            verdict = str(item.get("verdict", "")).strip().lower()
+            if verdict in ("supported", "partial", "unsupported"):
+                result[cid] = (verdict, str(item.get("reason", ""))[:60])
+        except Exception:
+            continue
+    return result
+
+def _apply_semantic_results(answer: str, claims: list, verdicts: dict) -> tuple[str, dict]:
+    lines = answer.split("\n")
+    counts = {"supported": 0, "partial": 0, "unsupported": 0, "unknown": 0}
+    to_delete = []
+    for n, c in enumerate(claims):
+        verdict, reason = verdicts.get(n + 1, ("unknown", ""))
+        counts[verdict] = counts.get(verdict, 0) + 1
+        if verdict == "partial":
+            lines[c["line"]] = lines[c["line"]].rstrip() + f" ⚠️*(원문과 일부 불일치: {reason})*"
+        elif verdict == "unsupported":
+            to_delete.append((c["line"], [f"의미 검증 불일치 – {reason}"]))
+    text = "\n".join(lines)
+    if to_delete:
+        text = _redact_lines(text, to_delete)
+    return text, counts
+
 
 # ---------------------------------------------------------
 # ✨ 법리 왜곡 0% 스마트 법령 텍스트 압축기 (토큰 50% 추가 절감)
@@ -101,10 +443,11 @@ def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
 def _model_id(env_key: str, default: str) -> str:
     return _get_secret_or_env(env_key) or default
 
-FREE_TIER_FLASH_ID = _model_id("GEMINI_FREE_MODEL", "gemini-3.8-flash")           # 무료 등급 지원
-FREE_TIER_MID_ID   = _model_id("GEMINI_FREE_MID_MODEL", "gemini-3.6-flash")        # 3.8 과부하(503) 시 차선
-PAID_TIER_FLASH_ID = _model_id("GEMINI_PAID_FLASH_MODEL", "gemini-3.8-flash")
-# Pro급은 무료 등급 미지원 → 유료키 전용. 첫 번째가 실패하면 두 번째로 넘어갑니다.
+FLASH_MODEL_ID     = _model_id("GEMINI_FLASH_MODEL", "gemini-3.8-flash")         # 기본 답변 모델
+FLASH_BACKUP_ID    = _model_id("GEMINI_FLASH_BACKUP_MODEL", "gemini-3.6-flash")  # 3.8 과부하(503 등) 시 예비
+VERIFIER_MODEL_ID  = _model_id("GEMINI_VERIFIER_MODEL", "gemini-3.8-flash")      # 의미 검증 모델
+SEMANTIC_VERIFY_ON = _get_secret_or_env("SEMANTIC_VERIFY").lower() not in ("off", "false", "0")
+# Pro급 (첫 번째가 실패하면 두 번째로)
 PAID_PRO_MODEL_IDS = [
     _model_id("GEMINI_PAID_PRO_MODEL", "gemini-3.1-pro-preview"),
     "gemini-4-argon",
@@ -152,10 +495,19 @@ def search_law_for_gemini(keyword: str, target: str = "law") -> str:
     - target: 'law'(법령), 'prec'(판례), 'decc'(조세심판원 결정례), 'admrul'(훈령·예규·고시), 'expc'(법령해석례), 'ordin'(지자체 조례)
     - target='law'일 때 keyword에는 '법령명만' 넣을 것 (예: '소득세법', '소득세법 시행령', '조세특례제한법').
       '업무용승용차' 같은 주제어는 keyword가 아니라 get_law_details_for_gemini의 query_filter(조문번호)로 찾을 것.
+    - target='prec'/'decc'/'expc'는 핵심 주제어(예: '업무무관 가지급금')나 사건번호(예: '2005두9415')로 검색할 것.
+      제목에 없으면 본문 검색으로 자동 재시도됨.
     """
     print(f"\n[시스템] 💡 목록 검색 도구 가동: '{keyword}' (대상: {target})")
     results = law_api.search_law_data(keyword, target)
     used_keyword = keyword
+
+    # 판례·심판례·해석례·행정규칙은 제목 검색에 안 걸리면 본문 검색으로 자동 재시도
+    if not results and target in ("prec", "decc", "expc", "admrul"):
+        print(f"[시스템]    ↳ 제목 검색 결과 없음 → 본문 검색으로 재시도")
+        results = law_api.search_law_data(keyword, target, search_mode=2)
+        if results:
+            used_keyword = keyword + " (본문검색)"
 
     # 결과가 없으면 뒤쪽 단어를 하나씩 빼며 자동 재검색 (예: '소득세법 업무용승용차' → '소득세법')
     words = keyword.split()
@@ -164,9 +516,11 @@ def search_law_for_gemini(keyword: str, target: str = "law") -> str:
         used_keyword = " ".join(words)
         print(f"[시스템]    ↳ 결과 없음 → '{used_keyword}'로 자동 재검색")
         results = law_api.search_law_data(used_keyword, target)
+        if not results and target in ("prec", "decc", "expc", "admrul"):
+            results = law_api.search_law_data(used_keyword, target, search_mode=2)
 
     if not results:
-        return f"'{keyword}' (대상: {target}) 검색 결과가 없습니다. 법령명만 넣어 다시 검색하세요."
+        return _record("list", f"'{keyword}' (대상: {target}) 검색 결과가 없습니다. 법령은 법령명만, 판례는 핵심 주제어 1~2개로 다시 검색하세요.")
 
     if isinstance(results, dict):
         results = [results]
@@ -190,7 +544,7 @@ def search_law_for_gemini(keyword: str, target: str = "law") -> str:
             summary += f"{i+1}. [지자체 조례/자치법규] {item.get('자치법규명', item.get('법령명한글'))} | 지자체: {item.get('지자체기관명')} | 시행일: {item.get('시행일자')} | ID: {item.get('자치법규일련번호', item.get('법령일련번호'))}\n"
         else:
             summary += f"{i+1}. {item.get('법령명한글', item.get('행정규칙명', '제목 없음'))}\n"
-    return summary
+    return _record("list", summary)
 
 def get_law_details_for_gemini(doc_id: str, target: str = "law", query_filter: str = "") -> str:
     """
@@ -203,7 +557,9 @@ def get_law_details_for_gemini(doc_id: str, target: str = "law", query_filter: s
     # 🔧 진단용: 모델에게 실제로 전달되는 분량과 앞부분을 터미널에 표시
     preview = result[:150].replace("\n", " ")
     print(f"[시스템]    ↳ 원문 {len(raw_text or ''):,}자 → 전달 {len(result):,}자 | 앞부분: {preview}")
-    return result
+    if target == "law":
+        _record_law_articles(result)
+    return _record("detail", result)
 
 def search_exchange_rate_for_gemini(start_date: str, end_date: str, currency: str = "USD") -> str:
     """한국은행 ECOS에서 특정 기간의 공식 환율(매매기준율)을 조회합니다."""
@@ -268,6 +624,14 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
 - **[핵심 조문 조회 원칙]**: 세법 질문은 **법률과 시행령의 해당 조문을 모두** 원문으로 조회한 뒤 답변할 것. 도구 호출은 필요한 만큼(보통 4~8회) 하되, **이미 결과를 받은 검색을 같은 검색어로 반복하지 말 것.**
 - 법령 검색(search_law_for_gemini, target='law')의 keyword에는 **법령명만** 넣을 것 (예: '소득세법', '소득세법 시행령'). 주제어는 넣지 말 것.
 - 조회한 원문에서 직접 확인하지 못한 금액·비율·연도는 단정하지 말고 **"(원문 미확인)"**이라고 표시할 것.
+- **[근거 표시 의무]** 판례·심판례·해석례·예규·법령 조문을 근거로 쓰는 문장 끝에는 반드시 아래 형식의 근거 표시를 붙일 것. 시스템이 근거 표시를 도구 조회 기록과 자동 대조하며, **조회하지 않은 근거나 근거 표시 없는 판례·예규 서술은 자동 삭제됨.**
+  * 판례: [판례:2005두9415] / 조세심판: [심판례:조심2020서1234] / 법령해석례: [해석례:안건번호] / 예규·고시: [예규:문서명 또는 번호]
+  * 법령 조문: [조문:법인세법 시행령 제89조] (반드시 정식 법령명 포함. '동법', '같은 법' 사용 금지)
+- **판례·심판례·해석례 인용 규칙**: 판결요지·결정요지를 서술하는 사건은 반드시 get_law_details_for_gemini(target='prec' 등)로 **원문을 조회한 사건만** 쓸 것. 목록 검색에서만 본 사건은 사건번호·선고일만 적고 "(요지 미조회)"로 표시할 것. **도구로 조회하지 않은 사건번호를 기억으로 적지 말 것.**
+- **법령 조문 인용 규칙**: 답변에 법령명과 함께 적는 조문(예: 「법인세법」 제52조)은 반드시 get_law_details_for_gemini로 **그 조문을 조회한 것만** 쓸 것. 조회하지 않은 조문이 필요하면 먼저 조회할 것.
+- 판례 검색 순서: 주제어로 목록 검색 → 결과 중 관련성 높은 1~2건의 ID로 원문 조회 → 그 내용만 인용. **판례 목록 검색은 질문당 최대 3회, 판례 원문 조회는 최대 3건**까지만 할 것.
+- **근거 표시는 그 문장의 내용이 실제로 해당 원문에 있을 때만** 붙일 것. 한 판례에 없는 내용을 그 판례 근거 표시로 묶지 말 것.
+- **따옴표(“ ”) 인용은 조회한 원문을 글자 그대로 옮길 때만** 사용하고, 요약·의역할 때는 따옴표를 쓰지 말 것. (시스템이 인용문을 원문과 글자 단위로 대조함)
 - 법령·판례·심판례·예규·지방세조례 확인: 'search_law_for_gemini'로 ID를 찾은 뒤 'get_law_details_for_gemini'(반드시 query_filter에 조문번호 입력)로 핵심 조문만 읽을 것.
 - 기업 공시·재무·지분·배당·출자 확인: 'search_dart_corp_for_gemini' 호출.
 - 사업자 상태(휴·폐업/과세유형) 및 진위확인: 'check_nts_biz_status_for_gemini' 또는 'verify_nts_biz_info_for_gemini' 호출.
@@ -351,19 +715,87 @@ def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dy
             system_instruction=dynamic_prompt,
             safety_settings=safety_settings,
             automatic_function_calling=types.AutomaticFunctionCallingConfig(
-                maximum_remote_calls=10
+                maximum_remote_calls=12
             )
         )
     )
-    response = chat.send_message(user_input)
-    final_text = extract_safe_text(response)
+    trace_token = _TOOL_TRACE.set(_new_trace())
+    try:
+        response = chat.send_message(user_input)
+        final_text = extract_safe_text(response)
 
-    if not final_text:
-        follow_up = chat.send_message("지금까지 조회한 법령 조문과 계산 결과를 바탕으로 추가 도구 호출 없이 즉시 [A. 사전 3줄 크로스체크]와 [B. 최종 답변]을 작성해 주세요.")
-        final_text = extract_safe_text(follow_up)
+        if not final_text:
+            follow_up = chat.send_message("지금까지 조회한 법령 조문과 계산 결과를 바탕으로 추가 도구 호출 없이 즉시 [A. 사전 3줄 크로스체크]와 [B. 최종 답변]을 작성해 주세요.")
+            final_text = extract_safe_text(follow_up)
+        trace = _TOOL_TRACE.get()
+    finally:
+        _TOOL_TRACE.reset(trace_token)
 
     if not final_text:
         raise ValueError("빈 응답이 반환되었습니다.")
+
+    # ---------------------------------------------------------
+    # 🔒 근거 강제 검증 (도구 기록이 수집된 경우에만)
+    #   대상: 사건번호 / 법령명+조문 / 집행기준 번호 / [근거 표시] / 출처 없는 판례·예규 서술
+    #   1단계: 위반이 있으면 모델에게 "원문을 조회하거나 삭제하라"고 1회 재작성 요청
+    #   2단계: 그래도 남으면 해당 줄(과 하위 항목)을 코드에서 직접 삭제
+    # ---------------------------------------------------------
+    citation_note = ""
+    if trace and (trace["list"] or trace["detail"]):
+        violations = _scan_violations(final_text, trace)
+        if violations:
+            first_labels = _violation_labels(violations)
+            print(f"[시스템] 🔒 미검증 근거 {len(first_labels)}건 감지 → 재작성 요청: {first_labels[:8]}")
+            fix_msg = (
+                "방금 답변에서 도구 조회 기록으로 확인되지 않는 근거가 발견되었습니다:\n- "
+                + "\n- ".join(first_labels[:15])
+                + "\n\n각 항목에 대해 ① get_law_details_for_gemini로 원문(판결요지·조문)을 조회해 확인한 뒤 근거 표시"
+                  "([판례:사건번호], [조문:정식법령명 제N조], [예규:문서명] 등)를 붙여 인용하거나, "
+                  "② 조회할 수 없으면 그 근거와 관련 서술을 답변에서 완전히 삭제하세요. "
+                  "'대법원은 ~ 판시' 같은 서술에도 반드시 근거 표시가 있어야 합니다. "
+                  "조회하지 않은 근거는 다시 쓰지 말고, 양식([A]→[B])을 유지해 전체 답변을 다시 작성하세요."
+            )
+            trace_token2 = _TOOL_TRACE.set(trace)   # 재작성 중 조회한 원문도 같은 기록에 누적
+            try:
+                retry_resp = chat.send_message(fix_msg)
+                retry_text = extract_safe_text(retry_resp)
+            except Exception as e:
+                retry_text = ""
+                print(f"[시스템]    ↳ 재작성 요청 실패: {e}")
+            finally:
+                _TOOL_TRACE.reset(trace_token2)
+
+            if retry_text:
+                final_text = retry_text
+                response = retry_resp
+
+            remaining = _scan_violations(final_text, trace)
+            if remaining:
+                final_text = _redact_lines(final_text, remaining)
+                short = [r.split(":")[0] if r.startswith(("출처 표시 없는", "판례 인용문")) else r for r in _violation_labels(remaining)]
+                short = list(dict.fromkeys(short))
+                citation_note = ("\n> 🚫 재작성 후에도 검증되지 않은 근거가 남아 **코드에서 삭제**했습니다: "
+                                 + "; ".join(short[:10]))
+            else:
+                citation_note = ("\n> 🔒 미검증 근거가 감지되어 **재작성**(원문 조회 또는 삭제)했습니다. (최초 감지 "
+                                 + str(len(first_labels)) + "건)")
+        else:
+            citation_note = "\n> ✅ 답변의 판례·조문·예규 근거가 모두 이번 조회 기록과 일치합니다."
+
+        # 🧪 의미 검증: 근거 표시가 붙은 문장이 실제로 원문 내용과 맞는지 별도 모델로 판정
+        if SEMANTIC_VERIFY_ON:
+            claims, sources = _extract_claims(final_text, trace)
+            if claims:
+                print(f"[시스템] 🧪 의미 검증 가동: 주장 {len(claims)}건 / 원문 {len(sources)}건")
+                try:
+                    verdicts = _semantic_verify(api_key, claims, sources)
+                    final_text, cnt = _apply_semantic_results(final_text, claims, verdicts)
+                    citation_note += (f"\n> 🧪 의미 검증 {len(claims)}건: 일치 {cnt['supported']} · "
+                                      f"일부 불일치 {cnt['partial']}(⚠️ 표시) · 불일치 {cnt['unsupported']}(삭제)"
+                                      + (f" · 판정 누락 {cnt['unknown']}" if cnt.get("unknown") else ""))
+                except Exception as e:
+                    print(f"[시스템]    ↳ 의미 검증 실패: {e}")
+                    citation_note += "\n> 🧪 의미 검증을 수행하지 못했습니다(검증 모델 오류). 근거 표시 문장은 직접 확인하세요."
 
     # 🔧 진단용: 실제 호출된 도구 목록을 답변 하단에 표시
     #    (chat 모드에서는 response가 아니라 chat 기록에 도구 호출이 남으므로 둘 다 확인)
@@ -398,15 +830,16 @@ def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dy
         final_text += "\n\n---\n> 🛠 도구 호출 없음 (모델 자체 지식으로 답변)"
     if limit_hit:
         final_text += "\n> ⚠️ 도구 호출 한도에 도달해 조회가 중간에 끊겼습니다. 결론을 원문과 대조해 확인하세요."
+    final_text += citation_note
 
     return final_text
 
-# 4. 실행 순서: 무료 3.8-flash → 무료 3.6-flash → 유료 3.8-flash (PRO 모드는 유료 Pro 우선)
+# 4. 실행 순서(유료키 전용): 3.8-flash → 3.6-flash (PRO 모드는 Pro 모델 → Flash 백업)
 #    경량(lite) 모델은 세무 답변 정확도 문제로 사용하지 않음. 500/503/504는 2초 후 1회 재시도
 def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> str:
     live_pool = get_live_gemini_key_pool()
     if not live_pool:
-        return "❌ 설정된 Gemini API 키가 없습니다. .env 또는 Streamlit Secrets를 확인해 주세요."
+        return "❌ 설정된 Gemini 유료 API 키가 없습니다. .env 또는 Streamlit Secrets에 GEMINI_PAID_KEY를 넣어 주세요."
 
     query_for_routing = raw_query if raw_query else user_input
     tier_mode, mode_badge = select_optimal_model(
@@ -439,28 +872,16 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> s
         types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
     ]
 
-    free_keys = [(lbl, k) for lbl, k in live_pool if "무료" in lbl]
-    paid_keys = [(lbl, k) for lbl, k in live_pool if "무료" not in lbl]
-
     execution_plan = []
-
-    if tier_mode == "PRO":
-        # 무료 Pro가 없으므로: 유료 Pro → 무료 3.8/3.6 Flash → 유료 Flash
-        for lbl, k in paid_keys:
+    for lbl, k in live_pool:
+        if tier_mode == "PRO":
             for m in PAID_PRO_MODEL_IDS:
                 execution_plan.append((lbl, k, m, f"{mode_badge} *(🔑 {lbl} · {m})*"))
-        for m in (FREE_TIER_FLASH_ID, FREE_TIER_MID_ID):
-            for lbl, k in free_keys:
-                execution_plan.append((lbl, k, m, f"⚡ **[Flash 무료 방어 모드]** *(🔑 {lbl} · {m})*"))
-        for lbl, k in paid_keys:
-            execution_plan.append((lbl, k, PAID_TIER_FLASH_ID, f"⚡ **[최후 백업 모드]** *(🔑 {lbl} Flash 가동)*"))
-    else:
-        # 무료 3.8-flash → 무료 3.6-flash (각각 전 키) → 유료 3.8-flash
-        for m in (FREE_TIER_FLASH_ID, FREE_TIER_MID_ID):
-            for lbl, k in free_keys:
+            for m in (FLASH_MODEL_ID, FLASH_BACKUP_ID):
+                execution_plan.append((lbl, k, m, f"⚡ **[Pro 실패 → Flash 백업]** *(🔑 {lbl} · {m})*"))
+        else:
+            for m in (FLASH_MODEL_ID, FLASH_BACKUP_ID):
                 execution_plan.append((lbl, k, m, f"{mode_badge} *(🔑 {lbl} · {m})*"))
-        for lbl, k in paid_keys:
-            execution_plan.append((lbl, k, PAID_TIER_FLASH_ID, f"{mode_badge} *(🔑 {lbl} 가동)*"))
 
     last_error = None
     diag_notes = []
