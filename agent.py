@@ -88,10 +88,21 @@ def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
     return cleaned[:3500]
 
 
-# 1. 모델 설정: 무료 등급(Free Tier)에서 429/503 없이 하루 1,500회 뚫리는 2.5-flash를 무료키 기본 엔진으로 설정
-FREE_TIER_FLASH_ID = "gemini-2.5-flash"
-PAID_TIER_FLASH_ID = "gemini-3.8-flash"
-PRO_MODEL_ID = "gemini-2.5-pro"
+# 1. 모델 설정 (2026-09-18부터 2.5 계열은 신규 프로젝트에서 404 → 3.x로 전환)
+def _model_id(env_key: str, default: str) -> str:
+    return _get_secret_or_env(env_key) or default
+
+FREE_TIER_FLASH_ID = _model_id("GEMINI_FREE_MODEL", "gemini-3.8-flash")
+FREE_TIER_LITE_ID  = _model_id("GEMINI_FREE_LITE_MODEL", "gemini-3.5-flash-lite")
+PAID_TIER_FLASH_ID = _model_id("GEMINI_PAID_FLASH_MODEL", "gemini-3.8-flash")
+PAID_PRO_MODEL_IDS = [
+    _model_id("GEMINI_PAID_PRO_MODEL", "gemini-3.1-pro-preview"),
+    "gemini-4-argon",
+]
+
+def _is_model_not_found(e: Exception) -> bool:
+    s = str(e)
+    return ("404" in s or "NOT_FOUND" in s) and "model" in s.lower()
 
 FORCE_PRO_TRIGGERS = ["[프로]", "[정밀검토]", "[심층검토]", "프로모드"]
 
