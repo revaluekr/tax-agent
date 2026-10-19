@@ -2,6 +2,7 @@ import os
 import re
 import math
 from datetime import datetime
+from zoneinfo import ZoneInfo
 import streamlit as st
 from google import genai
 from google.genai import types
@@ -55,7 +56,7 @@ def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
 
     # 1) 불필요한 개정/신설 연혁 꼬리표 제거 (예: <개정 2020. 12. 29., 2022. 12. 31.>, [전문개정 ...])
     cleaned = re.sub(r"<(개정|신설|타법개정|일부개정|전문개정)[^>]*>", "", raw_text)
-    cleaned = re.sub(r"\[(전문개정\vert{}본조신설\vert{}제목개정\vert{}제\d+조에서 이동)[^\]]*\]", "", cleaned)
+    cleaned = re.sub(r"\[(전문개정|본조신설|제목개정|제\d+조에서 이동)[^\]]*\]", "", cleaned)
 
     # 2) 만약 특정 조문번호(예: '제29조의8', '제26조')로 필터링한 경우,
     #    해당 조문으로 시작하는 '진짜 본조문' 블록을 최우선 배치하고 단순 언급 조문은 뒤로 밀어냄
@@ -89,12 +90,14 @@ def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
 
 
 # 1. 모델 설정 (2026-09-18부터 2.5 계열은 신규 프로젝트에서 404 → 3.x로 전환)
+#    Secrets/.env에 같은 이름의 키를 넣으면 코드 수정 없이 모델명을 바꿀 수 있습니다.
 def _model_id(env_key: str, default: str) -> str:
     return _get_secret_or_env(env_key) or default
 
-FREE_TIER_FLASH_ID = _model_id("GEMINI_FREE_MODEL", "gemini-3.8-flash")
-FREE_TIER_LITE_ID  = _model_id("GEMINI_FREE_LITE_MODEL", "gemini-3.5-flash-lite")
+FREE_TIER_FLASH_ID = _model_id("GEMINI_FREE_MODEL", "gemini-3.8-flash")           # 무료 등급 지원
+FREE_TIER_LITE_ID  = _model_id("GEMINI_FREE_LITE_MODEL", "gemini-3.5-flash-lite") # 무료 예비(별도 쿼터)
 PAID_TIER_FLASH_ID = _model_id("GEMINI_PAID_FLASH_MODEL", "gemini-3.8-flash")
+# Pro급은 무료 등급 미지원 → 유료키 전용. 첫 번째가 실패하면 두 번째로 넘어갑니다.
 PAID_PRO_MODEL_IDS = [
     _model_id("GEMINI_PAID_PRO_MODEL", "gemini-3.1-pro-preview"),
     "gemini-4-argon",
@@ -145,10 +148,10 @@ def search_law_for_gemini(keyword: str, target: str = "law") -> str:
     results = law_api.search_law_data(keyword, target)
     if not results:
         return f"'{keyword}' (대상: {target}) 검색 결과가 없습니다."
-    
+
     if isinstance(results, dict):
         results = [results]
-        
+
     summary = f"총 {len(results)}건 검색됨 (상위 5건 요약):\n"
     for i, item in enumerate(results[:5]):
         if target == "law":
@@ -291,7 +294,7 @@ def extract_safe_text(response) -> str:
             return response.text
     except Exception:
         pass
-    
+
     extracted_parts = []
     try:
         for cand in getattr(response, "candidates", []) or []:
@@ -305,9 +308,10 @@ def extract_safe_text(response) -> str:
     return "\n".join(extracted_parts).strip()
 
 def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dynamic_prompt: str, tools_list: list, safety_settings: list) -> str:
-    """특정 API 키와 모델로 세션을 열어 대기 지연 없이 빠르게 답변을 받아옵니다."""
+    """특정 API 키와 모델로 세션을 열어 답변을 받아옵니다."""
     try:
-        temp_client = genai.Client(api_key=api_key, http_options={"timeout": 20000})
+        # 타임아웃 단위는 밀리초(60초). Pro 모델·다중 도구 호출 시 20초는 부족할 수 있음
+        temp_client = genai.Client(api_key=api_key, http_options={"timeout": 60000})
     except Exception:
         temp_client = genai.Client(api_key=api_key)
 
@@ -315,7 +319,7 @@ def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dy
         model=model_id,
         config=types.GenerateContentConfig(
             tools=tools_list,
-            temperature=0.2,
+            # temperature=0.2,  # 2026-07-21 deprecated → 제거
             system_instruction=dynamic_prompt,
             safety_settings=safety_settings,
             automatic_function_calling=types.AutomaticFunctionCallingConfig(
@@ -325,16 +329,16 @@ def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dy
     )
     response = chat.send_message(user_input)
     final_text = extract_safe_text(response)
-    
+
     if not final_text:
         follow_up = chat.send_message("지금까지 조회한 법령 조문과 계산 결과를 바탕으로 추가 도구 호출 없이 즉시 [A. 사전 3줄 크로스체크]와 [B. 최종 답변]을 작성해 주세요.")
         final_text = extract_safe_text(follow_up)
-        
+
     if not final_text:
         raise ValueError("빈 응답이 반환되었습니다.")
     return final_text
 
-# 4. 무료키는 하루 1,500회 무료 쿼터가 보장되는 2.5-flash로 직행시켜 지연 시간(0초) 및 429/503 원천 차단
+# 4. 실행 순서: 무료 3.8-flash → 무료 3.5-flash-lite → 유료 (PRO 모드는 유료 Pro 우선)
 def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> str:
     live_pool = get_live_gemini_key_pool()
     if not live_pool:
@@ -346,12 +350,13 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> s
         has_file=has_file,
         full_input_len=len(user_input)
     )
-    
-    today_str = datetime.now().strftime("%Y년 %m월 %d일")
+
+    # Streamlit Cloud 서버는 UTC이므로 한국 시간 기준으로 오늘 날짜 계산
+    today_str = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y년 %m월 %d일")
     dynamic_prompt = f"[시스템 기준일 안내: 오늘 날짜는 {today_str}입니다. 질문에 등장하는 연도와 날짜의 과거/현재 여부를 반드시 오늘 날짜({today_str}) 기준으로 판단하세요.]\n\n" + SYSTEM_PROMPT
-    
+
     tools_list = [
-        search_law_for_gemini, 
+        search_law_for_gemini,
         get_law_details_for_gemini,
         search_exchange_rate_for_gemini,
         search_base_rate_for_gemini,
@@ -362,7 +367,7 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> s
         search_real_estate_trade_for_gemini,
         run_tax_calculator_for_gemini
     ]
-    
+
     safety_settings = [
         types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
         types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
@@ -376,24 +381,29 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> s
     execution_plan = []
 
     if tier_mode == "PRO":
-        for lbl, k in free_keys:
-            execution_plan.append((lbl, k, PRO_MODEL_ID, f"{mode_badge} *(🔑 {lbl} Pro 가동)*"))
+        # 무료 Pro가 없으므로: 유료 Pro → 무료 Flash → 유료 Flash
+        for lbl, k in paid_keys:
+            for m in PAID_PRO_MODEL_IDS:
+                execution_plan.append((lbl, k, m, f"{mode_badge} *(🔑 {lbl} · {m})*"))
         for lbl, k in free_keys:
             execution_plan.append((lbl, k, FREE_TIER_FLASH_ID, f"⚡ **[Flash 무료 방어 모드]** *(🔑 {lbl} 가동)*"))
         for lbl, k in paid_keys:
-            execution_plan.append((lbl, k, "gemini-3.8-pro", f"{mode_badge} *(🔑 {lbl} 가동)*"))
-        for lbl, k in paid_keys:
             execution_plan.append((lbl, k, PAID_TIER_FLASH_ID, f"⚡ **[최후 백업 모드]** *(🔑 {lbl} Flash 가동)*"))
     else:
-        for lbl, k in free_keys:
-            execution_plan.append((lbl, k, FREE_TIER_FLASH_ID, f"{mode_badge} *(🔑 {lbl} 가동)*"))
+        # 무료 3.8-flash(전 키) → 무료 3.5-flash-lite(전 키) → 유료 3.8-flash
+        for m in (FREE_TIER_FLASH_ID, FREE_TIER_LITE_ID):
+            for lbl, k in free_keys:
+                execution_plan.append((lbl, k, m, f"{mode_badge} *(🔑 {lbl} · {m})*"))
         for lbl, k in paid_keys:
             execution_plan.append((lbl, k, PAID_TIER_FLASH_ID, f"{mode_badge} *(🔑 {lbl} 가동)*"))
 
     last_error = None
     diag_notes = []
+    dead_models = set()  # 404 난 모델은 다른 키로 재시도하지 않음
 
     for key_label, current_key, target_model, final_badge in execution_plan:
+        if target_model in dead_models:
+            continue
         try:
             final_text = _execute_with_key_and_model(
                 api_key=current_key,
@@ -404,15 +414,15 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> s
                 safety_settings=safety_settings
             )
             diag_header = f"> {final_badge}\n"
-            if "유료" in key_label and diag_notes:
-                short_diag = " | ".join(diag_notes[:2])
-                diag_header += f"> *(ℹ️ 무료키 건너뜀 사유: {short_diag})*\n"
+            if diag_notes:
+                diag_header += f"> *(ℹ️ 앞선 시도 실패: {' | '.join(diag_notes[:2])})*\n"
             return diag_header + "\n" + final_text
         except Exception as e:
+            if _is_model_not_found(e):
+                dead_models.add(target_model)
             err_short = str(e).splitlines()[0][:90]
             diag_notes.append(f"{key_label}({target_model}): {err_short}")
             last_error = e
             continue
 
-    error_msg = f"❌ 모든 API 키 호출이 실패했습니다. 마지막 오류: {str(last_error)}"
-    return error_msg
+    return f"❌ 모든 API 키 호출이 실패했습니다. 마지막 오류: {str(last_error)}"
