@@ -95,6 +95,7 @@ def _model_id(env_key: str, default: str) -> str:
     return _get_secret_or_env(env_key) or default
 
 FREE_TIER_FLASH_ID = _model_id("GEMINI_FREE_MODEL", "gemini-3.8-flash")           # 무료 등급 지원
+FREE_TIER_MID_ID   = _model_id("GEMINI_FREE_MID_MODEL", "gemini-3.6-flash")        # 3.8 과부하(503) 시 차선
 FREE_TIER_LITE_ID  = _model_id("GEMINI_FREE_LITE_MODEL", "gemini-3.5-flash-lite") # 무료 예비(별도 쿼터)
 PAID_TIER_FLASH_ID = _model_id("GEMINI_PAID_FLASH_MODEL", "gemini-3.8-flash")
 # Pro급은 무료 등급 미지원 → 유료키 전용. 첫 번째가 실패하면 두 번째로 넘어갑니다.
@@ -338,7 +339,7 @@ def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dy
         raise ValueError("빈 응답이 반환되었습니다.")
     return final_text
 
-# 4. 실행 순서: 무료 3.8-flash → 무료 3.5-flash-lite → 유료 (PRO 모드는 유료 Pro 우선)
+# 4. 실행 순서: 무료 3.8-flash → 무료 3.6-flash → 무료 3.5-flash-lite → 유료 (PRO 모드는 유료 Pro 우선)
 def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> str:
     live_pool = get_live_gemini_key_pool()
     if not live_pool:
@@ -390,8 +391,8 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> s
         for lbl, k in paid_keys:
             execution_plan.append((lbl, k, PAID_TIER_FLASH_ID, f"⚡ **[최후 백업 모드]** *(🔑 {lbl} Flash 가동)*"))
     else:
-        # 무료 3.8-flash(전 키) → 무료 3.5-flash-lite(전 키) → 유료 3.8-flash
-        for m in (FREE_TIER_FLASH_ID, FREE_TIER_LITE_ID):
+        # 무료 3.8-flash → 무료 3.6-flash → 무료 3.5-flash-lite (각각 전 키) → 유료 3.8-flash
+        for m in (FREE_TIER_FLASH_ID, FREE_TIER_MID_ID, FREE_TIER_LITE_ID):
             for lbl, k in free_keys:
                 execution_plan.append((lbl, k, m, f"{mode_badge} *(🔑 {lbl} · {m})*"))
         for lbl, k in paid_keys:
