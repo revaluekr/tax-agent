@@ -311,6 +311,9 @@ def _violation_labels(violations: list[tuple]) -> list[str]:
                 labels.append(p)
     return labels
 
+def _show_diag() -> bool:
+    return _get_secret_or_env("SHOW_DIAGNOSTICS").lower() in ("on", "true", "1")
+
 def _redact_lines(answer: str, violations: list[tuple]) -> str:
     """위반 줄과 그 하위 항목(더 깊게 들여쓴 줄)을 삭제하고 삭제 사실을 한 줄로 남깁니다."""
     bad = {i: probs for i, probs in violations}
@@ -324,6 +327,12 @@ def _redact_lines(answer: str, violations: list[tuple]) -> str:
         if i in bad:
             reasons = [r.split(":")[0] if r.startswith(("출처 표시 없는", "판례 인용문")) else r for r in bad[i]]
             reason_txt = "; ".join(dict.fromkeys(reasons))[:120]
+            if not _show_diag():
+                # 고객 화면: 삭제 표시 없이 해당 줄(과 하위 항목)만 조용히 제거, 사유는 로그로
+                print(f"[시스템] 🚫 미검증 근거 삭제: {reason_txt} | {line.strip()[:60]}")
+                if not line.strip().startswith("|"):
+                    skip_indent = indent
+                continue
             if line.strip().startswith("|"):
                 # 표의 한 행이면 칸 수를 유지한 채 내용만 비움 (표가 깨지지 않게)
                 n_cols = max(line.strip().strip("|").count("|") + 1, 1)
@@ -487,7 +496,11 @@ def _apply_semantic_results(answer: str, claims: list, verdicts: dict, sources: 
                 verdict, reason = "partial", "원문이 길어 일부만 대조됨 – 직접 확인 필요"
         counts[verdict] = counts.get(verdict, 0) + 1
         if verdict == "partial":
-            lines[c["line"]] = lines[c["line"]].rstrip() + f" ⚠️*(원문과 일부 불일치: {reason})*"
+            print(f"[시스템] ⚠️ 원문 확인 필요: {reason} | {c['text'][:60]}")
+            if _show_diag():
+                lines[c["line"]] = lines[c["line"]].rstrip() + f" ⚠️*(원문 확인 필요: {reason})*"
+            else:
+                lines[c["line"]] = lines[c["line"]].rstrip() + " ⚠️*(원문 확인 필요)*"
         elif verdict == "unsupported":
             to_delete.append((c["line"], [f"의미 검증 불일치 – {reason}"]))
     text = "\n".join(lines)
@@ -942,7 +955,7 @@ def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dy
                     verdicts = _semantic_verify(api_key, claims, sources)
                     final_text, cnt = _apply_semantic_results(final_text, claims, verdicts, sources)
                     citation_note += (f"\n> 🧪 의미 검증 {len(claims)}건: 일치 {cnt['supported']} · "
-                                      f"일부 불일치 {cnt['partial']}(⚠️ 표시) · 불일치 {cnt['unsupported']}(삭제)"
+                                      f"원문 확인 필요 {cnt['partial']}(⚠️ 표시) · 불일치 {cnt['unsupported']}(삭제)"
                                       + (f" · 판정 누락 {cnt['unknown']}" if cnt.get("unknown") else ""))
                 except Exception as e:
                     print(f"[시스템]    ↳ 의미 검증 실패: {e}")
@@ -985,7 +998,7 @@ def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dy
         diag += "\n> ⚠️ 도구 호출 한도에 도달해 조회가 중간에 끊겼습니다. 결론을 원문과 대조해 확인하세요."
     diag += citation_note
 
-    if _get_secret_or_env("SHOW_DIAGNOSTICS").lower() in ("on", "true", "1"):
+    if _show_diag():
         final_text += diag
     else:
         print("[시스템] 📋 진단 정보(화면 미표시):" + diag.replace("\n> ", "\n   ").replace("\n\n---", ""))
@@ -1061,7 +1074,7 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> s
                 )
                 diag_header = f"> {final_badge}\n"
                 if diag_notes:
-                    if _get_secret_or_env("SHOW_DIAGNOSTICS").lower() in ("on", "true", "1"):
+                    if _show_diag():
                         diag_header += f"> *(ℹ️ 앞선 시도 실패: {' | '.join(diag_notes)})*\n"
                     else:
                         print("[시스템] ℹ️ 앞선 시도 실패: " + " | ".join(diag_notes))
