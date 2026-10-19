@@ -51,7 +51,7 @@ import law_api
 _TOOL_TRACE = contextvars.ContextVar("tool_trace", default=None)
 
 def _new_trace() -> dict:
-    return {"list": [], "detail": [], "articles": set(), "article_texts": {}, "counts": {}}
+    return {"list": [], "detail": [], "articles": set(), "article_texts": {}, "counts": {}, "id_map": {}}
 
 # 질문 1건당 도구 사용 상한 (프롬프트 지시만으로는 지켜지지 않아 코드에서 강제)
 _SEARCH_LIMIT = {"law": 4, "prec": 3, "decc": 3, "expc": 2, "admrul": 2, "ordin": 2}
@@ -248,9 +248,9 @@ def _scan_violations(answer: str, trace: dict) -> list[tuple]:
             elif no in list_blob and "요지미조회" in compact:
                 verified_source = True
             elif no in list_blob:
-                problems.append(f"판례 {no} (목록만 조회, 판결요지 미조회)")
+                problems.append(f"판례·심판례 {no} (목록만 조회, 원문 미조회)")
             else:
-                problems.append(f"판례 {no} (조회 기록 없음)")
+                problems.append(f"판례·심판례 {no} (조회 기록 없음)")
 
         # ② 법령 조문 (근거 표시 안팎 모두)
         for ref in _find_article_refs(line, trace):
@@ -664,6 +664,13 @@ def search_law_for_gemini(keyword: str, target: str = "law") -> str:
             summary += f"{i+1}. [지자체 조례/자치법규] {item.get('자치법규명', item.get('법령명한글'))} | 지자체: {item.get('지자체기관명')} | 시행일: {item.get('시행일자')} | ID: {item.get('자치법규일련번호', item.get('법령일련번호'))}\n"
         else:
             summary += f"{i+1}. {item.get('법령명한글', item.get('행정규칙명', '제목 없음'))}\n"
+    trace = _TOOL_TRACE.get()
+    if trace is not None and target in ("prec", "decc"):
+        for item in results[:10]:
+            rid = item.get("판례일련번호") or item.get("특별행정심판재결례일련번호") or item.get("행정심판재결례일련번호")
+            rno = item.get("사건번호") or item.get("청구번호")
+            if rid and rno:
+                trace["id_map"][str(rid).strip()] = rno.strip()
     return _record("list", summary)
 
 def get_law_details_for_gemini(doc_id: str, target: str = "law", query_filter: str = "") -> str:
@@ -683,6 +690,14 @@ def get_law_details_for_gemini(doc_id: str, target: str = "law", query_filter: s
     print(f"[시스템]    ↳ 원문 {len(raw_text or ''):,}자 → 전달 {len(result):,}자 | 앞부분: {preview}")
     if target == "law":
         _record_law_articles(result)
+    trace = _TOOL_TRACE.get()
+    if trace is not None and target in ("prec", "decc"):
+        rno = trace["id_map"].get(str(doc_id).strip())
+        body_ok = result and not result.startswith("❌") and len(result) >= 300
+        if rno and body_ok and _norm(rno) not in _norm(result):
+            result = f"[사건(청구)번호: {rno}]\n" + result
+        if not body_ok:
+            print(f"[시스템]    ↳ ⚠️ 원문이 비었거나 오류: {result[:120]}")
     return _record("detail", result)
 
 def search_exchange_rate_for_gemini(start_date: str, end_date: str, currency: str = "USD") -> str:
