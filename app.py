@@ -1,5 +1,8 @@
+import os
 import io
 import re
+import json
+import hashlib
 import streamlit as st
 import pandas as pd
 from pypdf import PdfReader
@@ -16,25 +19,63 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------
-# 0. 멀티 대화방(10개 세션) 및 파일 캐시 메모리 초기화
+# 0. 작업공간(Workspace)별 서버 자동 저장소 설정
 # ---------------------------------------------------------
 ROOM_IDS = [f"검토방 {i}" for i in range(1, 11)]
+STORAGE_DIR = ".workspace_storage"
+os.makedirs(STORAGE_DIR, exist_ok=True)
 
-if "chat_rooms" not in st.session_state:
-    st.session_state.chat_rooms = {r_id: [] for r_id in ROOM_IDS}
+def get_storage_path(workspace_id: str) -> str:
+    """작업공간 ID(암호)를 해시 암호화하여 고유한 저장 파일 경로를 생성합니다."""
+    safe_hash = hashlib.sha256(workspace_id.strip().encode("utf-8")).hexdigest()[:16]
+    return os.path.join(STORAGE_DIR, f"ws_{safe_hash}.json")
 
-# 각 방의 사용자 지정 별명(메모) 저장용 (예: 검토방 1 -> 인도네시아 건)
-if "room_titles" not in st.session_state:
+def get_default_workspace_data() -> dict:
+    """깨끗한 초기 10개 방 데이터 구조를 생성합니다."""
     default_titles = {r_id: "빈 대화방" for r_id in ROOM_IDS}
     default_titles["검토방 1"] = "메인 검토"
-    st.session_state.room_titles = default_titles
+    return {
+        "chat_rooms": {r_id: [] for r_id in ROOM_IDS},
+        "room_titles": default_titles,
+        "room_files": {r_id: {"name": None, "text": ""} for r_id in ROOM_IDS}
+    }
 
-# 방 이동 시 첨부파일을 매번 다시 읽지 않도록 잡아주는 고속 캐시 메모리
-if "room_files" not in st.session_state:
-    st.session_state.room_files = {r_id: {"name": None, "text": ""} for r_id in ROOM_IDS}
+def load_workspace_from_disk(workspace_id: str) -> dict:
+    """서버 디스크에서 해당 작업공간의 10개 방 데이터를 불러옵니다."""
+    path = get_storage_path(workspace_id)
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            # 누락된 키 보정
+            default_data = get_default_workspace_data()
+            for key in ["chat_rooms", "room_titles", "room_files"]:
+                if key not in data:
+                    data[key] = default_data[key]
+                else:
+                    for r_id in ROOM_IDS:
+                        if r_id not in data[key]:
+                            data[key][r_id] = default_data[key][r_id]
+            return data
+        except Exception:
+            pass
+    return get_default_workspace_data()
 
-if "current_room" not in st.session_state:
-    st.session_state.current_room = ROOM_IDS[0]
+def save_workspace_to_disk(workspace_id: str):
+    """현재 세션의 10개 방 대화·제목·첨부파일 텍스트를 서버 디스크에 즉시 자동 저장합니다."""
+    if not workspace_id:
+        return
+    path = get_storage_path(workspace_id)
+    data = {
+        "chat_rooms": st.session_state.chat_rooms,
+        "room_titles": st.session_state.room_titles,
+        "room_files": st.session_state.room_files
+    }
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"⚠️ 자동 저장 오류: {e}")
 
 # ---------------------------------------------------------
 # 헬퍼 함수 1: 업로드된 파일(Excel, PDF, Word) 텍스트 추출 (대용량 50,000자 한도)
@@ -171,14 +212,45 @@ def create_printable_html(report_text: str) -> bytes:
     return html_str.encode("utf-8-sig")
 
 # ---------------------------------------------------------
-# 2. 왼쪽 사이드바 제어판 (10개 대화방 드롭다운 + 방 이름 메모 + 캐시 파일 업로더)
+# 2. 왼쪽 사이드바 제어판 (작업공간 암호 로그인 + 10개 방 자동 동기화)
 # ---------------------------------------------------------
 with st.sidebar:
     st.title("⚙️ 에이전트 제어판")
     
+    # 🔐 1) 작업공간 ID(암호) 입력창: 창을 껐다 켜거나 다른 PC에서 접속해도 동일한 코드 입력 시 즉시 복원!
+    st.subheader("🔐 내 작업공간 (자동 동기화)")
+    workspace_input = st.text_input(
+        "작업공간 코드(ID/암호) 입력",
+        value=st.session_state.get("active_workspace_id", ""),
+        type="password",
+        placeholder="나만의 코드 입력 후 Enter (예: kbj1234)",
+        help="창을 닫거나 다른 PC에서 접속해도 동일한 코드를 입력하면 1~10번 방의 대화와 첨부파일이 그대로 유지됩니다."
+    )
+    
+    # 입력한 코드가 없으면 기본 임시 공간('default_guest')으로 작동하되 안내 표시
+    effective_ws_id = workspace_input.strip() if workspace_input.strip() else "default_public"
+    
+    # 작업공간 ID가 처음 입력되었거나 변경된 경우 디스크에서 해당 작업공간 데이터 즉시 로드
+    if st.session_state.get("loaded_workspace_id") != effective_ws_id:
+        ws_data = load_workspace_from_disk(effective_ws_id)
+        st.session_state.chat_rooms = ws_data["chat_rooms"]
+        st.session_state.room_titles = ws_data["room_titles"]
+        st.session_state.room_files = ws_data["room_files"]
+        st.session_state.loaded_workspace_id = effective_ws_id
+        st.session_state.active_workspace_id = workspace_input.strip()
+        if "current_room" not in st.session_state:
+            st.session_state.current_room = ROOM_IDS[0]
+
+    if workspace_input.strip():
+        st.success("🟢 전용 작업공간 실시간 자동 저장 중")
+    else:
+        st.warning("🔓 공용 임시 모드입니다. 상단에 나만의 작업공간 코드를 입력하면 대화가 안전하게 분리·보존됩니다.")
+
+    st.divider()
+    
+    # 🗂️ 2) 멀티 대화방 선택 (1~10번)
     st.subheader("🗂️ 멀티 대화방 선택 (1~10번)")
     
-    # 드롭다운 목록에 [방 번호 - 방 제목 (대화 건수)] 형태로 직관적으로 표시
     def format_room_label(r_id: str) -> str:
         title = st.session_state.room_titles.get(r_id, "")
         q_cnt = len(st.session_state.chat_rooms[r_id]) // 2
@@ -193,66 +265,104 @@ with st.sidebar:
     )
     st.session_state.current_room = selected_room
     
-    # 현재 선택된 방의 이름(메모)을 직접 수정할 수 있는 입력칸
+    # 현재 선택된 방의 이름(메모) 수정칸 (변경 즉시 디스크 자동 저장)
     new_title = st.text_input(
         "✏️ 현재 대화방 주제(메모) 설정",
         value=st.session_state.room_titles[selected_room],
         placeholder="예: 인도네시아 자문, A사 세무조사 등",
-        key=f"title_input_{selected_room}"
+        key=f"title_input_{effective_ws_id}_{selected_room}"
     )
     if new_title != st.session_state.room_titles[selected_room]:
         st.session_state.room_titles[selected_room] = new_title
+        save_workspace_to_disk(effective_ws_id)
         st.rerun()
     
-    col_del1, col_del2 = st.columns(2)
-    with col_del1:
-        if st.button("🗑️ 현재 방 비우기", use_container_width=True):
-            st.session_state.chat_rooms[selected_room] = []
-            st.session_state.room_files[selected_room] = {"name": None, "text": ""}
+    # 🗑️ 3) 비우기 버튼 설계 (현재 방 단일 비우기 vs 안전 잠금장치가 있는 10개 방 전체 초기화)
+    if st.button(f"🗑️ [{selected_room}] 현재 방만 비우기", use_container_width=True):
+        st.session_state.chat_rooms[selected_room] = []
+        st.session_state.room_files[selected_room] = {"name": None, "text": ""}
+        st.session_state.room_titles[selected_room] = "빈 대화방"
+        # 파일 업로더 위젯 상태 초기화를 위해 카운터 증가
+        st.session_state[f"reset_cnt_{selected_room}"] = st.session_state.get(f"reset_cnt_{selected_room}", 0) + 1
+        save_workspace_to_disk(effective_ws_id)
+        st.rerun()
+
+    with st.expander("⚠️ 10개 방 전체 초기화 / 백업 관리"):
+        unlock_all_reset = st.checkbox("실수 방지: 10개 방 전체 삭제에 동의합니다", key="unlock_reset")
+        if st.button("🔄 내 작업공간(10개 방) 전체 초기화", disabled=not unlock_all_reset, use_container_width=True):
+            fresh_data = get_default_workspace_data()
+            st.session_state.chat_rooms = fresh_data["chat_rooms"]
+            st.session_state.room_titles = fresh_data["room_titles"]
+            st.session_state.room_files = fresh_data["room_files"]
+            for r_id in ROOM_IDS:
+                st.session_state[f"reset_cnt_{r_id}"] = st.session_state.get(f"reset_cnt_{r_id}", 0) + 1
+            save_workspace_to_disk(effective_ws_id)
             st.rerun()
-    with col_del2:
-        if st.button("🔄 10개 방 전체 초기화", use_container_width=True):
-            st.session_state.chat_rooms = {r_id: [] for r_id in ROOM_IDS}
-            st.session_state.room_files = {r_id: {"name": None, "text": ""} for r_id in ROOM_IDS}
-            st.rerun()
+            
+        st.caption("💾 서버 재부팅 대비 내 PC로 전체 대화 백업/복원:")
+        backup_json_bytes = json.dumps({
+            "chat_rooms": st.session_state.chat_rooms,
+            "room_titles": st.session_state.room_titles,
+            "room_files": st.session_state.room_files
+        }, ensure_ascii=False, indent=2).encode("utf-8")
+        
+        st.download_button(
+            label="📥 10개 방 통째로 내 PC에 백업 (.json)",
+            data=backup_json_bytes,
+            file_name=f"세무에이전트_전체백업.json",
+            mime="application/json",
+            use_container_width=True
+        )
+        
+        restored_file = st.file_uploader("📤 백업 파일(.json) 불러오기", type=["json"], key="restore_uploader")
+        if restored_file is not None:
+            if st.button("✅ 이 백업 파일로 10개 방 복원하기", use_container_width=True):
+                try:
+                    loaded_backup = json.loads(restored_file.read().decode("utf-8"))
+                    st.session_state.chat_rooms = loaded_backup["chat_rooms"]
+                    st.session_state.room_titles = loaded_backup["room_titles"]
+                    st.session_state.room_files = loaded_backup["room_files"]
+                    save_workspace_to_disk(effective_ws_id)
+                    st.success("복원 완료!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"복원 실패: {e}")
         
     st.divider()
     
-    # 📂 방별 독립 파일 업로드 (캐시 적용으로 방 전환 시 재로딩 지연 0초!)
+    # 📂 4) 방별 독립 파일 업로드 (자동 저장소와 연동되어 창을 껐다 켜도 첨부파일 텍스트 유지!)
     st.subheader(f"📂 [{selected_room}] 전용 자료 업로드")
+    reset_cnt = st.session_state.get(f"reset_cnt_{selected_room}", 0)
     uploaded_file = st.file_uploader(
-        "이 대화방에서만 사용할 엑셀, PDF, 워드 파일을 올려주세요.",
+        "엑셀, PDF, 워드 파일을 올리면 이 방에 자동 보존됩니다.",
         type=["xlsx", "xls", "csv", "pdf", "docx"],
-        key=f"uploader_{selected_room}"
+        key=f"uploader_{effective_ws_id}_{selected_room}_{reset_cnt}"
     )
     
     if uploaded_file is not None:
-        # 새로 올린 파일이거나 파일명이 바뀐 경우에만 텍스트 추출 수행 (캐싱)
         if st.session_state.room_files[selected_room]["name"] != uploaded_file.name:
-            with st.spinner("문서 내용을 읽고 메모리에 캐싱하는 중..."):
+            with st.spinner("문서 내용을 읽고 작업공간에 자동 저장하는 중..."):
                 extracted_text = extract_file_content(uploaded_file)
                 st.session_state.room_files[selected_room] = {
                     "name": uploaded_file.name,
                     "text": extracted_text
                 }
-        cached_name = st.session_state.room_files[selected_room]["name"]
-        cached_text = st.session_state.room_files[selected_room]["text"]
-        st.success(f"✅ '{cached_name}' 유지 중 ({len(cached_text):,}자)")
-        with st.expander("📄 추출된 파일 내용 미리보기"):
-            st.text(cached_text[:1000] + ("\n...(중략)..." if len(cached_text) > 1000 else ""))
-    else:
-        # 파일 업로더에서 X를 눌러 지운 경우 캐시도 비움
-        st.session_state.room_files[selected_room] = {"name": None, "text": ""}
-
-    st.divider()
-    st.subheader("🤖 스마트 라우팅 & 방어벽")
-    st.markdown("""
-    - **⚡ Flash 모드 (기본)**: 일반 질의 및 중소형 문서 (토큰 절약)
-    - **🧠 Pro 모드 (자동 전환)**:
-      1. 15,000자 이상 대용량 문서 첨부 시
-      2. 고난도 키워드 2개 이상 결합 시
-      3. 질문에 **`[프로]`** 또는 **`[정밀검토]`** 입력 시
-    """)
+                save_workspace_to_disk(effective_ws_id)
+                st.rerun()
+                
+    # 이미 디스크에 저장되어 있는 첨부파일 정보가 있으면 창을 껐다 켜도 그대로 유지!
+    saved_file_name = st.session_state.room_files[selected_room]["name"]
+    saved_file_text = st.session_state.room_files[selected_room]["text"]
+    
+    if saved_file_name:
+        st.success(f"📎 현재 유지 중인 파일: **{saved_file_name}** ({len(saved_file_text):,}자)")
+        if st.button("❌ 이 방의 첨부파일만 제거", key=f"remove_file_{selected_room}", use_container_width=True):
+            st.session_state.room_files[selected_room] = {"name": None, "text": ""}
+            st.session_state[f"reset_cnt_{selected_room}"] = reset_cnt + 1
+            save_workspace_to_disk(effective_ws_id)
+            st.rerun()
+        with st.expander("📄 저장된 파일 내용 미리보기"):
+            st.text(saved_file_text[:1000] + ("\n...(중략)..." if len(saved_file_text) > 1000 else ""))
 
 # ---------------------------------------------------------
 # 3. 메인 화면 및 현재 선택된 대화방 렌더링
@@ -262,7 +372,7 @@ current_room_title = st.session_state.room_titles[selected_room]
 current_file_info = st.session_state.room_files[selected_room]
 
 st.title(f"⚖️ 세무·법령·회계 자율 에이전트 — [{selected_room}: {current_room_title}]")
-st.markdown("10개의 독립된 검토방에서 거래처·주제별로 대화를 누적 관리할 수 있습니다. *(⚠️ 주의: 브라우저 창을 완전히 닫거나 앱을 재부팅하면 임시 대화 내역은 초기화되므로 중요한 보고서는 하단 버튼으로 꼭 다운로드해 두세요!)*")
+st.markdown("왼쪽 상단에 **나만의 작업공간 코드**를 입력해 두면, 브라우저를 닫거나 다른 PC에서 접속해도 **1~10번 방의 모든 대화와 첨부파일이 실시간 자동 복원**됩니다.")
 
 for idx, message in enumerate(current_messages):
     with st.chat_message(message["role"]):
@@ -275,7 +385,7 @@ for idx, message in enumerate(current_messages):
                     data=create_word_docx(message["content"]),
                     file_name=f"검토보고서_{selected_room}_{current_room_title}_{idx}.docx",
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    key=f"docx_{selected_room}_{idx}",
+                    key=f"docx_{effective_ws_id}_{selected_room}_{idx}",
                     use_container_width=True
                 )
             with col2:
@@ -284,7 +394,7 @@ for idx, message in enumerate(current_messages):
                     data=create_printable_html(message["content"]),
                     file_name=f"검토보고서_{selected_room}_{current_room_title}_{idx}.html",
                     mime="text/html",
-                    key=f"print_{selected_room}_{idx}",
+                    key=f"print_{effective_ws_id}_{selected_room}_{idx}",
                     use_container_width=True
                 )
             with col3:
@@ -293,22 +403,22 @@ for idx, message in enumerate(current_messages):
                     data=message["content"].encode("utf-8-sig"),
                     file_name=f"검토보고서_{selected_room}_{current_room_title}_{idx}.md",
                     mime="text/markdown",
-                    key=f"md_{selected_room}_{idx}",
+                    key=f"md_{effective_ws_id}_{selected_room}_{idx}",
                     use_container_width=True
                 )
 
-# 4. 사용자 질문 입력 및 이전 대화 맥락(Context) + 첨부 파일 결합 처리
+# 4. 사용자 질문 입력 및 실시간 자동 저장 처리
 if prompt := st.chat_input(f"[{selected_room}: {current_room_title}]에 검토할 이슈를 입력하세요"):
     has_attached_file = bool(current_file_info["name"] and current_file_info["text"])
     display_prompt = f"📎 **[첨부파일: {current_file_info['name']}]**\n\n{prompt}" if has_attached_file else prompt
     
-    # 첫 질문이고 방 제목이 기본값('빈 대화방')이면 첫 질문 앞 12글자로 방 제목을 자동 세팅해주는 센스 기능!
+    # 첫 질문이고 방 제목이 기본값이면 첫 질문 앞 12글자로 방 제목 자동 설정
     if st.session_state.room_titles[selected_room] in ["빈 대화방", "메인 검토"] and not current_messages:
         auto_title = prompt.strip().replace("\n", " ")[:12]
         st.session_state.room_titles[selected_room] = auto_title
         current_room_title = auto_title
 
-    # 현재 방의 직전 대화 맥락(최근 6개 메시지 = 3턴) 요약 추출
+    # 직전 대화 맥락(최근 6개 메시지 = 3턴) 추출
     history_context = ""
     if current_messages:
         recent_msgs = current_messages[-6:]
@@ -319,6 +429,8 @@ if prompt := st.chat_input(f"[{selected_room}: {current_room_title}]에 검토�
         history_context = "\n".join(history_lines) + "\n\n"
 
     current_messages.append({"role": "user", "content": display_prompt})
+    save_workspace_to_disk(effective_ws_id)  # 질문 입력 즉시 1차 자동 저장
+    
     with st.chat_message("user"):
         st.markdown(display_prompt)
 
@@ -352,7 +464,7 @@ if prompt := st.chat_input(f"[{selected_room}: {current_room_title}]에 검토�
                     data=create_word_docx(response),
                     file_name=f"검토보고서_{selected_room}_{current_room_title}_최신.docx",
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    key=f"docx_new_{selected_room}_{new_idx}",
+                    key=f"docx_new_{effective_ws_id}_{selected_room}_{new_idx}",
                     use_container_width=True
                 )
             with col2:
@@ -361,7 +473,7 @@ if prompt := st.chat_input(f"[{selected_room}: {current_room_title}]에 검토�
                     data=create_printable_html(response),
                     file_name=f"검토보고서_{selected_room}_{current_room_title}_최신.html",
                     mime="text/html",
-                    key=f"print_new_{selected_room}_{new_idx}",
+                    key=f"print_new_{effective_ws_id}_{selected_room}_{new_idx}",
                     use_container_width=True
                 )
             with col3:
@@ -370,8 +482,9 @@ if prompt := st.chat_input(f"[{selected_room}: {current_room_title}]에 검토�
                     data=response.encode("utf-8-sig"),
                     file_name=f"검토보고서_{selected_room}_{current_room_title}_최신.md",
                     mime="text/markdown",
-                    key=f"md_new_{selected_room}_{new_idx}",
+                    key=f"md_new_{effective_ws_id}_{selected_room}_{new_idx}",
                     use_container_width=True
                 )
             
     current_messages.append({"role": "assistant", "content": response})
+    save_workspace_to_disk(effective_ws_id)  # 답변 완료 즉시 2차 자동 저장!
