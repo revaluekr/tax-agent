@@ -1,6 +1,7 @@
 import os
 import re
 import math
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import streamlit as st
@@ -85,8 +86,12 @@ def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
     cleaned = re.sub(r"[ \t]+", " ", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
 
-    # 4) 단일 조문 전체가 잘리지 않도록 3,500자(순수 조문 기준 매우 넉넉한 분량)까지 허용
-    return cleaned[:3500]
+    # 4) 3,500자까지 허용하되, 잘린 경우 모델이 알 수 있도록 안내문을 덧붙여 재조회 유도
+    if len(cleaned) > 3500:
+        return (cleaned[:3500]
+                + f"\n\n[※ 원문 {len(cleaned):,}자 중 3,500자까지만 표시됨. 필요한 항이 없으면 "
+                  "query_filter에 '제78조의3 제8항'처럼 항 번호까지 넣어 다시 조회할 것]")
+    return cleaned
 
 
 # 1. 모델 설정 (2026-09-18부터 2.5 계열은 신규 프로젝트에서 404 → 3.x로 전환)
@@ -96,7 +101,6 @@ def _model_id(env_key: str, default: str) -> str:
 
 FREE_TIER_FLASH_ID = _model_id("GEMINI_FREE_MODEL", "gemini-3.8-flash")           # 무료 등급 지원
 FREE_TIER_MID_ID   = _model_id("GEMINI_FREE_MID_MODEL", "gemini-3.6-flash")        # 3.8 과부하(503) 시 차선
-FREE_TIER_LITE_ID  = _model_id("GEMINI_FREE_LITE_MODEL", "gemini-3.5-flash-lite") # 무료 예비(별도 쿼터)
 PAID_TIER_FLASH_ID = _model_id("GEMINI_PAID_FLASH_MODEL", "gemini-3.8-flash")
 # Pro급은 무료 등급 미지원 → 유료키 전용. 첫 번째가 실패하면 두 번째로 넘어갑니다.
 PAID_PRO_MODEL_IDS = [
@@ -337,9 +341,24 @@ def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dy
 
     if not final_text:
         raise ValueError("빈 응답이 반환되었습니다.")
+
+    # 🔧 진단용: 실제 호출된 도구 목록을 답변 하단에 표시
+    calls = []
+    for c in (getattr(response, "automatic_function_calling_history", None) or []):
+        for p in (getattr(c, "parts", None) or []):
+            fc = getattr(p, "function_call", None)
+            if fc:
+                args = ", ".join(f"{k}={v}" for k, v in (fc.args or {}).items())
+                calls.append(f"{fc.name}({args})")
+    if calls:
+        final_text += "\n\n---\n> 🛠 도구 호출 " + str(len(calls)) + "회: " + " → ".join(calls)
+    else:
+        final_text += "\n\n---\n> 🛠 도구 호출 없음 (모델 자체 지식으로 답변)"
+
     return final_text
 
-# 4. 실행 순서: 무료 3.8-flash → 무료 3.6-flash → 무료 3.5-flash-lite → 유료 (PRO 모드는 유료 Pro 우선)
+# 4. 실행 순서: 무료 3.8-flash → 무료 3.6-flash → 유료 3.8-flash (PRO 모드는 유료 Pro 우선)
+#    경량(lite) 모델은 세무 답변 정확도 문제로 사용하지 않음. 500/503은 2초 후 1회 재시도
 def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> str:
     live_pool = get_live_gemini_key_pool()
     if not live_pool:
@@ -382,17 +401,18 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> s
     execution_plan = []
 
     if tier_mode == "PRO":
-        # 무료 Pro가 없으므로: 유료 Pro → 무료 Flash → 유료 Flash
+        # 무료 Pro가 없으므로: 유료 Pro → 무료 3.8/3.6 Flash → 유료 Flash
         for lbl, k in paid_keys:
             for m in PAID_PRO_MODEL_IDS:
                 execution_plan.append((lbl, k, m, f"{mode_badge} *(🔑 {lbl} · {m})*"))
-        for lbl, k in free_keys:
-            execution_plan.append((lbl, k, FREE_TIER_FLASH_ID, f"⚡ **[Flash 무료 방어 모드]** *(🔑 {lbl} 가동)*"))
+        for m in (FREE_TIER_FLASH_ID, FREE_TIER_MID_ID):
+            for lbl, k in free_keys:
+                execution_plan.append((lbl, k, m, f"⚡ **[Flash 무료 방어 모드]** *(🔑 {lbl} · {m})*"))
         for lbl, k in paid_keys:
             execution_plan.append((lbl, k, PAID_TIER_FLASH_ID, f"⚡ **[최후 백업 모드]** *(🔑 {lbl} Flash 가동)*"))
     else:
-        # 무료 3.8-flash → 무료 3.6-flash → 무료 3.5-flash-lite (각각 전 키) → 유료 3.8-flash
-        for m in (FREE_TIER_FLASH_ID, FREE_TIER_MID_ID, FREE_TIER_LITE_ID):
+        # 무료 3.8-flash → 무료 3.6-flash (각각 전 키) → 유료 3.8-flash
+        for m in (FREE_TIER_FLASH_ID, FREE_TIER_MID_ID):
             for lbl, k in free_keys:
                 execution_plan.append((lbl, k, m, f"{mode_badge} *(🔑 {lbl} · {m})*"))
         for lbl, k in paid_keys:
@@ -405,26 +425,31 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> s
     for key_label, current_key, target_model, final_badge in execution_plan:
         if target_model in dead_models:
             continue
-        try:
-            final_text = _execute_with_key_and_model(
-                api_key=current_key,
-                model_id=target_model,
-                user_input=user_input,
-                dynamic_prompt=dynamic_prompt,
-                tools_list=tools_list,
-                safety_settings=safety_settings
-            )
-            diag_header = f"> {final_badge}\n"
-            if diag_notes:
-                diag_header += f"> *(ℹ️ 앞선 시도 실패: {' | '.join(diag_notes)})*\n"
-            return diag_header + "\n" + final_text
-        except Exception as e:
-            if _is_model_not_found(e):
-                dead_models.add(target_model)
-            m_code = re.search(r"\b(4\d\d|5\d\d)\b", str(e))
-            err_short = m_code.group(1) if m_code else str(e).splitlines()[0][:40]
-            diag_notes.append(f"{key_label}({target_model}): {err_short}")
-            last_error = e
-            continue
+        for attempt in range(2):  # 500/503(일시 과부하)은 2초 후 1회 재시도
+            try:
+                final_text = _execute_with_key_and_model(
+                    api_key=current_key,
+                    model_id=target_model,
+                    user_input=user_input,
+                    dynamic_prompt=dynamic_prompt,
+                    tools_list=tools_list,
+                    safety_settings=safety_settings
+                )
+                diag_header = f"> {final_badge}\n"
+                if diag_notes:
+                    diag_header += f"> *(ℹ️ 앞선 시도 실패: {' | '.join(diag_notes)})*\n"
+                return diag_header + "\n" + final_text
+            except Exception as e:
+                if _is_model_not_found(e):
+                    dead_models.add(target_model)
+                m_code = re.search(r"\b(4\d\d|5\d\d)\b", str(e))
+                err_short = m_code.group(1) if m_code else str(e).splitlines()[0][:40]
+                retry_tag = "(재시도)" if attempt == 1 else ""
+                diag_notes.append(f"{key_label}({target_model}){retry_tag}: {err_short}")
+                last_error = e
+                if attempt == 0 and err_short in ("500", "503"):
+                    time.sleep(2)
+                    continue
+                break
 
     return f"❌ 모든 API 키 호출이 실패했습니다. 마지막 오류: {str(last_error)}"
