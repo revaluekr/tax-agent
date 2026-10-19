@@ -86,10 +86,12 @@ def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
     cleaned = re.sub(r"[ \t]+", " ", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
 
-    # 4) 3,500자까지 허용하되, 잘린 경우 모델이 알 수 있도록 안내문을 덧붙여 재조회 유도
-    if len(cleaned) > 3500:
-        return (cleaned[:3500]
-                + f"\n\n[※ 원문 {len(cleaned):,}자 중 3,500자까지만 표시됨. 필요한 항이 없으면 "
+    # 4) 조문번호로 특정 조문 1개를 조회한 경우 8,000자, 그 외(키워드 조회 등)는 3,500자까지 허용
+    #    (시행령 제78조의3처럼 항이 많은 조문이 중간에 잘리지 않도록)
+    limit = 8000 if (qf.startswith("제") and "조" in qf) else 3500
+    if len(cleaned) > limit:
+        return (cleaned[:limit]
+                + f"\n\n[※ 원문 {len(cleaned):,}자 중 {limit:,}자까지만 표시됨. 필요한 항이 없으면 "
                   "query_filter에 '제78조의3 제8항'처럼 항 번호까지 넣어 다시 조회할 것]")
     return cleaned
 
@@ -400,7 +402,7 @@ def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dy
     return final_text
 
 # 4. 실행 순서: 무료 3.8-flash → 무료 3.6-flash → 유료 3.8-flash (PRO 모드는 유료 Pro 우선)
-#    경량(lite) 모델은 세무 답변 정확도 문제로 사용하지 않음. 500/503은 2초 후 1회 재시도
+#    경량(lite) 모델은 세무 답변 정확도 문제로 사용하지 않음. 500/503/504는 2초 후 1회 재시도
 def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> str:
     live_pool = get_live_gemini_key_pool()
     if not live_pool:
@@ -467,7 +469,7 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> s
     for key_label, current_key, target_model, final_badge in execution_plan:
         if target_model in dead_models:
             continue
-        for attempt in range(2):  # 500/503(일시 과부하)은 2초 후 1회 재시도
+        for attempt in range(2):  # 500/503/504(일시 과부하·응답 지연)는 2초 후 1회 재시도
             try:
                 final_text = _execute_with_key_and_model(
                     api_key=current_key,
@@ -489,7 +491,7 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> s
                 retry_tag = "(재시도)" if attempt == 1 else ""
                 diag_notes.append(f"{key_label}({target_model}){retry_tag}: {err_short}")
                 last_error = e
-                if attempt == 0 and err_short in ("500", "503"):
+                if attempt == 0 and err_short in ("500", "503", "504"):
                     time.sleep(2)
                     continue
                 break
