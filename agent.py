@@ -41,10 +41,10 @@ def get_live_gemini_key_pool() -> list[tuple[str, str]]:
 
 import law_api
 
-# 1. 기본/심층 모델 설정 및 무료 서버 혼잡(503) 우회용 고속 모델
-FLASH_MODEL_ID = "gemini-3.8-flash"
-BACKUP_FREE_FLASH_ID = "gemini-2.5-flash"
-PRO_MODEL_ID = "gemini-3.8-pro"
+# 1. 모델 설정: 무료 등급(Free Tier)에서 429/503 없이 하루 1,500회 뚫리는 2.5-flash를 무료키 기본 엔진으로 설정
+FREE_TIER_FLASH_ID = "gemini-2.5-flash"
+PAID_TIER_FLASH_ID = "gemini-3.8-flash"
+PRO_MODEL_ID = "gemini-2.5-pro"
 
 FORCE_PRO_TRIGGERS = ["[프로]", "[정밀검토]", "[심층검토]", "프로모드"]
 
@@ -62,22 +62,22 @@ def select_optimal_model(user_query: str, has_file: bool = False, full_input_len
     """평소 95% 이상은 Flash를 쓰고, 초대형 문서나 복합 고난도 쟁점일 때만 제한적으로 Pro를 선택합니다."""
     for trigger in FORCE_PRO_TRIGGERS:
         if trigger in user_query:
-            return PRO_MODEL_ID, f"🧠 **[Pro 심층 모드]** 사용자 지정 정밀 검토 ({trigger})"
+            return "PRO", f"🧠 **[Pro 심층 모드]** 사용자 지정 정밀 검토 ({trigger})"
 
     if has_file and full_input_len >= 15000:
-        return PRO_MODEL_ID, f"🧠 **[Pro 심층 모드 자동 전환]** 대용량 문서({full_input_len:,}자) 정밀 분석"
+        return "PRO", f"🧠 **[Pro 심층 모드 자동 전환]** 대용량 문서({full_input_len:,}자) 정밀 분석"
 
     matched_deep = [kw for kw in DEEP_KEYWORDS if kw in user_query]
     if len(matched_deep) >= 2:
-        return PRO_MODEL_ID, f"🧠 **[Pro 심층 모드 자동 전환]** 복합 고난도 쟁점 감지 ({', '.join(matched_deep[:3])})"
+        return "PRO", f"🧠 **[Pro 심층 모드 자동 전환]** 복합 고난도 쟁점 감지 ({', '.join(matched_deep[:3])})"
 
     matched_calc = [kw for kw in CALC_KEYWORDS if kw in user_query]
     if len(user_query.strip()) >= 500 and len(matched_calc) >= 1:
-        return PRO_MODEL_ID, "🧠 **[Pro 심층 모드 자동 전환]** 초장문 복합 시뮬레이션 감지"
+        return "PRO", "🧠 **[Pro 심층 모드 자동 전환]** 초장문 복합 시뮬레이션 감지"
 
-    return FLASH_MODEL_ID, "⚡ **[Flash 빠른 검토 모드]** 실무 표준 검토 (토큰 절약 모드)"
+    return "FLASH", "⚡ **[Flash 빠른 검토 모드]** 실무 표준 검토 (토큰 절약 모드)"
 
-# 2. Gemini 도구 정의
+# 2. Gemini 도구 정의 (무료키 429 방지를 위해 반환 텍스트를 핵심 4,500자로 자동 다이어트)
 def search_law_for_gemini(keyword: str, target: str = "law") -> str:
     """
     국가법령정보센터에서 법령, 판례, 행정규칙, 법령해석례, 조세심판원 재결례, 지방세 자치법규(조례) 목록과 일련번호(ID)를 검색합니다.
@@ -110,9 +110,13 @@ def search_law_for_gemini(keyword: str, target: str = "law") -> str:
     return summary
 
 def get_law_details_for_gemini(doc_id: str, target: str = "law", query_filter: str = "") -> str:
-    """검색된 일련번호(ID)를 입력받아 법령 조문, 판례 요지, 조세심판원 결정례('decc'), 행정규칙('admrul'), 법령해석례('expc'), 지자체 조례('ordin') 본문 원문을 상세 조회합니다."""
+    """
+    검색된 일련번호(ID)로 원문을 조회합니다. 법령('law') 조회 시 반드시 query_filter에 조문번호(예: '제29조의8', '제26조')나 핵심 단어를 넣어 호출하세요.
+    """
     print(f"\n[시스템] 📖 원문 정밀 조회 가동: ID '{doc_id}' (대상: {target}, 필터: '{query_filter}')")
-    return law_api.get_law_content(doc_id, target, query_filter)
+    raw_text = law_api.get_law_content(doc_id, target, query_filter)
+    # 무료키 분당 토큰 한도(TPM) 보호를 위해 핵심 4,500자로 압축 반환
+    return raw_text[:4500]
 
 def search_exchange_rate_for_gemini(start_date: str, end_date: str, currency: str = "USD") -> str:
     """한국은행 ECOS에서 특정 기간의 공식 환율(매매기준율)을 조회합니다."""
@@ -132,7 +136,7 @@ def search_industry_code_for_gemini(keyword: str) -> str:
 def search_dart_corp_for_gemini(corp_name: str, bsns_year: str = "2025") -> str:
     """금융감독원 전자공시시스템(Open DART)에서 특정 기업의 6대 핵심 정보를 통합 조회합니다."""
     print(f"\n[시스템] 📊 DART 전자공시 통합 조회 가동: '{corp_name}' ({bsns_year}년)")
-    return law_api.get_dart_corp_info(corp_name, bsns_year)
+    return law_api.get_dart_corp_info(corp_name, bsns_year)[:5000]
 
 def check_nts_biz_status_for_gemini(biz_numbers: str) -> str:
     """국세청 API를 통해 사업자등록번호(10자리)의 납세자 상태(계속/휴폐업) 및 과세유형을 실시간 조회합니다."""
@@ -173,9 +177,9 @@ def run_tax_calculator_for_gemini(formula_expression: str, description: str = ""
 SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문 에이전트입니다.
 앞으로의 질문에 답변할 때는 반드시 먼저 제공된 도구(API)들을 사용하여 실제 원문 데이터와 통계를 확인한 뒤, 아래의 **[자료 검토 기준]**을 엄격히 준수하고, 반드시 **[A. 사전 3줄 크로스체크]**를 먼저 출력한 뒤 **[B. 최종 답변]**을 작성해줘.
 
-[필수 도구 호출 원칙 및 속도 최적화 규칙]
-- ⚡ **[초고속 핵심 핀셋 조회 원칙]**: 도구 호출은 질문당 **최대 3~5회 이내**로 가장 핵심적인 법령·데이터만 핀셋 호출하고 즉시 최종 답변을 작성할 것! (동일하거나 유사한 키워드로 반복 검색 절대 금지)
-- 법령·판례·심판례·예규·지방세조례 확인: 'search_law_for_gemini'(target: 'law', 'prec', 'decc', 'admrul', 'expc', 'ordin')로 ID를 찾은 뒤 'get_law_details_for_gemini'로 핵심 조문만 읽을 것.
+[필수 도구 호출 원칙 및 초고속 핀셋 규칙]
+- ⚡ **[초고속 핵심 핀셋 조회 원칙]**: 도구 호출은 질문당 **최대 2~4회 이내**로 가장 핵심적인 법령 조문(query_filter 필수 입력)과 계산기만 핀셋 호출하고 즉시 최종 답변을 작성할 것! (불필요한 부수 법령까지 전부 중복 검색하지 말 것)
+- 법령·판례·심판례·예규·지방세조례 확인: 'search_law_for_gemini'로 ID를 찾은 뒤 'get_law_details_for_gemini'(반드시 query_filter에 조문번호 예: '제29조의8' 입력)로 핵심 조문만 읽을 것.
 - 기업 공시·재무·지분·배당·출자 확인: 'search_dart_corp_for_gemini' 호출.
 - 사업자 상태(휴·폐업/과세유형) 및 진위확인: 'check_nts_biz_status_for_gemini' 또는 'verify_nts_biz_info_for_gemini' 호출.
 - 부동산(아파트·오피스텔·상가·토지) 실거래가 확인: 'search_real_estate_trade_for_gemini' 호출.
@@ -245,7 +249,7 @@ def extract_safe_text(response) -> str:
 def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dynamic_prompt: str, tools_list: list, safety_settings: list) -> str:
     """특정 API 키와 모델로 세션을 열어 대기 지연 없이 빠르게 답변을 받아옵니다."""
     try:
-        temp_client = genai.Client(api_key=api_key, http_options={"timeout": 25000})
+        temp_client = genai.Client(api_key=api_key, http_options={"timeout": 20000})
     except Exception:
         temp_client = genai.Client(api_key=api_key)
 
@@ -257,7 +261,7 @@ def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dy
             system_instruction=dynamic_prompt,
             safety_settings=safety_settings,
             automatic_function_calling=types.AutomaticFunctionCallingConfig(
-                maximum_remote_calls=6
+                maximum_remote_calls=5
             )
         )
     )
@@ -272,14 +276,14 @@ def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dy
         raise ValueError("빈 응답이 반환되었습니다.")
     return final_text
 
-# 4. 503 서버 혼잡 시 무료키 내 백업 차선(2.5-flash)을 먼저 타는 방어벽
+# 4. 무료키는 하루 1,500회 무료 쿼터가 보장되는 2.5-flash로 직행시켜 지연 시간(0초) 및 429/503 원천 차단
 def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> str:
     live_pool = get_live_gemini_key_pool()
     if not live_pool:
         return "❌ 설정된 Gemini API 키가 없습니다. .env 또는 Streamlit Secrets를 확인해 주세요."
 
     query_for_routing = raw_query if raw_query else user_input
-    selected_model, mode_badge = select_optimal_model(
+    tier_mode, mode_badge = select_optimal_model(
         user_query=query_for_routing,
         has_file=has_file,
         full_input_len=len(user_input)
@@ -313,27 +317,22 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> s
 
     execution_plan = []
 
-    if selected_model == PRO_MODEL_ID:
+    if tier_mode == "PRO":
         for lbl, k in free_keys:
             execution_plan.append((lbl, k, PRO_MODEL_ID, f"{mode_badge} *(🔑 {lbl} Pro 가동)*"))
         for lbl, k in free_keys:
-            execution_plan.append((lbl, k, FLASH_MODEL_ID, f"⚡ **[Flash 무료 방어 모드]** *(🔑 {lbl} 가동)*"))
-        for lbl, k in free_keys:
-            execution_plan.append((lbl, k, BACKUP_FREE_FLASH_ID, f"⚡ **[Flash 무료 우회 모드]** *(🔑 {lbl} | 2.5-Flash 가동)*"))
+            execution_plan.append((lbl, k, FREE_TIER_FLASH_ID, f"⚡ **[Flash 무료 방어 모드]** *(🔑 {lbl} 가동)*"))
         for lbl, k in paid_keys:
-            execution_plan.append((lbl, k, PRO_MODEL_ID, f"{mode_badge} *(🔑 {lbl} 가동)*"))
+            execution_plan.append((lbl, k, "gemini-3.8-pro", f"{mode_badge} *(🔑 {lbl} 가동)*"))
         for lbl, k in paid_keys:
-            execution_plan.append((lbl, k, FLASH_MODEL_ID, f"⚡ **[최후 백업 모드]** *(🔑 {lbl} Flash 가동)*"))
+            execution_plan.append((lbl, k, PAID_TIER_FLASH_ID, f"⚡ **[최후 백업 모드]** *(🔑 {lbl} Flash 가동)*"))
     else:
-        # 1차: 무료키 #1, #2로 3.8-flash 시도
+        # 무료키는 429/503이 걸리는 3.8-flash를 건너뛰고 곧바로 쾌속 무료 모델(2.5-flash)로 직행!
         for lbl, k in free_keys:
-            execution_plan.append((lbl, k, FLASH_MODEL_ID, f"{mode_badge} *(🔑 {lbl} 가동)*"))
-        # 2차: 3.8 서버가 503 혼잡일 때 유료키로 가기 전 무료키 #1, #2의 2.5-flash로 즉시 우회
-        for lbl, k in free_keys:
-            execution_plan.append((lbl, k, BACKUP_FREE_FLASH_ID, f"{mode_badge} *(🔑 {lbl} | 2.5-Flash 고속우회 가동)*"))
-        # 3차: 최후 유료 예비키
+            execution_plan.append((lbl, k, FREE_TIER_FLASH_ID, f"{mode_badge} *(🔑 {lbl} 가동)*"))
+        # 모든 무료키가 소진되었을 때만 최후 방어벽 유료키 가동
         for lbl, k in paid_keys:
-            execution_plan.append((lbl, k, FLASH_MODEL_ID, f"{mode_badge} *(🔑 {lbl} 가동)*"))
+            execution_plan.append((lbl, k, PAID_TIER_FLASH_ID, f"{mode_badge} *(🔑 {lbl} 가동)*"))
 
     last_error = None
     diag_notes = []
