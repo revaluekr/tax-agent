@@ -12,13 +12,13 @@ load_dotenv()
 def _get_secret_or_env(key_name: str) -> str:
     """Streamlit Cloud의 st.secrets와 로컬 .env 양쪽에서 실시간으로 키를 읽어옵니다."""
     try:
-        if key_name in st.secrets:
-            val = str(st.secrets[key_name]).strip()
+        if hasattr(st, "secrets") and key_name in st.secrets:
+            val = str(st.secrets[key_name]).strip().strip('"').strip("'")
             if val:
                 return val
     except Exception:
         pass
-    return os.getenv(key_name, "").strip()
+    return os.getenv(key_name, "").strip().strip('"').strip("'")
 
 def get_live_gemini_key_pool() -> list[tuple[str, str]]:
     """질문 시점마다 무료키 1~5번을 최우선으로 배열하고 유료 예비키를 맨 마지막에 배치합니다."""
@@ -40,12 +40,14 @@ def get_live_gemini_key_pool() -> list[tuple[str, str]]:
 
     return pool
 
-# ImportError가 절대 발생하지 않도록 안전하게 law_api 모듈을 불러옵니다.
 import law_api
 
-# 1. 기본/심층 모델 설정 및 스마트 라우팅 기준
+# 1. 기본/심층 모델 설정 및 무료 등급 호환 백업 모델 목록
 FLASH_MODEL_ID = "gemini-3.8-flash"
 PRO_MODEL_ID = "gemini-3.8-pro"
+
+# 무료 등급(Free Tier)에서 특정 모델 ID 쿼터가 0일 때 유료키로 넘어가지 않고 무료키 내에서 자동 우회할 모델 리스트
+FREE_FLASH_FALLBACKS = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash"]
 
 FORCE_PRO_TRIGGERS = ["[프로]", "[정밀검토]", "[심층검토]", "프로모드"]
 
@@ -297,7 +299,7 @@ def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dy
         raise ValueError("빈 응답이 반환되었습니다.")
     return final_text
 
-# 4. 실시간 키 스캔 + 4단계 계단식 방어벽 (무료키 #1 -> 무료키 #2 -> 유료 예비키)
+# 4. 무료키 내 멀티 모델 우회 + 실시간 진단 로그가 포함된 방어벽
 def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> str:
     live_pool = get_live_gemini_key_pool()
     if not live_pool:
@@ -336,31 +338,33 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> s
     free_keys = [(lbl, k) for lbl, k in live_pool if "무료" in lbl]
     paid_keys = [(lbl, k) for lbl, k in live_pool if "무료" not in lbl]
 
-    if not free_keys:
-        free_keys = paid_keys
-        paid_keys = []
-
     execution_plan = []
 
     if selected_model == PRO_MODEL_ID:
         for lbl, k in free_keys:
             execution_plan.append((lbl, k, PRO_MODEL_ID, f"{mode_badge} *(🔑 {lbl} Pro 가동)*"))
-        for lbl, k in free_keys:
-            execution_plan.append((lbl, k, FLASH_MODEL_ID, f"⚡ **[Flash 무료 방어 모드]** *(🔑 {lbl} - 무료 Pro 소진으로 무료 Flash 우회)*"))
+        for m_id in FREE_FLASH_FALLBACKS:
+            for lbl, k in free_keys:
+                execution_plan.append((lbl, k, m_id, f"⚡ **[Flash 무료 방어 모드]** *(🔑 {lbl} | {m_id} 가동)*"))
         for lbl, k in paid_keys:
             execution_plan.append((lbl, k, PRO_MODEL_ID, f"{mode_badge} *(🔑 {lbl} 가동)*"))
         for lbl, k in paid_keys:
             execution_plan.append((lbl, k, FLASH_MODEL_ID, f"⚡ **[최후 백업 모드]** *(🔑 {lbl} Flash 가동)*"))
     else:
-        for lbl, k in free_keys:
-            execution_plan.append((lbl, k, FLASH_MODEL_ID, f"{mode_badge} *(🔑 {lbl} 가동)*"))
+        # 무료키 1, 2번으로 기본 Flash부터 호환 Flash 모델까지 모두 먼저 시도한 뒤에야 유료키로 넘어감
+        for m_id in FREE_FLASH_FALLBACKS:
+            for lbl, k in free_keys:
+                execution_plan.append((lbl, k, m_id, f"{mode_badge} *(🔑 {lbl} | {m_id} 가동)*"))
         for lbl, k in paid_keys:
             execution_plan.append((lbl, k, FLASH_MODEL_ID, f"{mode_badge} *(🔑 {lbl} 가동)*"))
 
     last_error = None
+    diag_notes = []
+
+    if not free_keys:
+        diag_notes.append("⚠️ Secrets/.env에서 GEMINI_FREE_KEY_1, 2가 감지되지 않아 유료키로 직행함 (Streamlit 앱 Reboot 필요)")
 
     for key_label, current_key, target_model, final_badge in execution_plan:
-        print(f"🔄 [라우팅 시도] 키: [{key_label} (...{current_key[-4:]})] | 모델: {target_model}")
         try:
             final_text = _execute_with_key_and_model(
                 api_key=current_key,
@@ -370,29 +374,16 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> s
                 tools_list=tools_list,
                 safety_settings=safety_settings
             )
-            return f"> {final_badge}\n\n" + final_text
+            diag_header = f"> {final_badge}\n"
+            if "유료" in key_label and diag_notes:
+                short_diag = " / ".join(diag_notes[:2])
+                diag_header += f"> *(ℹ️ 무료키 전환 사유: {short_diag})*\n"
+            return diag_header + "\n" + final_text
         except Exception as e:
-            err_str = str(e)
-            if "무료" in key_label and ("429" in err_str or "RESOURCE_EXHAUSTED" in err_str):
-                time.sleep(1.5)
-                try:
-                    final_text = _execute_with_key_and_model(
-                        api_key=current_key,
-                        model_id=target_model,
-                        user_input=user_input,
-                        dynamic_prompt=dynamic_prompt,
-                        tools_list=tools_list,
-                        safety_settings=safety_settings
-                    )
-                    return f"> {final_badge}\n\n" + final_text
-                except Exception as retry_e:
-                    last_error = retry_e
-                    print(f"⚠️ [{key_label} | {target_model}] 재시도 후 전환: {retry_e}")
-                    continue
+            err_short = str(e).splitlines()[0][:120]
+            diag_notes.append(f"{key_label}({target_model}): {err_short}")
             last_error = e
-            print(f"⚠️ [{key_label} | {target_model}] 전환 사유 발생: {e}")
             continue
 
     error_msg = f"❌ 모든 API 키 및 백업 모델 호출이 실패했습니다. 마지막 오류: {str(last_error)}"
-    print(error_msg)
     return error_msg
