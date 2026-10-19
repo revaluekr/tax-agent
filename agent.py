@@ -416,12 +416,13 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> s
             )
             diag_header = f"> {final_badge}\n"
             if diag_notes:
-                diag_header += f"> *(ℹ️ 앞선 시도 실패: {' | '.join(diag_notes[:2])})*\n"
+                diag_header += f"> *(ℹ️ 앞선 시도 실패: {' | '.join(diag_notes)})*\n"
             return diag_header + "\n" + final_text
         except Exception as e:
             if _is_model_not_found(e):
                 dead_models.add(target_model)
-            err_short = str(e).splitlines()[0][:90]
+            m_code = re.search(r"\b(4\d\d|5\d\d)\b", str(e))
+            err_short = m_code.group(1) if m_code else str(e).splitlines()[0][:40]
             diag_notes.append(f"{key_label}({target_model}): {err_short}")
             last_error = e
             continue
