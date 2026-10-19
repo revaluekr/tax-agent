@@ -47,7 +47,6 @@ def load_workspace_from_disk(workspace_id: str) -> dict:
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            # 누락된 키 보정
             default_data = get_default_workspace_data()
             for key in ["chat_rooms", "room_titles", "room_files"]:
                 if key not in data:
@@ -76,6 +75,17 @@ def save_workspace_to_disk(workspace_id: str):
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"⚠️ 자동 저장 오류: {e}")
+
+def delete_workspace_from_disk(workspace_id: str):
+    """서버 디스크에서 해당 작업공간의 저장 파일(.json)을 영구 삭제합니다."""
+    if not workspace_id or workspace_id == "default_public":
+        return
+    path = get_storage_path(workspace_id)
+    if os.path.exists(path):
+        try:
+            os.remove(path)
+        except Exception as e:
+            print(f"⚠️ 파일 삭제 오류: {e}")
 
 # ---------------------------------------------------------
 # 헬퍼 함수 1: 업로드된 파일(Excel, PDF, Word) 텍스트 추출 (대용량 50,000자 한도)
@@ -212,22 +222,24 @@ def create_printable_html(report_text: str) -> bytes:
     return html_str.encode("utf-8-sig")
 
 # ---------------------------------------------------------
-# 2. 왼쪽 사이드바 제어판 (작업공간 암호 로그인 + 10개 방 자동 동기화)
+# 2. 왼쪽 사이드바 제어판 (작업공간 원클릭 잠금 해제/파기 버튼 장착)
 # ---------------------------------------------------------
 with st.sidebar:
     st.title("⚙️ 에이전트 제어판")
     
-    # 🔐 1) 작업공간 ID(암호) 입력창: 창을 껐다 켜거나 다른 PC에서 접속해도 동일한 코드 입력 시 즉시 복원!
+    # 🔐 1) 작업공간 ID(암호) 입력창 및 원클릭 코드 풀기(잠금) 버튼
     st.subheader("🔐 내 작업공간 (자동 동기화)")
+    
+    ws_widget_ver = st.session_state.get("ws_widget_ver", 0)
     workspace_input = st.text_input(
         "작업공간 코드(ID/암호) 입력",
         value=st.session_state.get("active_workspace_id", ""),
         type="password",
         placeholder="나만의 코드 입력 후 Enter (예: kbj1234)",
+        key=f"ws_input_box_{ws_widget_ver}",
         help="창을 닫거나 다른 PC에서 접속해도 동일한 코드를 입력하면 1~10번 방의 대화와 첨부파일이 그대로 유지됩니다."
     )
     
-    # 입력한 코드가 없으면 기본 임시 공간('default_guest')으로 작동하되 안내 표시
     effective_ws_id = workspace_input.strip() if workspace_input.strip() else "default_public"
     
     # 작업공간 ID가 처음 입력되었거나 변경된 경우 디스크에서 해당 작업공간 데이터 즉시 로드
@@ -243,6 +255,12 @@ with st.sidebar:
 
     if workspace_input.strip():
         st.success("🟢 전용 작업공간 실시간 자동 저장 중")
+        # 원클릭으로 작업공간 코드를 풀고 공용 모드로 나가는 심플 버튼!
+        if st.button("🔒 코드 풀기 (잠금 / 나가기)", use_container_width=True):
+            st.session_state.active_workspace_id = ""
+            st.session_state.loaded_workspace_id = None
+            st.session_state.ws_widget_ver = ws_widget_ver + 1
+            st.rerun()
     else:
         st.warning("🔓 공용 임시 모드입니다. 상단에 나만의 작업공간 코드를 입력하면 대화가 안전하게 분리·보존됩니다.")
 
@@ -277,27 +295,37 @@ with st.sidebar:
         save_workspace_to_disk(effective_ws_id)
         st.rerun()
     
-    # 🗑️ 3) 비우기 버튼 설계 (현재 방 단일 비우기 vs 안전 잠금장치가 있는 10개 방 전체 초기화)
+    # 🗑️ 3) 비우기 버튼 설계 (현재 방 단일 비우기 vs 10개 방 초기화 / 작업공간 완전 파기)
     if st.button(f"🗑️ [{selected_room}] 현재 방만 비우기", use_container_width=True):
         st.session_state.chat_rooms[selected_room] = []
         st.session_state.room_files[selected_room] = {"name": None, "text": ""}
         st.session_state.room_titles[selected_room] = "빈 대화방"
-        # 파일 업로더 위젯 상태 초기화를 위해 카운터 증가
         st.session_state[f"reset_cnt_{selected_room}"] = st.session_state.get(f"reset_cnt_{selected_room}", 0) + 1
         save_workspace_to_disk(effective_ws_id)
         st.rerun()
 
-    with st.expander("⚠️ 10개 방 전체 초기화 / 백업 관리"):
-        unlock_all_reset = st.checkbox("실수 방지: 10개 방 전체 삭제에 동의합니다", key="unlock_reset")
-        if st.button("🔄 내 작업공간(10개 방) 전체 초기화", disabled=not unlock_all_reset, use_container_width=True):
-            fresh_data = get_default_workspace_data()
-            st.session_state.chat_rooms = fresh_data["chat_rooms"]
-            st.session_state.room_titles = fresh_data["room_titles"]
-            st.session_state.room_files = fresh_data["room_files"]
-            for r_id in ROOM_IDS:
-                st.session_state[f"reset_cnt_{r_id}"] = st.session_state.get(f"reset_cnt_{r_id}", 0) + 1
-            save_workspace_to_disk(effective_ws_id)
-            st.rerun()
+    with st.expander("⚠️ 10개 방 전체 초기화 / 작업공간 파기"):
+        unlock_all_reset = st.checkbox("실수 방지: 전체 삭제·파기에 동의합니다", key="unlock_reset")
+        
+        col_r1, col_r2 = st.columns(2)
+        with col_r1:
+            if st.button("🔄 10개 방 비우기", disabled=not unlock_all_reset, use_container_width=True):
+                fresh_data = get_default_workspace_data()
+                st.session_state.chat_rooms = fresh_data["chat_rooms"]
+                st.session_state.room_titles = fresh_data["room_titles"]
+                st.session_state.room_files = fresh_data["room_files"]
+                for r_id in ROOM_IDS:
+                    st.session_state[f"reset_cnt_{r_id}"] = st.session_state.get(f"reset_cnt_{r_id}", 0) + 1
+                save_workspace_to_disk(effective_ws_id)
+                st.rerun()
+        with col_r2:
+            # 서버에 저장된 이 작업공간 파일(.json) 자체를 완전 삭제하고 코드도 풀어버리는 버튼
+            if st.button("🔥 작업공간 파기", disabled=(not unlock_all_reset or not workspace_input.strip()), use_container_width=True):
+                delete_workspace_from_disk(effective_ws_id)
+                st.session_state.active_workspace_id = ""
+                st.session_state.loaded_workspace_id = None
+                st.session_state.ws_widget_ver = ws_widget_ver + 1
+                st.rerun()
             
         st.caption("💾 서버 재부팅 대비 내 PC로 전체 대화 백업/복원:")
         backup_json_bytes = json.dumps({
@@ -309,7 +337,7 @@ with st.sidebar:
         st.download_button(
             label="📥 10개 방 통째로 내 PC에 백업 (.json)",
             data=backup_json_bytes,
-            file_name=f"세무에이전트_전체백업.json",
+            file_name="세무에이전트_전체백업.json",
             mime="application/json",
             use_container_width=True
         )
@@ -330,7 +358,7 @@ with st.sidebar:
         
     st.divider()
     
-    # 📂 4) 방별 독립 파일 업로드 (자동 저장소와 연동되어 창을 껐다 켜도 첨부파일 텍스트 유지!)
+    # 📂 4) 방별 독립 파일 업로드
     st.subheader(f"📂 [{selected_room}] 전용 자료 업로드")
     reset_cnt = st.session_state.get(f"reset_cnt_{selected_room}", 0)
     uploaded_file = st.file_uploader(
@@ -350,7 +378,6 @@ with st.sidebar:
                 save_workspace_to_disk(effective_ws_id)
                 st.rerun()
                 
-    # 이미 디스크에 저장되어 있는 첨부파일 정보가 있으면 창을 껐다 켜도 그대로 유지!
     saved_file_name = st.session_state.room_files[selected_room]["name"]
     saved_file_text = st.session_state.room_files[selected_room]["text"]
     
@@ -412,13 +439,11 @@ if prompt := st.chat_input(f"[{selected_room}: {current_room_title}]에 검토�
     has_attached_file = bool(current_file_info["name"] and current_file_info["text"])
     display_prompt = f"📎 **[첨부파일: {current_file_info['name']}]**\n\n{prompt}" if has_attached_file else prompt
     
-    # 첫 질문이고 방 제목이 기본값이면 첫 질문 앞 12글자로 방 제목 자동 설정
     if st.session_state.room_titles[selected_room] in ["빈 대화방", "메인 검토"] and not current_messages:
         auto_title = prompt.strip().replace("\n", " ")[:12]
         st.session_state.room_titles[selected_room] = auto_title
         current_room_title = auto_title
 
-    # 직전 대화 맥락(최근 6개 메시지 = 3턴) 추출
     history_context = ""
     if current_messages:
         recent_msgs = current_messages[-6:]
@@ -429,7 +454,7 @@ if prompt := st.chat_input(f"[{selected_room}: {current_room_title}]에 검토�
         history_context = "\n".join(history_lines) + "\n\n"
 
     current_messages.append({"role": "user", "content": display_prompt})
-    save_workspace_to_disk(effective_ws_id)  # 질문 입력 즉시 1차 자동 저장
+    save_workspace_to_disk(effective_ws_id)
     
     with st.chat_message("user"):
         st.markdown(display_prompt)
@@ -487,4 +512,4 @@ if prompt := st.chat_input(f"[{selected_room}: {current_room_title}]에 검토�
                 )
             
     current_messages.append({"role": "assistant", "content": response})
-    save_workspace_to_disk(effective_ws_id)  # 답변 완료 즉시 2차 자동 저장!
+    save_workspace_to_disk(effective_ws_id)
