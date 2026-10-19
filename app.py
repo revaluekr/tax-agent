@@ -21,7 +21,7 @@ st.set_page_config(
 # ---------------------------------------------------------
 # 0. 작업공간(Workspace)별 서버 자동 저장소 설정
 # ---------------------------------------------------------
-ROOM_IDS = [f"검토방 {i}" for i in range(1, 11)]
+ROOM_IDS = [f"대화방 {i}" for i in range(1, 11)]
 STORAGE_DIR = ".workspace_storage"
 os.makedirs(STORAGE_DIR, exist_ok=True)
 
@@ -33,7 +33,7 @@ def get_storage_path(workspace_id: str) -> str:
 def get_default_workspace_data() -> dict:
     """깨끗한 초기 10개 방 데이터 구조를 생성합니다."""
     default_titles = {r_id: "빈 대화방" for r_id in ROOM_IDS}
-    default_titles["검토방 1"] = "메인 검토"
+    default_titles["대화방 1"] = "메인 검토"
     return {
         "chat_rooms": {r_id: [] for r_id in ROOM_IDS},
         "room_titles": default_titles,
