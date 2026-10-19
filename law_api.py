@@ -23,10 +23,10 @@ def search_law_data(keyword: str, target: str = "law", search_mode: int = None) 
     if not LAW_OPEN_API_KEY:
         return []
 
-    # 'decc'는 API상 행정심판 재결례 → 조세심판원 결정례는 'ttSpecialDecc'(특별행정심판-조세심판원)로 먼저 조회
+    # 'decc'는 API상 일반 행정심판 재결례(국민권익위 등)라서 세무와 무관한 결과가 나옴
+    # → 조세심판원 결정례는 'ttSpecialDecc'로만 조회 (일반 행정심판으로 대체하지 않음)
     if target == "decc":
-        rows = _search_law_data_raw(keyword, "ttSpecialDecc", search_mode)
-        return rows if rows else _search_law_data_raw(keyword, "decc", search_mode)
+        return _search_law_data_raw(keyword, "ttSpecialDecc", search_mode)
     return _search_law_data_raw(keyword, target, search_mode)
 
 
@@ -41,6 +41,8 @@ def _search_law_data_raw(keyword: str, target: str, search_mode: int = None) -> 
     }
     if search_mode:
         params["search"] = search_mode
+    if target in ("prec", "ttSpecialDecc"):
+        params["sort"] = "ddes"   # 선고·의결일자 최신순 (기본값은 오래된 순이라 1990년대 사건부터 나옴)
 
     try:
         resp = requests.get(url, params=params, timeout=15)
@@ -56,7 +58,7 @@ def _search_law_data_raw(keyword: str, target: str, search_mode: int = None) -> 
             "admrul": "admrul",
             "expc": "expc",
             "decc": "decc",
-            "ttSpecialDecc": "ttSpecialDecc",
+            "ttSpecialDecc": "decc",   # 실제 응답: <Decc><decc id="1">…</decc></Decc>
             "ordin": "law"
         }
         item_tag = tag_map.get(target, target)
@@ -244,10 +246,6 @@ def get_law_content(doc_id: str, target: str = "law", query_filter: str = "") ->
     try:
         resp = requests.get(url, params=params, timeout=20)
         resp.encoding = "utf-8"
-        if target == "decc" and (resp.status_code != 200 or "사건" not in resp.text):
-            params["target"] = "decc"   # 조세심판원 결정이 아니면 일반 행정심판 재결례로 재조회
-            resp = requests.get(url, params=params, timeout=20)
-            resp.encoding = "utf-8"
         if resp.status_code != 200:
             return f"❌ 원문 조회 실패 (HTTP {resp.status_code})"
 
@@ -292,7 +290,7 @@ def get_law_content(doc_id: str, target: str = "law", query_filter: str = "") ->
 
         elif target == "decc":
             case_name = root.findtext(".//사건명") or ""
-            case_no = root.findtext(".//사건번호") or ""
+            case_no = root.findtext(".//사건번호") or root.findtext(".//청구번호") or ""
             dec_date = root.findtext(".//의결일자") or root.findtext(".//처분일자") or ""
             agency = root.findtext(".//재결청") or "조세심판원 등"
             order = root.findtext(".//주문") or ""
