@@ -103,7 +103,6 @@ _CASE_NO_PATTERNS = [
 ]
 
 # ② 법령 조문: 「상속세 및 증여세법」 제45조의2, 법인세법 시행령 제89조 (법령명이 붙은 경우만 검증)
-#    법령명은 띄어쓰기·'및'이 들어간 정식 명칭이 많아서, '제N조' 앞쪽 글자를 아래 법령명 목록과 뒤에서부터 맞춰 봅니다.
 _ARTICLE_NO = re.compile(r"제\s*(\d+)\s*조(?:\s*의\s*(\d+))?")
 _COMMON_LAWS = [
     "상속세및증여세법", "조세특례제한법", "국세기본법", "국세징수법", "법인세법", "소득세법", "부가가치세법",
@@ -122,7 +121,7 @@ def _known_law_titles(trace: dict = None) -> list[str]:
         titles.update({base, base + "시행령", base + "시행규칙"})
     if trace:
         titles.update(t for (t, _, _) in trace.get("articles", set()))
-    return sorted(titles, key=len, reverse=True)   # 긴 이름부터 맞춰야 '증여세법'이 '상속세및증여세법'을 가로채지 않음
+    return sorted(titles, key=len, reverse=True)
 
 def _resolve_law_name(prefix: str, titles: list[str]):
     """'제N조' 바로 앞 글자들(prefix)의 끝부분에서 법령명을 찾아 정식 명칭(공백 제거)으로 돌려줍니다."""
@@ -132,12 +131,11 @@ def _resolve_law_name(prefix: str, titles: list[str]):
             return None
     for alias, full in _LAW_ALIASES.items():
         for ext in ("시행규칙", "시행령", ""):
-            if tail.endswith(alias + ext) or tail.endswith(alias.replace("법", "령")) and ext == "시행령":
+            if tail.endswith(alias + ext) or (tail.endswith(alias.replace("법", "령")) and ext == "시행령"):
                 return full + ext
     for t in titles:
         if tail.endswith(t):
             return t
-    # 정식 명칭 일부만 쓴 경우 (예: '증여세법' → '상속세및증여세법')
     m = re.search(r"([가-힣ㆍ·]{2,30}?법(?:시행령|시행규칙)?)$", tail)
     if not m:
         return None
@@ -145,7 +143,7 @@ def _resolve_law_name(prefix: str, titles: list[str]):
     for t in titles:
         if t.endswith(partial) and len(partial) >= 3:
             return t
-    return partial   # 목록에 없는 법령명 → 그대로 반환(조회 기록과 대조되어 미조회로 처리됨)
+    return partial
 
 # ③ 집행기준 번호: 33의2-78의3-1, 52-88-3
 _EXEC_STD = re.compile(r"(?<![\d의])(\d{1,3}(?:의\d{1,2})?-\d{1,3}(?:의\d{1,2})?-\d{1,3})(?![\d])")
@@ -193,7 +191,6 @@ def _find_article_refs(text: str, trace: dict = None) -> list[tuple]:
     refs = []
     last_end = 0
     for m in _ARTICLE_NO.finditer(text):
-        # 바로 앞 조문 참조 이후의 글자만 본다 (예: '법인세법 제28조 및 제52조'에서 제52조 앞은 '및')
         prefix = text[max(last_end, m.start() - 45):m.start()]
         last_end = m.end()
         stripped = re.sub(r"[\s「」『』\[\]:(),·ㆍ]+$", "", prefix)
@@ -272,7 +269,6 @@ def _scan_violations(answer: str, trace: dict) -> list[tuple]:
                 refs = _find_article_refs(val, trace)
                 if not refs:
                     problems.append(f"[조문:{val}] (법령명이 빠져 검증 불가)")
-                # 법령명이 있는 경우는 ②에서 이미 검사됨
             else:
                 nos = _find_case_numbers(val)
                 if nos:
@@ -281,10 +277,10 @@ def _scan_violations(answer: str, trace: dict) -> list[tuple]:
                     ok = _norm(val) in detail_blob
                 if ok:
                     verified_source = True
-                elif not nos:   # 번호 있는 경우는 ①에서 이미 지적됨
+                elif not nos:
                     problems.append(f"[{kind}:{val}] (원문 미조회)")
 
-        # ④-2 따옴표 인용문 대조 (판례·심판례 근거가 걸린 줄, 또는 그 하위 항목)
+        # ④-2 따옴표 인용문 대조
         line_cases = _find_case_numbers(line) + [n for k, v in _TAG.findall(line) if k != "조문" for n in _find_case_numbers(v)]
         if (line_cases or inherited_ok or _TAG.search(line)) and _QUOTE.search(line):
             problems.extend(_quote_mismatches(line, line_cases or parent_cases, trace["detail"]))
@@ -328,13 +324,11 @@ def _redact_lines(answer: str, violations: list[tuple]) -> str:
             reasons = [r.split(":")[0] if r.startswith(("출처 표시 없는", "판례 인용문")) else r for r in bad[i]]
             reason_txt = "; ".join(dict.fromkeys(reasons))[:120]
             if not _show_diag():
-                # 고객 화면: 삭제 표시 없이 해당 줄(과 하위 항목)만 조용히 제거, 사유는 로그로
                 print(f"[시스템] 🚫 미검증 근거 삭제: {reason_txt} | {line.strip()[:60]}")
                 if not line.strip().startswith("|"):
                     skip_indent = indent
                 continue
             if line.strip().startswith("|"):
-                # 표의 한 행이면 칸 수를 유지한 채 내용만 비움 (표가 깨지지 않게)
                 n_cols = max(line.strip().strip("|").count("|") + 1, 1)
                 out.append("| 🚫 *(검증되지 않아 삭제)* " + "| " * (n_cols - 1) + "|")
             else:
@@ -343,7 +337,6 @@ def _redact_lines(answer: str, violations: list[tuple]) -> str:
             continue
         out.append(line)
 
-    # 같은 들여쓰기의 삭제 표시가 연달아 나오면 한 줄로 묶음
     merged = []
     for line in out:
         if (merged and "🚫 *(검증되지 않은 근거 삭제" in line and "🚫 *(검증되지 않은 근거" in merged[-1]
@@ -359,10 +352,6 @@ def _redact_lines(answer: str, violations: list[tuple]) -> str:
 
 # ---------------------------------------------------------
 # 🧪 의미 검증 (검증 모델)
-#   - 기계적 대조로는 못 잡는 것: 조회한 근거 표시를 붙였지만 내용은 원문에 없는 '의역 주장'
-#   - 근거 표시가 붙은 문장(+검증된 판례 항목의 하위 문장)만 골라, 해당 원문과 함께
-#     별도 모델에게 "원문이 이 주장을 뒷받침하는가"를 판정시킵니다.
-#   - 판정: supported(통과) / partial(⚠️ 표시) / unsupported(삭제)
 # ---------------------------------------------------------
 def _strip_md(text: str) -> str:
     return re.sub(r"[*_`>#]", "", text or "").strip(" -")
@@ -416,7 +405,6 @@ def _extract_claims(answer: str, trace: dict, max_claims: int = 20) -> tuple[lis
                         src_ids.append(_src_id(f"{kind} {val}", d))
         body = _strip_md(_TAG.sub("", line))
         if not tags:
-            # 근거 표시가 없더라도, 검증된 판례 항목의 하위 문장이거나 판례번호와 함께 쓴 긴 서술이면 검증
             cases = line_cases if (line_cases and len(body) >= 40) else (parent_cases if len(body) >= 15 else [])
             for n in cases:
                 for d in details:
@@ -428,32 +416,35 @@ def _extract_claims(answer: str, trace: dict, max_claims: int = 20) -> tuple[lis
         if len(claims) >= max_claims:
             break
 
-    # 근거 표시와 다른 조문에 내용이 있을 수 있으므로, 이번에 조회한 다른 원문도 '참고 원문'으로 함께 제공 (총량 제한)
+    # 이번에 조회한 다른 원문 및 정밀 계산기 산출 결과도 '참고 원문'으로 함께 제공
     total = sum(len(t) for _, t in sources.values())
     for key, txt in art_texts.items():
         label = _article_label(key)
         if label not in src_index and total < 40000:
-            _src_id(label, txt); total += min(len(txt), 6000)
-    for d in details:
-        head = d.split("\n", 1)[0][:60]
-        if head not in src_index and total < 40000:
-            _src_id(head, d); total += min(len(d), 6000)
+            _src_id(label, txt)
+            total += min(len(txt), 6000)
+    for idx, d in enumerate(details):
+        head = d.split("\n", 1)[0][:55]
+        if head in src_index:
+            head = f"{head} (#{idx + 1})"
+        if total < 40000:
+            _src_id(head, d)
+            total += min(len(d), 6000)
     return claims, sources
 
-def _semantic_verify(api_key: str, claims: list, sources: dict) -> dict:
+def _semantic_verify(api_key: str, claims: list, sources: dict, user_query: str = "") -> dict:
     """검증 모델 호출. 반환: {claim_id: (verdict, reason)}"""
     src_block = "\n\n".join(f"[{sid}] {label}\n{text}" for sid, (label, text) in sources.items())
     claim_block = "\n".join(f"{n + 1}. (근거: {', '.join(c['sources'])}) {c['text']}" for n, c in enumerate(claims))
     prompt = (
-        "당신은 세무 답변의 근거를 검증하는 감수자입니다. 아래 [원문] 전체를 기준으로 각 [주장]의 '핵심 법적 명제'가 뒷받침되는지 판정하세요.\n"
-        "- supported: 핵심 명제(요건·효과·수치)가 원문(지정 근거 또는 다른 원문)에 있음. 같은 뜻의 요약·의역, 원문에서 직접 도출되는 당연한 결론, "
-        "'실무상 유의' 같은 부수적 권고 문구는 문제 삼지 말 것\n"
-        "- partial: 핵심 명제는 맞지만, 주장에 적힌 **구체적 수치·기간·비율·요건**이 원문에 없거나 원문과 다름\n"
-        "- unsupported: 핵심 명제 자체가 원문 어디에도 없거나 원문과 모순됨 (일반 지식으로 맞더라도 원문에 없으면 unsupported)\n"
+        "당신은 세무 답변의 근거를 검증하는 감수자입니다. 아래 [사용자 질문(사례 전제)]와 [원문(법령·판례·계산 결과)] 전체를 기준으로 각 [주장]의 '핵심 법적 명제'가 뒷받침되는지 판정하세요.\n"
+        "- supported: 핵심 법리가 [원문]에 부합하고, 사례 금액·계산값이 [사용자 질문] 또는 [정밀 계산 완료] 내역과 일치함. 같은 뜻의 요약·의역, 원문들을 결합해 도출되는 당연한 세무조정·소득처분 결론(예: 법 제27조 업무무관비용 + 시행령 제106조 임원 귀속 → 대표자 상여), 실무상 유의 문구는 모두 supported로 판정할 것\n"
+        "- partial: 법령상의 고정 기준 수치(예: 세율, 법정한도율, 기준금액)를 [원문]과 다르게 잘못 적은 경우에만 부여할 것. (사용자 질문의 사례 금액이나 계산기 산출 금액이 법조문 텍스트에 직접 적혀 있지 않다는 이유로 partial을 주지 말 것!)\n"
+        "- unsupported: 핵심 법리 자체가 [원문] 어디에도 없거나 [원문]과 정면으로 모순되는 경우\n"
         "원문 밖의 지식으로 판단하지 마세요. 사소한 표현 차이로 partial/unsupported를 주지 마세요. "
         "reason은 한국어 30자 이내로, 'S1' 같은 번호 대신 법령·판례 이름으로 쓰세요.\n"
         '출력은 JSON 배열만: [{"id": 1, "verdict": "supported", "reason": "..."}]\n\n'
-        f"[원문]\n{src_block}\n\n[주장]\n{claim_block}"
+        f"[사용자 질문(사례 전제)]\n{user_query[:3000]}\n\n[원문]\n{src_block}\n\n[주장]\n{claim_block}"
     )
     try:
         client = genai.Client(api_key=api_key, http_options={"timeout": 60000})
@@ -474,7 +465,7 @@ def _semantic_verify(api_key: str, claims: list, sources: dict) -> dict:
             verdict = str(item.get("verdict", "")).strip().lower()
             if verdict in ("supported", "partial", "unsupported"):
                 reason = str(item.get("reason", ""))[:60]
-                for sid, (label, _) in sources.items():          # 'S2에 없음' → '법인세법시행령 제44조에 없음'
+                for sid, (label, _) in sources.items():
                     reason = re.sub(rf"\b{sid}\b", label[:30], reason)
                 result[cid] = (verdict, reason)
         except Exception:
@@ -489,7 +480,6 @@ def _apply_semantic_results(answer: str, claims: list, verdicts: dict, sources: 
     to_delete = []
     for n, c in enumerate(claims):
         verdict, reason = verdicts.get(n + 1, ("unknown", ""))
-        # 근거 원문이 길어 잘린 채로 조회됐다면, '원문에 없음'이 잘린 부분 때문일 수 있으므로 삭제 대신 확인 필요로 표시
         if verdict == "unsupported" and sources:
             src_texts = [sources[sid][1] for sid in c["sources"] if sid in sources]
             if any(m in t for t in src_texts for m in _TRUNC_MARK) or any(len(t) >= 5900 for t in src_texts):
@@ -497,10 +487,13 @@ def _apply_semantic_results(answer: str, claims: list, verdicts: dict, sources: 
         counts[verdict] = counts.get(verdict, 0) + 1
         if verdict == "partial":
             print(f"[시스템] ⚠️ 원문 확인 필요: {reason} | {c['text'][:60]}")
-            if _show_diag():
-                lines[c["line"]] = lines[c["line"]].rstrip() + f" ⚠️*(원문 확인 필요: {reason})*"
+            tag_txt = f" ⚠️*(원문 확인 필요: {reason})*" if _show_diag() else " ⚠️*(원문 확인 필요)*"
+            raw_line = lines[c["line"]].rstrip()
+            # 마크다운 표 행(| ... |)인 경우 닫는 파이프(|) 안쪽에 태그를 넣어 인쇄 시 표가 깨지지 않게 보호
+            if raw_line.startswith("|") and raw_line.endswith("|"):
+                lines[c["line"]] = raw_line[:-1].rstrip() + tag_txt + " |"
             else:
-                lines[c["line"]] = lines[c["line"]].rstrip() + " ⚠️*(원문 확인 필요)*"
+                lines[c["line"]] = raw_line + tag_txt
         elif verdict == "unsupported":
             to_delete.append((c["line"], [f"의미 검증 불일치 – {reason}"]))
     text = "\n".join(lines)
@@ -520,12 +513,9 @@ def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
     if not raw_text:
         return ""
 
-    # 1) 불필요한 개정/신설 연혁 꼬리표 제거 (예: <개정 2020. 12. 29., 2022. 12. 31.>, [전문개정 ...])
     cleaned = re.sub(r"<(개정|신설|타법개정|일부개정|전문개정)[^>]*>", "", raw_text)
-    cleaned = re.sub(r"\[(전문개정|본조신설|제목개정|제\d+조에서 이동)[^\]]*\]", "", cleaned)
+    cleaned = re.sub(r"\[(전문개정\vert{}본조신설\vert{}제목개정\vert{}제\d+조에서 이동)[^\]]*\]", "", cleaned)
 
-    # 2) 만약 특정 조문번호(예: '제29조의8', '제26조')로 필터링한 경우,
-    #    해당 조문으로 시작하는 '진짜 본조문' 블록을 최우선 배치하고 단순 언급 조문은 뒤로 밀어냄
     qf = query_filter.strip().replace(" ", "")
     if qf.startswith("제") and "조" in qf:
         blocks = cleaned.split("\n\n")
@@ -535,24 +525,19 @@ def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
 
         for blk in blocks[1:]:
             blk_clean = blk.strip().replace(" ", "")
-            # '제29조의8(' 또는 '제29조의8 ' 형태로 시작하는 실제 해당 조문인지 판별
             if blk_clean.startswith(qf + "(") or blk_clean.startswith(qf + " ") or blk_clean == qf:
                 exact_articles.append(blk.strip())
             else:
                 other_mentions.append(blk.strip())
 
         if exact_articles:
-            # 진짜 타깃 조문이 있으면 그 조문 전체(1항~끝항, 단서 포함)를 온전히 보존
             cleaned = header + "\n\n" + "\n\n".join(exact_articles)
         else:
             cleaned = header + "\n\n" + "\n\n".join(other_mentions[:3])
 
-    # 3) 연속된 빈 줄 및 불필요한 공백 압축
     cleaned = re.sub(r"[ \t]+", " ", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
 
-    # 4) 조문번호로 특정 조문 1개를 조회한 경우 8,000자, 그 외(키워드 조회 등)는 3,500자까지 허용
-    #    (시행령 제78조의3처럼 항이 많은 조문이 중간에 잘리지 않도록)
     limit = 12000 if (qf.startswith("제") and "조" in qf) else 3500
     if len(cleaned) > limit:
         return (cleaned[:limit]
@@ -562,15 +547,13 @@ def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
 
 
 # 1. 모델 설정 (2026-09-18부터 2.5 계열은 신규 프로젝트에서 404 → 3.x로 전환)
-#    Secrets/.env에 같은 이름의 키를 넣으면 코드 수정 없이 모델명을 바꿀 수 있습니다.
 def _model_id(env_key: str, default: str) -> str:
     return _get_secret_or_env(env_key) or default
 
-FLASH_MODEL_ID     = _model_id("GEMINI_FLASH_MODEL", "gemini-3.8-flash")         # 기본 답변 모델
-FLASH_BACKUP_ID    = _model_id("GEMINI_FLASH_BACKUP_MODEL", "gemini-3.6-flash")  # 3.8 과부하(503 등) 시 예비
-VERIFIER_MODEL_ID  = _model_id("GEMINI_VERIFIER_MODEL", "gemini-3.8-flash")      # 의미 검증 모델
+FLASH_MODEL_ID     = _model_id("GEMINI_FLASH_MODEL", "gemini-3.8-flash")
+FLASH_BACKUP_ID    = _model_id("GEMINI_FLASH_BACKUP_MODEL", "gemini-3.6-flash")
+VERIFIER_MODEL_ID  = _model_id("GEMINI_VERIFIER_MODEL", "gemini-3.8-flash")
 SEMANTIC_VERIFY_ON = _get_secret_or_env("SEMANTIC_VERIFY").lower() not in ("off", "false", "0")
-# Pro급 (첫 번째가 실패하면 두 번째로)
 PAID_PRO_MODEL_IDS = [
     _model_id("GEMINI_PAID_PRO_MODEL", "gemini-3.1-pro-preview"),
     "gemini-4-argon",
@@ -598,7 +581,6 @@ def select_optimal_model(user_query: str, has_file: bool = False, full_input_len
         if trigger in user_query:
             return "PRO", f"🧠 **[Pro 심층 모드]** 사용자 지정 정밀 검토 ({trigger})"
 
-    # 자동 전환은 비용이 크므로 기본 OFF (Secrets에 AUTO_PRO = "on" 을 넣으면 켜짐)
     if _get_secret_or_env("AUTO_PRO").lower() not in ("on", "true", "1"):
         return "FLASH", "⚡ **[Flash 빠른 검토 모드]** 실무 표준 검토"
 
@@ -633,14 +615,12 @@ def search_law_for_gemini(keyword: str, target: str = "law") -> str:
     results = law_api.search_law_data(keyword, target)
     used_keyword = keyword
 
-    # 판례·심판례·해석례·행정규칙은 제목 검색에 안 걸리면 본문 검색으로 자동 재시도
     if not results and target in ("prec", "decc", "expc", "admrul"):
         print(f"[시스템]    ↳ 제목 검색 결과 없음 → 본문 검색으로 재시도")
         results = law_api.search_law_data(keyword, target, search_mode=2)
         if results:
             used_keyword = keyword + " (본문검색)"
 
-    # 결과가 없으면 뒤쪽 단어를 하나씩 빼며 자동 재검색 (예: '소득세법 업무용승용차' → '소득세법')
     words = keyword.split()
     while not results and len(words) > 1:
         words = words[:-1]
@@ -690,7 +670,6 @@ def get_law_details_for_gemini(doc_id: str, target: str = "law", query_filter: s
     """
     검색된 일련번호(ID)로 원문을 조회합니다. 법령('law') 조회 시 반드시 query_filter에 조문번호(예: '제29조의8', '제26조')나 핵심 단어를 넣어 호출하세요.
     """
-    # 판례·심판례·해석례·예규는 query_filter와 상관없이 같은 원문이 오므로, 같은 문서를 다시 조회하지 않음
     trace = _TOOL_TRACE.get()
     if trace is not None and target != "law":
         seen = trace.setdefault("seen_docs", set())
@@ -704,9 +683,7 @@ def get_law_details_for_gemini(doc_id: str, target: str = "law", query_filter: s
                 "이미 조회한 원문만으로 답변을 작성하세요.")
     print(f"\n[시스템] 📖 원문 정밀 조회 가동: ID '{doc_id}' (대상: {target}, 필터: '{query_filter}')")
     raw_text = law_api.get_law_content(doc_id, target, query_filter)
-    # 법리 왜곡 없이 개정 연혁 태그와 타 조문 군더더기만 제거하여 토큰 50% 절감
     result = compress_legal_text(raw_text, query_filter)
-    # 🔧 진단용: 모델에게 실제로 전달되는 분량과 앞부분을 터미널에 표시
     preview = result[:150].replace("\n", " ")
     print(f"[시스템]    ↳ 원문 {len(raw_text or ''):,}자 → 전달 {len(result):,}자 | 앞부분: {preview}")
     if target == "law":
@@ -724,40 +701,40 @@ def get_law_details_for_gemini(doc_id: str, target: str = "law", query_filter: s
 def search_exchange_rate_for_gemini(start_date: str, end_date: str, currency: str = "USD") -> str:
     """한국은행 ECOS에서 특정 기간의 공식 환율(매매기준율)을 조회합니다."""
     print(f"\n[시스템] 💱 한국은행 환율 조회 도구 가동: {currency} ({start_date}~{end_date})")
-    return law_api.get_bok_exchange_rate(start_date, end_date, currency)
+    return _record("detail", law_api.get_bok_exchange_rate(start_date, end_date, currency))
 
 def search_base_rate_for_gemini(start_date: str, end_date: str) -> str:
     """한국은행 ECOS에서 특정 기간('YYYYMMDD' ~ 'YYYYMMDD')의 한국은행 기준금리를 조회합니다."""
     print(f"\n[시스템] 📈 한국은행 기준금리 조회 도구 가동: ({start_date}~{end_date})")
-    return law_api.get_bok_base_rate(start_date, end_date)
+    return _record("detail", law_api.get_bok_base_rate(start_date, end_date))
 
 def search_industry_code_for_gemini(keyword: str) -> str:
     """프로젝트 내 마스터 데이터('industry_codes.xlsx')에서 국세청 6자리 기준경비율 업종코드를 검색합니다."""
     print(f"\n[시스템] 🏢 국세청 업종코드 검색 도구 가동: '{keyword}'")
-    return law_api.search_industry_code(keyword)
+    return _record("detail", law_api.search_industry_code(keyword))
 
 def search_dart_corp_for_gemini(corp_name: str, bsns_year: str = "2025") -> str:
     """금융감독원 전자공시시스템(Open DART)에서 특정 기업의 6대 핵심 정보를 통합 조회합니다."""
     print(f"\n[시스템] 📊 DART 전자공시 통합 조회 가동: '{corp_name}' ({bsns_year}년)")
-    return law_api.get_dart_corp_info(corp_name, bsns_year)[:4000]
+    return _record("detail", law_api.get_dart_corp_info(corp_name, bsns_year)[:4000])
 
 def check_nts_biz_status_for_gemini(biz_numbers: str) -> str:
     """국세청 API를 통해 사업자등록번호(10자리)의 납세자 상태(계속/휴폐업) 및 과세유형을 실시간 조회합니다."""
     print(f"\n[시스템] 🔎 국세청 사업자등록 상태·과세유형 실시간 조회 가동: '{biz_numbers}'")
-    return law_api.get_nts_biz_status(biz_numbers)
+    return _record("detail", law_api.get_nts_biz_status(biz_numbers))
 
 def verify_nts_biz_info_for_gemini(b_no: str, start_dt: str, p_nm: str, b_nm: str = "") -> str:
     """국세청 API를 통해 사업자등록번호(10자리) + 개업일자(YYYYMMDD) + 대표자 성명의 진위확인을 수행합니다."""
     print(f"\n[시스템] 🛡️ 국세청 사업자등록 진위확인 가동: {b_no} | {start_dt} | {p_nm}")
     if hasattr(law_api, "verify_nts_biz_info"):
-        return law_api.verify_nts_biz_info(b_no, start_dt, p_nm, b_nm)
+        return _record("detail", law_api.verify_nts_biz_info(b_no, start_dt, p_nm, b_nm))
     return "현재 law_api.py에 진위확인 함수가 없습니다."
 
 def search_real_estate_trade_for_gemini(property_type: str, region: str, deal_ymd: str, filter_keyword: str = "") -> str:
     """국토교통부 부동산 매매 실거래가 4종(아파트 'apt', 오피스텔 'offi', 상가 'comm', 토지 'land')을 조회합니다."""
     print(f"\n[시스템] 🏘️ 국토교통부 부동산 실거래가 조회 가동: 유형={property_type} | 지역={region} | 연월={deal_ymd} | 필터='{filter_keyword}'")
     if hasattr(law_api, "get_molit_real_estate_trade"):
-        return law_api.get_molit_real_estate_trade(property_type, region, deal_ymd, filter_keyword)
+        return _record("detail", law_api.get_molit_real_estate_trade(property_type, region, deal_ymd, filter_keyword))
     return "현재 law_api.py에 부동산 실거래가 조회 함수가 없습니다."
 
 def run_tax_calculator_for_gemini(formula_expression: str, description: str = "") -> str:
@@ -771,8 +748,11 @@ def run_tax_calculator_for_gemini(formula_expression: str, description: str = ""
         clean_expr = formula_expression.strip().replace(",", "")
         result = eval(clean_expr, {"__builtins__": {}}, allowed_names)
         if isinstance(result, (int, float)):
-            return f"🧮 [정밀 계산 완료 - {description}]\n- 입력 수식: {clean_expr}\n- 정확한 산출값: {result:,.4f} (정수 반올림: {round(result):,}원)"
-        return f"🧮 [정밀 계산 완료 - {description}]\n- 결과: {result}"
+            return _record(
+                "detail",
+                f"🧮 [정밀 계산 완료 - {description} | 수식: {clean_expr}]\n- 입력 수식: {clean_expr}\n- 정확한 산출값: {result:,.4f} (정수 반올림: {round(result):,}원)"
+            )
+        return _record("detail", f"🧮 [정밀 계산 완료 - {description} | 수식: {clean_expr}]\n- 결과: {result}")
     except Exception as e:
         return f"❌ 수식 계산 오류 ({formula_expression}): {e} -> 올바른 파이썬 사칙연산 수식으로 다시 호출하세요."
 
@@ -794,6 +774,7 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
 - 판례 검색 순서: 주제어로 목록 검색 → 결과 중 관련성 높은 1~2건의 ID로 원문 조회 → 그 내용만 인용. **판례 목록 검색은 질문당 최대 3회, 판례 원문 조회는 최대 3건**까지만 할 것.
 - **근거 표시는 그 문장의 내용이 실제로 해당 원문에 있을 때만** 붙일 것. 한 판례에 없는 내용을 그 판례 근거 표시로 묶지 말 것.
 - **따옴표(“ ”) 인용은 조회한 원문을 글자 그대로 옮길 때만** 사용하고, 요약·의역할 때는 따옴표를 쓰지 말 것. (시스템이 인용문을 원문과 글자 단위로 대조함)
+- **[수식 및 표 작성 규칙]**: 인쇄용 문서 출력 시 글자가 깨지는 LaTeX 수식 문법($$,$, \\frac, \\times, \\text 등)은 절대 사용하지 말고 일반 텍스트 기호(×, ÷, +, -, =)로만 깔끔하게 표기할 것. 마크다운 표를 작성할 때는 반드시 표 위아래로 빈 줄을 띄우고 헤더 구분선(| --- | --- |)을 정확히 작성할 것.
 - 법령·판례·심판례·예규·지방세조례 확인: 'search_law_for_gemini'로 ID를 찾은 뒤 'get_law_details_for_gemini'(반드시 query_filter에 조문번호 입력)로 핵심 조문만 읽을 것.
 - 기업 공시·재무·지분·배당·출자 확인: 'search_dart_corp_for_gemini' 호출.
 - 사업자 상태(휴·폐업/과세유형) 및 진위확인: 'check_nts_biz_status_for_gemini' 또는 'verify_nts_biz_info_for_gemini' 호출.
@@ -839,6 +820,23 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
   * 국세청 홈택스(사업자상태/업종코드): https://www.hometax.go.kr
 """
 
+def _clean_latex_for_export(text: str) -> str:
+    """인쇄용 문서(.html/PDF) 및 워드 출력 시 깨지는 LaTeX 수식 문법을 일반 텍스트 연산자로 정제합니다."""
+    if not text:
+        return ""
+    s = text
+    # \text{원} -> 원, \textbf{...} -> ...
+    s = re.sub(r"\\text(?:bf|rm|it)?\{([^}]*)\}", r"\1", s)
+    # \frac{A}{B} -> (A/B)
+    s = re.sub(r"\\frac\{([^}]*)\}\{([^}]*)\}", r"(\1/\2)", s)
+    # 연산자 및 특수기호 치환
+    s = s.replace(r"\times", "×").replace(r"\div", "÷").replace(r"\cdot", "·")
+    s = s.replace(r"\%", "%").replace(r"\_", "_")
+    # 수식 블록 기호($$, $) 제거
+    s = re.sub(r"\$\$(.*?)\$\$", r"\1", s, flags=re.DOTALL)
+    s = re.sub(r"\$([^$\n]+)\$", r"\1", s)
+    return s
+
 def extract_safe_text(response) -> str:
     """Gemini 응답 객체에서 NoneType 오류 없이 안전하게 텍스트를 추출합니다."""
     if not response:
@@ -864,7 +862,6 @@ def extract_safe_text(response) -> str:
 def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dynamic_prompt: str, tools_list: list, safety_settings: list) -> str:
     """특정 API 키와 모델로 세션을 열어 답변을 받아옵니다."""
     try:
-        # 타임아웃 단위는 밀리초(60초). Pro 모델·다중 도구 호출 시 20초는 부족할 수 있음
         temp_client = genai.Client(api_key=api_key, http_options={"timeout": 60000})
     except Exception:
         temp_client = genai.Client(api_key=api_key)
@@ -873,7 +870,6 @@ def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dy
         model=model_id,
         config=types.GenerateContentConfig(
             tools=tools_list,
-            # temperature=0.2,  # 2026-07-21 deprecated → 제거
             system_instruction=dynamic_prompt,
             safety_settings=safety_settings,
             automatic_function_calling=types.AutomaticFunctionCallingConfig(
@@ -895,13 +891,11 @@ def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dy
 
     if not final_text:
         raise ValueError("빈 응답이 반환되었습니다.")
-    final_text = re.sub(r"\s*<br\s*/?>\s*", " / ", final_text)   # 표 안 <br>이 글자로 보이는 문제 정리
+    final_text = re.sub(r"\s*<br\s*/?>\s*", " / ", final_text)
+    final_text = _clean_latex_for_export(final_text)
 
     # ---------------------------------------------------------
     # 🔒 근거 강제 검증 (도구 기록이 수집된 경우에만)
-    #   대상: 사건번호 / 법령명+조문 / 집행기준 번호 / [근거 표시] / 출처 없는 판례·예규 서술
-    #   1단계: 위반이 있으면 모델에게 "원문을 조회하거나 삭제하라"고 1회 재작성 요청
-    #   2단계: 그래도 남으면 해당 줄(과 하위 항목)을 코드에서 직접 삭제
     # ---------------------------------------------------------
     citation_note = ""
     if trace and (trace["list"] or trace["detail"]):
@@ -919,7 +913,7 @@ def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dy
                   "조회하지 않은 근거는 다시 쓰지 말고, 양식([A]→[B])을 유지해 전체 답변을 다시 작성하세요. "
                   "다시 쓴 답변에는 이 검증 요청이나 삭제 사실, 시스템에 대한 언급을 절대 넣지 마세요."
             )
-            trace_token2 = _TOOL_TRACE.set(trace)   # 재작성 중 조회한 원문도 같은 기록에 누적
+            trace_token2 = _TOOL_TRACE.set(trace)
             try:
                 retry_resp = chat.send_message(fix_msg)
                 retry_text = extract_safe_text(retry_resp)
@@ -930,7 +924,8 @@ def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dy
                 _TOOL_TRACE.reset(trace_token2)
 
             if retry_text:
-                final_text = retry_text
+                final_text = re.sub(r"\s*<br\s*/?>\s*", " / ", retry_text)
+                final_text = _clean_latex_for_export(final_text)
                 response = retry_resp
 
             remaining = _scan_violations(final_text, trace)
@@ -952,7 +947,7 @@ def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dy
             if claims:
                 print(f"[시스템] 🧪 의미 검증 가동: 주장 {len(claims)}건 / 원문 {len(sources)}건")
                 try:
-                    verdicts = _semantic_verify(api_key, claims, sources)
+                    verdicts = _semantic_verify(api_key, claims, sources, user_input)
                     final_text, cnt = _apply_semantic_results(final_text, claims, verdicts, sources)
                     citation_note += (f"\n> 🧪 의미 검증 {len(claims)}건: 일치 {cnt['supported']} · "
                                       f"원문 확인 필요 {cnt['partial']}(⚠️ 표시) · 불일치 {cnt['unsupported']}(삭제)"
@@ -962,7 +957,6 @@ def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dy
                     citation_note += "\n> 🧪 의미 검증을 수행하지 못했습니다(검증 모델 오류). 근거 표시 문장은 직접 확인하세요."
 
     # 🔧 진단용: 실제 호출된 도구 목록을 답변 하단에 표시
-    #    (chat 모드에서는 response가 아니라 chat 기록에 도구 호출이 남으므로 둘 다 확인)
     history = []
     try:
         history = chat.get_history(curated=False) or []
@@ -979,7 +973,6 @@ def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dy
                 args = ", ".join(f"{k}={v}" for k, v in (fc.args or {}).items())
                 calls.append(f"{fc.name}({args})")
 
-    # 마지막 응답에 아직 function_call이 남아 있으면 호출 한도에 걸려 중간에 끊긴 것
     limit_hit = False
     try:
         for p in (response.candidates[0].content.parts or []):
@@ -988,8 +981,6 @@ def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dy
     except Exception:
         pass
 
-    # 진단 정보(도구 호출·검증 결과)는 기본적으로 화면에 숨기고 터미널/로그에만 남김
-    #   Secrets 또는 .env에 SHOW_DIAGNOSTICS = "on" 을 넣으면 답변 하단에 다시 표시됨
     if calls:
         diag = "\n\n---\n> 🛠 도구 호출 " + str(len(calls)) + "회: " + " → ".join(calls)
     else:
@@ -1007,7 +998,6 @@ def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dy
     return final_text
 
 # 4. 실행 순서(유료키 전용): 3.8-flash → 3.6-flash (PRO 모드는 Pro 모델 → Flash 백업)
-#    경량(lite) 모델은 세무 답변 정확도 문제로 사용하지 않음. 500/503/504는 2초 후 1회 재시도
 def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> str:
     live_pool = get_live_gemini_key_pool()
     if not live_pool:
@@ -1020,7 +1010,6 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> s
         full_input_len=len(user_input)
     )
 
-    # Streamlit Cloud 서버는 UTC이므로 한국 시간 기준으로 오늘 날짜 계산
     today_str = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y년 %m월 %d일")
     dynamic_prompt = f"[시스템 기준일 안내: 오늘 날짜는 {today_str}입니다. 질문에 등장하는 연도와 날짜의 과거/현재 여부를 반드시 오늘 날짜({today_str}) 기준으로 판단하세요.]\n\n" + SYSTEM_PROMPT
 
@@ -1057,12 +1046,12 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> s
 
     last_error = None
     diag_notes = []
-    dead_models = set()  # 404 난 모델은 다른 키로 재시도하지 않음
+    dead_models = set()
 
     for key_label, current_key, target_model, final_badge in execution_plan:
         if target_model in dead_models:
             continue
-        for attempt in range(2):  # 500/503/504(일시 과부하·응답 지연)는 2초 후 1회 재시도
+        for attempt in range(2):
             try:
                 final_text = _execute_with_key_and_model(
                     api_key=current_key,
