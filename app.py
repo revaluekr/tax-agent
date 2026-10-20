@@ -88,12 +88,13 @@ def delete_workspace_from_disk(workspace_id: str):
             print(f"⚠️ 파일 삭제 오류: {e}")
 
 # ---------------------------------------------------------
-# 헬퍼 함수 1: 업로드된 파일(Excel, PDF, Word) 텍스트 추출 (대용량 50,000자 한도)
+# 헬퍼 함수 1: 업로드된 파일(Excel, PDF, Word) 텍스트 추출 (Pro 3배 한도: 150,000자)
 # ---------------------------------------------------------
-MAX_DOC_CHARS = 50000
+MAX_DOC_CHARS_STANDARD = 50000
+MAX_DOC_CHARS_PRO      = 150000
 
 def extract_file_content(uploaded_file) -> str:
-    """업로드된 엑셀, CSV, PDF, 워드(.docx) 파일에서 텍스트와 표 데이터를 추출합니다."""
+    """업로드된 엑셀, CSV, PDF, 워드(.docx) 파일에서 최대 150,000자(Pro 3배 한도)까지 텍스트와 표를 추출합니다."""
     filename = uploaded_file.name.lower()
     try:
         if filename.endswith((".xlsx", ".xls")):
@@ -102,15 +103,15 @@ def extract_file_content(uploaded_file) -> str:
             for sheet in excel_file.sheet_names:
                 df = excel_file.parse(sheet)
                 text_parts.append(f"\n--- 시트명: {sheet} (총 {len(df)}행) ---")
-                text_parts.append(df.head(500).to_string(index=False))
-            return "\n".join(text_parts)[:MAX_DOC_CHARS]
+                text_parts.append(df.head(1500).to_string(index=False))
+            return "\n".join(text_parts)[:MAX_DOC_CHARS_PRO]
 
         elif filename.endswith(".csv"):
             for enc in ["utf-8-sig", "utf-8", "cp949", "euc-kr"]:
                 try:
                     uploaded_file.seek(0)
                     df = pd.read_csv(uploaded_file, encoding=enc)
-                    return (f"[첨부 CSV 파일명: {uploaded_file.name} (총 {len(df)}행)]\n" + df.head(500).to_string(index=False))[:MAX_DOC_CHARS]
+                    return (f"[첨부 CSV 파일명: {uploaded_file.name} (총 {len(df)}행)]\n" + df.head(1500).to_string(index=False))[:MAX_DOC_CHARS_PRO]
                 except Exception:
                     continue
             return "❌ CSV 파일의 한글 인코딩을 읽을 수 없습니다. 엑셀(.xlsx)로 저장 후 다시 올려주세요."
@@ -118,10 +119,10 @@ def extract_file_content(uploaded_file) -> str:
         elif filename.endswith(".pdf"):
             reader = PdfReader(uploaded_file)
             text_parts = [f"[첨부 PDF 파일명: {uploaded_file.name} (총 {len(reader.pages)}페이지)]"]
-            for idx, page in enumerate(reader.pages[:50]):
+            for idx, page in enumerate(reader.pages[:150]):
                 page_text = page.extract_text() or ""
                 text_parts.append(f"\n--- {idx+1}페이지 ---\n{page_text}")
-            return "\n".join(text_parts)[:MAX_DOC_CHARS]
+            return "\n".join(text_parts)[:MAX_DOC_CHARS_PRO]
 
         elif filename.endswith(".docx"):
             doc = Document(uploaded_file)
@@ -139,7 +140,7 @@ def extract_file_content(uploaded_file) -> str:
                         row_cells = [cell.text.strip().replace("\n", " ") for cell in row.cells]
                         text_parts.append(" | ".join(row_cells))
                         
-            return "\n".join(text_parts)[:MAX_DOC_CHARS]
+            return "\n".join(text_parts)[:MAX_DOC_CHARS_PRO]
 
         return "지원하지 않는 파일 형식입니다."
     except Exception as e:
@@ -197,7 +198,6 @@ def create_word_docx(report_text: str) -> bytes:
                 row_s = lines[i].strip()
                 if not (row_s.startswith("|") and row_s.endswith("|")):
                     break
-                # 구분선(|---|---|)은 건너뜀
                 if not re.match(r"^\|[\s\-:|]+\|$", row_s):
                     cells = [re.sub(r"\*\*(.*?)\*\*", r"\1", c.strip()) for c in row_s.strip("|").split("|")]
                     table_rows.append(cells)
@@ -285,7 +285,6 @@ def create_printable_html(report_text: str) -> bytes:
 
             rows_data = []
             for r_str in table_lines:
-                # |---|---| 형태의 구분선은 건너뜀
                 if re.match(r"^\|[\s\-:|]+\|$", r_str):
                     continue
                 cells = [c.strip() for c in r_str.strip("|").split("|")]
@@ -293,13 +292,11 @@ def create_printable_html(report_text: str) -> bytes:
 
             if rows_data:
                 t_html = ['<table class="report-table">']
-                # 첫 행은 헤더(th)
                 t_html.append("<thead><tr>")
                 for c in rows_data[0]:
                     esc_c = _format_inline_md(c.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
                     t_html.append(f"<th>{esc_c}</th>")
                 t_html.append("</tr></thead>")
-                # 나머지 행은 본문(td)
                 if len(rows_data) > 1:
                     t_html.append("<tbody>")
                     for r in rows_data[1:]:
@@ -313,10 +310,9 @@ def create_printable_html(report_text: str) -> bytes:
                 html_parts.append("".join(t_html))
             continue
 
-        # 일반 줄 HTML 이스케이프
         esc = stripped.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-        # 3) 제목 (#### -> h3, ###/## -> h2, # -> h1 순서로 매칭해 '#' 찌꺼기 원천 방지)
+        # 3) 제목 (#### -> h3, ###/## -> h2, # -> h1)
         if stripped.startswith("#### "):
             html_parts.append(f"<h3>{_format_inline_md(esc[5:])}</h3>")
         elif stripped.startswith("### "):
@@ -396,7 +392,6 @@ with st.sidebar:
     
     effective_ws_id = workspace_input.strip() if workspace_input.strip() else "default_public"
     
-    # 작업공간 ID가 처음 입력되었거나 변경된 경우 디스크에서 해당 작업공간 데이터 즉시 로드
     if st.session_state.get("loaded_workspace_id") != effective_ws_id:
         ws_data = load_workspace_from_disk(effective_ws_id)
         st.session_state.chat_rooms = ws_data["chat_rooms"]
@@ -436,7 +431,6 @@ with st.sidebar:
     )
     st.session_state.current_room = selected_room
     
-    # 현재 선택된 방의 이름(메모) 수정칸 (변경 즉시 디스크 자동 저장)
     new_title = st.text_input(
         "✏️ 현재 대화방 주제(메모) 설정",
         value=st.session_state.room_titles[selected_room],
@@ -510,11 +504,11 @@ with st.sidebar:
         
     st.divider()
     
-    # 📂 4) 방별 독립 파일 업로드
+    # 📂 4) 방별 독립 파일 업로드 (최대 150,000자 추출)
     st.subheader(f"📂 [{selected_room}] 전용 자료 업로드")
     reset_cnt = st.session_state.get(f"reset_cnt_{selected_room}", 0)
     uploaded_file = st.file_uploader(
-        "엑셀, PDF, 워드 파일을 올리면 이 방에 자동 보존됩니다.",
+        "엑셀, PDF, 워드 파일을 올리면 이 방에 자동 보존됩니다. (15,000자 이상 대용량 문서는 자동으로 Pro 3배 개방 모드가 작동합니다)",
         type=["xlsx", "xls", "csv", "pdf", "docx"],
         key=f"uploader_{effective_ws_id}_{selected_room}_{reset_cnt}"
     )
@@ -534,7 +528,8 @@ with st.sidebar:
     saved_file_text = st.session_state.room_files[selected_room]["text"]
     
     if saved_file_name:
-        st.success(f"📎 현재 유지 중인 파일: **{saved_file_name}** ({len(saved_file_text):,}자)")
+        pro_file_tag = " 🧠 [Pro 자동 전환 대상]" if len(saved_file_text) >= 15000 else ""
+        st.success(f"📎 현재 유지 중인 파일: **{saved_file_name}** ({len(saved_file_text):,}자){pro_file_tag}")
         if st.button("❌ 이 방의 첨부파일만 제거", key=f"remove_file_{selected_room}", use_container_width=True):
             st.session_state.room_files[selected_room] = {"name": None, "text": ""}
             st.session_state[f"reset_cnt_{selected_room}"] = reset_cnt + 1
@@ -551,7 +546,10 @@ current_room_title = st.session_state.room_titles[selected_room]
 current_file_info = st.session_state.room_files[selected_room]
 
 st.title(f"⚖️ 세무·법령·회계 자율 에이전트 — [{selected_room}: {current_room_title}]")
-st.markdown("왼쪽 상단에 **나만의 작업공간 코드**를 입력해 두면, 브라우저를 닫거나 다른 PC에서 접속해도 **1~10번 방의 모든 대화와 첨부파일이 실시간 자동 복원**됩니다.")
+st.markdown(
+    "💡 **모드 안내:** 일반 질의는 빠른 **Flash**로 작동하며, **① 질문 맨 앞에 `[프로]`를 입력**하거나 "
+    "**② 대용량 문서(15,000자 이상)를 첨부**하면 **Pro 심층 모드(데이터·도구 한도 3배 개방)**가 자동 가동됩니다."
+)
 
 for idx, message in enumerate(current_messages):
     with st.chat_message(message["role"]):
@@ -587,10 +585,8 @@ for idx, message in enumerate(current_messages):
                 )
 
 # 4. 사용자 질문 입력 및 실시간 자동 저장 처리
-# ⚠️ 핵심 패치: placeholder에 동적으로 바뀌는 current_room_title을 넣으면 첫 질문 직후 위젯 ID가 바뀌어
-# 두 번째 질문의 첫 엔터가 씹히는 스트림릿 버그가 발생하므로 고정 key와 고정 placeholder를 사용합니다.
 if prompt := st.chat_input(
-    placeholder=f"[{selected_room}] 검토할 세무·법령·회계 이슈를 입력하세요 (이전 대화 맥락이 자동으로 이어집니다)",
+    placeholder=f"[{selected_room}] 검토할 이슈를 입력하세요 (심층 3배 개방 검토는 맨 앞에 [프로] 입력)",
     key=f"chat_input_{effective_ws_id}_{selected_room}"
 ):
     has_attached_file = bool(current_file_info["name"] and current_file_info["text"])
@@ -601,16 +597,19 @@ if prompt := st.chat_input(
         st.session_state.room_titles[selected_room] = auto_title
         current_room_title = auto_title
 
+    is_pro_request = prompt.strip().startswith("[프로]") or (has_attached_file and len(current_file_info["text"]) >= 15000)
+    msg_char_cap = 24000 if is_pro_request else 8000
+
     history_context = ""
     if current_messages:
-        recent_msgs = current_messages[-6:]
+        # 하이브리드 대화 기억: 최초 1차 문답(사례 원본 2개)은 항상 보존하고 + 직전 3턴(6개)을 결합
+        recent_msgs = (current_messages[:2] + current_messages[-6:]) if len(current_messages) > 6 else current_messages
         history_lines = [
-            "[이 대화방의 직전 대화 맥락 — 사용자가 별도 수식어 없이 후속 질문이나 조건 변경만 말하더라도 반드시 아래 직전 질문·답변의 사례 금액, 토지/자산 정보, 계산 내역을 그대로 이어받아 답변할 것]"
+            "[이 대화방의 이전 대화 맥락 — 사용자가 별도 수식어 없이 후속 질문이나 조건 변경, 또는 '[프로] 다시 검토해 줘'라고 말하더라도 반드시 아래 직전 질문·답변의 사례 금액, 자산 정보, 계산 내역을 그대로 이어받아 답변할 것]"
         ]
         for m in recent_msgs:
             role_label = "사용자" if m["role"] == "user" else "에이전트"
-            # 직전 답변의 표와 계산 내역이 잘리지 않도록 8,000자까지 넉넉히 전달
-            history_lines.append(f"- {role_label}: {m['content'][:8000]}")
+            history_lines.append(f"- {role_label}: {m['content'][:msg_char_cap]}")
         history_context = "\n".join(history_lines) + "\n\n"
 
     current_messages.append({"role": "user", "content": display_prompt})
@@ -620,20 +619,27 @@ if prompt := st.chat_input(
         st.markdown(display_prompt)
 
     if has_attached_file:
+        doc_cap = MAX_DOC_CHARS_PRO if is_pro_request else MAX_DOC_CHARS_STANDARD
         full_input_for_agent = (
             f"{history_context}"
             f"[현재 사용자 질문]: {prompt}\n\n"
             f"아래는 사용자가 현재 대화방에 업로드한 첨부파일({current_file_info['name']})의 데이터입니다. "
             f"직전 대화 맥락과 이 파일 데이터를 바탕으로 관련 법령·예규·판례·환율을 정밀 대조하여 답변하세요:\n"
             f"========================================\n"
-            f"{current_file_info['text']}\n"
+            f"{current_file_info['text'][:doc_cap]}\n"
             f"========================================"
         )
     else:
         full_input_for_agent = f"{history_context}[현재 사용자 질문]: {prompt}" if history_context else prompt
 
+    spinner_msg = (
+        f"🧠 [{selected_room}] Pro 심층 모드 (데이터·도구 한도 3배 개방) 정밀 분석 중입니다..."
+        if is_pro_request else
+        f"🔍 [{selected_room}] 맥락 분석 및 3단계 크로스체크 중입니다..."
+    )
+
     with st.chat_message("assistant"):
-        with st.spinner(f"🔍 [{selected_room}] 맥락 분석 및 3단계 크로스체크 중입니다..."):
+        with st.spinner(spinner_msg):
             response = run_agent(
                 user_input=full_input_for_agent,
                 raw_query=prompt,
@@ -643,5 +649,4 @@ if prompt := st.chat_input(
             
     current_messages.append({"role": "assistant", "content": response})
     save_workspace_to_disk(effective_ws_id)
-    # 답변 저장 직후 즉시 화면 상태를 확정하여 다음 질문 첫 엔터가 씹히지 않도록 보장
     st.rerun()
