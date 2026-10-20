@@ -27,8 +27,6 @@ def _get_secret_or_env(key_name: str) -> str:
 def get_live_gemini_key_pool() -> list[tuple[str, str]]:
     """
     유료키만 사용합니다.
-    - 무료 한도는 키가 아니라 프로젝트 단위라 키를 늘려도 효과가 없고,
-      여러 프로젝트로 한도를 늘리는 방식은 '한도 우회'로 제재될 위험이 있어 무료키 사용을 중단했습니다.
     - GEMINI_PAID_KEY(기본) → GEMINI_API_KEY(예비, 다른 값일 때만) 순서로 사용합니다.
     """
     pool = []
@@ -43,29 +41,40 @@ def get_live_gemini_key_pool() -> list[tuple[str, str]]:
 import law_api
 
 # ---------------------------------------------------------
-# 🔎 근거 추적·검증
-#   - 이번 질문에서 도구가 실제로 돌려준 원문(목록/원문/조회한 조문 번호)을 기록하고,
-#   - 답변에 나온 ① 사건번호 ② 법령 조문 ③ 집행기준 번호 ④ [근거 표시] ⑤ 출처 없는 판례·예규 서술을
-#     조회 기록과 줄 단위로 대조합니다.
+# 🔎 근거 추적·검증 및 Pro 모드 3배 리미트 해제(Unleash) 동적 제어
 # ---------------------------------------------------------
 _TOOL_TRACE = contextvars.ContextVar("tool_trace", default=None)
 
-def _new_trace() -> dict:
-    return {"list": [], "detail": [], "articles": set(), "article_texts": {}, "counts": {}, "id_map": {}}
+def _new_trace(unleash: bool = False) -> dict:
+    return {
+        "list": [],
+        "detail": [],
+        "articles": set(),
+        "article_texts": {},
+        "counts": {},
+        "id_map": {},
+        "unleash": unleash
+    }
 
-# 질문 1건당 도구 사용 상한 (복합 법령 질문을 위해 법령 검색 7회, 원문 조회 12회로 설정)
+def _is_unleashed() -> bool:
+    trace = _TOOL_TRACE.get()
+    return bool(trace and trace.get("unleash"))
+
+# 기본(Flash) 1배 한도 vs Pro 모드 3배 개방(Unleash) 시 자동 곱셈 적용
 _SEARCH_LIMIT = {"law": 7, "prec": 3, "decc": 3, "expc": 2, "admrul": 2, "ordin": 2}
 _DETAIL_LIMIT = {"law": 12, "prec": 3, "decc": 3, "expc": 2, "admrul": 2, "ordin": 2}
 
 def _over_limit(kind: str, target: str) -> bool:
-    """kind: 'search' 또는 'detail'. 상한을 넘으면 True (넘지 않으면 횟수를 1 늘림)"""
+    """kind: 'search' 또는 'detail'. Pro(unleash) 모드일 때는 상한을 3배로 자동 확장합니다."""
     trace = _TOOL_TRACE.get()
     if trace is None:
         return False
+    mult = 3 if trace.get("unleash") else 1
     table = _SEARCH_LIMIT if kind == "search" else _DETAIL_LIMIT
     key = f"{kind}:{target}"
     used = trace["counts"].get(key, 0)
-    if used >= table.get(target, 2):
+    limit_val = table.get(target, 2) * mult
+    if used >= limit_val:
         return True
     trace["counts"][key] = used + 1
     return False
@@ -319,7 +328,6 @@ def _redact_lines(answer: str, violations: list[tuple]) -> str:
     for i, line in enumerate(answer.split("\n")):
         if i in bad:
             probs = bad[i]
-            # 단순 조문 약칭이나 일반 서술은 문장을 삭제하지 않고 그대로 통과시킴 (가짜 판례/심판례 사건번호만 차단)
             has_fake_case = any("판례·심판례" in p and "조회 기록 없음" in p for p in probs)
             if not has_fake_case:
                 out.append(line)
@@ -342,7 +350,12 @@ def _strip_md(text: str) -> str:
     return re.sub(r"[*_`>#]", "", text or "").strip(" -")
 
 def _extract_claims(answer: str, trace: dict, max_claims: int = 20) -> tuple[list, dict]:
-    """검증 대상 문장과 그 근거 원문을 뽑습니다. 반환: (claims, sources)"""
+    """검증 대상 문장과 그 근거 원문을 뽑습니다. Pro(unleash) 모드 시 검증 범위도 3배로 확장합니다."""
+    mult = 3 if trace.get("unleash") else 1
+    effective_max_claims = max_claims * mult
+    src_char_cap = 6000 * mult
+    total_char_cap = 40000 * mult
+
     details = trace["detail"]
     art_texts = trace.get("article_texts", {})
     sources, src_index = {}, {}
@@ -351,7 +364,7 @@ def _extract_claims(answer: str, trace: dict, max_claims: int = 20) -> tuple[lis
         if label not in src_index:
             sid = f"S{len(src_index) + 1}"
             src_index[label] = sid
-            sources[sid] = (label, text[:6000])
+            sources[sid] = (label, text[:src_char_cap])
         return src_index[label]
 
     claims = []
@@ -398,23 +411,22 @@ def _extract_claims(answer: str, trace: dict, max_claims: int = 20) -> tuple[lis
         src_ids = list(dict.fromkeys(src_ids))
         if src_ids and len(body) >= 15:
             claims.append({"line": i, "text": body[:400], "sources": src_ids})
-        if len(claims) >= max_claims:
+        if len(claims) >= effective_max_claims:
             break
 
-    # 이번에 조회한 다른 원문 및 정밀 계산기 산출 결과도 '참고 원문'으로 함께 제공
     total = sum(len(t) for _, t in sources.values())
     for key, txt in art_texts.items():
         label = _article_label(key)
-        if label not in src_index and total < 40000:
+        if label not in src_index and total < total_char_cap:
             _src_id(label, txt)
-            total += min(len(txt), 6000)
+            total += min(len(txt), src_char_cap)
     for idx, d in enumerate(details):
         head = d.split("\n", 1)[0][:55]
         if head in src_index:
             head = f"{head} (#{idx + 1})"
-        if total < 40000:
+        if total < total_char_cap:
             _src_id(head, d)
-            total += min(len(d), 6000)
+            total += min(len(d), src_char_cap)
     return claims, sources
 
 def _semantic_verify(api_key: str, claims: list, sources: dict, user_query: str = "") -> dict:
@@ -457,11 +469,8 @@ def _semantic_verify(api_key: str, claims: list, sources: dict, user_query: str 
             continue
     return result
 
-_TRUNC_MARK = ("[※ 원문", "앞부분만 표시", "앞 8개만 표시")
-
 def _apply_semantic_results(answer: str, claims: list, verdicts: dict, sources: dict = None) -> tuple[str, dict]:
-    """의미 검증 결과 반영: 별표(서식) 수치나 조문 요약 차이로 인해 멀쩡한 핵심 결론 문장이 삭제(unsupported)되거나
-    경고 꼬리표가 도배되지 않도록, 로그에만 기록하고 본문 문장은 온전히 보존합니다."""
+    """의미 검증 결과 반영: 별표(서식) 수치나 조문 요약 차이로 인해 핵심 결론 문장이 삭제되지 않도록 보존합니다."""
     counts = {"supported": 0, "partial": 0, "unsupported": 0, "unknown": 0}
     for n, c in enumerate(claims):
         verdict, reason = verdicts.get(n + 1, ("unknown", ""))
@@ -474,12 +483,12 @@ def _apply_semantic_results(answer: str, claims: list, verdicts: dict, sources: 
 
 
 # ---------------------------------------------------------
-# ✨ 법리 왜곡 0% 스마트 법령 텍스트 압축기 (토큰 50% 추가 절감)
+# ✨ 법리 왜곡 0% 스마트 법령 텍스트 압축기 (Pro 모드 시 3배 리미트 개방)
 # ---------------------------------------------------------
 def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
     """
-    법령·판례 원문에서 법리 해석과 무관한 개정 연혁 태그(<개정 ...>), 중복 공백,
-    타 조문 단순 인용구 등을 제거하여 단서·예외 규정 왜곡 없이 토큰만 최소화합니다.
+    법령·판례 원문에서 개정 연혁 태그(<개정 ...>), 중복 공백 등을 제거합니다.
+    Pro 모드(unleash=True)일 때는 조문 36,000자, 판례·예규 12,000자로 한도를 3배 개방합니다.
     """
     if not raw_text:
         return ""
@@ -487,6 +496,7 @@ def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
     cleaned = re.sub(r"<(개정|신설|타법개정|일부개정|전문개정)[^>]*>", "", raw_text)
     cleaned = re.sub(r"\[(전문개정\vert{}본조신설\vert{}제목개정\vert{}제\d+조에서 이동)[^\]]*\]", "", cleaned)
 
+    mult = 3 if _is_unleashed() else 1
     qf = query_filter.strip().replace(" ", "")
     if qf.startswith("제") and "조" in qf:
         blocks = cleaned.split("\n\n")
@@ -504,12 +514,13 @@ def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
         if exact_articles:
             cleaned = header + "\n\n" + "\n\n".join(exact_articles)
         else:
-            cleaned = header + "\n\n" + "\n\n".join(other_mentions[:3])
+            cleaned = header + "\n\n" + "\n\n".join(other_mentions[:3 * mult])
 
     cleaned = re.sub(r"[ \t]+", " ", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
 
-    limit = 12000 if (qf.startswith("제") and "조" in qf) else 3500
+    base_limit = 12000 if (qf.startswith("제") and "조" in qf) else 3500
+    limit = base_limit * mult
     if len(cleaned) > limit:
         return (cleaned[:limit]
                 + f"\n\n[※ 원문 {len(cleaned):,}자 중 {limit:,}자까지만 표시됨. 필요한 항이 없으면 "
@@ -517,7 +528,9 @@ def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
     return cleaned
 
 
-# 1. 모델 설정 (2026-09-18부터 2.5 계열은 신규 프로젝트에서 404 → 3.x로 전환)
+# ---------------------------------------------------------
+# 1. 모델 설정 및 개편된 3대 라우팅 프로토콜
+# ---------------------------------------------------------
 def _model_id(env_key: str, default: str) -> str:
     return _get_secret_or_env(env_key) or default
 
@@ -534,49 +547,59 @@ def _is_model_not_found(e: Exception) -> bool:
     s = str(e)
     return ("404" in s or "NOT_FOUND" in s) and "model" in s.lower()
 
-FORCE_PRO_TRIGGERS = ["[프로]", "[정밀검토]", "[심층검토]", "프로모드"]
+# [규칙 설정값] 언제든 숫자만 수정하여 감지 기준을 조절할 수 있습니다.
+LARGE_FILE_AUTO_PRO_CHARS = 15000   # 2번 규칙: 대용량 첨부파일 자동 Pro 전환 기준 (15,000자 이상)
+LONG_SIMUL_QUERY_CHARS    = 600     # 3번 규칙: 초장문 시뮬레이션 안내 기준 (600자 이상 + 시뮬레이션 키워드)
 
-DEEP_KEYWORDS = [
-    "합병", "분할", "세무조사", "조세심판", "부당행위계산", "가업승계",
-    "실질과세", "법인격", "명의신탁", "사기나 그 밖의 부정한", "조세범",
-    "뇌물방지법", "조세조약", "고정사업장", "이전가격", "불균등증자", "불균등감자"
+SIMUL_KEYWORDS = [
+    "시뮬레이션", "시나리오", "비교", "플랜", "부담부증여", "분할증여",
+    "일괄증여", "법인전환", "절세전략", "유불리", "실효세율"
 ]
 
-CALC_KEYWORDS = [
-    "시뮬레이션", "시나리오별", "실효세율 비교", "20년 플랜", "30년 플랜"
-]
+def select_optimal_model(user_query: str, has_file: bool = False, full_input_len: int = 0) -> tuple[str, str, str]:
+    """
+    개편된 3대 라우팅 프로토콜:
+    1. 질문 처음에 '[프로]'라고 입력했을 때 -> PRO 모드 ON (데이터·도구 한도 3배 개방)
+    2. 대용량 첨부파일(15,000자 이상)을 감지했을 때 -> PRO 모드 자동 ON (데이터·도구 한도 3배 개방)
+    3. 초장문(600자 이상 + 시뮬레이션 키워드) 감지 시 -> FLASH로 답변하되 상단에 '[프로]' 전환 필요성 안내 배지 출력
+    반환값: (tier_mode, mode_badge, recommend_pro_notice)
+    """
+    q_clean = (user_query or "").strip()
 
-def select_optimal_model(user_query: str, has_file: bool = False, full_input_len: int = 0) -> tuple[str, str]:
-    """평소 95% 이상은 Flash를 쓰고, 초대형 문서나 복합 고난도 쟁점일 때만 제한적으로 Pro를 선택합니다."""
-    for trigger in FORCE_PRO_TRIGGERS:
-        if trigger in user_query:
-            return "PRO", f"🧠 **[Pro 심층 모드]** 사용자 지정 정밀 검토 ({trigger})"
+    # 1. 질문 처음에 [프로]라고 입력했을 때 -> Pro ON (3배 개방)
+    if q_clean.startswith("[프로]"):
+        return (
+            "PRO",
+            "🧠 **[Pro 심층 모드 (데이터·도구 한도 3배 개방)]** 사용자 지정 정밀 검토 (`[프로]`)",
+            ""
+        )
 
-    if _get_secret_or_env("AUTO_PRO").lower() not in ("on", "true", "1"):
-        return "FLASH", "⚡ **[Flash 빠른 검토 모드]** 실무 표준 검토"
+    # 2. 대용량 첨부파일을 감지했을 때 -> Pro 자동 ON (3배 개방)
+    if has_file and full_input_len >= LARGE_FILE_AUTO_PRO_CHARS:
+        return (
+            "PRO",
+            f"🧠 **[Pro 심층 모드 자동 전환 (데이터·도구 한도 3배 개방)]** 대용량 첨부문서({full_input_len:,}자) 정밀 분석",
+            ""
+        )
 
-    if has_file and full_input_len >= 15000:
-        return "PRO", f"🧠 **[Pro 심층 모드 자동 전환]** 대용량 문서({full_input_len:,}자) 정밀 분석"
+    # 3. 초장문(600자 이상 + 시뮬레이션 키워드) 감지했을 때 -> Flash 실행 + Pro 전환 안내 문구 표시
+    matched_simul = [kw for kw in SIMUL_KEYWORDS if kw in q_clean]
+    if len(q_clean) >= LONG_SIMUL_QUERY_CHARS and len(matched_simul) >= 1:
+        kw_str = ", ".join(matched_simul[:3])
+        notice = (
+            f"> 💡 **[Pro 정밀검토 전환 안내]** 초장문({len(q_clean):,}자) 시뮬레이션 질의(감지 키워드: `{kw_str}`)가 확인되었습니다. "
+            "현재 답변은 표준 한도(Flash)로 빠르게 작성되었으며, **판례·예규 전문 독해 및 데이터·도구 한도 3배 개방(Unleash)**을 통한 "
+            "심층 재검토가 필요하시면 채팅창에 **`[프로] 방금 질문 다시 정밀 검토해 줘`**라고 입력해 주세요.\n"
+        )
+        return "FLASH", "⚡ **[Flash 빠른 검토 모드]** 실무 표준 검토", notice
 
-    matched_deep = [kw for kw in DEEP_KEYWORDS if kw in user_query]
-    if len(matched_deep) >= 2:
-        return "PRO", f"🧠 **[Pro 심층 모드 자동 전환]** 복합 고난도 쟁점 감지 ({', '.join(matched_deep[:3])})"
-
-    matched_calc = [kw for kw in CALC_KEYWORDS if kw in user_query]
-    if len(user_query.strip()) >= 500 and len(matched_calc) >= 1:
-        return "PRO", "🧠 **[Pro 심층 모드 자동 전환]** 초장문 복합 시뮬레이션 감지"
-
-    return "FLASH", "⚡ **[Flash 빠른 검토 모드]** 실무 표준 검토"
+    # 4. 기본 일반 질문
+    return "FLASH", "⚡ **[Flash 빠른 검토 모드]** 실무 표준 검토", ""
 
 # 2. Gemini 도구 정의
 def search_law_for_gemini(keyword: str, target: str = "law") -> str:
     """
     국가법령정보센터에서 법령, 판례, 행정규칙, 법령해석례, 조세심판원 재결례, 지방세 자치법규(조례) 목록과 일련번호(ID)를 검색합니다.
-    - target: 'law'(법령), 'prec'(판례), 'decc'(조세심판원 결정례 – 내부적으로 ttSpecialDecc 사용), 'admrul'(훈령·예규·고시), 'expc'(법령해석례), 'ordin'(지자체 조례)
-    - target='law'일 때 keyword에는 '법령명만' 넣을 것 (예: '소득세법', '소득세법 시행령', '조세특례제한법').
-      '업무용승용차' 같은 주제어는 keyword가 아니라 get_law_details_for_gemini의 query_filter(조문번호)로 찾을 것.
-    - target='prec'/'decc'/'expc'는 핵심 주제어(예: '업무무관 가지급금')나 사건번호(예: '2005두9415')로 검색할 것.
-      제목에 없으면 본문 검색으로 자동 재시도됨.
     """
     if _over_limit("search", target):
         print(f"\n[시스템] ⛔ 검색 한도 도달 → 차단: '{keyword}' (대상: {target})")
@@ -607,11 +630,12 @@ def search_law_for_gemini(keyword: str, target: str = "law") -> str:
     if isinstance(results, dict):
         results = [results]
 
+    top_n = 10 if _is_unleashed() else 5
     summary = ""
     if used_keyword != keyword:
         summary += f"※ '{keyword}' 검색 결과가 없어 '{used_keyword}'(으)로 재검색한 결과입니다.\n"
-    summary += f"총 {len(results)}건 검색됨 (상위 5건 요약):\n"
-    for i, item in enumerate(results[:5]):
+    summary += f"총 {len(results)}건 검색됨 (상위 {min(len(results), top_n)}건 요약):\n"
+    for i, item in enumerate(results[:top_n]):
         if target == "law":
             summary += f"{i+1}. [법령] {item.get('법령명한글')} | 공포번호: {item.get('공포번호')} | 시행일: {item.get('시행일자')} | ID: {item.get('법령일련번호')}\n"
         elif target == "prec":
@@ -687,7 +711,8 @@ def search_industry_code_for_gemini(keyword: str) -> str:
 def search_dart_corp_for_gemini(corp_name: str, bsns_year: str = "2025") -> str:
     """금융감독원 전자공시시스템(Open DART)에서 특정 기업의 6대 핵심 정보를 통합 조회합니다."""
     print(f"\n[시스템] 📊 DART 전자공시 통합 조회 가동: '{corp_name}' ({bsns_year}년)")
-    return _record("detail", law_api.get_dart_corp_info(corp_name, bsns_year)[:4000])
+    cap = 12000 if _is_unleashed() else 4000
+    return _record("detail", law_api.get_dart_corp_info(corp_name, bsns_year)[:cap])
 
 def check_nts_biz_status_for_gemini(biz_numbers: str) -> str:
     """국세청 API를 통해 사업자등록번호(10자리)의 납세자 상태(계속/휴폐업) 및 과세유형을 실시간 조회합니다."""
@@ -712,7 +737,6 @@ def search_official_land_price_for_gemini(address: str, stdr_year: str = "") -> 
     """
     국토교통부 브이월드(V-World) API를 통해 특정 지번/도로명 주소(예: '서울 강남구 대치동 316')의
     1) 토지 개별공시지가(원/㎡) 및 2) 공동주택 공시가격(기준시가)을 조회합니다.
-    양도소득세 환산취득가액 계산, 상증세 보충적 평가(기준시가), 보유세 시뮬레이션 시 호출하세요.
     """
     print(f"\n[시스템] 🏛️ 브이월드 공시지가·공동주택공시가격 조회 가동: 주소='{address}' | 기준연도='{stdr_year}'")
     if hasattr(law_api, "get_vworld_official_price"):
@@ -743,7 +767,7 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
 앞으로의 질문에 답변할 때는 반드시 먼저 제공된 도구(API)들을 사용하여 실제 원문 데이터와 통계를 확인한 뒤, 아래의 **[자료 검토 기준]**을 엄격히 준수하고, 반드시 **[A. 사전 3줄 크로스체크]**를 먼저 출력한 뒤 **[B. 최종 답변]**을 작성해줘.
 
 [필수 도구 호출 원칙]
-- **[핵심 조문 조회 원칙]**: 세법 질문은 **법률과 시행령의 해당 조문을 모두** 원문으로 조회한 뒤 답변할 것. 도구 호출은 필요한 만큼(보통 4~10회) 하되, **이미 결과를 받은 검색을 같은 검색어로 반복하지 말 것.**
+- **[핵심 조문 조회 원칙]**: 세법 질문은 **법률과 시행령의 해당 조문을 모두** 원문으로 조회한 뒤 답변할 것. 도구 호출은 필요한 만큼 하되, **이미 결과를 받은 검색을 같은 검색어로 반복하지 말 것.**
 - 법령 검색(search_law_for_gemini, target='law')의 keyword에는 **법령명만** 넣을 것 (예: '소득세법', '소득세법 시행령'). 주제어는 넣지 말 것.
 - 조회한 원문에서 직접 확인하지 못한 금액·비율·연도는 단정하지 말고 **"(원문 미확인)"**이라고 표시할 것.
 - **[근거 표시 의무]** 판례·심판례·해석례·예규·법령 조문을 근거로 쓰는 문장 끝에는 반드시 아래 형식의 근거 표시를 붙일 것(닫는 대괄호 ']'가 누락되지 않도록 주의). 시스템이 근거 표시를 도구 조회 기록과 자동 대조하며, **조회하지 않은 근거나 근거 표시 없는 판례·예규 서술은 자동 삭제됨.**
@@ -753,10 +777,9 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
 - **법령 조문 인용 규칙**: 답변에 법령명과 함께 적는 조문(예: 「법인세법」 제52조)은 반드시 get_law_details_for_gemini로 **그 조문을 조회한 것만** 쓸 것. 조회하지 않은 조문이 필요하면 먼저 조회할 것.
 - **답변에 시스템·도구·검증 절차·삭제 여부에 대한 언급을 절대 쓰지 말 것** (예: "시스템상 미조회 항목은 배제" 같은 문장 금지). 근거가 부족하면 "관련 원문을 확인하지 못했다"고만 쓸 것.
 - **법령명은 반드시 정식 명칭**으로 쓸 것 (예: 「상속세 및 증여세법」, 「조세특례제한법 시행령」).
-- 판례 검색 순서: 주제어로 목록 검색 → 결과 중 관련성 높은 1~2건의 ID로 원문 조회 → 그 내용만 인용. **판례 목록 검색은 질문당 최대 3회, 판례 원문 조회는 최대 3건**까지만 할 것.
 - **근거 표시는 그 문장의 내용이 실제로 해당 원문에 있을 때만** 붙일 것. 한 판례에 없는 내용을 그 판례 근거 표시로 묶지 말 것.
 - **따옴표(“ ”) 인용은 조회한 원문을 글자 그대로 옮길 때만** 사용하고, 요약·의역할 때는 따옴표를 쓰지 말 것. (시스템이 인용문을 원문과 글자 단위로 대조함)
-- **[수식 및 표 작성 규칙]**: 인쇄용 문서 출력 시 글자가 깨지는 LaTeX 수식 문법($$,$, \\frac, \\times, \\text 등)은 절대 사용하지 말고 일반 텍스트 기호(×, ÷, +, -, =)로만 깔끔하게 표기할 것. 마크다운 표를 작성할 때는 반드시 표 위아래로 빈 줄을 띄우고 헤더 구분선(| --- | --- |)을 정확히 작성할 것.
+- **[수식 및 표 작성 규칙]**: 인쇄용 문서 출력 시 글자가 깨지는 LaTeX 수식 문법($$, $, \\frac, \\times, \\text 등)은 절대 사용하지 말고 일반 텍스트 기호(×, ÷, +, -, =)로만 깔끔하게 표기할 것. 마크다운 표를 작성할 때는 반드시 표 위아래로 빈 줄을 띄우고 헤더 구분선(| --- | --- |)을 정확히 작성할 것.
 - 법령·판례·심판례·예규·지방세조례 확인: 'search_law_for_gemini'로 ID를 찾은 뒤 'get_law_details_for_gemini'(반드시 query_filter에 조문번호 입력)로 핵심 조문만 읽을 것.
 - 기업 공시·재무·지분·배당·출자 확인: 'search_dart_corp_for_gemini' 호출.
 - 사업자 상태(휴·폐업/과세유형) 및 진위확인: 'check_nts_biz_status_for_gemini' 또는 'verify_nts_biz_info_for_gemini' 호출.
@@ -808,18 +831,13 @@ def _clean_latex_for_export(text: str) -> str:
     if not text:
         return ""
     s = text
-    # 수식 블록 기호($$, $)를 가장 먼저 제거
     s = re.sub(r"\$\$(.*?)\$\$", r"\1", s, flags=re.DOTALL)
     s = re.sub(r"\$([^$\n]+)\$", r"\1", s)
-    # \text{원} -> 원, \frac{A}{B} -> (A/B)
     s = re.sub(r"\\text(?:bf|rm|it)?\{([^}]*)\}", r"\1", s)
     s = re.sub(r"\\frac\{([^}]*)\}\{([^}]*)\}", r"(\1/\2)", s)
-    # 모든 백슬래시 연산자 치환 (\times, \div, \cdot, \% 등)
     s = s.replace(r"\times", " × ").replace(r"\div", " ÷ ").replace(r"\cdot", "·")
     s = s.replace(r"\%", "%").replace(r"\_", "_").replace(r"\,", ",")
-    # 남은 불필요한 백슬래시 명령어 제거
     s = re.sub(r"\\(left|right|quad|qquad|mathrm|mathbf)\b", "", s)
-    # 3번 패치: [조문:국민연금법 제88조 (법정 상한액... 처럼 닫는 대괄호 ']'가 누락된 오타 자동 복구
     s = re.sub(r"(\[(?:조문|판례|심판례|해석례|예규)\s*:\s*[^\]\n(]+?)\s+(\()", r"\1] \2", s)
     return s
 
@@ -845,10 +863,21 @@ def extract_safe_text(response) -> str:
         pass
     return "\n".join(extracted_parts).strip()
 
-def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dynamic_prompt: str, tools_list: list, safety_settings: list) -> str:
-    """특정 API 키와 모델로 세션을 열어 답변을 받아옵니다."""
+def _execute_with_key_and_model(
+    api_key: str,
+    model_id: str,
+    user_input: str,
+    dynamic_prompt: str,
+    tools_list: list,
+    safety_settings: list,
+    unleash: bool = False
+) -> str:
+    """특정 API 키와 모델로 세션을 열어 답변을 받아옵니다. Pro(unleash=True) 모드 시 한도를 3배 개방합니다."""
+    timeout_ms = 120000 if unleash else 60000
+    max_remote_calls = 30 if unleash else 16
+
     try:
-        temp_client = genai.Client(api_key=api_key, http_options={"timeout": 60000})
+        temp_client = genai.Client(api_key=api_key, http_options={"timeout": timeout_ms})
     except Exception:
         temp_client = genai.Client(api_key=api_key)
 
@@ -859,11 +888,11 @@ def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dy
             system_instruction=dynamic_prompt,
             safety_settings=safety_settings,
             automatic_function_calling=types.AutomaticFunctionCallingConfig(
-                maximum_remote_calls=16
+                maximum_remote_calls=max_remote_calls
             )
         )
     )
-    trace_token = _TOOL_TRACE.set(_new_trace())
+    trace_token = _TOOL_TRACE.set(_new_trace(unleash=unleash))
     try:
         response = chat.send_message(user_input)
         final_text = extract_safe_text(response)
@@ -983,21 +1012,30 @@ def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dy
 
     return _clean_latex_for_export(final_text)
 
-# 4. 실행 순서(유료키 전용): 3.8-flash → 3.6-flash (PRO 모드는 Pro 모델 → Flash 백업)
+# 4. 실행 순서(유료키 전용): 3.8-flash → 3.6-flash (PRO 모드는 Pro 모델 + 3배 리미트 개방)
 def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> str:
     live_pool = get_live_gemini_key_pool()
     if not live_pool:
         return "❌ 설정된 Gemini 유료 API 키가 없습니다. .env 또는 Streamlit Secrets에 GEMINI_PAID_KEY를 넣어 주세요."
 
     query_for_routing = raw_query if raw_query else user_input
-    tier_mode, mode_badge = select_optimal_model(
+    tier_mode, mode_badge, recommend_pro_notice = select_optimal_model(
         user_query=query_for_routing,
         has_file=has_file,
         full_input_len=len(user_input)
     )
+    unleash_mode = (tier_mode == "PRO")
 
     today_str = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y년 %m월 %d일")
-    dynamic_prompt = f"[시스템 기준일 안내: 오늘 날짜는 {today_str}입니다. 질문에 등장하는 연도와 날짜의 과거/현재 여부를 반드시 오늘 날짜({today_str}) 기준으로 판단하세요.]\n\n" + SYSTEM_PROMPT
+    unleash_guide = (
+        "\n[🚀 PRO 3배 리미트 해제 모드 가동 중: 법령 검색 최대 21회, 원문 조회 최대 36회, 판례·심판례·예규 조회 최대 6~9회, "
+        "원문 길이 최대 36,000자까지 한도가 3배 확장되었습니다. 관련 법령 조문과 판례·예규의 구체적 사실관계(이유)까지 빠짐없이 깊이 있게 대조하여 작성하세요.]\n"
+        if unleash_mode else ""
+    )
+    dynamic_prompt = (
+        f"[시스템 기준일 안내: 오늘 날짜는 {today_str}입니다. 질문에 등장하는 연도와 날짜의 과거/현재 여부를 반드시 오늘 날짜({today_str}) 기준으로 판단하세요.]"
+        f"{unleash_guide}\n\n" + SYSTEM_PROMPT
+    )
 
     tools_list = [
         search_law_for_gemini,
@@ -1026,7 +1064,7 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> s
             for m in PAID_PRO_MODEL_IDS:
                 execution_plan.append((lbl, k, m, f"{mode_badge} *(🔑 {lbl} · {m})*"))
             for m in (FLASH_MODEL_ID, FLASH_BACKUP_ID):
-                execution_plan.append((lbl, k, m, f"⚡ **[Pro 실패 → Flash 백업]** *(🔑 {lbl} · {m})*"))
+                execution_plan.append((lbl, k, m, f"⚡ **[Pro 실패 → Flash 백업 (3배 리미트 개방 유지)]** *(🔑 {lbl} · {m})*"))
         else:
             for m in (FLASH_MODEL_ID, FLASH_BACKUP_ID):
                 execution_plan.append((lbl, k, m, f"{mode_badge} *(🔑 {lbl} · {m})*"))
@@ -1046,9 +1084,12 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> s
                     user_input=user_input,
                     dynamic_prompt=dynamic_prompt,
                     tools_list=tools_list,
-                    safety_settings=safety_settings
+                    safety_settings=safety_settings,
+                    unleash=unleash_mode
                 )
                 diag_header = f"> {final_badge}\n"
+                if recommend_pro_notice:
+                    diag_header += recommend_pro_notice
                 if diag_notes:
                     if _show_diag():
                         diag_header += f"> *(ℹ️ 앞선 시도 실패: {' | '.join(diag_notes)})*\n"
