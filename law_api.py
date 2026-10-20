@@ -1017,27 +1017,48 @@ def get_vworld_official_price(address_or_pnu: str, stdr_year: str = "") -> str:
 
     output = [f"🏛️ [국토교통부 브이월드 공시가격 통합 조회 | 주소: {resolved_addr} (PNU: {pnu})]"]
 
-    def _call_vworld_ned(ep_url: str, extra_params: dict) -> dict:
-        last_json = {}
-        for dom in ("https://ailaw-j.streamlit.app", "ailaw-j.streamlit.app", "http://localhost:8501", ""):
+    def _call_vworld_ned(ep_url: str, extra_params: dict) -> tuple[dict, str]:
+        last_err = ""
+        # 1순위: domain 파라미터 없이 호출 -> 2순위: 등록된 서비스URL들로 순차 호출
+        for dom in ("", "https://ailaw-j.streamlit.app", "ailaw-j.streamlit.app", "http://ailaw-j.streamlit.app"):
             p = {**extra_params}
             if dom:
                 p["domain"] = dom
             try:
                 r = requests.get(ep_url, params=p, timeout=10)
-                if r.status_code == 200:
-                    js = r.json()
-                    last_json = js
-                    if "indvdLandPrices" in js or "apartHousingPrices" in js:
-                        return js
-            except Exception:
+                if r.status_code != 200:
+                    last_err = f"HTTP {r.status_code}"
+                    continue
+                js = r.json()
+                # 정상 데이터 블록이 있고 field가 존재하면 즉시 반환
+                if "indvdLandPrices" in js:
+                    if js["indvdLandPrices"].get("field"):
+                        return js, ""
+                    rc = js["indvdLandPrices"].get("resultCode", "")
+                    rm = js["indvdLandPrices"].get("resultMsg", "")
+                    if rc or rm:
+                        last_err = f"{rc} {rm}".strip()
+                elif "apartHousingPrices" in js:
+                    if js["apartHousingPrices"].get("field"):
+                        return js, ""
+                    rc = js["apartHousingPrices"].get("resultCode", "")
+                    rm = js["apartHousingPrices"].get("resultMsg", "")
+                    if rc or rm:
+                        last_err = f"{rc} {rm}".strip()
+                elif "error" in js:
+                    err_obj = js.get("error") or {}
+                    last_err = f"{err_obj.get('code', '')}: {err_obj.get('text') or err_obj.get('message') or err_obj}"
+                elif "response" in js and js["response"].get("status") == "ERROR":
+                    err_obj = js["response"].get("error") or {}
+                    last_err = f"{err_obj.get('code', '')}: {err_obj.get('text', '')}"
+            except Exception as ex:
+                last_err = str(ex)
                 continue
-        return last_json
+        return {}, last_err
 
     req_years = re.findall(r"(?:19|20)\d{2}", stdr_year or "")
 
     # 1) 개별공시지가 조회 (getIndvdLandPriceAttr)
-    # 1필지의 1990~2026년 전체 공시지가는 최대 37건이므로 numOfRows=100으로 한 번에 전체 연도를 가져와 최신순 정렬
     try:
         land_url = "https://api.vworld.kr/ned/data/getIndvdLandPriceAttr"
         params = {
@@ -1047,14 +1068,13 @@ def get_vworld_official_price(address_or_pnu: str, stdr_year: str = "") -> str:
             "numOfRows": 100,
             "pageNo": 1
         }
-        l_res = _call_vworld_ned(land_url, params)
+        l_res, l_err = _call_vworld_ned(land_url, params)
         fields = l_res.get("indvdLandPrices", {}).get("field", [])
         if isinstance(fields, dict):
             fields = [fields]
 
         if fields:
             sorted_fields = sorted(fields, key=lambda x: str(x.get("stdrYear", "")), reverse=True)
-            # 사용자가 특정 연도(예: 2020)를 요청했으면 최근 10개년 + 요청 연도가 반드시 포함되도록 구성
             selected = sorted_fields[:12]
             for f in sorted_fields[12:]:
                 if str(f.get("stdrYear", "")) in req_years and f not in selected:
@@ -1068,7 +1088,8 @@ def get_vworld_official_price(address_or_pnu: str, stdr_year: str = "") -> str:
                 std_dt = f.get("pblntfDe", "-")
                 output.append(f"- [{yr}년 기준] {p_str} (공시일자: {std_dt})")
         else:
-            output.append("\n■ 1. 개별공시지가: 해당 필지의 개별공시지가 내역이 없습니다.")
+            note = f" (사유: {l_err})" if l_err else " (도로·공공용지 등 비과세 미공시 필지이거나 지번 확인 필요)"
+            output.append(f"\n■ 1. 개별공시지가: 해당 필지({pnu})의 공시지가 데이터가 조회되지 않았습니다.{note}")
     except Exception as e:
         output.append(f"\n■ 1. 개별공시지가 조회 오류: {e}")
 
@@ -1086,7 +1107,7 @@ def get_vworld_official_price(address_or_pnu: str, stdr_year: str = "") -> str:
                 "numOfRows": 30,
                 "pageNo": 1
             }
-            a_res = _call_vworld_ned(apt_url, a_params)
+            a_res, _ = _call_vworld_ned(apt_url, a_params)
             f_list = a_res.get("apartHousingPrices", {}).get("field", [])
             if isinstance(f_list, dict):
                 f_list = [f_list]
