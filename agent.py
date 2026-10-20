@@ -821,20 +821,21 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
 """
 
 def _clean_latex_for_export(text: str) -> str:
-    """인쇄용 문서(.html/PDF) 및 워드 출력 시 깨지는 LaTeX 수식 문법을 일반 텍스트 연산자로 정제합니다."""
+    """인쇄용 문서(.html/PDF) 및 워드 출력 시 깨지는 모든 LaTeX 수식 문법을 일반 텍스트로 정제합니다."""
     if not text:
         return ""
     s = text
-    # \text{원} -> 원, \textbf{...} -> ...
-    s = re.sub(r"\\text(?:bf|rm|it)?\{([^}]*)\}", r"\1", s)
-    # \frac{A}{B} -> (A/B)
-    s = re.sub(r"\\frac\{([^}]*)\}\{([^}]*)\}", r"(\1/\2)", s)
-    # 연산자 및 특수기호 치환
-    s = s.replace(r"\times", "×").replace(r"\div", "÷").replace(r"\cdot", "·")
-    s = s.replace(r"\%", "%").replace(r"\_", "_")
-    # 수식 블록 기호($$, $) 제거
+    # 수식 블록 기호($$, $)를 가장 먼저 제거
     s = re.sub(r"\$\$(.*?)\$\$", r"\1", s, flags=re.DOTALL)
     s = re.sub(r"\$([^$\n]+)\$", r"\1", s)
+    # \text{원} -> 원, \frac{A}{B} -> (A/B)
+    s = re.sub(r"\\text(?:bf|rm|it)?\{([^}]*)\}", r"\1", s)
+    s = re.sub(r"\\frac\{([^}]*)\}\{([^}]*)\}", r"(\1/\2)", s)
+    # 모든 백슬래시 연산자 치환 (\times, \div, \cdot, \% 등)
+    s = s.replace(r"\times", " × ").replace(r"\div", " ÷ ").replace(r"\cdot", "·")
+    s = s.replace(r"\%", "%").replace(r"\_", "_").replace(r"\,", ",")
+    # 남은 불필요한 백슬래시 명령어 제거
+    s = re.sub(r"\\(left|right|quad|qquad|mathrm|mathbf)\b", "", s)
     return s
 
 def extract_safe_text(response) -> str:
@@ -995,7 +996,7 @@ def _execute_with_key_and_model(api_key: str, model_id: str, user_input: str, dy
         print("[시스템] 📋 진단 정보(화면 미표시):" + diag.replace("\n> ", "\n   ").replace("\n\n---", ""))
     final_text = re.sub(r"\s*<br\s*/?>\s*", " / ", final_text)
 
-    return final_text
+    return _clean_latex_for_export(final_text)
 
 # 4. 실행 순서(유료키 전용): 3.8-flash → 3.6-flash (PRO 모드는 Pro 모델 → Flash 백업)
 def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> str:
