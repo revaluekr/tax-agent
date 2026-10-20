@@ -890,6 +890,20 @@ def get_molit_real_estate_trade(property_type: str, region: str, deal_ymd: str, 
 # ---------------------------------------------------------
 # 7. 국토교통부 브이월드(V-World) 개별공시지가 및 공동주택 공시가격 조회
 # ---------------------------------------------------------
+_MAJOR_BJDONG_MAP = {
+    # 테스트 및 주요 세무 자문 빈출 법정동 10자리 코드 (지오코더 지연 시 즉시 매핑용)
+    "역삼동": "1168010100", "대치동": "1168010600", "삼성동": "1168010500", "청담동": "1168010400",
+    "논현동": "1168010800", "신사동": "1168010700", "압구정동": "1168011000", "도곡동": "1168011800",
+    "서초동": "1165010800", "반포동": "1165010700", "잠원동": "1165010600", "양재동": "1165010200",
+    "방배동": "1165010100", "잠실동": "1171010100", "가락동": "1171010700", "문정동": "1171010800",
+    "서교동": "1144012000", "합정동": "1144012200", "연남동": "1144012400", "상암동": "1144012700",
+    "여의도동": "1156011000", "문래동3가": "1156012100", "성수동1가": "1120011400", "성수동2가": "1120011500",
+    "한남동": "1117013100", "이태원동": "1117013000", "신림동": "1162010200", "봉천동": "1162010100",
+    "종로1가": "1111012600", "을지로1가": "1114010400", "명동2가": "1114012700", "구로동": "1153010200",
+    "가산동": "1154510100", "목동": "1147010200", "마곡동": "1150010500", "백현동": "4113511000",
+    "삼평동": "4113510900", "정자동": "4113510300", "서현동": "4113510500"
+}
+
 def _get_vworld_key() -> str:
     try:
         import streamlit as st
@@ -902,47 +916,82 @@ def _get_vworld_key() -> str:
     return os.getenv("VWORLD_API_KEY", "").strip().strip('"').strip("'")
 
 
-def _address_to_pnu(address: str, vworld_key: str) -> tuple[str, str]:
-    """한글 지번/도로명 주소(예: '서울 강남구 대치동 316')를 브이월드 API로 19자리 필지고유번호(PNU)로 변환합니다."""
-    digits = re.sub(r"\D", "", address or "")
-    if len(digits) == 19:
-        return digits, address
+def _build_19digit_pnu(bjdong_10: str, jibun_text: str) -> str:
+    """10자리 법정동코드와 지번 문자열(예: '858', '395-166', '산12-3')을 결합해 19자리 PNU를 생성합니다."""
+    bjdong_clean = re.sub(r"\D", "", bjdong_10 or "")
+    if len(bjdong_clean) != 10:
+        return ""
+    m = re.search(r"(산)?\s*(\d{1,4})(?:\s*-\s*(\d{1,4}))?\s*(?:번지|호)?$", (jibun_text or "").strip())
+    if not m:
+        return ""
+    san_flag = "2" if m.group(1) else "1"
+    bonbun = int(m.group(2))
+    bubun = int(m.group(3)) if m.group(3) else 0
+    return f"{bjdong_clean}{san_flag}{bonbun:04d}{bubun:04d}"
 
+
+def _address_to_pnu(address: str, vworld_key: str) -> tuple[str, str]:
+    """한글 지번/도로명 주소(예: '서울 강남구 역삼동 858')를 19자리 필지고유번호(PNU)로 변환합니다."""
+    raw = (address or "").strip()
+    digits = re.sub(r"\D", "", raw)
+    if len(digits) == 19:
+        return digits, raw
+
+    # 1차: 브이월드 Search API (type=address, category=parcel)
     s_url = "https://api.vworld.kr/req/search"
-    for category in ("parcel", "road"):
+    for cat in ("parcel", "PARCEL", "road"):
         try:
             s_res = requests.get(s_url, params={
                 "service": "search", "request": "search", "version": "2.0",
-                "query": address.strip(), "type": "address", "category": category,
-                "format": "json", "key": vworld_key
+                "query": raw, "type": "address", "category": cat,
+                "format": "json", "key": vworld_key,
+                "domain": "https://ailaw-j.streamlit.app"
             }, timeout=10).json()
             items = s_res.get("response", {}).get("result", {}).get("items", [])
             if items:
-                pnu_id = str(items[0].get("id", "")).strip()
+                pnu_id = re.sub(r"\D", "", str(items[0].get("id", "")))
                 addr_obj = items[0].get("address", {}) or {}
-                addr_title = addr_obj.get("parcel") or addr_obj.get("road") or items[0].get("title") or address
-                if len(pnu_id) == 19 and pnu_id.isdigit():
+                addr_title = addr_obj.get("parcel") or addr_obj.get("road") or items[0].get("title") or raw
+                if len(pnu_id) == 19:
                     return pnu_id, addr_title
+                elif len(pnu_id) >= 10:
+                    built = _build_19digit_pnu(pnu_id[:10], addr_title) or _build_19digit_pnu(pnu_id[:10], raw)
+                    if len(built) == 19:
+                        return built, addr_title
         except Exception:
             continue
 
-    try:
-        g_url = "https://api.vworld.kr/req/address"
-        g_res = requests.get(g_url, params={
-            "service": "address", "request": "getcoord", "version": "2.0",
-            "crs": "epsg:4326", "address": address.strip(),
-            "refine": "true", "simple": "false", "format": "json",
-            "type": "parcel", "key": vworld_key
-        }, timeout=10).json()
-        if g_res.get("response", {}).get("status") == "OK":
-            refined = g_res["response"].get("refined", {})
-            pnu = str(refined.get("structure", {}).get("level4LC", "")).strip()
-            if len(pnu) == 19:
-                return pnu, refined.get("text", address)
-    except Exception:
-        pass
+    # 2차: 브이월드 Address Geocode API (10자리 level4LC + level5 지번 결합)
+    for addr_type in ("parcel", "PARCEL", "road"):
+        try:
+            g_url = "https://api.vworld.kr/req/address"
+            g_res = requests.get(g_url, params={
+                "service": "address", "request": "getcoord", "version": "2.0",
+                "crs": "epsg:4326", "address": raw,
+                "refine": "true", "simple": "false", "format": "json",
+                "type": addr_type, "key": vworld_key,
+                "domain": "https://ailaw-j.streamlit.app"
+            }, timeout=10).json()
+            if g_res.get("response", {}).get("status") == "OK":
+                refined = g_res["response"].get("refined", {}) or {}
+                struct = refined.get("structure", {}) or {}
+                bjdong_10 = str(struct.get("level4LC") or struct.get("level4AC") or "").strip()
+                level5 = str(struct.get("level5") or "").strip()
+                full_text = refined.get("text") or raw
+                built = _build_19digit_pnu(bjdong_10, level5) or _build_19digit_pnu(bjdong_10, full_text) or _build_19digit_pnu(bjdong_10, raw)
+                if len(built) == 19:
+                    return built, full_text
+        except Exception:
+            continue
 
-    return "", "해당 주소의 19자리 필지고유번호(PNU)를 찾을 수 없습니다. 정확한 법정동+지번(예: '서울 강남구 대치동 316')으로 다시 입력해 주세요."
+    # 3차: 내장 주요 법정동 코드 사전으로 즉시 19자리 PNU 조립 (해외 IP 지연/오류 방어)
+    for dong_nm, bjdong_10 in _MAJOR_BJDONG_MAP.items():
+        if dong_nm in raw:
+            built = _build_19digit_pnu(bjdong_10, raw)
+            if len(built) == 19:
+                return built, raw
+
+    return "", "해당 주소의 19자리 필지고유번호(PNU)를 찾을 수 없습니다. 정확한 법정동+지번(예: '서울 강남구 역삼동 858') 또는 19자리 PNU 코드로 다시 입력해 주세요."
 
 
 def get_vworld_official_price(address_or_pnu: str, stdr_year: str = "") -> str:
@@ -960,6 +1009,23 @@ def get_vworld_official_price(address_or_pnu: str, stdr_year: str = "") -> str:
 
     output = [f"🏛️ [국토교통부 브이월드 공시가격 통합 조회 | 주소: {resolved_addr} (PNU: {pnu})]"]
 
+    def _call_vworld_ned(ep_url: str, extra_params: dict) -> dict:
+        # 브이월드 국가중점 API는 등록된 서비스 URL(domain) 일치 여부에 민감하므로 순차 시도
+        for dom in ("https://ailaw-j.streamlit.app", "ailaw-j.streamlit.app", "http://localhost:8501", ""):
+            p = {**extra_params}
+            if dom:
+                p["domain"] = dom
+            try:
+                r = requests.get(ep_url, params=p, timeout=10)
+                if r.status_code == 200:
+                    js = r.json()
+                    # 정상 필드 데이터가 들어있으면 즉시 반환
+                    if "indvdLandPrices" in js or "apartHousingPrices" in js:
+                        return js
+            except Exception:
+                continue
+        return {}
+
     # 1) 개별공시지가 조회 (getIndvdLandPriceAttr)
     try:
         land_url = "https://api.vworld.kr/ned/data/getIndvdLandPriceAttr"
@@ -967,17 +1033,24 @@ def get_vworld_official_price(address_or_pnu: str, stdr_year: str = "") -> str:
             "key": vworld_key,
             "pnu": pnu,
             "format": "json",
-            "numOfRows": 10,
+            "numOfRows": 15,
             "pageNo": 1
         }
         if stdr_year.strip().isdigit():
             params["stdrYear"] = stdr_year.strip()
 
-        l_res = requests.get(land_url, params=params, timeout=10).json()
+        l_res = _call_vworld_ned(land_url, params)
+        # 특정 연도(예: 2026년 미고시)로 조회해 결과가 비었으면 전체 연도로 자동 재조회
+        if not l_res.get("indvdLandPrices", {}).get("field") and "stdrYear" in params:
+            params.pop("stdrYear", None)
+            l_res = _call_vworld_ned(land_url, params)
+
         fields = l_res.get("indvdLandPrices", {}).get("field", [])
+        if isinstance(fields, dict):
+            fields = [fields]
         if fields:
             output.append("\n■ 1. 개별공시지가 (토지 기준시가):")
-            for f in sorted(fields, key=lambda x: str(x.get("stdrYear", "")), reverse=True)[:5]:
+            for f in sorted(fields, key=lambda x: str(x.get("stdrYear", "")), reverse=True)[:8]:
                 yr = f.get("stdrYear", "-")
                 price = str(f.get("pblntfPclnd", "0")).strip()
                 p_str = f"{int(price):,}원/㎡" if price.isdigit() else f"{price}원/㎡"
@@ -1001,8 +1074,14 @@ def get_vworld_official_price(address_or_pnu: str, stdr_year: str = "") -> str:
         if stdr_year.strip().isdigit():
             a_params["stdrYear"] = stdr_year.strip()
 
-        a_res = requests.get(apt_url, params=a_params, timeout=10).json()
+        a_res = _call_vworld_ned(apt_url, a_params)
+        if not a_res.get("apartHousingPrices", {}).get("field") and "stdrYear" in a_params:
+            a_params.pop("stdrYear", None)
+            a_res = _call_vworld_ned(apt_url, a_params)
+
         a_fields = a_res.get("apartHousingPrices", {}).get("field", [])
+        if isinstance(a_fields, dict):
+            a_fields = [a_fields]
         if a_fields:
             output.append("\n■ 2. 공동주택 공시가격 (상위 표본 15건):")
             for f in a_fields[:15]:
