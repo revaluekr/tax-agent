@@ -603,7 +603,7 @@ if prompt := st.chat_input(
 
     history_context = ""
     if current_messages:
-        recent_msgs = current_messages[-6:]
+        recent_msgs = current_messages[-10:]
         history_lines = [
             "[이 대화방의 직전 대화 맥락 — 사용자가 별도 수식어 없이 후속 질문이나 조건 변경만 말하더라도 반드시 아래 직전 질문·답변의 사례 금액, 토지/자산 정보, 계산 내역을 그대로 이어받아 답변할 것]"
         ]
