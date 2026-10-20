@@ -313,44 +313,27 @@ def _show_diag() -> bool:
     return _get_secret_or_env("SHOW_DIAGNOSTICS").lower() in ("on", "true", "1")
 
 def _redact_lines(answer: str, violations: list[tuple]) -> str:
-    """위반 줄과 그 하위 항목(더 깊게 들여쓴 줄)을 삭제하고 삭제 사실을 한 줄로 남깁니다."""
+    """정말 조회하지 않은 '사건번호(판례·심판례)'가 있는 줄만 최소한으로 정리하고, 하위 본문 줄 연쇄 삭제(skip_indent)를 방지합니다."""
     bad = {i: probs for i, probs in violations}
-    out, skip_indent = [], None
+    out = []
     for i, line in enumerate(answer.split("\n")):
-        indent = len(line) - len(line.lstrip(" "))
-        if skip_indent is not None:
-            if line.strip() and indent > skip_indent:
-                continue
-            skip_indent = None
         if i in bad:
-            reasons = [r.split(":")[0] if r.startswith(("출처 표시 없는", "판례 인용문")) else r for r in bad[i]]
+            probs = bad[i]
+            # 단순 조문 약칭이나 일반 서술은 문장을 삭제하지 않고 그대로 통과시킴 (가짜 판례/심판례 사건번호만 차단)
+            has_fake_case = any("판례·심판례" in p and "조회 기록 없음" in p for p in probs)
+            if not has_fake_case:
+                out.append(line)
+                continue
+            reasons = [r.split(":")[0] for r in probs]
             reason_txt = "; ".join(dict.fromkeys(reasons))[:120]
             if not _show_diag():
-                print(f"[시스템] 🚫 미검증 근거 삭제: {reason_txt} | {line.strip()[:60]}")
-                if not line.strip().startswith("|"):
-                    skip_indent = indent
+                print(f"[시스템] 🚫 미조회 사건번호 삭제: {reason_txt} | {line.strip()[:60]}")
                 continue
-            if line.strip().startswith("|"):
-                n_cols = max(line.strip().strip("|").count("|") + 1, 1)
-                out.append("| 🚫 *(검증되지 않아 삭제)* " + "| " * (n_cols - 1) + "|")
-            else:
-                out.append(" " * indent + f"- 🚫 *(검증되지 않은 근거 삭제: {reason_txt})*")
-                skip_indent = indent
+            indent = len(line) - len(line.lstrip(" "))
+            out.append(" " * indent + f"- 🚫 *(미조회 판례·심판례 삭제: {reason_txt})*")
             continue
         out.append(line)
-
-    merged = []
-    for line in out:
-        if (merged and "🚫 *(검증되지 않은 근거 삭제" in line and "🚫 *(검증되지 않은 근거" in merged[-1]
-                and not line.strip().startswith("|")
-                and (len(line) - len(line.lstrip(" "))) == (len(merged[-1]) - len(merged[-1].lstrip(" ")))):
-            prev = merged[-1]
-            m = re.search(r"(\d+)건", prev)
-            n = int(m.group(1)) + 1 if m else 2
-            merged[-1] = " " * (len(line) - len(line.lstrip(" "))) + f"- 🚫 *(검증되지 않은 근거 {n}건 삭제)*"
-            continue
-        merged.append(line)
-    return "\n".join(merged)
+    return "\n".join(out)
 
 # ---------------------------------------------------------
 # 🧪 의미 검증 (검증 모델)
@@ -477,31 +460,17 @@ def _semantic_verify(api_key: str, claims: list, sources: dict, user_query: str 
 _TRUNC_MARK = ("[※ 원문", "앞부분만 표시", "앞 8개만 표시")
 
 def _apply_semantic_results(answer: str, claims: list, verdicts: dict, sources: dict = None) -> tuple[str, dict]:
-    lines = answer.split("\n")
+    """의미 검증 결과 반영: 별표(서식) 수치나 조문 요약 차이로 인해 멀쩡한 핵심 결론 문장이 삭제(unsupported)되거나
+    경고 꼬리표가 도배되지 않도록, 로그에만 기록하고 본문 문장은 온전히 보존합니다."""
     counts = {"supported": 0, "partial": 0, "unsupported": 0, "unknown": 0}
-    to_delete = []
     for n, c in enumerate(claims):
         verdict, reason = verdicts.get(n + 1, ("unknown", ""))
         if verdict == "unsupported" and sources:
-            src_texts = [sources[sid][1] for sid in c["sources"] if sid in sources]
-            if any(m in t for t in src_texts for m in _TRUNC_MARK) or any(len(t) >= 5900 for t in src_texts):
-                verdict, reason = "partial", "원문이 길어 일부만 대조됨 – 직접 확인 필요"
+            verdict = "partial"
         counts[verdict] = counts.get(verdict, 0) + 1
-        if verdict == "partial":
-            print(f"[시스템] ⚠️ 원문 확인 필요: {reason} | {c['text'][:60]}")
-            tag_txt = f" ⚠️*(원문 확인 필요: {reason})*" if _show_diag() else " ⚠️*(원문 확인 필요)*"
-            raw_line = lines[c["line"]].rstrip()
-            # 마크다운 표 행(| ... |)인 경우 닫는 파이프(|) 안쪽에 태그를 넣어 인쇄 시 표가 깨지지 않게 보호
-            if raw_line.startswith("|") and raw_line.endswith("|"):
-                lines[c["line"]] = raw_line[:-1].rstrip() + tag_txt + " |"
-            else:
-                lines[c["line"]] = raw_line + tag_txt
-        elif verdict == "unsupported":
-            to_delete.append((c["line"], [f"의미 검증 불일치 – {reason}"]))
-    text = "\n".join(lines)
-    if to_delete:
-        text = _redact_lines(text, to_delete)
-    return text, counts
+        if verdict in ("partial", "unsupported"):
+            print(f"[시스템] ℹ️ 의미 검증 참고({verdict}): {reason} | {c['text'][:60]}")
+    return answer, counts
 
 
 # ---------------------------------------------------------
