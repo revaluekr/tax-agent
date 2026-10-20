@@ -146,10 +146,31 @@ def extract_file_content(uploaded_file) -> str:
         return f"❌ 파일 읽기 오류: {e}"
 
 # ---------------------------------------------------------
-# 헬퍼 함수 2: AI 답변을 워드(.docx)로 변환 (한글 폰트 깨짐 방지 적용)
+# 공통 정제 도우미: 기존 대화 내역에 남아있는 LaTeX 수식 기호까지 깔끔하게 정리
 # ---------------------------------------------------------
+def _sanitize_math_text(text: str) -> str:
+    if not text:
+        return ""
+    s = text
+    s = re.sub(r"\$\$(.*?)\$\$", r"\1", s, flags=re.DOTALL)
+    s = re.sub(r"\$([^$\n]+)\$", r"\1", s)
+    s = re.sub(r"\\text(?:bf|rm|it)?\{([^}]*)\}", r"\1", s)
+    s = re.sub(r"\\frac\{([^}]*)\}\{([^}]*)\}", r"(\1/\2)", s)
+    s = s.replace(r"\times", " × ").replace(r"\div", " ÷ ").replace(r"\cdot", "·")
+    s = s.replace(r"\%", "%").replace(r"\_", "_").replace(r"\,", ",")
+    s = re.sub(r"\\(left|right|quad|qquad|mathrm|mathbf)\b", "", s)
+    return s
+
+# ---------------------------------------------------------
+# 헬퍼 함수 2: AI 답변을 워드(.docx)로 변환 (한글 폰트 + 마크다운 표 변환 지원)
+# ---------------------------------------------------------
+def _set_malgun_font(run):
+    run.font.name = "Malgun Gothic"
+    run._element.rPr.rFonts.set(qn("w:eastAsia"), "Malgun Gothic")
+
 def create_word_docx(report_text: str) -> bytes:
-    """마크다운 형식의 보고서 텍스트를 한글 폰트(맑은 고딕)가 적용된 워드(.docx) 문서로 변환합니다."""
+    """마크다운 형식의 보고서 텍스트와 표를 한글 폰트(맑은 고딕)가 적용된 워드(.docx) 문서로 변환합니다."""
+    report_text = _sanitize_math_text(report_text)
     doc = Document()
     
     style = doc.styles["Normal"]
@@ -159,28 +180,61 @@ def create_word_docx(report_text: str) -> bytes:
     
     title = doc.add_heading("세무·법령·회계 전문 검토 보고서", level=0)
     for run in title.runs:
-        run.font.name = "Malgun Gothic"
-        run._element.rPr.rFonts.set(qn("w:eastAsia"), "Malgun Gothic")
+        _set_malgun_font(run)
     
-    for line in report_text.split("\n"):
-        stripped = line.strip()
+    lines = report_text.split("\n")
+    i = 0
+    while i < len(lines):
+        stripped = lines[i].strip()
         if not stripped:
+            i += 1
             continue
-        
+
+        # 마크다운 표(| ... |) 감지 및 워드 표(Table)로 변환
+        if stripped.startswith("|") and stripped.endswith("|"):
+            table_rows = []
+            while i < len(lines):
+                row_s = lines[i].strip()
+                if not (row_s.startswith("|") and row_s.endswith("|")):
+                    break
+                # 구분선(|---|---|)은 건너뜀
+                if not re.match(r"^\|[\s\-:|]+\|$", row_s):
+                    cells = [re.sub(r"\*\*(.*?)\*\*", r"\1", c.strip()) for c in row_s.strip("|").split("|")]
+                    table_rows.append(cells)
+                i += 1
+            if table_rows:
+                max_cols = max(len(r) for r in table_rows)
+                t = doc.add_table(rows=len(table_rows), cols=max_cols)
+                t.style = "Table Grid"
+                for r_idx, r_data in enumerate(table_rows):
+                    for c_idx, val in enumerate(r_data):
+                        cell = t.cell(r_idx, c_idx)
+                        cell.text = val
+                        for p in cell.paragraphs:
+                            for run in p.runs:
+                                _set_malgun_font(run)
+                                if r_idx == 0:
+                                    run.bold = True
+            continue
+
         clean_line = re.sub(r"\*\*(.*?)\*\*", r"\1", stripped)
         
-        if stripped.startswith("### ") or stripped.startswith("## "):
+        if stripped.startswith("#### "):
+            h = doc.add_heading(clean_line.replace("#### ", ""), level=2)
+            for run in h.runs:
+                _set_malgun_font(run)
+        elif stripped.startswith("### ") or stripped.startswith("## "):
             heading_text = clean_line.replace("### ", "").replace("## ", "")
             h = doc.add_heading(heading_text, level=1)
             for run in h.runs:
-                run.font.name = "Malgun Gothic"
-                run._element.rPr.rFonts.set(qn("w:eastAsia"), "Malgun Gothic")
+                _set_malgun_font(run)
         elif stripped.startswith("- ") or stripped.startswith("* "):
             p = doc.add_paragraph(clean_line[2:], style="List Bullet")
             p.paragraph_format.space_after = Pt(4)
         else:
             p = doc.add_paragraph(clean_line)
             p.paragraph_format.space_after = Pt(6)
+        i += 1
             
     buffer = io.BytesIO()
     doc.save(buffer)
@@ -188,14 +242,104 @@ def create_word_docx(report_text: str) -> bytes:
     return buffer.getvalue()
 
 # ---------------------------------------------------------
-# 헬퍼 함수 3: 한글 깨짐 없는 인쇄용 문서(.html / PDF 변환용) 생성
+# 헬퍼 함수 3: 한글·표·수식 깨짐 없는 인쇄용 문서(.html / PDF 변환용) 생성
 # ---------------------------------------------------------
+def _format_inline_md(escaped_line: str) -> str:
+    """HTML 이스케이프된 한 줄 텍스트에 굵게(**), 기울임(*), 인라인 코드(`) 서식을 적용합니다."""
+    s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", escaped_line)
+    s = re.sub(r"\*(.+?)\*", r"<em>\1</em>", s)
+    s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
+    return s
+
 def create_printable_html(report_text: str) -> bytes:
-    """브라우저에서 열어 바로 인쇄하거나 PDF로 저장할 수 있는 UTF-8-SIG 인코딩 문서입니다."""
-    html_body = report_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    html_body = re.sub(r"### (.*)", r"<h2>\1</h2>", html_body)
-    html_body = re.sub(r"\*\*(.*?)\*\*", r"<strong>\1</strong>", html_body)
-    html_body = html_body.replace("\n", "<br>\n")
+    """마크다운 표, 소제목(####), 목록, 수식을 완벽한 HTML 태그로 변환하여 인쇄용 문서를 생성합니다."""
+    cleaned_text = _sanitize_math_text(report_text)
+    raw_lines = cleaned_text.split("\n")
+    html_parts = []
+    i = 0
+
+    while i < len(raw_lines):
+        line = raw_lines[i]
+        stripped = line.strip()
+
+        if not stripped:
+            html_parts.append('<div style="height: 8px;"></div>')
+            i += 1
+            continue
+
+        # 1) 구분선 (---)
+        if re.match(r"^-{3,}$", stripped):
+            html_parts.append("<hr>")
+            i += 1
+            continue
+
+        # 2) 마크다운 표 (| ... |) 블록 감지 -> HTML <table> 변환
+        if stripped.startswith("|") and stripped.endswith("|"):
+            table_lines = []
+            while i < len(raw_lines):
+                r_str = raw_lines[i].strip()
+                if not (r_str.startswith("|") and r_str.endswith("|")):
+                    break
+                table_lines.append(r_str)
+                i += 1
+
+            rows_data = []
+            for r_str in table_lines:
+                # |---|---| 형태의 구분선은 건너뜀
+                if re.match(r"^\|[\s\-:|]+\|$", r_str):
+                    continue
+                cells = [c.strip() for c in r_str.strip("|").split("|")]
+                rows_data.append(cells)
+
+            if rows_data:
+                t_html = ['<table class="report-table">']
+                # 첫 행은 헤더(th)
+                t_html.append("<thead><tr>")
+                for c in rows_data[0]:
+                    esc_c = _format_inline_md(c.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+                    t_html.append(f"<th>{esc_c}</th>")
+                t_html.append("</tr></thead>")
+                # 나머지 행은 본문(td)
+                if len(rows_data) > 1:
+                    t_html.append("<tbody>")
+                    for r in rows_data[1:]:
+                        t_html.append("<tr>")
+                        for c in r:
+                            esc_c = _format_inline_md(c.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+                            t_html.append(f"<td>{esc_c}</td>")
+                        t_html.append("</tr>")
+                    t_html.append("</tbody>")
+                t_html.append("</table>")
+                html_parts.append("".join(t_html))
+            continue
+
+        # 일반 줄 HTML 이스케이프
+        esc = stripped.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+        # 3) 제목 (#### -> h3, ###/## -> h2, # -> h1 순서로 매칭해 '#' 찌꺼기 원천 방지)
+        if stripped.startswith("#### "):
+            html_parts.append(f"<h3>{_format_inline_md(esc[5:])}</h3>")
+        elif stripped.startswith("### "):
+            html_parts.append(f"<h2>{_format_inline_md(esc[4:])}</h2>")
+        elif stripped.startswith("## "):
+            html_parts.append(f"<h2>{_format_inline_md(esc[3:])}</h2>")
+        elif stripped.startswith("# "):
+            html_parts.append(f"<h2>{_format_inline_md(esc[2:])}</h2>")
+        # 4) 상단 모드 배지 / 인용구 (> ...)
+        elif stripped.startswith(">"):
+            quote_body = _format_inline_md(re.sub(r"^&gt;\s*", "", esc))
+            html_parts.append(f'<div class="quote-box">{quote_body}</div>')
+        # 5) 불릿 및 번호 목록
+        elif stripped.startswith(("- ", "* ")):
+            indent_px = (len(line) - len(line.lstrip(" "))) * 10
+            html_parts.append(f'<div class="list-item" style="margin-left: {indent_px}px;">• {_format_inline_md(esc[2:])}</div>')
+        else:
+            indent_px = (len(line) - len(line.lstrip(" "))) * 10
+            html_parts.append(f'<div class="para-line" style="margin-left: {indent_px}px;">{_format_inline_md(esc)}</div>')
+
+        i += 1
+
+    html_body = "\n".join(html_parts)
     
     html_str = f"""<!DOCTYPE html>
 <html lang="ko">
@@ -203,11 +347,21 @@ def create_printable_html(report_text: str) -> bytes:
 <meta charset="UTF-8">
 <title>세무·법령·회계 검토 보고서</title>
 <style>
-    body {{ font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', 'NanumGothic', sans-serif; line-height: 1.7; color: #222; max-width: 850px; margin: 40px auto; padding: 20px; }}
-    h1 {{ border-bottom: 2px solid #1f4e78; padding-bottom: 10px; color: #1f4e78; }}
-    h2 {{ margin-top: 28px; color: #2e5cb8; border-left: 4px solid #2e5cb8; padding-left: 10px; }}
+    body {{ font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', 'NanumGothic', sans-serif; line-height: 1.75; color: #222; max-width: 880px; margin: 35px auto; padding: 20px; font-size: 14.5px; }}
+    h1 {{ border-bottom: 2px solid #1f4e78; padding-bottom: 10px; color: #1f4e78; font-size: 23px; }}
+    h2 {{ margin-top: 26px; margin-bottom: 10px; color: #1f4e78; border-left: 4px solid #2e5cb8; padding-left: 10px; font-size: 18px; }}
+    h3 {{ margin-top: 18px; margin-bottom: 8px; color: #2e5cb8; font-size: 16px; }}
+    hr {{ border: 0; border-top: 1px solid #d0d7de; margin: 20px 0; }}
+    .quote-box {{ background: #f6f8fa; border-left: 4px solid #8c959f; padding: 6px 12px; margin: 6px 0; color: #57606a; font-size: 13px; border-radius: 4px; }}
+    .list-item {{ margin: 4px 0; padding-left: 12px; text-indent: -12px; }}
+    .para-line {{ margin: 5px 0; }}
+    .report-table {{ width: 100%; border-collapse: collapse; margin: 14px 0 18px 0; font-size: 13.5px; }}
+    .report-table th, .report-table td {{ border: 1px solid #cbd5e1; padding: 8px 10px; text-align: left; vertical-align: top; }}
+    .report-table th {{ background-color: #f1f5f9; color: #1e293b; font-weight: bold; }}
+    .report-table tr:nth-child(even) td {{ background-color: #f8fafc; }}
+    code {{ background: #f1f5f9; padding: 2px 5px; border-radius: 4px; font-family: monospace; font-size: 13px; }}
     .print-guide {{ background: #f0f4f8; padding: 12px 16px; border-radius: 8px; margin-bottom: 25px; font-size: 14px; }}
-    @media print {{ .print-guide {{ display: none; }} body {{ margin: 0; }} }}
+    @media print {{ .print-guide {{ display: none; }} body {{ margin: 0; padding: 10px; }} }}
 </style>
 </head>
 <body>
@@ -255,7 +409,6 @@ with st.sidebar:
 
     if workspace_input.strip():
         st.success("🟢 전용 작업공간 실시간 자동 저장 중")
-        # 원클릭으로 작업공간 코드를 풀고 공용 모드로 나가는 심플 버튼!
         if st.button("🔒 코드 풀기 (잠금 / 나가기)", use_container_width=True):
             st.session_state.active_workspace_id = ""
             st.session_state.loaded_workspace_id = None
@@ -295,7 +448,7 @@ with st.sidebar:
         save_workspace_to_disk(effective_ws_id)
         st.rerun()
     
-    # 🗑️ 3) 비우기 버튼 설계 (현재 방 단일 비우기 vs 10개 방 초기화 / 작업공간 완전 파기)
+    # 🗑️ 3) 비우기 버튼 설계
     if st.button(f"🗑️ [{selected_room}] 현재 방만 비우기", use_container_width=True):
         st.session_state.chat_rooms[selected_room] = []
         st.session_state.room_files[selected_room] = {"name": None, "text": ""}
@@ -319,7 +472,6 @@ with st.sidebar:
                 save_workspace_to_disk(effective_ws_id)
                 st.rerun()
         with col_r2:
-            # 서버에 저장된 이 작업공간 파일(.json) 자체를 완전 삭제하고 코드도 풀어버리는 버튼
             if st.button("🔥 작업공간 파기", disabled=(not unlock_all_reset or not workspace_input.strip()), use_container_width=True):
                 delete_workspace_from_disk(effective_ws_id)
                 st.session_state.active_workspace_id = ""
