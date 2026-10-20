@@ -1006,6 +1006,7 @@ def get_vworld_official_price(address_or_pnu: str, stdr_year: str = "") -> str:
     """
     지번 주소 또는 19자리 PNU 코드를 입력받아 브이월드(V-World)에서
     1) 토지 개별공시지가(원/㎡) 및 2) 공동주택 공시가격을 통합 조회합니다.
+    (해외 클라우드 IP 방화벽 502 오류 방지를 위해 브라우저 헤더 및 2D 데이터 API 이중 백업 적용)
     """
     vworld_key = _get_vworld_key()
     if not vworld_key:
@@ -1017,48 +1018,97 @@ def get_vworld_official_price(address_or_pnu: str, stdr_year: str = "") -> str:
 
     output = [f"🏛️ [국토교통부 브이월드 공시가격 통합 조회 | 주소: {resolved_addr} (PNU: {pnu})]"]
 
+    # 브이월드 방화벽(WAF)의 python-requests 차단 및 502 방지를 위한 정식 브라우저 헤더
+    browser_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Referer": "https://ailaw-j.streamlit.app/",
+        "Origin": "https://ailaw-j.streamlit.app"
+    }
+
     def _call_vworld_ned(ep_url: str, extra_params: dict) -> tuple[dict, str]:
         last_err = ""
-        # 1순위: domain 파라미터 없이 호출 -> 2순위: 등록된 서비스URL들로 순차 호출
-        for dom in ("", "https://ailaw-j.streamlit.app", "ailaw-j.streamlit.app", "http://ailaw-j.streamlit.app"):
+        # 신청서에 등록한 정식 URL('https://ailaw-j.streamlit.app')을 최우선으로 호출
+        for dom in ("https://ailaw-j.streamlit.app", "ailaw-j.streamlit.app", ""):
             p = {**extra_params}
             if dom:
                 p["domain"] = dom
-            try:
-                r = requests.get(ep_url, params=p, timeout=10)
-                if r.status_code != 200:
-                    last_err = f"HTTP {r.status_code}"
+            for scheme_url in (ep_url, ep_url.replace("https://", "http://")):
+                try:
+                    r = requests.get(scheme_url, params=p, headers=browser_headers, timeout=12)
+                    if r.status_code != 200:
+                        last_err = f"HTTP {r.status_code}"
+                        continue
+                    js = r.json()
+                    if "indvdLandPrices" in js:
+                        if js["indvdLandPrices"].get("field"):
+                            return js, ""
+                        rc = js["indvdLandPrices"].get("resultCode", "")
+                        rm = js["indvdLandPrices"].get("resultMsg", "")
+                        if rc or rm:
+                            last_err = f"{rc} {rm}".strip()
+                    elif "apartHousingPrices" in js:
+                        if js["apartHousingPrices"].get("field"):
+                            return js, ""
+                        rc = js["apartHousingPrices"].get("resultCode", "")
+                        rm = js["apartHousingPrices"].get("resultMsg", "")
+                        if rc or rm:
+                            last_err = f"{rc} {rm}".strip()
+                    elif "error" in js:
+                        err_obj = js.get("error") or {}
+                        last_err = f"{err_obj.get('code', '')}: {err_obj.get('text') or err_obj.get('message') or err_obj}"
+                    elif "response" in js and js["response"].get("status") == "ERROR":
+                        err_obj = js["response"].get("error") or {}
+                        last_err = f"{err_obj.get('code', '')}: {err_obj.get('text', '')}"
+                except Exception as ex:
+                    last_err = str(ex)
                     continue
-                js = r.json()
-                # 정상 데이터 블록이 있고 field가 존재하면 즉시 반환
-                if "indvdLandPrices" in js:
-                    if js["indvdLandPrices"].get("field"):
-                        return js, ""
-                    rc = js["indvdLandPrices"].get("resultCode", "")
-                    rm = js["indvdLandPrices"].get("resultMsg", "")
-                    if rc or rm:
-                        last_err = f"{rc} {rm}".strip()
-                elif "apartHousingPrices" in js:
-                    if js["apartHousingPrices"].get("field"):
-                        return js, ""
-                    rc = js["apartHousingPrices"].get("resultCode", "")
-                    rm = js["apartHousingPrices"].get("resultMsg", "")
-                    if rc or rm:
-                        last_err = f"{rc} {rm}".strip()
-                elif "error" in js:
-                    err_obj = js.get("error") or {}
-                    last_err = f"{err_obj.get('code', '')}: {err_obj.get('text') or err_obj.get('message') or err_obj}"
-                elif "response" in js and js["response"].get("status") == "ERROR":
-                    err_obj = js["response"].get("error") or {}
-                    last_err = f"{err_obj.get('code', '')}: {err_obj.get('text', '')}"
-            except Exception as ex:
-                last_err = str(ex)
-                continue
         return {}, last_err
+
+    def _call_vworld_2d_jiga_fallback(target_pnu: str) -> list[dict]:
+        """국가중점 API(ned/data)가 해외 IP에서 HTTP 502를 반환할 때 2D 데이터 API(연속지적도 LP_PA_CBND_BUBUN)로 공시지가를 백업 조회합니다."""
+        url_2d = "https://api.vworld.kr/req/data"
+        for dom in ("https://ailaw-j.streamlit.app", "ailaw-j.streamlit.app", ""):
+            params_2d = {
+                "service": "data",
+                "request": "GetFeature",
+                "data": "LP_PA_CBND_BUBUN",
+                "key": vworld_key,
+                "attrFilter": f"pnu:=:{target_pnu}",
+                "geometry": "false",
+                "format": "json"
+            }
+            if dom:
+                params_2d["domain"] = dom
+            try:
+                r = requests.get(url_2d, params=params_2d, headers=browser_headers, timeout=10)
+                if r.status_code == 200:
+                    js = r.json()
+                    features = (
+                        js.get("response", {})
+                        .get("result", {})
+                        .get("featureCollection", {})
+                        .get("features", [])
+                    )
+                    if features:
+                        props = features[0].get("properties", {}) or {}
+                        jiga = str(props.get("jiga", "")).strip()
+                        gosi_yr = str(props.get("gosi_year", "")).strip()
+                        gosi_mn = str(props.get("gosi_month", "")).strip()
+                        if jiga and jiga.isdigit():
+                            return [{
+                                "stdrYear": gosi_yr or "최신",
+                                "pblntfPclnd": jiga,
+                                "pblntfDe": f"{gosi_yr}-{gosi_mn.zfill(2)}" if gosi_yr and gosi_mn else "연속지적도 고시"
+                            }]
+            except Exception:
+                continue
+        return []
 
     req_years = re.findall(r"(?:19|20)\d{2}", stdr_year or "")
 
-    # 1) 개별공시지가 조회 (getIndvdLandPriceAttr)
+    # 1) 개별공시지가 조회 (1차: getIndvdLandPriceAttr -> 2차 백업: 2D Data API LP_PA_CBND_BUBUN)
     try:
         land_url = "https://api.vworld.kr/ned/data/getIndvdLandPriceAttr"
         params = {
@@ -1072,6 +1122,10 @@ def get_vworld_official_price(address_or_pnu: str, stdr_year: str = "") -> str:
         fields = l_res.get("indvdLandPrices", {}).get("field", [])
         if isinstance(fields, dict):
             fields = [fields]
+
+        # 국가중점 API가 502 등으로 실패한 경우 2D 데이터 API로 즉시 백업 조회!
+        if not fields:
+            fields = _call_vworld_2d_jiga_fallback(pnu)
 
         if fields:
             sorted_fields = sorted(fields, key=lambda x: str(x.get("stdrYear", "")), reverse=True)
@@ -1088,7 +1142,7 @@ def get_vworld_official_price(address_or_pnu: str, stdr_year: str = "") -> str:
                 std_dt = f.get("pblntfDe", "-")
                 output.append(f"- [{yr}년 기준] {p_str} (공시일자: {std_dt})")
         else:
-            note = f" (사유: {l_err})" if l_err else " (도로·공공용지 등 비과세 미공시 필지이거나 지번 확인 필요)"
+            note = f" (사유: {l_err})" if l_err else " (해외 클라우드 IP 차단 또는 미공시 필지)"
             output.append(f"\n■ 1. 개별공시지가: 해당 필지({pnu})의 공시지가 데이터가 조회되지 않았습니다.{note}")
     except Exception as e:
         output.append(f"\n■ 1. 개별공시지가 조회 오류: {e}")
