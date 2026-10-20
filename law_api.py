@@ -23,8 +23,6 @@ def search_law_data(keyword: str, target: str = "law", search_mode: int = None) 
     if not LAW_OPEN_API_KEY:
         return []
 
-    # 'decc'는 API상 일반 행정심판 재결례(국민권익위 등)라서 세무와 무관한 결과가 나옴
-    # → 조세심판원 결정례는 'ttSpecialDecc'로만 조회 (일반 행정심판으로 대체하지 않음)
     if target == "decc":
         return _search_law_data_raw(keyword, "ttSpecialDecc", search_mode)
     return _search_law_data_raw(keyword, target, search_mode)
@@ -42,7 +40,7 @@ def _search_law_data_raw(keyword: str, target: str, search_mode: int = None) -> 
     if search_mode:
         params["search"] = search_mode
     if target in ("prec", "ttSpecialDecc"):
-        params["sort"] = "ddes"   # 선고·의결일자 최신순 (기본값은 오래된 순이라 1990년대 사건부터 나옴)
+        params["sort"] = "ddes"
 
     try:
         resp = requests.get(url, params=params, timeout=15)
@@ -58,7 +56,7 @@ def _search_law_data_raw(keyword: str, target: str, search_mode: int = None) -> 
             "admrul": "admrul",
             "expc": "expc",
             "decc": "decc",
-            "ttSpecialDecc": "decc",   # 실제 응답: <Decc><decc id="1">…</decc></Decc>
+            "ttSpecialDecc": "decc",
             "ordin": "law"
         }
         item_tag = tag_map.get(target, target)
@@ -82,7 +80,7 @@ def _search_law_data_raw(keyword: str, target: str, search_mode: int = None) -> 
 # ---------------------------------------------------------
 # 1-1. 법령 조문 정밀 추출 도우미
 # ---------------------------------------------------------
-_CIRCLED_NUM = {chr(0x2460 + i): i + 1 for i in range(20)}  # ①~⑳ → 1~20
+_CIRCLED_NUM = {chr(0x2460 + i): i + 1 for i in range(20)}
 
 def _parse_article_filter(query_filter: str):
     """'제33조의2', '제78조의3 제8항' 같은 입력에서 (조, 가지, 항)을 추출합니다. 조문번호가 없으면 None."""
@@ -145,9 +143,7 @@ def _fetch_xml_root(url: str, params: dict):
         return None
 
 def _get_statute_articles(doc_id: str, query_filter: str = "") -> str:
-    """
-    법령 원문에서 조문을 정밀 추출합니다.
-    """
+    """법령 원문에서 조문을 정밀 추출합니다."""
     url = "http://www.law.go.kr/DRF/lawService.do"
     art_filter = _parse_article_filter(query_filter)
     base = {"OC": LAW_OPEN_API_KEY, "target": "law", "type": "XML"}
@@ -179,7 +175,6 @@ def _get_statute_articles(doc_id: str, query_filter: str = "") -> str:
         eff_note = f" | 법령 시행일자: {law_eff[:4]}.{law_eff[4:6]}.{law_eff[6:]}" if len(law_eff) == 8 else ""
         header = f"📘 [{title}] (일련번호: {doc_id}{eff_note})"
 
-        # ① 조문번호 지정 조회: 번호가 정확히 일치하는 조문만
         if art_filter:
             jo, gaji, hang = art_filter
             matched = [
@@ -191,7 +186,6 @@ def _get_statute_articles(doc_id: str, query_filter: str = "") -> str:
                 return (header + "\n\n" + body)[:15000]
             continue
 
-        # ② 키워드 조회: 키워드가 들어간 조문 (최대 8개)
         if query_filter:
             kw = query_filter.replace(" ", "")
             matched = []
@@ -204,7 +198,6 @@ def _get_statute_articles(doc_id: str, query_filter: str = "") -> str:
             note = f"\n\n[※ 키워드 포함 조문 {len(matched)}개 중 앞 8개만 표시]" if len(matched) > 8 else ""
             return (header + "\n\n" + "\n\n".join(matched[:8]))[:12000] + note
 
-        # ③ 필터 없음: 전체 조문 (분량 제한)
         body = "\n\n".join(_format_article(a) for a in articles)
         return (header + "\n\n" + body)[:12000] + "\n\n[※ 전체 조문 중 앞부분만 표시. 조문번호를 지정해 다시 조회하세요]"
 
@@ -556,7 +549,7 @@ def get_dart_corp_info(corp_name: str, bsns_year: str = "2025") -> str:
             continue
 
     if not fin_found:
-        output.append(f"\n■ 3. 주요 재무제표 요약: 정기 사업보고서 제출 대상이 아니거나 비상장 외감법인(감사보고서 원문 공시 대상)입니다. 위 2번 공시 목록의 감사보고서 링크를 참고하세요.")
+        output.append("\n■ 3. 주요 재무제표 요약: 정기 사업보고서 제출 대상이 아니거나 비상장 외감법인(감사보고서 원문 공시 대상)입니다. 위 2번 공시 목록의 감사보고서 링크를 참고하세요.")
 
     try:
         sh_url = "https://opendart.fss.or.kr/api/hyslrSttus.json"
@@ -655,3 +648,510 @@ def get_nts_biz_status(biz_numbers_text: str) -> str:
 
         res_json = resp.json()
         data_list = res_json.get("data", [])
+        if not data_list:
+            return "조회된 사업자등록 상태 데이터가 없습니다."
+
+        lines = [f"🏛️ [국세청 사업자등록 상태 및 과세유형 실시간 조회 결과 (총 {len(data_list)}건)]"]
+        for item in data_list:
+            b_no = item.get("b_no", "")
+            formatted_bno = f"{b_no[:3]}-{b_no[3:5]}-{b_no[5:]}" if len(b_no) == 10 else b_no
+            b_stt = item.get("b_stt") or "미등록/확인불가"
+            tax_type = item.get("tax_type") or "-"
+            end_dt = item.get("end_dt") or "-"
+            utcc_yn = item.get("utcc_yn") or "-"
+            tax_type_change_dt = item.get("tax_type_change_dt") or "-"
+            invoice_apply_dt = item.get("invoice_apply_dt") or "-"
+            rbf_tax_type = item.get("rbf_tax_type") or "-"
+
+            detail = f"■ 사업자번호: {formatted_bno}\n  - 납세자상태: {b_stt}\n  - 과세유형: {tax_type}"
+            if end_dt != "-":
+                detail += f"\n  - ⚠️ 폐업일자: {end_dt}"
+            if tax_type_change_dt != "-":
+                detail += f"\n  - 과세유형전환일자: {tax_type_change_dt} (직전 과세유형: {rbf_tax_type})"
+            if utcc_yn != "-":
+                detail += f"\n  - 단위과세전환폐업여부: {utcc_yn}"
+            if invoice_apply_dt != "-":
+                detail += f"\n  - 세금계산서적용일자: {invoice_apply_dt}"
+            lines.append(detail)
+
+        return "\n\n".join(lines)
+    except Exception as e:
+        return f"❌ 국세청 사업자 상태조회 중 오류 발생: {e}"
+
+
+def verify_nts_biz_info(b_no: str, start_dt: str, p_nm: str, b_nm: str = "") -> str:
+    if not NTS_API_KEY:
+        return "❌ NTS_API_KEY가 설정되지 않았습니다."
+
+    clean_bno = re.sub(r"\D", "", b_no)
+    clean_dt = re.sub(r"\D", "", start_dt)
+    if len(clean_bno) != 10 or len(clean_dt) != 8 or not p_nm.strip():
+        return "❌ 진위확인을 위해서는 10자리 사업자번호, 8자리 개업일자(YYYYMMDD), 대표자 성명이 모두 필요합니다."
+
+    encoded_key = NTS_API_KEY if "%" in NTS_API_KEY else urllib.parse.quote(NTS_API_KEY, safe="")
+    url = f"https://api.odcloud.kr/api/nts-businessman/v1/validate?serviceKey={encoded_key}"
+
+    payload = {
+        "businesses": [
+            {
+                "b_no": clean_bno,
+                "start_dt": clean_dt,
+                "p_nm": p_nm.strip(),
+                "p_nm2": "",
+                "b_nm": b_nm.strip(),
+                "corp_no": "",
+                "b_sector": "",
+                "b_type": "",
+                "b_adr": ""
+            }
+        ]
+    }
+
+    try:
+        resp = requests.post(
+            url,
+            json=payload,
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            timeout=10
+        )
+        if resp.status_code != 200:
+            return f"❌ 국세청 진위확인 API 호출 실패 (HTTP {resp.status_code}): {resp.text[:200]}"
+
+        res_json = resp.json()
+        data_list = res_json.get("data", [])
+        if not data_list:
+            return "진위확인 결과가 반환되지 않았습니다."
+
+        item = data_list[0]
+        valid_code = item.get("valid", "")
+        valid_msg = "✅ 일치 (정상 진위확인 완료)" if valid_code == "01" else f"❌ 불일치 (사유: {item.get('valid_msg', '등록정보와 다름')})"
+        status_info = item.get("status", {}) or {}
+
+        return (
+            f"🛡️ [국세청 사업자등록정보 진위확인 결과]\n"
+            f"- 검증 대상: 사업자번호 {clean_bno} | 개업일 {clean_dt} | 대표자 {p_nm} {f'| 상호 {b_nm}' if b_nm else ''}\n"
+            f"- 진위확인 판정: {valid_msg} (코드: {valid_code})\n"
+            f"- 현재 납세자상태: {status_info.get('b_stt', '-')} | 과세유형: {status_info.get('tax_type', '-')}"
+        )
+    except Exception as e:
+        return f"❌ 국세청 사업자 진위확인 중 오류 발생: {e}"
+
+
+# ---------------------------------------------------------
+# 6. 국토교통부 부동산 매매 실거래가 4종 통합 조회 (아파트 / 오피스텔 / 상업업무용 상가·빌딩 / 토지)
+# ---------------------------------------------------------
+_LAWD_CODE_MAP = {
+    "종로구": "11110", "중구": "11140", "용산구": "11170", "성동구": "11200", "광진구": "11215",
+    "동대문구": "11230", "중랑구": "11260", "성북구": "11290", "강북구": "11305", "도봉구": "11320",
+    "노원구": "11350", "은평구": "11380", "서대문구": "11410", "마포구": "11440", "양천구": "11470",
+    "강서구": "11500", "구로구": "11530", "금천구": "11545", "영등포구": "11560", "동작구": "11590",
+    "관악구": "11620", "서초구": "11650", "강남구": "11680", "송파구": "11710", "강동구": "11740",
+    "분당구": "41135", "수정구": "41131", "중원구": "41133", "수지구": "41465", "기흥구": "41463",
+    "처인구": "41461", "영통구": "41117", "팔달구": "41115", "권선구": "41113", "장안구": "41111",
+    "과천시": "41290", "광명시": "41210", "하남시": "41450", "고양시 일산동구": "41285", "일산동구": "41285",
+    "일산서구": "41287", "덕양구": "41281", "부천시": "41190", "안양시 동안구": "41173", "동안구": "41173",
+    "만안구": "41171", "화성시": "41590", "평택시": "41220", "남양주시": "41360", "김포시": "41570",
+    "연수구": "28185", "남동구": "28200", "부평구": "28237", "서구": "28260", "해운대구": "26350",
+    "수영구": "26500", "부산진구": "26230", "수성구": "27260", "유성구": "30200", "세종시": "36110"
+}
+
+def _resolve_lawd_cd(region_str: str) -> str:
+    """입력된 문자열에서 5자리 법정동코드(LAWD_CD)를 추출하거나 시군구 이름으로 매핑합니다."""
+    digits = re.sub(r"\D", "", region_str)
+    if len(digits) >= 5:
+        return digits[:5]
+    for name, code in _LAWD_CODE_MAP.items():
+        if name in region_str:
+            return code
+    return ""
+
+def get_molit_real_estate_trade(property_type: str, region: str, deal_ymd: str, filter_keyword: str = "") -> str:
+    if not NTS_API_KEY:
+        return "❌ NTS_API_KEY(공공데이터포털 인증키)가 설정되지 않았습니다."
+
+    lawd_cd = _resolve_lawd_cd(region)
+    if not lawd_cd:
+        return f"❌ '{region}'에 해당하는 5자리 법정동코드를 찾지 못했습니다. 시·군·구 명칭(예: '강남구', '관악구', '분당구')이나 5자리 법정동코드(예: '11680')로 다시 입력해 주세요."
+
+    ymd = re.sub(r"\D", "", deal_ymd)[:6]
+    if len(ymd) != 6:
+        return f"❌ 계약연월('{deal_ymd}')은 'YYYYMM' 6자리 형식(예: '202609')이어야 합니다."
+
+    ptype = property_type.lower().strip()
+    if ptype in ["아파트", "공동주택", "apt"]:
+        endpoint = "https://apis.data.go.kr/1613000/RTMSDataSvcAptTradeDev/getRTMSDataSvcAptTradeDev"
+        fallback_ep = "https://apis.data.go.kr/1613000/RTMSDataSvcAptTrade/getRTMSDataSvcAptTrade"
+        type_label = "아파트(공동주택) 매매"
+    elif ptype in ["오피스텔", "offi", "officetel"]:
+        endpoint = "https://apis.data.go.kr/1613000/RTMSDataSvcOffiTrade/getRTMSDataSvcOffiTrade"
+        fallback_ep = None
+        type_label = "오피스텔 매매"
+    elif ptype in ["상가", "상업업무용", "빌딩", "comm", "commercial"]:
+        endpoint = "https://apis.data.go.kr/1613000/RTMSDataSvcNrgTrade/getRTMSDataSvcNrgTrade"
+        fallback_ep = None
+        type_label = "상업·업무용(상가·오피스·빌딩) 매매"
+    elif ptype in ["토지", "대지", "임야", "land"]:
+        endpoint = "https://apis.data.go.kr/1613000/RTMSDataSvcLandTrade/getRTMSDataSvcLandTrade"
+        fallback_ep = None
+        type_label = "토지 매매"
+    else:
+        endpoint = "https://apis.data.go.kr/1613000/RTMSDataSvcAptTradeDev/getRTMSDataSvcAptTradeDev"
+        fallback_ep = "https://apis.data.go.kr/1613000/RTMSDataSvcAptTrade/getRTMSDataSvcAptTrade"
+        type_label = "아파트(공동주택) 매매"
+
+    encoded_key = NTS_API_KEY if "%" in NTS_API_KEY else urllib.parse.quote(NTS_API_KEY, safe="")
+
+    def _fetch_xml(ep_url: str):
+        full_url = f"{ep_url}?serviceKey={encoded_key}&LAWD_CD={lawd_cd}&DEAL_YMD={ymd}&numOfRows=200&pageNo=1"
+        return requests.get(full_url, timeout=15)
+
+    try:
+        resp = _fetch_xml(endpoint)
+        if (resp.status_code != 200 or "<item>" not in resp.text) and fallback_ep:
+            resp2 = _fetch_xml(fallback_ep)
+            if resp2.status_code == 200 and "<item>" in resp2.text:
+                resp = resp2
+
+        if resp.status_code != 200:
+            return f"❌ 국토교통부 API 호출 실패 (HTTP {resp.status_code}): 공공데이터포털 활용신청 동기화 대기 중이거나 키 오류입니다."
+
+        root = ET.fromstring(resp.text)
+        result_code = (root.findtext(".//resultCode") or "").strip()
+        result_msg = (root.findtext(".//resultMsg") or "").strip()
+
+        if result_code not in ["00", "000", "0000", ""]:
+            return f"❌ 국토부 API 응답 오류 (코드 {result_code}): {result_msg}"
+
+        items = root.findall(".//item")
+        if not items:
+            return f"조회된 [{type_label}] 실거래 내역이 없습니다. (지역코드: {lawd_cd}, 계약연월: {ymd})"
+
+        kw = filter_keyword.strip()
+        parsed_rows = []
+
+        for it in items:
+            data = {child.tag: (child.text or "").strip() for child in it}
+            raw_str = " ".join(data.values())
+            if kw and kw not in raw_str:
+                continue
+
+            umd = data.get("umdNm") or data.get("법정동") or data.get("dong") or ""
+            jibun = data.get("jibun") or data.get("지번") or ""
+            deal_amt = data.get("dealAmount") or data.get("거래금액") or "-"
+            deal_day = f"{ymd[:4]}-{ymd[4:6]}-{str(data.get('dealDay') or data.get('일') or '01').zfill(2)}"
+            cdeal_type = data.get("cdealType") or data.get("해제여부") or ""
+            cancel_note = f" [⚠️해제됨:{cdeal_type}]" if cdeal_type and cdeal_type != "-" else ""
+
+            if "아파트" in type_label or "오피스텔" in type_label:
+                bldg_nm = data.get("aptNm") or data.get("offiNm") or data.get("아파트") or data.get("단지") or "명칭미상"
+                exclu_area = data.get("excluUseAr") or data.get("전용면적") or "-"
+                floor = data.get("floor") or data.get("층") or "-"
+                build_yr = data.get("buildYear") or data.get("건축년도") or "-"
+                parsed_rows.append(
+                    f"- [{deal_day}] {umd} {bldg_nm} ({jibun}) | 전용 {exclu_area}㎡ ({floor}층, 건축:{build_yr}년) | 거래가액: {deal_amt}만원{cancel_note}"
+                )
+            elif "상업" in type_label:
+                bldg_use = data.get("buildingUse") or data.get("건물주용도") or "-"
+                land_use = data.get("landUse") or data.get("용도지역") or "-"
+                bldg_ar = data.get("buildingAr") or data.get("건물면적") or "-"
+                plottage_ar = data.get("plottageAr") or data.get("대지면적") or "-"
+                floor = data.get("floor") or data.get("층") or "-"
+                parsed_rows.append(
+                    f"- [{deal_day}] {umd} ({jibun}) | 용도:{bldg_use}({land_use}) | 건물면적:{bldg_ar}㎡ (대지:{plottage_ar}㎡, {floor}층) | 거래가액: {deal_amt}만원{cancel_note}"
+                )
+            else:
+                jimok = data.get("jimok") or data.get("지목") or "-"
+                land_use = data.get("landUse") or data.get("용도지역") or "-"
+                deal_ar = data.get("dealArea") or data.get("거래면적") or "-"
+                share_gbn = data.get("shareDealingType") or data.get("지분구분") or ""
+                parsed_rows.append(
+                    f"- [{deal_day}] {umd} ({jibun}) | 지목:{jimok} ({land_use}) | 거래면적:{deal_ar}㎡ {f'({share_gbn})' if share_gbn else ''} | 거래가액: {deal_amt}만원{cancel_note}"
+                )
+
+        if not parsed_rows:
+            return f"지역({lawd_cd})·연월({ymd})의 전체 거래 {len(items)}건 중 '{kw}' 키워드가 포함된 내역이 없습니다. 필터 키워드를 빼거나 동 이름만 입력해 다시 조회하세요."
+
+        header = f"🏘️ [국토교통부 {type_label} 실거래가 조회 결과 | 지역:{region}({lawd_cd}) | 연월:{ymd} | 검색:{kw or '전체'} (총 {len(parsed_rows)}건 중 최근 25건)]"
+        return header + "\n" + "\n".join(parsed_rows[:25])
+
+    except Exception as e:
+        return f"❌ 국토교통부 실거래가 조회 중 오류 발생: {e}"
+
+
+# ---------------------------------------------------------
+# 7. 국토교통부 브이월드(V-World) 개별공시지가 및 공동주택 공시가격 조회
+# ---------------------------------------------------------
+_MAJOR_BJDONG_MAP = {
+    "역삼동": "1168010100", "대치동": "1168010600", "삼성동": "1168010500", "청담동": "1168010400",
+    "논현동": "1168010800", "신사동": "1168010700", "압구정동": "1168011000", "도곡동": "1168011800",
+    "서초동": "1165010800", "반포동": "1165010700", "잠원동": "1165010600", "양재동": "1165010200",
+    "방배동": "1165010100", "잠실동": "1171010100", "가락동": "1171010700", "문정동": "1171010800",
+    "서교동": "1144012000", "합정동": "1144012200", "연남동": "1144012400", "상암동": "1144012700",
+    "여의도동": "1156011000", "문래동3가": "1156012100", "성수동1가": "1120011400", "성수동2가": "1120011500",
+    "한남동": "1117013100", "이태원동": "1117013000", "신림동": "1162010200", "봉천동": "1162010100",
+    "종로1가": "1111012600", "을지로1가": "1114010400", "명동2가": "1114012700", "구로동": "1153010200",
+    "가산동": "1154510100", "목동": "1147010200", "마곡동": "1150010500", "백현동": "4113511000",
+    "삼평동": "4113510900", "정자동": "4113510300", "서현동": "4113510500"
+}
+
+def _get_vworld_key() -> str:
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets") and "VWORLD_API_KEY" in st.secrets:
+            val = str(st.secrets["VWORLD_API_KEY"]).strip().strip('"').strip("'")
+            if val:
+                return val
+    except Exception:
+        pass
+    return os.getenv("VWORLD_API_KEY", "").strip().strip('"').strip("'")
+
+
+def _build_19digit_pnu(bjdong_10: str, jibun_text: str) -> str:
+    """10자리 법정동코드와 지번 문자열(예: '858', '대치동 316 (은마아파트)', '395-166')을 결합해 19자리 PNU를 생성합니다."""
+    bjdong_clean = re.sub(r"\D", "", bjdong_10 or "")
+    if len(bjdong_clean) != 10:
+        return ""
+    cleaned = re.sub(r"\([^)]*\)", " ", jibun_text or "").strip()
+
+    m = re.search(r"(?:[가-힣0-9]+(?:동|리|가))\s+(산)?\s*(\d{1,4})(?:\s*-\s*(\d{1,4}))?(?!\d)", cleaned)
+    if not m:
+        m = re.search(r"(?:^|\s)(산)?\s*(\d{1,4})(?:\s*-\s*(\d{1,4}))?\s*(?:번지|호)?(?:\s|$)", cleaned)
+    if not m:
+        return ""
+
+    san_flag = "2" if m.group(1) else "1"
+    bonbun = int(m.group(2))
+    bubun = int(m.group(3)) if m.group(3) else 0
+    return f"{bjdong_clean}{san_flag}{bonbun:04d}{bubun:04d}"
+
+
+def _address_to_pnu(address: str, vworld_key: str) -> tuple[str, str]:
+    """한글 지번/도로명 주소(예: '서울 강남구 역삼동 858')를 19자리 필지고유번호(PNU)로 변환합니다."""
+    raw = re.sub(r"\([^)]*\)", " ", address or "").strip()
+    raw = re.sub(r"\s+", " ", raw)
+    digits = re.sub(r"\D", "", raw)
+    if len(digits) == 19:
+        return digits, raw
+
+    for dong_nm, bjdong_10 in _MAJOR_BJDONG_MAP.items():
+        if dong_nm in raw:
+            built = _build_19digit_pnu(bjdong_10, raw)
+            if len(built) == 19:
+                return built, raw
+
+    s_url = "https://api.vworld.kr/req/search"
+    for cat in ("parcel", "road"):
+        try:
+            s_res = requests.get(s_url, params={
+                "service": "search", "request": "search", "version": "2.0",
+                "query": raw, "type": "address", "category": cat,
+                "format": "json", "key": vworld_key,
+                "domain": "https://ailaw-j.streamlit.app"
+            }, timeout=10).json()
+            items = s_res.get("response", {}).get("result", {}).get("items", [])
+            if items:
+                pnu_id = re.sub(r"\D", "", str(items[0].get("id", "")))
+                addr_obj = items[0].get("address", {}) or {}
+                addr_title = addr_obj.get("parcel") or addr_obj.get("road") or items[0].get("title") or raw
+                if len(pnu_id) == 19:
+                    return pnu_id, addr_title
+                elif len(pnu_id) >= 10:
+                    built = _build_19digit_pnu(pnu_id[:10], addr_title) or _build_19digit_pnu(pnu_id[:10], raw)
+                    if len(built) == 19:
+                        return built, addr_title
+        except Exception:
+            continue
+
+    for addr_type in ("parcel", "PARCEL", "road", "ROAD"):
+        try:
+            g_url = "https://api.vworld.kr/req/address"
+            g_res = requests.get(g_url, params={
+                "service": "address", "request": "getcoord", "version": "2.0",
+                "crs": "epsg:4326", "address": raw,
+                "refine": "true", "simple": "false", "format": "json",
+                "type": addr_type, "key": vworld_key,
+                "domain": "https://ailaw-j.streamlit.app"
+            }, timeout=10).json()
+            if g_res.get("response", {}).get("status") == "OK":
+                refined = g_res["response"].get("refined", {}) or {}
+                struct = refined.get("structure", {}) or {}
+                bjdong_10 = str(struct.get("level4LC") or struct.get("level4AC") or "").strip()
+                level5 = str(struct.get("level5") or "").strip()
+                full_text = refined.get("text") or raw
+                built = _build_19digit_pnu(bjdong_10, level5) or _build_19digit_pnu(bjdong_10, full_text) or _build_19digit_pnu(bjdong_10, raw)
+                if len(built) == 19:
+                    return built, full_text
+        except Exception:
+            continue
+
+    return "", "해당 주소의 19자리 필지고유번호(PNU)를 찾을 수 없습니다. 정확한 법정동+지번(예: '서울 강남구 역삼동 858') 또는 19자리 PNU 코드로 다시 입력해 주세요."
+
+
+def get_vworld_official_price(address_or_pnu: str, stdr_year: str = "") -> str:
+    """
+    지번 주소 또는 19자리 PNU 코드를 입력받아
+    1) 토지 개별공시지가(원/㎡) 및 2) 공동주택 공시가격을 조회합니다.
+    (Streamlit Cloud 해외 IP의 브이월드 HTTP 502 차단을 우회하기 위해 다중 게이트웨이 및 공공데이터포털 백업 적용)
+    """
+    vworld_key = _get_vworld_key()
+    if not vworld_key:
+        return "⚠️ 브이월드 인증키(VWORLD_API_KEY)가 설정되지 않았습니다. .env 또는 Streamlit Secrets에 VWORLD_API_KEY를 추가해 주세요."
+
+    pnu, resolved_addr = _address_to_pnu(address_or_pnu, vworld_key)
+    if not pnu:
+        return f"❌ 주소 변환 실패: {resolved_addr}"
+
+    output = [f"🏛️ [국토교통부 공시가격 통합 조회 | 주소: {resolved_addr} (PNU: {pnu})]"]
+
+    browser_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+    }
+
+    def _fetch_json_with_bypass(target_url: str, params: dict) -> tuple[dict, str]:
+        """직접 호출이 해외 IP 차단(HTTP 502)으로 막힐 경우 프록시 게이트웨이를 통해 우회 호출합니다."""
+        qs = urllib.parse.urlencode(params)
+        full_direct_url = f"{target_url}?{qs}"
+        last_err = ""
+
+        # 1차: 직접 호출 (로컬 PC 한국 IP에서는 즉시 통과)
+        try:
+            r = requests.get(full_direct_url, headers=browser_headers, timeout=6)
+            if r.status_code == 200 and r.text.strip().startswith("{"):
+                return r.json(), ""
+            last_err = f"HTTP {r.status_code}"
+        except Exception as e:
+            last_err = str(e)
+
+        # 2차: Streamlit Cloud(해외 IP) 502 차단 시 프록시 게이트웨이 우회 호출
+        proxy_urls = [
+            f"https://api.allorigins.win/raw?url={urllib.parse.quote(full_direct_url, safe='')}",
+            f"https://api.codetabs.com/v1/proxy?quest={urllib.parse.quote(full_direct_url, safe='')}",
+            f"https://corsproxy.io/?{urllib.parse.quote(full_direct_url, safe='')}",
+        ]
+        for p_url in proxy_urls:
+            try:
+                r = requests.get(p_url, headers=browser_headers, timeout=10)
+                if r.status_code == 200 and ("indvdLandPrices" in r.text or "apartHousingPrices" in r.text or "featureCollection" in r.text):
+                    return r.json(), ""
+            except Exception:
+                continue
+
+        # 3차: 공공데이터포털(apis.data.go.kr) 국토부 개별공시지가 엔드포인트 백업 (NTS_API_KEY 활용)
+        if NTS_API_KEY and "getIndvdLandPriceAttr" in target_url:
+            encoded_nts = NTS_API_KEY if "%" in NTS_API_KEY else urllib.parse.quote(NTS_API_KEY, safe="")
+            od_url = f"https://apis.data.go.kr/1611000/nsdi/IndvdLandPriceService/attr/getIndvdLandPriceAttr?serviceKey={encoded_nts}&pnu={pnu}&format=json&numOfRows=50&pageNo=1"
+            try:
+                r_od = requests.get(od_url, headers=browser_headers, timeout=8)
+                if r_od.status_code == 200 and "indvdLandPrices" in r_od.text:
+                    return r_od.json(), ""
+            except Exception:
+                pass
+
+        return {}, last_err
+
+    req_years = re.findall(r"(?:19|20)\d{2}", stdr_year or "")
+
+    # 1) 개별공시지가 조회 (getIndvdLandPriceAttr)
+    try:
+        land_url = "https://api.vworld.kr/ned/data/getIndvdLandPriceAttr"
+        params = {
+            "key": vworld_key,
+            "pnu": pnu,
+            "format": "json",
+            "numOfRows": 100,
+            "pageNo": 1
+        }
+        l_res, l_err = _fetch_json_with_bypass(land_url, params)
+        fields = l_res.get("indvdLandPrices", {}).get("field", [])
+        if isinstance(fields, dict):
+            fields = [fields]
+
+        if not fields:
+            url_2d = "https://api.vworld.kr/req/data"
+            params_2d = {
+                "service": "data",
+                "request": "GetFeature",
+                "data": "LP_PA_CBND_BUBUN",
+                "key": vworld_key,
+                "domain": "https://ailaw-j.streamlit.app",
+                "attrFilter": f"pnu:=:{pnu}",
+                "geometry": "false",
+                "format": "json"
+            }
+            js_2d, _ = _fetch_json_with_bypass(url_2d, params_2d)
+            features = (
+                js_2d.get("response", {})
+                .get("result", {})
+                .get("featureCollection", {})
+                .get("features", [])
+            )
+            if features:
+                props = features[0].get("properties", {}) or {}
+                jiga = str(props.get("jiga", "")).strip()
+                gosi_yr = str(props.get("gosi_year", "")).strip()
+                gosi_mn = str(props.get("gosi_month", "")).strip()
+                if jiga and jiga.isdigit():
+                    fields = [{
+                        "stdrYear": gosi_yr or "최신",
+                        "pblntfPclnd": jiga,
+                        "pblntfDe": f"{gosi_yr}-{gosi_mn.zfill(2)}" if gosi_yr and gosi_mn else "연속지적도 고시"
+                    }]
+
+        if fields:
+            sorted_fields = sorted(fields, key=lambda x: str(x.get("stdrYear", "")), reverse=True)
+            selected = sorted_fields[:12]
+            for f in sorted_fields[12:]:
+                if str(f.get("stdrYear", "")) in req_years and f not in selected:
+                    selected.append(f)
+
+            output.append("\n■ 1. 개별공시지가 (토지 기준시가, 연도별 내역):")
+            for f in selected:
+                yr = f.get("stdrYear", "-")
+                price = str(f.get("pblntfPclnd", "0")).strip()
+                p_str = f"{int(price):,}원/㎡" if price.isdigit() else f"{price}원/㎡"
+                std_dt = f.get("pblntfDe", "-")
+                output.append(f"- [{yr}년 기준] {p_str} (공시일자: {std_dt})")
+        else:
+            note = f" (사유: {l_err})" if l_err else ""
+            output.append(f"\n■ 1. 개별공시지가: 브이월드 서버 해외 IP 접속 제한으로 실시간 단가를 불러오지 못했습니다.{note}")
+    except Exception as e:
+        output.append(f"\n■ 1. 개별공시지가 조회 오류: {e}")
+
+    # 2) 공동주택 공시가격 조회 (getApartHousingPriceAttr)
+    try:
+        apt_url = "https://api.vworld.kr/ned/data/getApartHousingPriceAttr"
+        target_yrs = req_years if req_years else ["2025", "2024"]
+        a_fields = []
+        for yr in target_yrs:
+            a_params = {
+                "key": vworld_key,
+                "pnu": pnu,
+                "stdrYear": yr,
+                "format": "json",
+                "numOfRows": 30,
+                "pageNo": 1
+            }
+            a_res, _ = _fetch_json_with_bypass(apt_url, a_params)
+            f_list = a_res.get("apartHousingPrices", {}).get("field", [])
+            if isinstance(f_list, dict):
+                f_list = [f_list]
+            if f_list:
+                a_fields = f_list
+                break
+
+        if a_fields:
+            output.append("\n■ 2. 공동주택 공시가격 (상위 표본 15건):")
+            for f in a_fields[:15]:
+                yr = f.get("stdrYear", "-")
+                hs_nm = f.get("aphusNm", "")
+                dong = f.get("dongNm", "")
+                ho = f.get("hoNm", "")
+                area = f.get("prvuseAr", "-")
+                price = str(f.get("pblntfPc", "0")).strip()
+                p_str = f"{int(price):,}원" if price.isdigit() else f"{price}원"
+                output.append(f"- [{yr}년] {hs_nm} {dong}동 {ho}호 (전용 {area}㎡) -> 공시가격: {p_str}")
+    except Exception:
+        pass
+
+    return "\n".join(output)
