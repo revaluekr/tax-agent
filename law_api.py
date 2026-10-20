@@ -891,7 +891,7 @@ def get_molit_real_estate_trade(property_type: str, region: str, deal_ymd: str, 
 # 7. 국토교통부 브이월드(V-World) 개별공시지가 및 공동주택 공시가격 조회
 # ---------------------------------------------------------
 _MAJOR_BJDONG_MAP = {
-    # 테스트 및 주요 세무 자문 빈출 법정동 10자리 코드 (지오코더 지연 시 즉시 매핑용)
+    # 주요 세무 자문 빈출 법정동 10자리 코드 (지오코더 지연 시 즉시 매핑용)
     "역삼동": "1168010100", "대치동": "1168010600", "삼성동": "1168010500", "청담동": "1168010400",
     "논현동": "1168010800", "신사동": "1168010700", "압구정동": "1168011000", "도곡동": "1168011800",
     "서초동": "1165010800", "반포동": "1165010700", "잠원동": "1165010600", "양재동": "1165010200",
@@ -917,13 +917,20 @@ def _get_vworld_key() -> str:
 
 
 def _build_19digit_pnu(bjdong_10: str, jibun_text: str) -> str:
-    """10자리 법정동코드와 지번 문자열(예: '858', '395-166', '산12-3')을 결합해 19자리 PNU를 생성합니다."""
+    """10자리 법정동코드와 지번 문자열(예: '858', '대치동 316 (은마아파트)', '395-166')을 결합해 19자리 PNU를 생성합니다."""
     bjdong_clean = re.sub(r"\D", "", bjdong_10 or "")
     if len(bjdong_clean) != 10:
         return ""
-    m = re.search(r"(산)?\s*(\d{1,4})(?:\s*-\s*(\d{1,4}))?\s*(?:번지|호)?$", (jibun_text or "").strip())
+    cleaned = re.sub(r"\([^)]*\)", " ", jibun_text or "").strip()
+
+    # 1순위: '동/리/가' 바로 뒤에 오는 지번 추출 (뒤에 건물명이 붙어 있어도 정확히 매칭)
+    m = re.search(r"(?:[가-힣0-9]+(?:동|리|가))\s+(산)?\s*(\d{1,4})(?:\s*-\s*(\d{1,4}))?(?!\d)", cleaned)
+    # 2순위: 단독 지번 문자열('858', '395-166', '산12-3') 추출
+    if not m:
+        m = re.search(r"(?:^|\s)(산)?\s*(\d{1,4})(?:\s*-\s*(\d{1,4}))?\s*(?:번지|호)?(?:\s|$)", cleaned)
     if not m:
         return ""
+
     san_flag = "2" if m.group(1) else "1"
     bonbun = int(m.group(2))
     bubun = int(m.group(3)) if m.group(3) else 0
@@ -932,14 +939,22 @@ def _build_19digit_pnu(bjdong_10: str, jibun_text: str) -> str:
 
 def _address_to_pnu(address: str, vworld_key: str) -> tuple[str, str]:
     """한글 지번/도로명 주소(예: '서울 강남구 역삼동 858')를 19자리 필지고유번호(PNU)로 변환합니다."""
-    raw = (address or "").strip()
+    raw = re.sub(r"\([^)]*\)", " ", address or "").strip()
+    raw = re.sub(r"\s+", " ", raw)
     digits = re.sub(r"\D", "", raw)
     if len(digits) == 19:
         return digits, raw
 
-    # 1차: 브이월드 Search API (type=address, category=parcel)
+    # 1차: 내장 주요 법정동 코드 사전으로 즉시 19자리 PNU 조립 (속도 최우선 및 해외 IP 지연 방어)
+    for dong_nm, bjdong_10 in _MAJOR_BJDONG_MAP.items():
+        if dong_nm in raw:
+            built = _build_19digit_pnu(bjdong_10, raw)
+            if len(built) == 19:
+                return built, raw
+
+    # 2차: 브이월드 Search API (type=address, category=parcel/road)
     s_url = "https://api.vworld.kr/req/search"
-    for cat in ("parcel", "PARCEL", "road"):
+    for cat in ("parcel", "road"):
         try:
             s_res = requests.get(s_url, params={
                 "service": "search", "request": "search", "version": "2.0",
@@ -961,8 +976,8 @@ def _address_to_pnu(address: str, vworld_key: str) -> tuple[str, str]:
         except Exception:
             continue
 
-    # 2차: 브이월드 Address Geocode API (10자리 level4LC + level5 지번 결합)
-    for addr_type in ("parcel", "PARCEL", "road"):
+    # 3차: 브이월드 Address Geocode API (10자리 level4LC + level5 지번 결합)
+    for addr_type in ("parcel", "PARCEL", "road", "ROAD"):
         try:
             g_url = "https://api.vworld.kr/req/address"
             g_res = requests.get(g_url, params={
@@ -984,13 +999,6 @@ def _address_to_pnu(address: str, vworld_key: str) -> tuple[str, str]:
         except Exception:
             continue
 
-    # 3차: 내장 주요 법정동 코드 사전으로 즉시 19자리 PNU 조립 (해외 IP 지연/오류 방어)
-    for dong_nm, bjdong_10 in _MAJOR_BJDONG_MAP.items():
-        if dong_nm in raw:
-            built = _build_19digit_pnu(bjdong_10, raw)
-            if len(built) == 19:
-                return built, raw
-
     return "", "해당 주소의 19자리 필지고유번호(PNU)를 찾을 수 없습니다. 정확한 법정동+지번(예: '서울 강남구 역삼동 858') 또는 19자리 PNU 코드로 다시 입력해 주세요."
 
 
@@ -1010,7 +1018,7 @@ def get_vworld_official_price(address_or_pnu: str, stdr_year: str = "") -> str:
     output = [f"🏛️ [국토교통부 브이월드 공시가격 통합 조회 | 주소: {resolved_addr} (PNU: {pnu})]"]
 
     def _call_vworld_ned(ep_url: str, extra_params: dict) -> dict:
-        # 브이월드 국가중점 API는 등록된 서비스 URL(domain) 일치 여부에 민감하므로 순차 시도
+        last_json = {}
         for dom in ("https://ailaw-j.streamlit.app", "ailaw-j.streamlit.app", "http://localhost:8501", ""):
             p = {**extra_params}
             if dom:
@@ -1019,38 +1027,41 @@ def get_vworld_official_price(address_or_pnu: str, stdr_year: str = "") -> str:
                 r = requests.get(ep_url, params=p, timeout=10)
                 if r.status_code == 200:
                     js = r.json()
-                    # 정상 필드 데이터가 들어있으면 즉시 반환
+                    last_json = js
                     if "indvdLandPrices" in js or "apartHousingPrices" in js:
                         return js
             except Exception:
                 continue
-        return {}
+        return last_json
+
+    req_years = re.findall(r"(?:19|20)\d{2}", stdr_year or "")
 
     # 1) 개별공시지가 조회 (getIndvdLandPriceAttr)
+    # 1필지의 1990~2026년 전체 공시지가는 최대 37건이므로 numOfRows=100으로 한 번에 전체 연도를 가져와 최신순 정렬
     try:
         land_url = "https://api.vworld.kr/ned/data/getIndvdLandPriceAttr"
         params = {
             "key": vworld_key,
             "pnu": pnu,
             "format": "json",
-            "numOfRows": 15,
+            "numOfRows": 100,
             "pageNo": 1
         }
-        if stdr_year.strip().isdigit():
-            params["stdrYear"] = stdr_year.strip()
-
         l_res = _call_vworld_ned(land_url, params)
-        # 특정 연도(예: 2026년 미고시)로 조회해 결과가 비었으면 전체 연도로 자동 재조회
-        if not l_res.get("indvdLandPrices", {}).get("field") and "stdrYear" in params:
-            params.pop("stdrYear", None)
-            l_res = _call_vworld_ned(land_url, params)
-
         fields = l_res.get("indvdLandPrices", {}).get("field", [])
         if isinstance(fields, dict):
             fields = [fields]
+
         if fields:
-            output.append("\n■ 1. 개별공시지가 (토지 기준시가):")
-            for f in sorted(fields, key=lambda x: str(x.get("stdrYear", "")), reverse=True)[:8]:
+            sorted_fields = sorted(fields, key=lambda x: str(x.get("stdrYear", "")), reverse=True)
+            # 사용자가 특정 연도(예: 2020)를 요청했으면 최근 10개년 + 요청 연도가 반드시 포함되도록 구성
+            selected = sorted_fields[:12]
+            for f in sorted_fields[12:]:
+                if str(f.get("stdrYear", "")) in req_years and f not in selected:
+                    selected.append(f)
+
+            output.append("\n■ 1. 개별공시지가 (토지 기준시가, 연도별 내역):")
+            for f in selected:
                 yr = f.get("stdrYear", "-")
                 price = str(f.get("pblntfPclnd", "0")).strip()
                 p_str = f"{int(price):,}원/㎡" if price.isdigit() else f"{price}원/㎡"
@@ -1064,24 +1075,25 @@ def get_vworld_official_price(address_or_pnu: str, stdr_year: str = "") -> str:
     # 2) 공동주택 공시가격 조회 (getApartHousingPriceAttr)
     try:
         apt_url = "https://api.vworld.kr/ned/data/getApartHousingPriceAttr"
-        a_params = {
-            "key": vworld_key,
-            "pnu": pnu,
-            "format": "json",
-            "numOfRows": 30,
-            "pageNo": 1
-        }
-        if stdr_year.strip().isdigit():
-            a_params["stdrYear"] = stdr_year.strip()
-
-        a_res = _call_vworld_ned(apt_url, a_params)
-        if not a_res.get("apartHousingPrices", {}).get("field") and "stdrYear" in a_params:
-            a_params.pop("stdrYear", None)
+        target_yrs = req_years if req_years else ["2026", "2025", "2024"]
+        a_fields = []
+        for yr in target_yrs:
+            a_params = {
+                "key": vworld_key,
+                "pnu": pnu,
+                "stdrYear": yr,
+                "format": "json",
+                "numOfRows": 30,
+                "pageNo": 1
+            }
             a_res = _call_vworld_ned(apt_url, a_params)
+            f_list = a_res.get("apartHousingPrices", {}).get("field", [])
+            if isinstance(f_list, dict):
+                f_list = [f_list]
+            if f_list:
+                a_fields = f_list
+                break
 
-        a_fields = a_res.get("apartHousingPrices", {}).get("field", [])
-        if isinstance(a_fields, dict):
-            a_fields = [a_fields]
         if a_fields:
             output.append("\n■ 2. 공동주택 공시가격 (상위 표본 15건):")
             for f in a_fields[:15]:
