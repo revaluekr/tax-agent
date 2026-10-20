@@ -81,10 +81,6 @@ def _search_law_data_raw(keyword: str, target: str, search_mode: int = None) -> 
 
 # ---------------------------------------------------------
 # 1-1. 법령 조문 정밀 추출 도우미
-#   - 기존 방식은 조문 XML 전체를 itertext()로 이어 붙여서
-#     ① 조문번호·시행일 등 메타데이터가 본문 앞에 섞이고 ② 항·호 줄바꿈이 사라지고
-#     ③ '제33조의2'를 언급만 한 다른 조문까지 함께 걸려 정작 본조문이 잘리는 문제가 있었음
-#   - 이제 조문번호/가지번호를 정확히 비교해 해당 조문만 뽑고, 항·호·목을 줄 단위로 정리함
 # ---------------------------------------------------------
 _CIRCLED_NUM = {chr(0x2460 + i): i + 1 for i in range(20)}  # ①~⑳ → 1~20
 
@@ -128,7 +124,6 @@ def _format_article(art, only_hang=None) -> str:
                     indent = {"항내용": "", "호내용": "  ", "목내용": "    "}[el.tag]
                     lines.append(indent + el.text.strip())
     else:
-        # 항 없이 호가 바로 붙은 조문 대비
         for el in art.iter():
             if el.tag in ("호내용", "목내용") and el.text and el.text.strip():
                 lines.append(("  " if el.tag == "호내용" else "    ") + el.text.strip())
@@ -152,9 +147,6 @@ def _fetch_xml_root(url: str, params: dict):
 def _get_statute_articles(doc_id: str, query_filter: str = "") -> str:
     """
     법령 원문에서 조문을 정밀 추출합니다.
-    - 검색 결과의 '법령일련번호'는 lawService.do의 MST 값이므로 MST로 먼저 조회하고,
-      실패하면 ID(법령ID)로 한 번 더 조회합니다.
-    - 조문번호가 주어지면 JO 파라미터(6자리: 조4 + 가지2, 예: 제33조의2 → 003302)로 해당 조문만 요청합니다.
     """
     url = "http://www.law.go.kr/DRF/lawService.do"
     art_filter = _parse_article_filter(query_filter)
@@ -176,7 +168,7 @@ def _get_statute_articles(doc_id: str, query_filter: str = "") -> str:
             continue
         articles = [
             a for a in root.findall(".//조문단위")
-            if (a.findtext("조문여부") or "조문").strip() != "전문"   # 장·절 제목 제외
+            if (a.findtext("조문여부") or "조문").strip() != "전문"
         ]
         if not articles:
             continue
@@ -197,7 +189,7 @@ def _get_statute_articles(doc_id: str, query_filter: str = "") -> str:
             if matched:
                 body = "\n\n".join(_format_article(a, only_hang=hang) for a in matched)
                 return (header + "\n\n" + body)[:15000]
-            continue  # JO 조회가 다른 조문을 줬거나 비었으면 다음 방식으로 재시도
+            continue
 
         # ② 키워드 조회: 키워드가 들어간 조문 (최대 8개)
         if query_filter:
@@ -227,7 +219,6 @@ def get_law_content(doc_id: str, target: str = "law", query_filter: str = "") ->
     if not LAW_OPEN_API_KEY:
         return "❌ LAW_OPEN_API_KEY가 설정되지 않았습니다."
 
-    # 법령은 정밀 조문 추출기로 처리
     if target == "law":
         try:
             return _get_statute_articles(doc_id, query_filter)
@@ -298,7 +289,6 @@ def get_law_content(doc_id: str, target: str = "law", query_filter: str = "") ->
             reason = root.findtext(".//이유") or ""
 
             if not (order or summary or reason):
-                # 필드명이 다르게 오는 경우 대비: 본문 전체를 그대로 전달
                 body_all = "\n".join(t.strip() for t in root.itertext() if t.strip())
                 return f"🏛️ [조세심판원/특별행정심판 결정례] {case_name} ({case_no})\n{body_all[:10000]}"
             text = (
@@ -785,13 +775,6 @@ def _resolve_lawd_cd(region_str: str) -> str:
     return ""
 
 def get_molit_real_estate_trade(property_type: str, region: str, deal_ymd: str, filter_keyword: str = "") -> str:
-    """
-    국토교통부 실거래가 API 4종(아파트, 오피스텔, 상가/상업업무용, 토지)을 통합 조회합니다.
-    - property_type: 'apt'(아파트), 'offi'(오피스텔), 'comm'(상업업무용/상가/빌딩), 'land'(토지)
-    - region: 시군구명(예: '강남구', '관악구') 또는 5자리 법정동코드(예: '11680')
-    - deal_ymd: 계약연월 6자리(예: '202609', '202512')
-    - filter_keyword: 법정동명(예: '대치동', '신사동') 또는 아파트/단지명(예: '은마') 필터
-    """
     if not NTS_API_KEY:
         return "❌ NTS_API_KEY(공공데이터포털 인증키)가 설정되지 않았습니다."
 
@@ -885,7 +868,7 @@ def get_molit_real_estate_trade(property_type: str, region: str, deal_ymd: str, 
                 parsed_rows.append(
                     f"- [{deal_day}] {umd} ({jibun}) | 용도:{bldg_use}({land_use}) | 건물면적:{bldg_ar}㎡ (대지:{plottage_ar}㎡, {floor}층) | 거래가액: {deal_amt}만원{cancel_note}"
                 )
-            else:  # 토지
+            else:
                 jimok = data.get("jimok") or data.get("지목") or "-"
                 land_use = data.get("landUse") or data.get("용도지역") or "-"
                 deal_ar = data.get("dealArea") or data.get("거래면적") or "-"
@@ -902,3 +885,136 @@ def get_molit_real_estate_trade(property_type: str, region: str, deal_ymd: str, 
 
     except Exception as e:
         return f"❌ 국토교통부 실거래가 조회 중 오류 발생: {e}"
+
+
+# ---------------------------------------------------------
+# 7. 국토교통부 브이월드(V-World) 개별공시지가 및 공동주택 공시가격 조회
+# ---------------------------------------------------------
+def _get_vworld_key() -> str:
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets") and "VWORLD_API_KEY" in st.secrets:
+            val = str(st.secrets["VWORLD_API_KEY"]).strip().strip('"').strip("'")
+            if val:
+                return val
+    except Exception:
+        pass
+    return os.getenv("VWORLD_API_KEY", "").strip().strip('"').strip("'")
+
+
+def _address_to_pnu(address: str, vworld_key: str) -> tuple[str, str]:
+    """한글 지번/도로명 주소(예: '서울 강남구 대치동 316')를 브이월드 API로 19자리 필지고유번호(PNU)로 변환합니다."""
+    digits = re.sub(r"\D", "", address or "")
+    if len(digits) == 19:
+        return digits, address
+
+    s_url = "https://api.vworld.kr/req/search"
+    for category in ("parcel", "road"):
+        try:
+            s_res = requests.get(s_url, params={
+                "service": "search", "request": "search", "version": "2.0",
+                "query": address.strip(), "type": "address", "category": category,
+                "format": "json", "key": vworld_key
+            }, timeout=10).json()
+            items = s_res.get("response", {}).get("result", {}).get("items", [])
+            if items:
+                pnu_id = str(items[0].get("id", "")).strip()
+                addr_obj = items[0].get("address", {}) or {}
+                addr_title = addr_obj.get("parcel") or addr_obj.get("road") or items[0].get("title") or address
+                if len(pnu_id) == 19 and pnu_id.isdigit():
+                    return pnu_id, addr_title
+        except Exception:
+            continue
+
+    try:
+        g_url = "https://api.vworld.kr/req/address"
+        g_res = requests.get(g_url, params={
+            "service": "address", "request": "getcoord", "version": "2.0",
+            "crs": "epsg:4326", "address": address.strip(),
+            "refine": "true", "simple": "false", "format": "json",
+            "type": "parcel", "key": vworld_key
+        }, timeout=10).json()
+        if g_res.get("response", {}).get("status") == "OK":
+            refined = g_res["response"].get("refined", {})
+            pnu = str(refined.get("structure", {}).get("level4LC", "")).strip()
+            if len(pnu) == 19:
+                return pnu, refined.get("text", address)
+    except Exception:
+        pass
+
+    return "", "해당 주소의 19자리 필지고유번호(PNU)를 찾을 수 없습니다. 정확한 법정동+지번(예: '서울 강남구 대치동 316')으로 다시 입력해 주세요."
+
+
+def get_vworld_official_price(address_or_pnu: str, stdr_year: str = "") -> str:
+    """
+    지번 주소 또는 19자리 PNU 코드를 입력받아 브이월드(V-World)에서
+    1) 토지 개별공시지가(원/㎡) 및 2) 공동주택 공시가격을 통합 조회합니다.
+    """
+    vworld_key = _get_vworld_key()
+    if not vworld_key:
+        return "⚠️ 브이월드 인증키(VWORLD_API_KEY)가 설정되지 않았습니다. .env 또는 Streamlit Secrets에 VWORLD_API_KEY를 추가해 주세요."
+
+    pnu, resolved_addr = _address_to_pnu(address_or_pnu, vworld_key)
+    if not pnu:
+        return f"❌ 주소 변환 실패: {resolved_addr}"
+
+    output = [f"🏛️ [국토교통부 브이월드 공시가격 통합 조회 | 주소: {resolved_addr} (PNU: {pnu})]"]
+
+    # 1) 개별공시지가 조회 (getIndvdLandPriceAttr)
+    try:
+        land_url = "https://api.vworld.kr/ned/data/getIndvdLandPriceAttr"
+        params = {
+            "key": vworld_key,
+            "pnu": pnu,
+            "format": "json",
+            "numOfRows": 10,
+            "pageNo": 1
+        }
+        if stdr_year.strip().isdigit():
+            params["stdrYear"] = stdr_year.strip()
+
+        l_res = requests.get(land_url, params=params, timeout=10).json()
+        fields = l_res.get("indvdLandPrices", {}).get("field", [])
+        if fields:
+            output.append("\n■ 1. 개별공시지가 (토지 기준시가):")
+            for f in sorted(fields, key=lambda x: str(x.get("stdrYear", "")), reverse=True)[:5]:
+                yr = f.get("stdrYear", "-")
+                price = str(f.get("pblntfPclnd", "0")).strip()
+                p_str = f"{int(price):,}원/㎡" if price.isdigit() else f"{price}원/㎡"
+                std_dt = f.get("pblntfDe", "-")
+                output.append(f"- [{yr}년 기준] {p_str} (공시일자: {std_dt})")
+        else:
+            output.append("\n■ 1. 개별공시지가: 해당 필지의 개별공시지가 내역이 없습니다.")
+    except Exception as e:
+        output.append(f"\n■ 1. 개별공시지가 조회 오류: {e}")
+
+    # 2) 공동주택 공시가격 조회 (getApartHousingPriceAttr)
+    try:
+        apt_url = "https://api.vworld.kr/ned/data/getApartHousingPriceAttr"
+        a_params = {
+            "key": vworld_key,
+            "pnu": pnu,
+            "format": "json",
+            "numOfRows": 30,
+            "pageNo": 1
+        }
+        if stdr_year.strip().isdigit():
+            a_params["stdrYear"] = stdr_year.strip()
+
+        a_res = requests.get(apt_url, params=a_params, timeout=10).json()
+        a_fields = a_res.get("apartHousingPrices", {}).get("field", [])
+        if a_fields:
+            output.append("\n■ 2. 공동주택 공시가격 (상위 표본 15건):")
+            for f in a_fields[:15]:
+                yr = f.get("stdrYear", "-")
+                hs_nm = f.get("aphusNm", "")
+                dong = f.get("dongNm", "")
+                ho = f.get("hoNm", "")
+                area = f.get("prvuseAr", "-")
+                price = str(f.get("pblntfPc", "0")).strip()
+                p_str = f"{int(price):,}원" if price.isdigit() else f"{price}원"
+                output.append(f"- [{yr}년] {hs_nm} {dong}동 {ho}호 (전용 {area}㎡) -> 공시가격: {p_str}")
+    except Exception:
+        pass
+
+    return "\n".join(output)
