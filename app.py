@@ -587,7 +587,12 @@ for idx, message in enumerate(current_messages):
                 )
 
 # 4. 사용자 질문 입력 및 실시간 자동 저장 처리
-if prompt := st.chat_input(f"[{selected_room}: {current_room_title}]에 검토할 이슈를 입력하세요"):
+# ⚠️ 핵심 패치: placeholder에 동적으로 바뀌는 current_room_title을 넣으면 첫 질문 직후 위젯 ID가 바뀌어
+# 두 번째 질문의 첫 엔터가 씹히는 스트림릿 버그가 발생하므로 고정 key와 고정 placeholder를 사용합니다.
+if prompt := st.chat_input(
+    placeholder=f"[{selected_room}] 검토할 세무·법령·회계 이슈를 입력하세요 (이전 대화 맥락이 자동으로 이어집니다)",
+    key=f"chat_input_{effective_ws_id}_{selected_room}"
+):
     has_attached_file = bool(current_file_info["name"] and current_file_info["text"])
     display_prompt = f"📎 **[첨부파일: {current_file_info['name']}]**\n\n{prompt}" if has_attached_file else prompt
     
@@ -599,10 +604,13 @@ if prompt := st.chat_input(f"[{selected_room}: {current_room_title}]에 검토�
     history_context = ""
     if current_messages:
         recent_msgs = current_messages[-6:]
-        history_lines = ["[이 대화방의 직전 대화 맥락 (참고용)]"]
+        history_lines = [
+            "[이 대화방의 직전 대화 맥락 — 사용자가 별도 수식어 없이 후속 질문이나 조건 변경만 말하더라도 반드시 아래 직전 질문·답변의 사례 금액, 토지/자산 정보, 계산 내역을 그대로 이어받아 답변할 것]"
+        ]
         for m in recent_msgs:
             role_label = "사용자" if m["role"] == "user" else "에이전트"
-            history_lines.append(f"- {role_label}: {m['content'][:1500]}")
+            # 직전 답변의 표와 계산 내역이 잘리지 않도록 8,000자까지 넉넉히 전달
+            history_lines.append(f"- {role_label}: {m['content'][:8000]}")
         history_context = "\n".join(history_lines) + "\n\n"
 
     current_messages.append({"role": "user", "content": display_prompt})
@@ -633,35 +641,7 @@ if prompt := st.chat_input(f"[{selected_room}: {current_room_title}]에 검토�
             )
             st.markdown(response)
             
-            new_idx = len(current_messages)
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.download_button(
-                    label="📘 워드 다운로드 (.docx)",
-                    data=create_word_docx(response),
-                    file_name=f"검토보고서_{selected_room}_{current_room_title}_최신.docx",
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    key=f"docx_new_{effective_ws_id}_{selected_room}_{new_idx}",
-                    use_container_width=True
-                )
-            with col2:
-                st.download_button(
-                    label="🖨️ 인쇄용 문서 (.html/PDF)",
-                    data=create_printable_html(response),
-                    file_name=f"검토보고서_{selected_room}_{current_room_title}_최신.html",
-                    mime="text/html",
-                    key=f"print_new_{effective_ws_id}_{selected_room}_{new_idx}",
-                    use_container_width=True
-                )
-            with col3:
-                st.download_button(
-                    label="📝 마크다운 다운로드 (.md)",
-                    data=response.encode("utf-8-sig"),
-                    file_name=f"검토보고서_{selected_room}_{current_room_title}_최신.md",
-                    mime="text/markdown",
-                    key=f"md_new_{effective_ws_id}_{selected_room}_{new_idx}",
-                    use_container_width=True
-                )
-            
     current_messages.append({"role": "assistant", "content": response})
     save_workspace_to_disk(effective_ws_id)
+    # 답변 저장 직후 즉시 화면 상태를 확정하여 다음 질문 첫 엔터가 씹히지 않도록 보장
+    st.rerun()
