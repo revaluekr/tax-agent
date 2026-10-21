@@ -41,6 +41,104 @@ def get_live_gemini_key_pool() -> list[tuple[str, str]]:
 import law_api
 
 # ---------------------------------------------------------
+# 💰 월간 API 사용량·요금 실시간 추적 및 월 20,000원 Pro 자동 차단기
+# ---------------------------------------------------------
+USAGE_STORAGE_DIR = ".workspace_storage"
+os.makedirs(USAGE_STORAGE_DIR, exist_ok=True)
+USAGE_FILE_PATH = os.path.join(USAGE_STORAGE_DIR, "api_usage_stats.json")
+
+MONTHLY_PRO_LIMIT_KRW = float(_get_secret_or_env("MONTHLY_PRO_LIMIT_KRW") or 20000.0)
+USD_TO_KRW_RATE = 1400.0
+
+_MODEL_PRICING_USD_PER_1M = {
+    "PRO":   {"in": 1.50, "out": 10.00},
+    "FLASH": {"in": 0.15, "out": 0.60},
+}
+
+def _current_ym() -> str:
+    return datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m")
+
+def get_monthly_usage() -> dict:
+    """현재 월(YYYY-MM)의 누적 토큰 및 원화 환산 요금 데이터를 불러옵니다. 달이 바뀌면 자동 초기화됩니다."""
+    ym = _current_ym()
+    default_stats = {
+        "year_month": ym,
+        "total_krw": 0.0,
+        "total_usd": 0.0,
+        "pro_calls": 0,
+        "flash_calls": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "limit_krw": MONTHLY_PRO_LIMIT_KRW,
+        "updated_at": "-"
+    }
+    if os.path.exists(USAGE_FILE_PATH):
+        try:
+            with open(USAGE_FILE_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if data.get("year_month") == ym:
+                for k, v in default_stats.items():
+                    data.setdefault(k, v)
+                data["limit_krw"] = MONTHLY_PRO_LIMIT_KRW
+                return data
+        except Exception:
+            pass
+    return default_stats
+
+def _record_token_usage(model_id: str, in_tokens: int, out_tokens: int, count_call: bool = True) -> None:
+    """API 응답의 입출력 토큰을 원화 요금으로 환산해 디스크에 즉시 누적 저장합니다."""
+    if in_tokens <= 0 and out_tokens <= 0:
+        return
+    stats = get_monthly_usage()
+    is_pro_model = ("pro" in model_id.lower()) or ("argon" in model_id.lower())
+    tier_key = "PRO" if is_pro_model else "FLASH"
+    price_info = _MODEL_PRICING_USD_PER_1M[tier_key]
+
+    cost_usd = (in_tokens / 1_000_000.0) * price_info["in"] + (out_tokens / 1_000_000.0) * price_info["out"]
+    cost_krw = cost_usd * USD_TO_KRW_RATE
+
+    stats["total_usd"] = round(stats.get("total_usd", 0.0) + cost_usd, 6)
+    stats["total_krw"] = round(stats.get("total_krw", 0.0) + cost_krw, 2)
+    stats["input_tokens"] = int(stats.get("input_tokens", 0)) + int(in_tokens)
+    stats["output_tokens"] = int(stats.get("output_tokens", 0)) + int(out_tokens)
+    if count_call:
+        if is_pro_model:
+            stats["pro_calls"] = int(stats.get("pro_calls", 0)) + 1
+        else:
+            stats["flash_calls"] = int(stats.get("flash_calls", 0)) + 1
+    stats["updated_at"] = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%m/%d %H:%M:%S")
+
+    try:
+        with open(USAGE_FILE_PATH, "w", encoding="utf-8") as f:
+            json.dump(stats, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"⚠️ 사용량 기록 저장 오류: {e}")
+
+def _extract_and_log_response_usage(response, model_id: str, count_call: bool = True, est_in_chars: int = 0, est_out_chars: int = 0) -> None:
+    """Gemini 응답 객체에서 usage_metadata를 추출하여 요금을 기록합니다."""
+    in_tok, out_tok = 0, 0
+    try:
+        um = getattr(response, "usage_metadata", None)
+        if um:
+            in_tok = int(getattr(um, "prompt_token_count", 0) or 0)
+            out_tok = int(getattr(um, "candidates_token_count", 0) or 0)
+    except Exception:
+        pass
+    if in_tok == 0 and est_in_chars > 0:
+        in_tok = int(est_in_chars * 0.7)
+    if out_tok == 0 and est_out_chars > 0:
+        out_tok = int(est_out_chars * 0.7)
+    _record_token_usage(model_id, in_tok, out_tok, count_call=count_call)
+
+def is_pro_budget_exceeded() -> tuple[bool, float, float]:
+    """당월 누적 요금이 한도(20,000원)를 초과했는지 확인합니다."""
+    stats = get_monthly_usage()
+    cur_krw = float(stats.get("total_krw", 0.0))
+    limit_krw = float(stats.get("limit_krw", MONTHLY_PRO_LIMIT_KRW))
+    return (cur_krw >= limit_krw), cur_krw, limit_krw
+
+
+# ---------------------------------------------------------
 # 🔎 근거 추적·검증 및 Pro 모드 3배 리미트 해제(Unleash) 동적 제어
 # ---------------------------------------------------------
 _TOOL_TRACE = contextvars.ContextVar("tool_trace", default=None)
@@ -60,7 +158,6 @@ def _is_unleashed() -> bool:
     trace = _TOOL_TRACE.get()
     return bool(trace and trace.get("unleash"))
 
-# 기본(Flash) 1배 한도 vs Pro 모드 3배 개방(Unleash) 시 자동 곱셈 적용
 _SEARCH_LIMIT = {"law": 7, "prec": 3, "decc": 3, "expc": 2, "admrul": 2, "ordin": 2}
 _DETAIL_LIMIT = {"law": 12, "prec": 3, "decc": 3, "expc": 2, "admrul": 2, "ordin": 2}
 
@@ -105,13 +202,11 @@ def _record_law_articles(text: str) -> None:
         end = starts[n + 1].start() if n + 1 < len(starts) else len(text)
         trace["article_texts"][key] = text[am.start():end].strip()
 
-# ① 사건번호: 법원(2005두9415, 99다1234, 2004헌바92, 2014누53591) / 조세심판(조심2020서1234)
 _CASE_NO_PATTERNS = [
     re.compile(r"(?<!\d)((?:19|20)?\d{2})\s?(재두|재다|가합|가단|구합|구단|헌바|헌마|헌가|두|누|다|도|나|후|허|므|구|부|노|고단|고합)\s?(\d{2,6})(?!\d)"),
     re.compile(r"(?:조심|국심)\s?((?:19|20)\d{2})\s?(서|중|부|광|전|구|인|경|지)\s?(\d{2,6})(?!\d)"),
 ]
 
-# ② 법령 조문: 「상속세 및 증여세법」 제45조의2, 법인세법 시행령 제89조 (법령명이 붙은 경우만 검증)
 _ARTICLE_NO = re.compile(r"제\s*(\d+)\s*조(?:\s*의\s*(\d+))?")
 _COMMON_LAWS = [
     "상속세및증여세법", "조세특례제한법", "국세기본법", "국세징수법", "법인세법", "소득세법", "부가가치세법",
@@ -135,7 +230,6 @@ def _known_law_titles(trace: dict = None) -> list[str]:
     return sorted(titles, key=len, reverse=True)
 
 def _resolve_law_name(prefix: str, titles: list[str]):
-    """'제N조' 바로 앞 글자들(prefix)의 끝부분에서 법령명을 찾아 정식 명칭(공백 제거)으로 돌려줍니다."""
     tail = _norm(prefix)[-40:]
     for suf in _REF_SKIP_SUFFIX:
         if tail.endswith(suf):
@@ -156,25 +250,17 @@ def _resolve_law_name(prefix: str, titles: list[str]):
             return t
     return partial
 
-# ③ 집행기준 번호: 33의2-78의3-1, 52-88-3
 _EXEC_STD = re.compile(r"(?<![\d의])(\d{1,3}(?:의\d{1,2})?-\d{1,3}(?:의\d{1,2})?-\d{1,3})(?![\d])")
-
-# ④ 근거 표시: [판례:2005두9415] [심판례:조심2020서1234] [해석례:...] [예규:...] [조문:법인세법 제52조]
 _TAG = re.compile(r"\[(판례|심판례|해석례|예규|조문)\s*:\s*([^\]]+)\]")
-
-# ⑤ 출처가 필요한 서술 키워드 / 허용되는 부정·미조회 표현 / 양식 고정 문구
 _AUTHORITY = re.compile(r"대법원|판시|판례|심판원|조세심판|심판례|결정례|헌법재판소|헌재|예규|집행기준|유권해석|해석례|질의회신")
 _NEGATION = re.compile(r"없음|없습니다|없으며|없고|없어|확인되지|확인하지 못|찾지 못|미조회|조회되지|조회하지 못")
 _TEMPLATE_LABELS = ("상세 법리 및 기준 검토", "상세법리 및 기준검토", "실무 적용 및 리스크 주의사항", "실무적용 및 리스크 주의사항", "근거자료 및 검색방법", "근거 자료 및 검색 방법", "관련법령")
-
 _QUOTE = re.compile(r"[“\"]([^”\"]{12,})[”\"]")
 
 def _letters(text: str) -> str:
-    """인용문 대조용: 한글·영문·숫자만 남김 (띄어쓰기·문장부호 차이 무시)"""
     return re.sub(r"[^0-9A-Za-z가-힣]", "", text or "")
 
 def _quote_mismatches(line: str, case_nos: list, details: list) -> list[str]:
-    """따옴표로 인용한 문장이 조회한 판례·심판례 원문에 실제로 있는지 확인합니다."""
     bad = []
     pool = [d for d in details if any(n in _norm(d) for n in case_nos)] if case_nos else details
     pool_letters = [_letters(d) for d in pool]
@@ -196,7 +282,6 @@ def _find_case_numbers(text: str) -> list[str]:
     return cited
 
 def _find_article_refs(text: str, trace: dict = None) -> list[tuple]:
-    """문장 속 '법령명 + 제N조(의M)'를 (정식법령명, 조, 가지)로 추출합니다. 법령명이 바로 앞에 없으면 건너뜁니다."""
     text = text or ""
     titles = _known_law_titles(trace)
     refs = []
@@ -249,7 +334,6 @@ def _scan_violations(answer: str, trace: dict) -> list[tuple]:
         problems = []
         verified_source = False
 
-        # ① 사건번호
         for no in _find_case_numbers(line):
             if no in detail_blob:
                 verified_source = True
@@ -260,21 +344,18 @@ def _scan_violations(answer: str, trace: dict) -> list[tuple]:
             else:
                 problems.append(f"판례·심판례 {no} (조회 기록 없음)")
 
-        # ② 법령 조문 (근거 표시 안팎 모두)
         for ref in _find_article_refs(line, trace):
             if ref in fetched:
                 verified_source = True
             else:
                 problems.append(f"{_article_label(ref)} (조문 원문 미조회)")
 
-        # ③ 집행기준 번호
         for no in _EXEC_STD.findall(line):
             if _norm(no) in detail_blob:
                 verified_source = True
             else:
                 problems.append(f"집행기준 {no} (원문 미조회)")
 
-        # ④ 근거 표시 자체 검증
         for kind, val in _TAG.findall(line):
             if kind == "조문":
                 refs = _find_article_refs(val, trace)
@@ -291,12 +372,10 @@ def _scan_violations(answer: str, trace: dict) -> list[tuple]:
                 elif not nos:
                     problems.append(f"[{kind}:{val}] (원문 미조회)")
 
-        # ④-2 따옴표 인용문 대조
         line_cases = _find_case_numbers(line) + [n for k, v in _TAG.findall(line) if k != "조문" for n in _find_case_numbers(v)]
         if (line_cases or inherited_ok or _TAG.search(line)) and _QUOTE.search(line):
             problems.extend(_quote_mismatches(line, line_cases or parent_cases, trace["detail"]))
 
-        # ⑤ 출처 없는 판례·예규 서술 (근거 자료 섹션은 제외)
         if not in_refs_section and not problems:
             body = line
             for lbl in _TEMPLATE_LABELS:
@@ -322,7 +401,6 @@ def _show_diag() -> bool:
     return _get_secret_or_env("SHOW_DIAGNOSTICS").lower() in ("on", "true", "1")
 
 def _redact_lines(answer: str, violations: list[tuple]) -> str:
-    """정말 조회하지 않은 '사건번호(판례·심판례)'가 있는 줄만 최소한으로 정리하고, 하위 본문 줄 연쇄 삭제를 방지합니다."""
     bad = {i: probs for i, probs in violations}
     out = []
     for i, line in enumerate(answer.split("\n")):
@@ -350,7 +428,6 @@ def _strip_md(text: str) -> str:
     return re.sub(r"[*_`>#]", "", text or "").strip(" -")
 
 def _extract_claims(answer: str, trace: dict, max_claims: int = 20) -> tuple[list, dict]:
-    """검증 대상 문장과 그 근거 원문을 뽑습니다. Pro(unleash) 모드 시 검증 범위도 3배로 확장합니다."""
     mult = 3 if trace.get("unleash") else 1
     effective_max_claims = max_claims * mult
     src_char_cap = 6000 * mult
@@ -430,7 +507,6 @@ def _extract_claims(answer: str, trace: dict, max_claims: int = 20) -> tuple[lis
     return claims, sources
 
 def _semantic_verify(api_key: str, claims: list, sources: dict, user_query: str = "") -> dict:
-    """검증 모델 호출. 반환: {claim_id: (verdict, reason)}"""
     src_block = "\n\n".join(f"[{sid}] {label}\n{text}" for sid, (label, text) in sources.items())
     claim_block = "\n".join(f"{n + 1}. (근거: {', '.join(c['sources'])}) {c['text']}" for n, c in enumerate(claims))
     prompt = (
@@ -453,6 +529,7 @@ def _semantic_verify(api_key: str, claims: list, sources: dict, user_query: str 
         config=types.GenerateContentConfig(response_mime_type="application/json"),
     )
     raw = extract_safe_text(resp)
+    _extract_and_log_response_usage(resp, VERIFIER_MODEL_ID, count_call=False, est_in_chars=len(prompt), est_out_chars=len(raw))
     raw = re.sub(r"^```(?:json)?|```$", "", raw.strip()).strip()
     data = json.loads(raw)
     result = {}
@@ -470,7 +547,6 @@ def _semantic_verify(api_key: str, claims: list, sources: dict, user_query: str 
     return result
 
 def _apply_semantic_results(answer: str, claims: list, verdicts: dict, sources: dict = None) -> tuple[str, dict]:
-    """의미 검증 결과 반영: 별표(서식) 수치나 조문 요약 차이로 인해 핵심 결론 문장이 삭제되지 않도록 보존합니다."""
     counts = {"supported": 0, "partial": 0, "unsupported": 0, "unknown": 0}
     for n, c in enumerate(claims):
         verdict, reason = verdicts.get(n + 1, ("unknown", ""))
@@ -486,10 +562,6 @@ def _apply_semantic_results(answer: str, claims: list, verdicts: dict, sources: 
 # ✨ 법리 왜곡 0% 스마트 법령 텍스트 압축기 (Pro 모드 시 3배 리미트 개방)
 # ---------------------------------------------------------
 def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
-    """
-    법령·판례 원문에서 개정 연혁 태그(<개정 ...>), 중복 공백 등을 제거합니다.
-    Pro 모드(unleash=True)일 때는 조문 36,000자, 판례·예규 12,000자로 한도를 3배 개방합니다.
-    """
     if not raw_text:
         return ""
 
@@ -529,7 +601,7 @@ def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
 
 
 # ---------------------------------------------------------
-# 1. 모델 설정 및 개편된 3대 라우팅 프로토콜
+# 1. 모델 설정 및 개편된 3대 라우팅 프로토콜 + 월 2만원 Pro 차단기
 # ---------------------------------------------------------
 def _model_id(env_key: str, default: str) -> str:
     return _get_secret_or_env(env_key) or default
@@ -547,9 +619,8 @@ def _is_model_not_found(e: Exception) -> bool:
     s = str(e)
     return ("404" in s or "NOT_FOUND" in s) and "model" in s.lower()
 
-# [규칙 설정값] 언제든 숫자만 수정하여 감지 기준을 조절할 수 있습니다.
-LARGE_FILE_AUTO_PRO_CHARS = 15000   # 2번 규칙: 대용량 첨부파일 자동 Pro 전환 기준 (15,000자 이상)
-LONG_SIMUL_QUERY_CHARS    = 600     # 3번 규칙: 초장문 시뮬레이션 안내 기준 (600자 이상 + 시뮬레이션 키워드)
+LARGE_FILE_AUTO_PRO_CHARS = 15000
+LONG_SIMUL_QUERY_CHARS    = 600
 
 SIMUL_KEYWORDS = [
     "시뮬레이션", "시나리오", "비교", "플랜", "부담부증여", "분할증여",
@@ -557,50 +628,48 @@ SIMUL_KEYWORDS = [
 ]
 
 def select_optimal_model(user_query: str, has_file: bool = False, full_input_len: int = 0) -> tuple[str, str, str]:
-    """
-    개편된 3대 라우팅 프로토콜:
-    1. 질문 처음에 '[프로]'라고 입력했을 때 -> PRO 모드 ON (데이터·도구 한도 3배 개방)
-    2. 대용량 첨부파일(15,000자 이상)을 감지했을 때 -> PRO 모드 자동 ON (데이터·도구 한도 3배 개방)
-    3. 초장문(600자 이상 + 시뮬레이션 키워드) 감지 시 -> FLASH로 답변하되 상단에 '[프로]' 전환 필요성 안내 배지 출력
-    반환값: (tier_mode, mode_badge, recommend_pro_notice)
-    """
     q_clean = (user_query or "").strip()
+    budget_exceeded, cur_krw, limit_krw = is_pro_budget_exceeded()
 
-    # 1. 질문 처음에 [프로]라고 입력했을 때 -> Pro ON (3배 개방)
-    if q_clean.startswith("[프로]"):
+    wants_manual_pro = q_clean.startswith("[프로]")
+    wants_file_pro   = has_file and full_input_len >= LARGE_FILE_AUTO_PRO_CHARS
+
+    if (wants_manual_pro or wants_file_pro) and budget_exceeded:
+        block_notice = (
+            f"> ⛔ **[월간 요금 한도({limit_krw:,.0f}원) 도달 — Pro 모드 자동 차단됨]** "
+            f"당월 누적 API 예상 요금(**{cur_krw:,.0f}원**)이 설정된 월 한도({limit_krw:,.0f}원)를 초과하여 "
+            "과금 보호를 위해 **Flash 표준 모드**로 자동 전환되었습니다.\n"
+        )
+        return "FLASH", "⚡ **[Flash 표준 모드 (월 한도 초과 보호 작동)]** 실무 표준 검토", block_notice
+
+    if wants_manual_pro:
         return (
             "PRO",
             "🧠 **[Pro 심층 모드 (데이터·도구 한도 3배 개방)]** 사용자 지정 정밀 검토 (`[프로]`)",
             ""
         )
 
-    # 2. 대용량 첨부파일을 감지했을 때 -> Pro 자동 ON (3배 개방)
-    if has_file and full_input_len >= LARGE_FILE_AUTO_PRO_CHARS:
+    if wants_file_pro:
         return (
             "PRO",
             f"🧠 **[Pro 심층 모드 자동 전환 (데이터·도구 한도 3배 개방)]** 대용량 첨부문서({full_input_len:,}자) 정밀 분석",
             ""
         )
 
-    # 3. 초장문(600자 이상 + 시뮬레이션 키워드) 감지했을 때 -> Flash 실행 + Pro 전환 안내 문구 표시
     matched_simul = [kw for kw in SIMUL_KEYWORDS if kw in q_clean]
-    if len(q_clean) >= LONG_SIMUL_QUERY_CHARS and len(matched_simul) >= 1:
+    if len(q_clean) >= LONG_SIMUL_QUERY_CHARS and len(matched_simul) >= 1 and not budget_exceeded:
         kw_str = ", ".join(matched_simul[:3])
         notice = (
             f"> 💡 **[Pro 정밀검토 전환 안내]** 초장문({len(q_clean):,}자) 시뮬레이션 질의(감지 키워드: `{kw_str}`)가 확인되었습니다. "
             "현재 답변은 표준 한도(Flash)로 빠르게 작성되었으며, **판례·예규 전문 독해 및 데이터·도구 한도 3배 개방(Unleash)**을 통한 "
-            "심층 재검토가 필요하시면 채팅창에 **`[프로] 방금 질문 다시 정밀 검토해 줘`**라고 입력해 주세요.\n"
+            "심층 재검토가 필요하시면 좌측 **Pro 토글을 켜거나** 답변 하단의 **`🧠 [프로] 3배 개방 재검토`** 버튼을 눌러주세요.\n"
         )
         return "FLASH", "⚡ **[Flash 빠른 검토 모드]** 실무 표준 검토", notice
 
-    # 4. 기본 일반 질문
     return "FLASH", "⚡ **[Flash 빠른 검토 모드]** 실무 표준 검토", ""
 
 # 2. Gemini 도구 정의
 def search_law_for_gemini(keyword: str, target: str = "law") -> str:
-    """
-    국가법령정보센터에서 법령, 판례, 행정규칙, 법령해석례, 조세심판원 재결례, 지방세 자치법규(조례) 목록과 일련번호(ID)를 검색합니다.
-    """
     if _over_limit("search", target):
         print(f"\n[시스템] ⛔ 검색 한도 도달 → 차단: '{keyword}' (대상: {target})")
         return (f"[검색 한도 도달] 이번 질문에서 '{target}' 검색은 더 할 수 없습니다. "
@@ -662,9 +731,6 @@ def search_law_for_gemini(keyword: str, target: str = "law") -> str:
     return _record("list", summary)
 
 def get_law_details_for_gemini(doc_id: str, target: str = "law", query_filter: str = "") -> str:
-    """
-    검색된 일련번호(ID)로 원문을 조회합니다. 법령('law') 조회 시 반드시 query_filter에 조문번호(예: '제29조의8', '제26조')나 핵심 단어를 넣어 호출하세요.
-    """
     trace = _TOOL_TRACE.get()
     if trace is not None and target != "law":
         seen = trace.setdefault("seen_docs", set())
@@ -694,57 +760,45 @@ def get_law_details_for_gemini(doc_id: str, target: str = "law", query_filter: s
     return _record("detail", result)
 
 def search_exchange_rate_for_gemini(start_date: str, end_date: str, currency: str = "USD") -> str:
-    """한국은행 ECOS에서 특정 기간의 공식 환율(매매기준율)을 조회합니다."""
     print(f"\n[시스템] 💱 한국은행 환율 조회 도구 가동: {currency} ({start_date}~{end_date})")
     return _record("detail", law_api.get_bok_exchange_rate(start_date, end_date, currency))
 
 def search_base_rate_for_gemini(start_date: str, end_date: str) -> str:
-    """한국은행 ECOS에서 특정 기간('YYYYMMDD' ~ 'YYYYMMDD')의 한국은행 기준금리를 조회합니다."""
     print(f"\n[시스템] 📈 한국은행 기준금리 조회 도구 가동: ({start_date}~{end_date})")
     return _record("detail", law_api.get_bok_base_rate(start_date, end_date))
 
 def search_industry_code_for_gemini(keyword: str) -> str:
-    """프로젝트 내 마스터 데이터('industry_codes.xlsx')에서 국세청 6자리 기준경비율 업종코드를 검색합니다."""
     print(f"\n[시스템] 🏢 국세청 업종코드 검색 도구 가동: '{keyword}'")
     return _record("detail", law_api.search_industry_code(keyword))
 
 def search_dart_corp_for_gemini(corp_name: str, bsns_year: str = "2025") -> str:
-    """금융감독원 전자공시시스템(Open DART)에서 특정 기업의 6대 핵심 정보를 통합 조회합니다."""
     print(f"\n[시스템] 📊 DART 전자공시 통합 조회 가동: '{corp_name}' ({bsns_year}년)")
     cap = 12000 if _is_unleashed() else 4000
     return _record("detail", law_api.get_dart_corp_info(corp_name, bsns_year)[:cap])
 
 def check_nts_biz_status_for_gemini(biz_numbers: str) -> str:
-    """국세청 API를 통해 사업자등록번호(10자리)의 납세자 상태(계속/휴폐업) 및 과세유형을 실시간 조회합니다."""
     print(f"\n[시스템] 🔎 국세청 사업자등록 상태·과세유형 실시간 조회 가동: '{biz_numbers}'")
     return _record("detail", law_api.get_nts_biz_status(biz_numbers))
 
 def verify_nts_biz_info_for_gemini(b_no: str, start_dt: str, p_nm: str, b_nm: str = "") -> str:
-    """국세청 API를 통해 사업자등록번호(10자리) + 개업일자(YYYYMMDD) + 대표자 성명의 진위확인을 수행합니다."""
     print(f"\n[시스템] 🛡️ 국세청 사업자등록 진위확인 가동: {b_no} | {start_dt} | {p_nm}")
     if hasattr(law_api, "verify_nts_biz_info"):
         return _record("detail", law_api.verify_nts_biz_info(b_no, start_dt, p_nm, b_nm))
     return "현재 law_api.py에 진위확인 함수가 없습니다."
 
 def search_real_estate_trade_for_gemini(property_type: str, region: str, deal_ymd: str, filter_keyword: str = "") -> str:
-    """국토교통부 부동산 매매 실거래가 4종(아파트 'apt', 오피스텔 'offi', 상가 'comm', 토지 'land')을 조회합니다."""
     print(f"\n[시스템] 🏘️ 국토교통부 부동산 실거래가 조회 가동: 유형={property_type} | 지역={region} | 연월={deal_ymd} | 필터='{filter_keyword}'")
     if hasattr(law_api, "get_molit_real_estate_trade"):
         return _record("detail", law_api.get_molit_real_estate_trade(property_type, region, deal_ymd, filter_keyword))
     return "현재 law_api.py에 부동산 실거래가 조회 함수가 없습니다."
 
 def search_official_land_price_for_gemini(address: str, stdr_year: str = "") -> str:
-    """
-    국토교통부 브이월드(V-World) API를 통해 특정 지번/도로명 주소(예: '서울 강남구 대치동 316')의
-    1) 토지 개별공시지가(원/㎡) 및 2) 공동주택 공시가격(기준시가)을 조회합니다.
-    """
     print(f"\n[시스템] 🏛️ 브이월드 공시지가·공동주택공시가격 조회 가동: 주소='{address}' | 기준연도='{stdr_year}'")
     if hasattr(law_api, "get_vworld_official_price"):
         return _record("detail", law_api.get_vworld_official_price(address, stdr_year))
     return "현재 law_api.py에 공시지가 조회 함수가 없습니다."
 
 def run_tax_calculator_for_gemini(formula_expression: str, description: str = "") -> str:
-    """세액 계산, 누진세율 구간 계산, 양도세/증여세/상속세/공제액 시뮬레이션 등 모든 수학 계산 시 호출하는 파이썬 정밀 계산기입니다."""
     print(f"\n[시스템] 🧮 파이썬 정밀 세액 계산기 가동: [{description}] 수식: {formula_expression}")
     allowed_names = {
         "abs": abs, "round": round, "min": min, "max": max, "sum": sum, "pow": pow,
@@ -762,16 +816,16 @@ def run_tax_calculator_for_gemini(formula_expression: str, description: str = ""
     except Exception as e:
         return f"❌ 수식 계산 오류 ({formula_expression}): {e} -> 올바른 파이썬 사칙연산 수식으로 다시 호출하세요."
 
-# 3. 에이전트 시스템 프롬프트 템플릿 (개편된 1. 결론 -> 2. 내용 -> 3. 관련법령 양식)
+# 3. 에이전트 시스템 프롬프트 템플릿 (히든 <precheck> 3단 크로스체크 강제 + 1. 결론 -> 2. 내용 -> 3. 관련법령)
 SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문 에이전트입니다.
 사용자의 질문 성격에 따라 아래의 **[투트랙(Two-Track) 운영 프로토콜]**을 지능적으로 구분하여 작동하세요.
 
 [투트랙(Two-Track) 운영 프로토콜 — 최우선 판단 기준]
-- **📋 트랙 1 [전문 검토 보고서 모드]**: 세무·법령·회계·노무·4대보험에 관한 법리 검토, 요건 판정, 수당·세액·공제 계산, 기업 공시·실거래가·공시지가·사업자 상태 조회 등 **법령 검색이나 데이터/수식 계산이 필요한 모든 전문 질문**일 때 작동합니다. 반드시 먼저 제공된 도구(API)들을 사용하여 실제 원문 데이터와 통계를 확인한 뒤, 아래 1~2번 기준을 엄격히 준수하고 **3번의 [1. 결론 -> 2. 내용 -> 3. 관련법령] 보고서 양식**으로만 출력하세요. (※ 사전 3줄 크로스체크나 불필요한 보고서 표지 타이틀, 작성일자 등은 절대 출력하지 마세요.)
-- **💬 트랙 2 [자유 대화 및 실무 초안 모드]**: 사용자가 일상적인 대화·인사·브레인스토밍을 하거나, 직전 검토 결과를 바탕으로 **'거래처/고객 안내용 카톡·문자·이메일 초안 작성', '쉬운 요약 설명', '문장 다듬기', '일반 양식 작성'** 등을 요청한 경우에 작동합니다. 이때는 보고서 양식이나 대괄호 출처 태그([조문:...])를 모두 생략하고, 일반 제미나이처럼 자연스럽고 친절한 대화체나 사용자가 요청한 실무 양식(카톡/이메일 등)으로 자유롭게 답변하세요.
+- **📋 트랙 1 [전문 검토 보고서 모드]**: 세무·법령·회계·노무·4대보험에 관한 법리 검토, 요건 판정, 수당·세액·공제 계산, 기업 공시·실거래가·공시지가·사업자 상태 조회 등 **법령 검색이나 데이터/수식 계산이 필요한 모든 전문 질문**일 때 작동합니다. 반드시 먼저 제공된 도구(API)들을 사용하여 실제 원문 데이터와 통계를 확인한 뒤, **3번의 `<precheck>` 내부 3단 크로스체크를 먼저 수행하고 이어서 [1. 결론 -> 2. 내용 -> 3. 관련법령] 보고서 양식**으로 출력하세요.
+- **💬 트랙 2 [자유 대화 및 실무 초안 모드]**: 사용자가 일상적인 대화·인사·브레인스토밍을 하거나, 직전 검토 결과를 바탕으로 **'거래처/고객 안내용 카톡·문자·이메일 초안 작성', '쉬운 요약 설명', '문장 다듬기', '일반 양식 작성'** 등을 요청한 경우에 작동합니다. 이때는 `<precheck>`나 보고서 양식, 대괄호 출처 태그([조문:...])를 모두 생략하고 자연스럽고 친절한 대화체나 사용자가 요청한 실무 양식(카톡/이메일 등)으로 자유롭게 답변하세요.
 
 [트랙 1 (전문 검토 보고서 모드) 필수 도구 호출 원칙]
-- **[핵심 조문 조회 원칙]**: 세법·노동법·공단 규정 등 법령 질문은 **법률과 시행령의 해당 조문을 모두** 원문으로 조회한 뒤 답변할 것. 도구 호출은 필요한 만큼 하되, **이미 결과를 받은 검색을 같은 검색어로 반복하지 말 것.**
+- **[핵심 조문 조회 원칙]**: 세법·노동법·공단 규정 등 법령 질문은 **법률과 시행령(필요시 시행규칙)의 해당 조문을 모두** 원문으로 조회한 뒤 답변할 것. 도구 호출은 필요한 만큼 하되, **이미 결과를 받은 검색을 같은 검색어로 반복하지 말 것.**
 - 법령 검색(search_law_for_gemini, target='law')의 keyword에는 **법령명만** 넣을 것 (예: '소득세법', '근로기준법', '소득세법 시행령'). 주제어는 넣지 말 것.
 - 조회한 원문에서 직접 확인하지 못한 금액·비율·연도는 단정하지 말고 **"(원문 미확인)"**이라고 표시할 것.
 - **[근거 표시 의무 (트랙 1 전용)]** 전문 검토 보고서(1. 결론 ~ 3. 관련법령)를 작성할 때 판례·심판례·해석례·예규·법령 조문을 근거로 쓰는 문장 끝에는 반드시 아래 형식의 근거 표시를 붙일 것(닫는 대괄호 ']'가 누락되지 않도록 주의).
@@ -779,11 +833,11 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
   * 법령 조문: [조문:법인세법 시행령 제89조] (반드시 정식 법령명 포함. '동법', '같은 법' 사용 금지)
 - **판례·심판례·해석례 인용 규칙**: 판결요지·결정요지를 서술하는 사건은 반드시 get_law_details_for_gemini(target='prec' 등)로 **원문을 조회한 사건만** 쓸 것. 목록 검색에서만 본 사건은 사건번호·선고일만 적고 "(요지 미조회)"로 표시할 것. **도구로 조회하지 않은 사건번호를 기억으로 적지 말 것.**
 - **법령 조문 인용 규칙**: 전문 검토 보고서에 법령명과 함께 적는 조문(예: 「법인세법」 제52조)은 반드시 get_law_details_for_gemini로 **그 조문을 조회한 것만** 쓸 것. 조회하지 않은 조문이 필요하면 먼저 조회할 것.
-- **답변에 시스템·도구·검증 절차·삭제 여부에 대한 언급을 절대 쓰지 말 것** (예: "시스템상 미조회 항목은 배제" 같은 문장 금지). 근거가 부족하면 "관련 원문을 확인하지 못했다"고만 쓸 것.
+- **답변에 시스템·도구·검증 절차·삭제 여부에 대한 언급을 절대 쓰지 말 것**. 근거가 부족하면 "관련 원문을 확인하지 못했다"고만 쓸 것.
 - **법령명은 반드시 정식 명칭**으로 쓸 것 (예: 「상속세 및 증여세법」, 「조세특례제한법 시행령」, 「근로기준법」).
 - **근거 표시는 그 문장의 내용이 실제로 해당 원문에 있을 때만** 붙일 것. 한 판례에 없는 내용을 그 판례 근거 표시로 묶지 말 것.
 - **따옴표(“ ”) 인용은 조회한 원문을 글자 그대로 옮길 때만** 사용하고, 요약·의역할 때는 따옴표를 쓰지 말 것.
-- **[수식 및 표 작성 규칙]**: 인쇄용 문서 출력 시 글자가 깨지는 LaTeX 수식 문법($$, $, \\frac, \\times, \\text 등)은 절대 사용하지 말고 일반 텍스트 기호(×, ÷, +, -, =)로만 깔끔하게 표기할 것. 마크다운 표를 작성할 때는 반드시 표 위아래로 빈 줄을 띄우고 헤더 구분선(| --- | --- |)을 정확히 작성할 것.
+- **[수식 및 표 작성 규칙]**: 인쇄용 문서 출력 시 글자가 깨지는 LaTeX 수식 문법($$,$, \\frac, \\times, \\text 등)은 절대 사용하지 말고 일반 텍스트 기호(×, ÷, +, -, =)로만 깔끔하게 표기할 것. 마크다운 표를 작성할 때는 반드시 표 위아래로 빈 줄을 띄우고 헤더 구분선(| --- | --- |)을 정확히 작성할 것.
 - 법령·판례·심판례·예규·지방세조례 확인: 'search_law_for_gemini'로 ID를 찾은 뒤 'get_law_details_for_gemini'(반드시 query_filter에 조문번호 입력)로 핵심 조문만 읽을 것.
 - 기업 공시·재무·지분·배당·출자 확인: 'search_dart_corp_for_gemini' 호출.
 - 사업자 상태(휴·폐업/과세유형) 및 진위확인: 'check_nts_biz_status_for_gemini' 또는 'verify_nts_biz_info_for_gemini' 호출.
@@ -800,7 +854,14 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
 2. 할루시네이션(임의 생성) 금지 규칙
 - 확인되지 않은 법조문 번호, 통칙·집행기준 번호, 예규·판례·심판례 번호, 업종코드(6자리), 환율·금리·재무제표·지분율·실거래가·공시지가 수치, 깨진 상세 URL을 절대 임의로 추측하거나 조합해 만들어내지 말 것.
 
-3. 트랙 1 (전문 검토 보고서 모드) 필수 출력 양식 (트랙 1에 해당할 때는 반드시 아래 1 → 2 → 3 순서대로 화면에 출력할 것)
+3. 트랙 1 (전문 검토 보고서 모드) 필수 출력 양식
+**[절대 원칙]** 트랙 1 보고서를 작성할 때는 대충 요약하거나 단서 조항을 누락하는 것을 방지하기 위해, 반드시 맨 처음에 `<precheck>`와 `</precheck>` 태그를 열고 그 안에 **[사전 3단 크로스체크]**를 먼저 글자로 꼼꼼히 작성한 뒤, 바로 이어서 `### 1. 결론`을 시작할 것! (시스템이 `<precheck>...</precheck>` 구간만 화면 출력 직전에 자동 제거하므로, 태그를 정확히 닫고 그 뒤는 반드시 `### 1. 결론`으로 시작할 것.)
+
+<precheck>
+- [1단: 법령·판례 원문 대조] 이번에 도구로 실제 원문을 조회한 법률·시행령·시행규칙 조문 번호 및 판례·심판례 번호 점검
+- [2단: 단서·예외·배제 요건 체크] 특수관계인·지배주주 배제, 업종·규모 제한, 최저한세, 중복공제 배제, 사후관리(추징) 요건 등 예외 단서 해당 여부 점검
+- [3단: 수리 계산 및 한도 검산] 파이썬 정밀 계산기 산출값, 세율 구간, 안분 비율, 공제 한도 오차 여부 최종 점검 (계산이 없는 법리 질문이면 '계산 해당 없음' 기재)
+</precheck>
 
 ### 1. 결론
 - 질문에 대한 핵심 결론(가능/불가능 여부, 적용 세율·산출세액·공제액·수당·과세유형·업종코드·회계처리 등)을 명확하고 간결하게 요약
@@ -813,10 +874,10 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
 - 1~3순위 근거(법령 조문, 단서·예외 요건, 지자체 조례, 회계기준, 각 기관 API 조회 데이터, 예규·판례·조세심판례)를 바탕으로 상세 법리 및 요건 설명
 
 #### (2) 계산
-- 정밀 계산기(run_tax_calculator_for_gemini)로 산출한 단계별 계산 과정 및 산출 내역 (※ 단, 질문에 세액·수당·비율 등 수치 계산 내용이 전혀 없는 단순 법리 질의라면 이 '(2) 계산' 소제목과 항목은 완전히 생략하고 바로 아래 항목으로 이어서 작성할 것)
+- 정밀 계산기(run_tax_calculator_for_gemini)로 산출한 단계별 계산 과정 및 산출 내역 (※ 단, 질문에 세액·수당·비율 등 수치 계산 내용이 전혀 없는 단순 법리 질의라면 이 '(2) 계산' 소제목과 항목은 완전히 생략하고 바로 아래 항목을 '(2) 실무 적용 및 리스크 주의사항'으로 당겨서 작성할 것)
 
 #### (3) 실무 적용 및 리스크 주의사항
-- 가산세 및 사후관리(고용감소 추징 등) 리스크, 최저한세 적용 여부, 중복공제 배제 여부, 증빙 수취 요건, 홈택스/위택스 신고 시 주의할 점 정리 (※ 만약 계산 내용이 없어 위 '(2) 계산'을 생략한 경우에도 번호나 흐름에 맞게 실무 적용 및 리스크 주의사항을 명확히 기재할 것)
+- 가산세 및 사후관리(고용감소 추징 등) 리스크, 최저한세 적용 여부, 중복공제 배제 여부, 증빙 수취 요건, 홈택스/위택스 신고 시 주의할 점 정리 (※ 위 계산 항목이 생략된 경우 '(2) 실무 적용 및 리스크 주의사항'으로 번호를 맞춰 기재할 것)
 
 ---
 
@@ -830,11 +891,25 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
   * 국세청 홈택스(사업자상태/업종코드): https://www.hometax.go.kr
 """
 
-def _clean_latex_for_export(text: str) -> str:
-    """인쇄용 문서(.html/PDF) 및 워드 출력 시 깨지는 모든 LaTeX 수식 문법을 일반 텍스트로 정제합니다."""
+def _strip_hidden_precheck(text: str) -> str:
+    """AI가 추론 정밀도를 높이기 위해 먼저 작성한 <precheck>...</precheck> 내부 3단 크로스체크를 로그에만 남기고 화면 본문에서는 깔끔하게 제거합니다."""
     if not text:
         return ""
-    s = text
+    m = re.search(r"<precheck>(.*?)</precheck>", text, flags=re.DOTALL | re.IGNORECASE)
+    if m:
+        precheck_log = m.group(1).strip()
+        print(f"\n[시스템] 🧠 내부 3단 크로스체크 수행 완료 (화면 자동 숨김):\n{precheck_log}")
+        text = re.sub(r"<precheck>.*?</precheck>\s*", "", text, flags=re.DOTALL | re.IGNORECASE)
+    elif "<precheck>" in text.lower() and "### 1. 결론" in text:
+        idx = text.find("### 1. 결론")
+        text = text[idx:]
+    return text.lstrip()
+
+def _clean_latex_for_export(text: str) -> str:
+    """히든 <precheck> 블록을 제거하고, 인쇄용 문서(.html/PDF) 및 워드 출력 시 깨지는 모든 LaTeX 수식 문법을 일반 텍스트로 정제합니다."""
+    if not text:
+        return ""
+    s = _strip_hidden_precheck(text)
     s = re.sub(r"\$\$(.*?)\$\$", r"\1", s, flags=re.DOTALL)
     s = re.sub(r"\$([^$\n]+)\$", r"\1", s)
     s = re.sub(r"\\text(?:bf|rm|it)?\{([^}]*)\}", r"\1", s)
@@ -846,7 +921,6 @@ def _clean_latex_for_export(text: str) -> str:
     return s
 
 def extract_safe_text(response) -> str:
-    """Gemini 응답 객체에서 NoneType 오류 없이 안전하게 텍스트를 추출합니다."""
     if not response:
         return ""
     try:
@@ -876,7 +950,6 @@ def _execute_with_key_and_model(
     safety_settings: list,
     unleash: bool = False
 ) -> str:
-    """특정 API 키와 모델로 세션을 열어 답변을 받아옵니다. Pro(unleash=True) 모드 시 한도를 3배 개방합니다."""
     timeout_ms = 120000 if unleash else 60000
     max_remote_calls = 30 if unleash else 16
 
@@ -900,10 +973,16 @@ def _execute_with_key_and_model(
     try:
         response = chat.send_message(user_input)
         final_text = extract_safe_text(response)
+        _extract_and_log_response_usage(
+            response, model_id, count_call=True,
+            est_in_chars=len(user_input) + len(dynamic_prompt),
+            est_out_chars=len(final_text)
+        )
 
         if not final_text:
-            follow_up = chat.send_message("지금까지 조회한 법령 조문과 계산 결과를 바탕으로 추가 도구 호출 없이 즉시 [1. 결론 -> 2. 내용 -> 3. 관련법령] 순서로 답변을 작성해 주세요.")
+            follow_up = chat.send_message("지금까지 조회한 법령 조문과 계산 결과를 바탕으로 추가 도구 호출 없이 즉시 <precheck> 3단 크로스체크 후 [1. 결론 -> 2. 내용 -> 3. 관련법령] 순서로 답변을 작성해 주세요.")
             final_text = extract_safe_text(follow_up)
+            _extract_and_log_response_usage(follow_up, model_id, count_call=False, est_in_chars=500, est_out_chars=len(final_text))
         trace = _TOOL_TRACE.get()
     finally:
         _TOOL_TRACE.reset(trace_token)
@@ -915,7 +994,6 @@ def _execute_with_key_and_model(
 
     # ---------------------------------------------------------
     # 🔒 근거 강제 검증 (트랙 1: 정식 보고서 양식이고 도구 기록이 수집된 경우에만 작동)
-    # 트랙 2(자유 대화·카톡/이메일 초안 모드)일 때는 출처 대괄호가 없어도 문장을 삭제하지 않고 그대로 통과!
     # ---------------------------------------------------------
     is_formal_report = bool(re.search(r"###\s*1\.\s*결론|###\s*2\.\s*내용|###\s*3\.\s*관련법령", final_text))
     citation_note = ""
@@ -939,6 +1017,7 @@ def _execute_with_key_and_model(
             try:
                 retry_resp = chat.send_message(fix_msg)
                 retry_text = extract_safe_text(retry_resp)
+                _extract_and_log_response_usage(retry_resp, model_id, count_call=False, est_in_chars=len(fix_msg), est_out_chars=len(retry_text))
             except Exception as e:
                 retry_text = ""
                 print(f"[시스템]    ↳ 재작성 요청 실패: {e}")
@@ -963,7 +1042,6 @@ def _execute_with_key_and_model(
         else:
             citation_note = "\n> ✅ 답변의 판례·조문·예규 근거가 모두 이번 조회 기록과 일치합니다."
 
-        # 🧪 의미 검증: 근거 표시가 붙은 문장이 실제로 원문 내용과 맞는지 별도 모델로 판정
         if SEMANTIC_VERIFY_ON:
             claims, sources = _extract_claims(final_text, trace)
             if claims:
@@ -978,7 +1056,6 @@ def _execute_with_key_and_model(
                     print(f"[시스템]    ↳ 의미 검증 실패: {e}")
                     citation_note += "\n> 🧪 의미 검증을 수행하지 못했습니다(검증 모델 오류). 근거 표시 문장은 직접 확인하세요."
 
-    # 🔧 진단용: 실제 호출된 도구 목록을 답변 하단에 표시
     history = []
     try:
         history = chat.get_history(curated=False) or []
@@ -1101,7 +1178,7 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> s
                     if _show_diag():
                         diag_header += f"> *(ℹ️ 앞선 시도 실패: {' | '.join(diag_notes)})*\n"
                     else:
-                        print("[시스템] ℹ️ 앞선 시도 실패: " + " | ".join(diag_notes))
+                        print("[시스템] ℹ️ 앞선 시도 실패: " + " | '.join(diag_notes)")
                 return diag_header + "\n" + final_text
             except Exception as e:
                 if _is_model_not_found(e):
