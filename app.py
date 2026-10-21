@@ -6,6 +6,7 @@ import json
 import hashlib
 import threading
 import urllib.request
+import xml.etree.ElementTree as ET
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
 import streamlit as st
@@ -29,6 +30,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 
 # 🔒 ImportError 원천 방지 안전 임포트
 import agent
+import law_api
 from agent import run_agent
 
 # 1. 웹 페이지 기본 설정
@@ -258,15 +260,230 @@ footer {visibility: hidden;}
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# 0. 작업공간 · 월간 요금 계량기 · 백그라운드 매니저 · ⏰ API 만료일 관리
+# 0. 작업공간 · 요금 계량기 · API 만료일 · 🎯 맥락 연동형 법령 레이더 (3대 방식 통합)
 # ---------------------------------------------------------
 ROOM_IDS = [f"대화방 {i}" for i in range(1, 11)]
 STORAGE_DIR = ".workspace_storage"
 os.makedirs(STORAGE_DIR, exist_ok=True)
 USAGE_FILE_PATH = os.path.join(STORAGE_DIR, "api_usage_stats.json")
 EXPIRY_FILE_PATH = os.path.join(STORAGE_DIR, "api_expiry_dates.json")
+ROOM_LAW_ACK_PATH = os.path.join(STORAGE_DIR, "room_law_ack.json")
 MONTHLY_PRO_LIMIT_KRW = 20000.0
 USD_TO_KRW_RATE = 1400.0
+
+# 📢 실시간 공포 감지 및 『제·개정이유서』 직결 대상 핵심 세법·노동법 (시행령 인용도 자동 매핑)
+WATCHED_TAX_LAWS = [
+    "국세기본법",
+    "법인세법",
+    "소득세법",
+    "부가가치세법",
+    "조세특례제한법",
+    "상속세 및 증여세법",
+    "지방세법",
+    "농어촌특별세법",
+    "근로기준법"
+]
+
+def _fmt_ymd_str(raw_ymd: str) -> str:
+    s = re.sub(r"[^0-9]", "", str(raw_ymd or ""))
+    if len(s) == 8:
+        return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+    return str(raw_ymd or "-")
+
+@st.cache_data(ttl=43200, show_spinner=False)
+def fetch_latest_tax_law_promulgations() -> dict[str, dict]:
+    """
+    법제처 API를 통해 핵심 법령(본법 및 시행령)의 최신 공포일자·공포번호·시행일자·제개정구분을 조회합니다 (12시간 캐싱, 0토큰).
+    """
+    today_d = datetime.now(ZoneInfo("Asia/Seoul")).date()
+    today_int = int(today_d.strftime("%Y%m%d"))
+    results_map = {}
+
+    for base_name in WATCHED_TAX_LAWS:
+        for suffix in ("", " 시행령"):
+            law_name = base_name + suffix
+            try:
+                raw_res = law_api.search_law_data(law_name, "law")
+                if not raw_res:
+                    continue
+                if isinstance(raw_res, dict):
+                    raw_res = [raw_res]
+
+                target_clean = law_name.replace(" ", "")
+                exact_matches = [
+                    it for it in raw_res
+                    if str(it.get("법령명한글", "")).replace(" ", "") == target_clean
+                ]
+                candidates = exact_matches if exact_matches else raw_res[:1]
+                candidates.sort(
+                    key=lambda x: (str(x.get("공포일자", "")), str(x.get("시행일자", ""))),
+                    reverse=True
+                )
+                top = candidates[0]
+                prom_raw = str(top.get("공포일자", "")).strip()
+                enf_raw = str(top.get("시행일자", "")).strip()
+                prom_no = str(top.get("공포번호", "")).strip()
+                rev_type = str(top.get("제개정구분명", "개정")).strip()
+                law_id = str(top.get("법령일련번호", "")).strip()
+                mst_id = str(top.get("법령일련번호") or top.get("MST") or "").strip()
+
+                days_since_prom = 9999
+                if len(prom_raw) == 8 and prom_raw.isdigit():
+                    try:
+                        prom_d = datetime.strptime(prom_raw, "%Y%m%d").date()
+                        days_since_prom = (today_d - prom_d).days
+                    except Exception:
+                        pass
+
+                is_future_enforcement = bool(len(enf_raw) == 8 and enf_raw.isdigit() and int(enf_raw) > today_int)
+                is_recent_promulgation = (0 <= days_since_prom <= 60)
+
+                results_map[target_clean] = {
+                    "law_name": law_name,
+                    "clean_name": target_clean,
+                    "prom_date": _fmt_ymd_str(prom_raw),
+                    "prom_raw": prom_raw,
+                    "enf_date": _fmt_ymd_str(enf_raw),
+                    "enf_raw": enf_raw,
+                    "prom_no": prom_no,
+                    "rev_type": rev_type,
+                    "law_id": law_id,
+                    "mst_id": mst_id,
+                    "days_since_prom": days_since_prom,
+                    "is_future_enforcement": is_future_enforcement,
+                    "is_recent_promulgation": is_recent_promulgation,
+                    "version_key": f"{prom_raw}_{prom_no}_{enf_raw}"
+                }
+            except Exception:
+                continue
+    return results_map
+
+@st.cache_data(ttl=43200, show_spinner=False)
+def fetch_official_revision_reason_zero_token(law_id: str, law_name: str) -> str:
+    """
+    [방식 3] AI 토큰을 단 1원도 쓰지 않고(0토큰), 국가법령정보센터(법제처 DRF) XML에서
+    법제처가 직접 작성한 공식 『제·개정이유 및 주요내용』 원문을 즉시 추출합니다.
+    """
+    oc = os.getenv("LAW_API_OC") or os.getenv("OC") or ""
+    if not oc:
+        return "❌ 법제처 API 키(LAW_API_OC)가 설정되어 있지 않습니다."
+    if not law_id:
+        return "❌ 법령 일련번호(ID)를 확인할 수 없습니다."
+
+    # 1차: lawService.do?target=law XML 내부의 <제개정이유내용> 및 <개정문내용> 파싱
+    urls_to_try = [
+        f"http://www.law.go.kr/DRF/lawService.do?OC={oc}&target=law&ID={law_id}&type=XML",
+        f"http://www.law.go.kr/DRF/lawService.do?OC={oc}&target=lsRsn&ID={law_id}&type=XML",
+    ]
+    reason_texts = []
+    amend_texts = []
+
+    for url in urls_to_try:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                xml_bytes = resp.read()
+            root = ET.fromstring(xml_bytes)
+            for elem in root.iter():
+                tag_name = elem.tag.strip()
+                if tag_name in ("제개정이유내용", "제개정이유") and elem.text and elem.text.strip():
+                    reason_texts.append(elem.text.strip())
+                elif tag_name in ("개정문내용", "개정문") and elem.text and elem.text.strip():
+                    amend_texts.append(elem.text.strip())
+            if reason_texts:
+                break
+        except Exception:
+            continue
+
+    if reason_texts:
+        body = "\n\n".join(dict.fromkeys(reason_texts))
+        if amend_texts:
+            body = f"📌 [공식 개정이유 및 주요내용]\n{body}\n\n---\n📌 [공포 개정문 발췌]\n{amend_texts[0][:1500]}"
+        return body
+
+    if amend_texts:
+        return f"📌 [공포 개정문 원문]\n{amend_texts[0][:3000]}"
+
+    return f"ℹ️ 「{law_name}」(ID: {law_id})의 해당 공포본에는 별도 제·개정이유서 텍스트가 등록되어 있지 않습니다. 우측의 '⚡ AI 신·구법 상세 분석' 버튼을 이용해 조문별 변경 내역을 확인하세요."
+
+def load_room_law_ack() -> dict:
+    if os.path.exists(ROOM_LAW_ACK_PATH):
+        try:
+            with open(ROOM_LAW_ACK_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+def save_room_law_ack(ack_data: dict) -> None:
+    try:
+        with open(ROOM_LAW_ACK_PATH, "w", encoding="utf-8") as f:
+            json.dump(ack_data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+def extract_cited_laws_in_room(messages: list[dict], law_prom_map: dict[str, dict]) -> list[dict]:
+    """
+    [방식 1] 특정 대화방의 답변 메시지들에서 인용된 [조문:...] 태그를 스캔하여,
+    감시 대상 법령(본법·시행령) 중 인용된 법령 목록을 추출합니다.
+    """
+    if not messages or not law_prom_map:
+        return []
+    blob = "\n".join(m.get("content", "") for m in messages if m.get("role") == "assistant")
+    if not blob:
+        return []
+
+    found_clean_names = set()
+    # [조문:조세특례제한법 시행령 제26조의8] 등에서 법령명 추출
+    for m in re.finditer(r"\[조문\s*:\s*([^\]]+)\]", blob):
+        val = m.group(1)
+        val_clean = re.sub(r"제\s*\d+\s*조.*", "", val).replace(" ", "").replace("「", "").replace("」", "").strip()
+        if val_clean in law_prom_map:
+            found_clean_names.add(val_clean)
+        elif val_clean.endswith("시행규칙"):
+            base_c = val_clean.replace("시행규칙", "")
+            if base_c in law_prom_map:
+                found_clean_names.add(base_c)
+
+    return [law_prom_map[cname] for cname in sorted(found_clean_names)]
+
+def get_room_revision_alerts(ws_id: str, room_id: str, messages: list[dict], law_prom_map: dict[str, dict]) -> list[dict]:
+    """
+    대화방에서 인용된 법령이 ① 최근 60일 이내 신규 공포되었거나, ② 미래 시행예정 신법이거나,
+    ③ 이 대화방에서 마지막으로 확인(Ack)했던 공포버전과 달라진 경우 해당 법령 리스트를 반환합니다.
+    """
+    cited_list = extract_cited_laws_in_room(messages, law_prom_map)
+    if not cited_list:
+        return []
+
+    ack_all = load_room_law_ack()
+    room_key = f"{ws_id}::{room_id}"
+    room_ack = ack_all.get(room_key, {})
+
+    alerts = []
+    for item in cited_list:
+        cname = item["clean_name"]
+        vkey = item["version_key"]
+        acked_vkey = room_ack.get(cname)
+
+        # 이미 이 방에서 해당 버전을 '확인 완료' 눌렀다면 알림 제외
+        if acked_vkey == vkey:
+            continue
+
+        # 1) 이전에 기록된 버전이 있는데 새 버전으로 바뀐 경우, 또는 2) 최근 공포/미래 시행예정 법령인 경우 알림
+        if (acked_vkey is not None and acked_vkey != vkey) or item["is_recent_promulgation"] or item["is_future_enforcement"]:
+            alerts.append(item)
+
+    return alerts
+
+def acknowledge_room_laws(ws_id: str, room_id: str, law_items: list[dict]) -> None:
+    ack_all = load_room_law_ack()
+    room_key = f"{ws_id}::{room_id}"
+    room_ack = ack_all.get(room_key, {})
+    for it in law_items:
+        room_ack[it["clean_name"]] = it["version_key"]
+    ack_all[room_key] = room_ack
+    save_room_law_ack(ack_all)
 
 # ⏰ 유효기간이 존재하는 3대 API의 기본 만료일 설정 (st.secrets에 설정 시 영구 우선 적용)
 DEFAULT_API_EXPIRY_CONFIG = {
@@ -294,7 +511,6 @@ DEFAULT_API_EXPIRY_CONFIG = {
 }
 
 def load_api_expiry_dates() -> dict:
-    """저장된 API 만료일(YYYY-MM-DD)을 불러옵니다."""
     saved = {}
     if os.path.exists(EXPIRY_FILE_PATH):
         try:
@@ -309,7 +525,6 @@ def load_api_expiry_dates() -> dict:
     return result
 
 def save_api_expiry_dates(expiry_dict: dict) -> None:
-    """사용자가 변경한 API 만료일을 디스크에 즉시 저장합니다."""
     try:
         with open(EXPIRY_FILE_PATH, "w", encoding="utf-8") as f:
             json.dump(expiry_dict, f, ensure_ascii=False, indent=2)
@@ -317,9 +532,6 @@ def save_api_expiry_dates(expiry_dict: dict) -> None:
         print(f"⚠️ 만료일 저장 오류: {e}")
 
 def check_api_expiry_alerts() -> tuple[list[dict], list[dict]]:
-    """
-    모든 유효기간 API를 점검하여 (30일 이내 임박/만료 알림 리스트, 전체 상태 리스트)를 반환합니다.
-    """
     expiry_map = load_api_expiry_dates()
     today_d = datetime.now(ZoneInfo("Asia/Seoul")).date()
     alerts = []
@@ -368,7 +580,6 @@ def get_background_task_manager() -> dict:
     return {"tasks": {}, "lock": threading.Lock()}
 
 def get_monthly_usage() -> dict:
-    """agent.py 버전에 관계없이 안전하게 당월 누적 요금 데이터를 조회합니다."""
     if hasattr(agent, "get_monthly_usage"):
         try:
             return agent.get_monthly_usage()
@@ -400,7 +611,6 @@ def get_monthly_usage() -> dict:
     return default_stats
 
 def is_pro_budget_exceeded() -> tuple[bool, float, float]:
-    """당월 누적 요금이 20,000원을 초과했는지 확인합니다."""
     if hasattr(agent, "is_pro_budget_exceeded"):
         try:
             return agent.is_pro_budget_exceeded()
@@ -412,7 +622,6 @@ def is_pro_budget_exceeded() -> tuple[bool, float, float]:
     return (cur_krw >= limit_krw), cur_krw, limit_krw
 
 def _log_custom_tokens(model_id: str, in_tok: int, out_tok: int, count_call: bool = True) -> None:
-    """OCR 등 app.py에서 직접 호출한 소액 토큰도 실시간 요금 계량기에 합산합니다."""
     if hasattr(agent, "_record_token_usage"):
         try:
             agent._record_token_usage(model_id, in_tok, out_tok, count_call=count_call)
@@ -442,7 +651,6 @@ def _log_custom_tokens(model_id: str, in_tok: int, out_tok: int, count_call: boo
         pass
 
 def _record_usage_fallback(user_input: str, response_text: str, is_pro: bool) -> None:
-    """만약 agent.py가 구버전이더라도 app.py에서 자동으로 토큰과 요금을 계산해 기록합니다."""
     if hasattr(agent, "_record_token_usage"):
         return
     in_tok = int((len(user_input) + 12000) * 0.7) * (3 if is_pro else 1)
@@ -450,7 +658,6 @@ def _record_usage_fallback(user_input: str, response_text: str, is_pro: bool) ->
     _log_custom_tokens("pro" if is_pro else "flash", in_tok, out_tok, count_call=True)
 
 def _check_api_configured(key_names: list[str]) -> bool:
-    """환경변수 또는 st.secrets에 해당 API 키가 설정되어 있는지 확인합니다."""
     for k in key_names:
         try:
             if hasattr(st, "secrets") and k in st.secrets and str(st.secrets[k]).strip():
@@ -462,12 +669,10 @@ def _check_api_configured(key_names: list[str]) -> bool:
     return False
 
 def get_storage_path(workspace_id: str) -> str:
-    """작업공간 ID(암호)를 해시 암호화하여 고유한 저장 파일 경로를 생성합니다."""
     safe_hash = hashlib.sha256(workspace_id.strip().encode("utf-8")).hexdigest()[:16]
     return os.path.join(STORAGE_DIR, f"ws_{safe_hash}.json")
 
 def _normalize_room_file_entry(entry: dict) -> dict:
-    """단일 파일 구조와 다중 파일(items) 구조를 모두 호환하도록 정규화합니다."""
     if not isinstance(entry, dict):
         return {"name": None, "text": "", "items": []}
     items = entry.get("items")
@@ -485,7 +690,6 @@ def _normalize_room_file_entry(entry: dict) -> dict:
     return {"name": summary_name, "text": combined_text, "items": items}
 
 def get_default_workspace_data() -> dict:
-    """깨끗한 초기 10개 방 데이터 구조를 생성합니다."""
     default_titles = {r_id: "빈 대화방" for r_id in ROOM_IDS}
     default_titles["대화방 1"] = "메인 대화"
     return {
@@ -495,7 +699,6 @@ def get_default_workspace_data() -> dict:
     }
 
 def load_workspace_from_disk(workspace_id: str) -> dict:
-    """서버 디스크에서 해당 작업공간의 10개 방 데이터를 불러옵니다."""
     path = get_storage_path(workspace_id)
     if os.path.exists(path):
         try:
@@ -517,7 +720,6 @@ def load_workspace_from_disk(workspace_id: str) -> dict:
     return get_default_workspace_data()
 
 def save_workspace_to_disk(workspace_id: str):
-    """현재 세션의 10개 방 대화·제목·첨부파일 텍스트를 서버 디스크에 즉시 자동 저장합니다."""
     if not workspace_id:
         return
     path = get_storage_path(workspace_id)
@@ -534,7 +736,6 @@ def save_workspace_to_disk(workspace_id: str):
         print(f"⚠️ 자동 저장 오류: {e}")
 
 def delete_workspace_from_disk(workspace_id: str):
-    """서버 디스크에서 해당 작업공간의 저장 파일(.json)을 영구 삭제합니다."""
     if not workspace_id or workspace_id == "default_public":
         return
     path = get_storage_path(workspace_id)
@@ -553,10 +754,6 @@ def _background_agent_worker(
     is_pro: bool,
     task_info: dict
 ) -> None:
-    """
-    화면 이동이나 버튼 클릭으로 Streamlit이 새로고침되더라도
-    백그라운드에서 끝까지 법령 검색과 답변 생성을 완수하고 디스크에 저장하는 독립 워커입니다.
-    """
     try:
         response_text = run_agent(
             user_input=full_input,
@@ -591,7 +788,6 @@ MAX_DOC_CHARS_STANDARD = 50000
 MAX_DOC_CHARS_PRO      = 150000
 
 def _ocr_with_gemini_flash(file_bytes: bytes, mime_type: str, filename: str) -> str:
-    """사진(.jpg/.png)이나 텍스트가 없는 스캔본 PDF를 업로드 시 딱 1회만 저렴한 Flash 모델로 OCR 추출해 저장합니다."""
     pool = agent.get_live_gemini_key_pool() if hasattr(agent, "get_live_gemini_key_pool") else []
     api_key = pool[0][1] if pool else (os.getenv("GEMINI_PAID_KEY") or os.getenv("GEMINI_API_KEY") or "")
     if not api_key:
@@ -631,7 +827,6 @@ def _ocr_with_gemini_flash(file_bytes: bytes, mime_type: str, filename: str) -> 
     return f"❌ 이미지/스캔본 OCR 판독 실패 ({filename}): {last_err}"
 
 def extract_file_content(uploaded_file) -> str:
-    """엑셀, CSV, 텍스트 PDF, 워드는 무료 파이썬으로 추출하고, 사진이나 스캔본 PDF만 1회 Flash OCR을 가동합니다."""
     filename = uploaded_file.name
     lower_name = filename.lower()
     try:
@@ -710,7 +905,6 @@ def _sanitize_math_text(text: str) -> str:
     return s
 
 def _extract_clean_copy_text(report_text: str) -> str:
-    """클립보드 원클릭 복사용: 상단 시스템 배지(> ⚡ 등)를 제외하고 카톡/이메일/문서에 바로 붙여넣기 좋은 텍스트를 반환합니다."""
     cleaned = _sanitize_math_text(report_text)
     out_lines = []
     for line in cleaned.split("\n"):
@@ -720,7 +914,6 @@ def _extract_clean_copy_text(report_text: str) -> str:
     return "\n".join(out_lines).strip()
 
 def create_excel_from_markdown_tables(report_text: str) -> bytes | None:
-    """답변 안의 마크다운 표(| ... |)들을 자동 감지하여 시트별로 정리된 엑셀(.xlsx) 바이트로 변환합니다 (0토큰)."""
     cleaned = _sanitize_math_text(report_text)
     lines = cleaned.split("\n")
     tables = []
@@ -774,7 +967,6 @@ def _set_malgun_font(run):
     run._element.rPr.rFonts.set(qn("w:eastAsia"), "Malgun Gothic")
 
 def create_word_docx(report_text: str) -> bytes:
-    """마크다운 형식의 보고서 텍스트와 표를 한글 폰트(맑은 고딕)가 적용된 워드(.docx) 문서로 변환합니다."""
     report_text = _sanitize_math_text(report_text)
     doc = Document()
     
@@ -844,7 +1036,6 @@ def create_word_docx(report_text: str) -> bytes:
 # 헬퍼 함수 3: 정식 PDF 직접 생성 엔진
 # ---------------------------------------------------------
 def _ensure_korean_font() -> tuple[str, str]:
-    """서버 환경(Linux/Windows/Mac)에 한글 폰트를 자동 준비·등록하고 (일반폰트명, 굵은폰트명)을 반환합니다."""
     reg_name = "KoreanFont"
     bold_name = "KoreanFontBold"
     if reg_name in pdfmetrics.getRegisteredFontNames():
@@ -882,11 +1073,9 @@ def _ensure_korean_font() -> tuple[str, str]:
         return "Helvetica", "Helvetica-Bold"
 
 def _strip_emojis_for_pdf(text: str) -> str:
-    """TTF 기본 폰트에서 네모(□)로 깨질 수 있는 컬러 이모지만 깔끔하게 제거합니다."""
     return re.sub(r"[\U00010000-\U0010ffff]", "", text or "")
 
 def _md_to_rl_xml(text: str, bold_font: str) -> str:
-    """마크다운 인라인 문법(**굵게**, `코드`)을 ReportLab Paragraph용 XML 태그로 안전하게 변환합니다."""
     s = _strip_emojis_for_pdf(text).strip()
     s = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     s = re.sub(r"\*\*(.+?)\*\*", rf'<font name="{bold_font}">\1</font>', s)
@@ -894,7 +1083,6 @@ def _md_to_rl_xml(text: str, bold_font: str) -> str:
     return s
 
 def _draw_page_footer(canvas, doc):
-    """PDF 하단 페이지 번호(- 1 -)만 깔끔하게 출력합니다."""
     canvas.saveState()
     reg_font, _ = _ensure_korean_font()
     canvas.setFont(reg_font, 8.5)
@@ -904,7 +1092,6 @@ def _draw_page_footer(canvas, doc):
     canvas.restoreState()
 
 def create_pdf_report(report_text: str) -> bytes:
-    """상단 타이틀·검토안건·작성일자 없이 '1. 결론 -> 2. 내용 -> 3. 관련법령' 본문을 즉시 깔끔한 PDF로 조판합니다."""
     reg_font, bold_font = _ensure_korean_font()
     cleaned_text = _sanitize_math_text(report_text)
     raw_lines = cleaned_text.split("\n")
@@ -1056,7 +1243,6 @@ def _trigger_agent_task(
     budget_exceeded: bool,
     force_flash: bool = False
 ) -> None:
-    """채팅창 질문 입력과 원클릭 후속 버튼(카톡/이메일/Pro재검토)을 공통 처리하여 백그라운드 스레드로 실행합니다."""
     task_mgr = get_background_task_manager()
     current_messages = st.session_state.chat_rooms[selected_room]
     current_file_info = _normalize_room_file_entry(st.session_state.room_files[selected_room])
@@ -1136,13 +1322,96 @@ def _trigger_agent_task(
     st.rerun()
 
 # ---------------------------------------------------------
-# 2. 왼쪽 사이드바 제어판 (글자 잘림 완벽 해결 + 원스크린 화이트 카드 UI + API 만료 관리)
+# 헬퍼 함수 5: 📜 [방식 3] 법제처 공식 『제·개정이유서』 0토큰 원문 열람 뷰어
+# ---------------------------------------------------------
+_dialog_decorator = getattr(st, "dialog", getattr(st, "experimental_dialog", None))
+
+def _render_official_reason_viewer_body(
+    law_prom_map: dict[str, dict],
+    effective_ws_id: str,
+    selected_room: str,
+    pro_toggle_on: bool,
+    budget_exceeded: bool,
+    preselected_clean_name: str = ""
+):
+    st.caption(
+        "💡 **AI 토큰을 전혀 소모하지 않고(0원)** 국가법령정보센터(법제처 DRF) XML에서 "
+        "정부가 직접 작성한 **공식 『제·개정이유 및 주요내용 요약문』** 원문을 즉시 불러옵니다."
+    )
+    items = list(law_prom_map.values())
+    if not items:
+        st.warning("법제처 공포 정보를 불러오지 못했습니다. API 키(LAW_API_OC)를 확인해 주세요.")
+        return
+
+    options_clean = [it["clean_name"] for it in items]
+    default_idx = options_clean.index(preselected_clean_name) if preselected_clean_name in options_clean else 0
+
+    def _fmt_law_opt(cname: str) -> str:
+        it = law_prom_map[cname]
+        tag = "🚀시행예정" if it["is_future_enforcement"] else (f"🆕공포 D+{it['days_since_prom']}" if it["is_recent_promulgation"] else "현행")
+        return f"📘 {it['law_name']} ({it['rev_type']} | 공포: {it['prom_date']} | 시행: {it['enf_date']} | {tag})"
+
+    chosen_clean = st.selectbox(
+        "열람할 법령·시행령 선택",
+        options=options_clean,
+        index=default_idx,
+        format_func=_fmt_law_opt
+    )
+    chosen_item = law_prom_map[chosen_clean]
+
+    st.markdown(
+        f"**공포번호:** 제{chosen_item['prom_no']}호 &nbsp;|&nbsp; "
+        f"**공포일:** `{chosen_item['prom_date']}` &nbsp;|&nbsp; "
+        f"**시행일:** `{chosen_item['enf_date']}` &nbsp;|&nbsp; "
+        f"**구분:** `{chosen_item['rev_type']}`"
+    )
+
+    with st.spinner("법제처 공식 『제·개정이유서』 원문 수신 중 (0토큰)..."):
+        official_reason_text = fetch_official_revision_reason_zero_token(chosen_item["law_id"], chosen_item["law_name"])
+
+    st.text_area(
+        "📜 법제처 공식 『제·개정이유 및 주요내용』 원문 (0토큰 무료 조회)",
+        value=official_reason_text,
+        height=320
+    )
+
+    c_v1, c_v2 = st.columns(2)
+    with c_v1:
+        if st.button("🔄 법제처 최신 공포정보 새로고침", use_container_width=True):
+            fetch_latest_tax_law_promulgations.clear()
+            fetch_official_revision_reason_zero_token.clear()
+            st.rerun()
+    with c_v2:
+        if st.button(f"⚡ 「{chosen_item['law_name']}」 AI 신·구법 비교표 생성", use_container_width=True):
+            q_str = (
+                f"「{chosen_item['law_name']}」(공포일: {chosen_item['prom_date']}, 제{chosen_item['prom_no']}호, 시행일: {chosen_item['enf_date']})의 "
+                "핵심 개정 조문을 조회하여 [종전 규정 vs 현행(개정) 규정 vs 적용시기 및 실무 영향] 신·구 비교표 형태로 상세히 정리해 줘."
+            )
+            _trigger_agent_task(effective_ws_id, selected_room, q_str, pro_toggle_on, budget_exceeded, force_flash=False)
+
+if _dialog_decorator:
+    @_dialog_decorator("📜 법제처 공식 『제·개정이유 및 주요내용』 원문 뷰어 (0토큰)", width="large")
+    def open_official_reason_modal(
+        law_prom_map: dict[str, dict],
+        effective_ws_id: str,
+        selected_room: str,
+        pro_toggle_on: bool,
+        budget_exceeded: bool,
+        preselected_clean_name: str = ""
+    ):
+        _render_official_reason_viewer_body(
+            law_prom_map, effective_ws_id, selected_room, pro_toggle_on, budget_exceeded, preselected_clean_name
+        )
+
+# ---------------------------------------------------------
+# 2. 왼쪽 사이드바 제어판 (글자 잘림 완벽 해결 + 원스크린 화이트 카드 UI)
 # ---------------------------------------------------------
 usage_stats = get_monthly_usage()
 budget_exceeded, cur_krw, limit_krw = is_pro_budget_exceeded()
 usage_ratio = min(1.0, cur_krw / limit_krw) if limit_krw > 0 else 0.0
 task_mgr = get_background_task_manager()
 expiry_alerts, expiry_all_status = check_api_expiry_alerts()
+law_prom_map = fetch_latest_tax_law_promulgations()
 
 with st.sidebar:
     st.markdown(
@@ -1223,9 +1492,18 @@ with st.sidebar:
                 st.session_state.ws_widget_ver = ws_widget_ver + 1
                 st.rerun()
 
-    # 📦 [카드 3] 멀티 대화방 선택 및 🔍 10개 방 통합 키워드 검색 (0토큰)
+    # 📦 [카드 3] 멀티 대화방 선택 (`🔄개정감지` 역추적 태깅 연동) 및 🔍 10개 방 통합 키워드 검색
     with st.container(border=True):
-        st.markdown("<div class='sb-card-title'><span>🗂️ 멀티 대화방 (1~10번)</span></div>", unsafe_allow_html=True)
+        # 전체 10개 방 중 인용 법령 개정이 감지된 방 개수 집계
+        rooms_with_rev_cnt = sum(
+            1 for r_id in ROOM_IDS
+            if get_room_revision_alerts(effective_ws_id, r_id, st.session_state.chat_rooms.get(r_id, []), law_prom_map)
+        )
+        rev_header_pill = (
+            f"<span class='sb-badge-amber'>🔄 {rooms_with_rev_cnt}개방 개정감지</span>"
+            if rooms_with_rev_cnt > 0 else ""
+        )
+        st.markdown(f"<div class='sb-card-title'><span>🗂️ 멀티 대화방 (1~10번)</span>{rev_header_pill}</div>", unsafe_allow_html=True)
 
         room_search_kw = st.text_input(
             "전체 대화방 통합 검색",
@@ -1255,12 +1533,15 @@ with st.sidebar:
 
         def format_room_label(r_id: str) -> str:
             title = st.session_state.room_titles.get(r_id, "")
-            q_cnt = (len(st.session_state.chat_rooms[r_id]) + 1) // 2
+            r_msgs = st.session_state.chat_rooms.get(r_id, [])
+            q_cnt = (len(r_msgs) + 1) // 2
             f_items = st.session_state.room_files[r_id].get("items", [])
             file_mark = f"📎({len(f_items)})" if f_items else ""
             t_info = task_mgr["tasks"].get(f"{effective_ws_id}::{r_id}")
             running_mark = " ⏳분석중" if (t_info and t_info.get("status") == "running") else ""
-            return f"💬 {r_id} [{title}] ({q_cnt}건) {file_mark}{running_mark}"
+            rev_alerts = get_room_revision_alerts(effective_ws_id, r_id, r_msgs, law_prom_map)
+            rev_mark = " 🔄개정감지" if rev_alerts else ""
+            return f"💬 {r_id} [{title}] ({q_cnt}건) {file_mark}{rev_mark}{running_mark}"
 
         selected_room = st.selectbox(
             "대화방 선택",
@@ -1268,7 +1549,7 @@ with st.sidebar:
             index=ROOM_IDS.index(st.session_state.current_room),
             format_func=format_room_label,
             label_visibility="collapsed",
-            help="질문 후 다른 대화방으로 이동해도 기존 방의 AI는 백그라운드에서 멈추지 않고 답변을 완성합니다."
+            help="과거 검토에 인용된 법령이 개정되면 방 이름 옆에 '🔄개정감지'가 자동으로 표시됩니다."
         )
         st.session_state.current_room = selected_room
 
@@ -1345,8 +1626,8 @@ with st.sidebar:
                     save_workspace_to_disk(effective_ws_id)
                     st.rerun()
 
-    # 📦 [보조 메뉴] 7대 기관 연동 상태 · ⏰ API 만료일 설정 · 전체 백업 접이식(Expander)
-    exp_header_badge = " ⚠️(만료임박)" if expiry_alerts else ""
+    # 📦 [보조 메뉴] 7대 기관 연동 · 📜 법제처 공식 제·개정이유서(0토큰) · API 만료일 · 백업
+    exp_header_badge = " ⚠️" if expiry_alerts else ""
     with st.expander(f"📡 7대 기관 DB 연동 및 전체 백업{exp_header_badge}"):
         led_law   = "🟢" if _check_api_configured(["LAW_API_OC", "OC"]) else "🟡"
         led_nts   = "🟢" if _check_api_configured(["NTS_API_KEY", "DATA_GO_KR_KEY", "PUBLIC_DATA_KEY"]) else "🟡"
@@ -1358,6 +1639,12 @@ with st.sidebar:
             f"{led_law} 법제처(무기한) · {led_nts} 국세청 · {led_dart} DART(무기한)\n\n"
             f"{led_molit} 국토부/브이월드 · {led_bok} 한국은행 · {led_ind} 업종DB"
         )
+        if st.button("📜 공식 『제·개정이유서』 원문 열람 (0토큰)", use_container_width=True):
+            if _dialog_decorator:
+                open_official_reason_modal(law_prom_map, effective_ws_id, selected_room, pro_toggle_on, budget_exceeded)
+            else:
+                st.session_state.show_inline_reason_viewer = True
+
         st.divider()
         st.markdown("**⏰ 유효기간 있는 3대 API 만료일 설정** *(만료 30일 전부터 화면 상단 자동 경고)*")
         current_expiry_map = load_api_expiry_dates()
@@ -1389,236 +1676,4 @@ with st.sidebar:
             data=backup_json_bytes,
             file_name="세무에이전트_전체백업.json",
             mime="application/json",
-            use_container_width=True
-        )
-        restored_file = st.file_uploader("📤 백업 복원 (.json)", type=["json"], key="restore_uploader")
-        if restored_file is not None:
-            if st.button("✅ 복원 실행", use_container_width=True):
-                try:
-                    loaded_backup = json.loads(restored_file.read().decode("utf-8"))
-                    st.session_state.chat_rooms = loaded_backup["chat_rooms"]
-                    st.session_state.room_titles = loaded_backup["room_titles"]
-                    st.session_state.room_files = {
-                        r: _normalize_room_file_entry(loaded_backup.get("room_files", {}).get(r, {}))
-                        for r in ROOM_IDS
-                    }
-                    save_workspace_to_disk(effective_ws_id)
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"복원 실패: {e}")
-        unlock_all_reset = st.checkbox("전체 초기화/파기 동의", key="unlock_reset")
-        col_r1, col_r2 = st.columns(2)
-        with col_r1:
-            if st.button("🔄 전체 비우기", disabled=not unlock_all_reset, use_container_width=True):
-                fresh_data = get_default_workspace_data()
-                st.session_state.chat_rooms = fresh_data["chat_rooms"]
-                st.session_state.room_titles = fresh_data["room_titles"]
-                st.session_state.room_files = fresh_data["room_files"]
-                for r_id in ROOM_IDS:
-                    task_mgr["tasks"].pop(f"{effective_ws_id}::{r_id}", None)
-                    st.session_state[f"reset_cnt_{r_id}"] = st.session_state.get(f"reset_cnt_{r_id}", 0) + 1
-                save_workspace_to_disk(effective_ws_id)
-                st.rerun()
-        with col_r2:
-            if st.button("🔥 공간 파기", disabled=(not unlock_all_reset or not workspace_input.strip()), use_container_width=True):
-                for r_id in ROOM_IDS:
-                    task_mgr["tasks"].pop(f"{effective_ws_id}::{r_id}", None)
-                delete_workspace_from_disk(effective_ws_id)
-                st.session_state.active_workspace_id = ""
-                st.session_state.loaded_workspace_id = None
-                st.session_state.ws_widget_ver = ws_widget_ver + 1
-                st.rerun()
-
-    # 📦 [카드 5 — 최하단 고정 & 3버튼 1줄 배치]
-    with st.container(border=True):
-        total_tokens_k = (usage_stats.get("input_tokens", 0) + usage_stats.get("output_tokens", 0)) / 1000.0
-        st.markdown(
-            f"<div class='sb-card-title'><span>💳 {usage_stats['year_month']}월 요금 계량기</span>"
-            f"<span class='sb-badge-green'>{usage_ratio*100:.1f}%</span></div>",
-            unsafe_allow_html=True
-        )
-        st.markdown(
-            f"<div style='display:flex; justify-content:space-between; align-items:baseline; line-height:1.4; margin-bottom:4px;'>"
-            f"<span style='font-size:1.02rem; font-weight:800; color:#0f172a;'>{cur_krw:,.0f}원 "
-            f"<span style='font-size:0.74rem; font-weight:500; color:#64748b;'>/ {limit_krw:,.0f}원</span></span>"
-            f"<span style='font-size:0.72rem; color:#475569;'>Flash <b>{usage_stats.get('flash_calls', 0)}</b> · Pro <b>{usage_stats.get('pro_calls', 0)}</b> ({total_tokens_k:,.1f}K)</span>"
-            f"</div>",
-            unsafe_allow_html=True
-        )
-        st.progress(usage_ratio)
-
-        col_b1, col_b2, col_b3 = st.columns(3)
-        with col_b1:
-            if st.button("🔄 갱신", use_container_width=True, help="실시간 사용량 새로고침"):
-                st.rerun()
-        with col_b2:
-            st.link_button("💳 결제", "https://console.cloud.google.com/billing", use_container_width=True)
-        with col_b3:
-            st.link_button("🔑 API키", "https://aistudio.google.com/apikey", use_container_width=True)
-
-# ---------------------------------------------------------
-# 3. 메인 화면 및 현재 선택된 대화방 렌더링 (+ ⏰ API 만료 한 달 전 자동 배너)
-# ---------------------------------------------------------
-current_messages = st.session_state.chat_rooms[selected_room]
-current_room_title = st.session_state.room_titles[selected_room]
-current_file_info = _normalize_room_file_entry(st.session_state.room_files[selected_room])
-current_task_key = f"{effective_ws_id}::{selected_room}"
-active_task = task_mgr["tasks"].get(current_task_key)
-is_current_room_running = bool(active_task and active_task.get("status") == "running")
-
-if budget_exceeded:
-    mode_status_str = f"⛔ **Pro 차단됨 (월 한도 {limit_krw:,.0f}원 도달 → Flash 안전 작동 중)**"
-elif pro_toggle_on:
-    mode_status_str = "🧠 **Pro 심층 모드 (3배 리미트 개방 ON)**"
-else:
-    mode_status_str = "⚡ **Flash 표준 모드 (고속 검토)**"
-
-st.title(f"⚖️ 세무·법령·회계 자율 에이전트 — [{selected_room}: {current_room_title}]")
-st.markdown(
-    f"💡 **현재 엔진 상태:** {mode_status_str} &nbsp;|&nbsp; 당월 누적 예상 요금: **`{cur_krw:,.0f}원 / {limit_krw:,.0f}원`**"
-)
-
-# 🚨 [API 유효기간 1개월(30일) 전 자동 경고 배너] 평소에 30일 이상 남았을 때는 전혀 표시되지 않고 깔끔하게 숨어 있음
-if expiry_alerts:
-    for alert_item in expiry_alerts:
-        c_al1, c_al2 = st.columns([5, 1])
-        with c_al1:
-            if alert_item["level"] == "expired":
-                st.error(alert_item["msg"])
-            else:
-                st.warning(alert_item["msg"])
-        with c_al2:
-            st.link_button("🔗 연장·재발급", alert_item["url"], use_container_width=True)
-
-for idx, message in enumerate(current_messages):
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-        if message["role"] == "assistant":
-            # 📥 1줄: 문서 다운로드 버튼 4종 (PDF / 워드 / 표 엑셀(.xlsx) / 마크다운)
-            excel_bytes = create_excel_from_markdown_tables(message["content"])
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.download_button(
-                    label="📕 정식 PDF (.pdf)",
-                    data=create_pdf_report(message["content"]),
-                    file_name=f"검토보고서_{selected_room}_{current_room_title}_{idx}.pdf",
-                    mime="application/pdf",
-                    key=f"pdf_{effective_ws_id}_{selected_room}_{idx}",
-                    use_container_width=True
-                )
-            with col2:
-                st.download_button(
-                    label="📘 워드 (.docx)",
-                    data=create_word_docx(message["content"]),
-                    file_name=f"검토보고서_{selected_room}_{current_room_title}_{idx}.docx",
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    key=f"docx_{effective_ws_id}_{selected_room}_{idx}",
-                    use_container_width=True
-                )
-            with col3:
-                if excel_bytes:
-                    st.download_button(
-                        label="📊 표 엑셀 (.xlsx)",
-                        data=excel_bytes,
-                        file_name=f"검토표_{selected_room}_{current_room_title}_{idx}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key=f"xlsx_{effective_ws_id}_{selected_room}_{idx}",
-                        use_container_width=True
-                    )
-                else:
-                    st.button("📊 표 없음 (.xlsx)", disabled=True, key=f"no_xlsx_{effective_ws_id}_{selected_room}_{idx}", use_container_width=True)
-            with col4:
-                st.download_button(
-                    label="📝 마크다운 (.md)",
-                    data=message["content"].encode("utf-8-sig"),
-                    file_name=f"검토보고서_{selected_room}_{current_room_title}_{idx}.md",
-                    mime="text/markdown",
-                    key=f"md_{effective_ws_id}_{selected_room}_{idx}",
-                    use_container_width=True
-                )
-
-            # ⚡ 2줄: 타이핑 제로 원클릭 후속 작업 버튼 3종 (카톡/이메일은 Flash 초저가 강제 실행)
-            act1, act2, act3 = st.columns(3)
-            with act1:
-                if st.button(
-                    "💬 카톡 안내문 변환 (Flash)",
-                    key=f"kakao_{effective_ws_id}_{selected_room}_{idx}",
-                    disabled=is_current_room_running,
-                    use_container_width=True
-                ):
-                    _trigger_agent_task(
-                        effective_ws_id, selected_room,
-                        "방금 작성한 검토 결과를 바탕으로, 거래처 대표님이나 고객에게 카카오톡으로 바로 복사해서 보낼 수 있도록 핵심 결론과 주의사항만 친절하고 정중한 실무 대화체로 요약해 줘.",
-                        pro_toggle_on, budget_exceeded, force_flash=True
-                    )
-            with act2:
-                if st.button(
-                    "📧 이메일 회신 초안 (Flash)",
-                    key=f"email_{effective_ws_id}_{selected_room}_{idx}",
-                    disabled=is_current_room_running,
-                    use_container_width=True
-                ):
-                    _trigger_agent_task(
-                        effective_ws_id, selected_room,
-                        "방금 작성한 검토 결과를 바탕으로, 거래처에 발송할 정식 비즈니스 이메일 회신 초안(제목, 인사말, 핵심 검토 결과 요약, 실무 유의사항, 맺음말 포함)을 깔끔하게 작성해 줘.",
-                        pro_toggle_on, budget_exceeded, force_flash=True
-                    )
-            with act3:
-                if st.button(
-                    "🧠 [프로] 3배 개방 재검토",
-                    key=f"repro_{effective_ws_id}_{selected_room}_{idx}",
-                    disabled=(is_current_room_running or budget_exceeded),
-                    use_container_width=True
-                ):
-                    _trigger_agent_task(
-                        effective_ws_id, selected_room,
-                        "[프로] 직전 질문 사안에 대해 관련 법령·시행령·판례·심판례·예규와 예외 요건까지 데이터·도구 한도를 3배 개방하여 심층 재검토해 줘.",
-                        pro_toggle_on, budget_exceeded, force_flash=False
-                    )
-
-            with st.expander("📋 카톡·이메일 전송용 텍스트 원클릭 복사 (우측 상단 복사 아이콘 클릭)"):
-                st.code(_extract_clean_copy_text(message["content"]), language="markdown")
-
-# 4. 새로운 질문 입력 시 -> 공통 백그라운드 실행기 호출
-if prompt := st.chat_input(
-    placeholder=(
-        f"⏳ [{selected_room}] 현재 백그라운드 정밀 검토 진행 중입니다... (다른 대화방으로 이동하여 추가 질문을 하실 수 있습니다)"
-        if is_current_room_running else
-        f"[{selected_room}] 검토할 이슈를 입력하세요 (좌측 Pro 토글 ON 또는 맨 앞에 [프로] 입력 시 3배 개방)"
-    ),
-    disabled=is_current_room_running,
-    key=f"chat_input_{effective_ws_id}_{selected_room}"
-):
-    _trigger_agent_task(
-        effective_ws_id=effective_ws_id,
-        selected_room=selected_room,
-        raw_prompt=prompt,
-        pro_toggle_on=pro_toggle_on,
-        budget_exceeded=budget_exceeded,
-        force_flash=False
-    )
-
-# 5. 현재 방에서 백그라운드 작업이 진행 중일 때 실시간 상태창 표시
-active_task = task_mgr["tasks"].get(current_task_key)
-if active_task and active_task.get("status") == "running":
-    is_pro_running = active_task.get("is_pro", False)
-    status_title = (
-        f"🧠 [{selected_room}] Pro 심층 모드 백그라운드 가동 중 (데이터·도구 한도 3배 개방)..."
-        if is_pro_running else
-        f"⚡ [{selected_room}] 실시간 법령·공시 DB 조회 및 백그라운드 정밀 검토 중..."
-    )
-    with st.chat_message("assistant"):
-        with st.status(status_title, expanded=True) as status_box:
-            st.write("🔎 **1단계:** 질의 쟁점 분석 및 7대 국가·공공기관(법제처·국세청·DART·국토부·한은) DB 탐색 중...")
-            st.write("🧮 **2단계:** 관련 법령·판례 원문 파싱 및 파이썬 1원 단위 정밀 수리 계산기 구동 중...")
-            st.write("🛡️ **3단계:** 미조회 근거 강제 차단(`_scan_violations`) 및 듀얼 AI 의미 감수(`_semantic_verify`) 수행 중...")
-            st.caption("💡 **백그라운드 멀티태스킹 작동 중:** 지금 좌측 버튼을 누르거나 다른 대화방으로 이동하셔도 이 방의 AI 검토는 멈추지 않고 끝까지 완료됩니다.")
-            while active_task.get("status") == "running":
-                time.sleep(0.4)
-            status_box.update(label="✅ 정밀 검토 및 무결성 감수 완료", state="complete", expanded=False)
-
-    ans = active_task.get("response", "")
-    if ans and (not current_messages or current_messages[-1].get("role") != "assistant" or current_messages[-1].get("content") != ans):
-        current_messages.append({"role": "assistant", "content": ans})
-    task_mgr["tasks"].pop(current_task_key, None)
-    st.rerun()
+            use_container_
