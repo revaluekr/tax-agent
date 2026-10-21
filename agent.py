@@ -110,7 +110,6 @@ def _current_ym() -> str:
     return datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m")
 
 def get_monthly_usage() -> dict:
-    """현재 월(YYYY-MM)의 누적 토큰 및 원화 환산 요금 데이터를 불러옵니다. 달이 바뀌면 자동 초기화됩니다."""
     ym = _current_ym()
     default_stats = {
         "year_month": ym,
@@ -137,7 +136,6 @@ def get_monthly_usage() -> dict:
     return default_stats
 
 def _record_token_usage(model_id: str, in_tokens: int, out_tokens: int, count_call: bool = True) -> None:
-    """API 응답의 입출력 토큰을 원화 요금으로 환산해 디스크에 즉시 누적 저장합니다."""
     if in_tokens <= 0 and out_tokens <= 0:
         return
     stats = get_monthly_usage()
@@ -166,7 +164,6 @@ def _record_token_usage(model_id: str, in_tokens: int, out_tokens: int, count_ca
         print(f"⚠️ 사용량 기록 저장 오류: {e}")
 
 def _extract_and_log_response_usage(response, model_id: str, count_call: bool = True, est_in_chars: int = 0, est_out_chars: int = 0) -> None:
-    """Gemini 응답 객체에서 usage_metadata를 추출하여 요금을 기록합니다."""
     in_tok, out_tok = 0, 0
     try:
         um = getattr(response, "usage_metadata", None)
@@ -182,7 +179,6 @@ def _extract_and_log_response_usage(response, model_id: str, count_call: bool = 
     _record_token_usage(model_id, in_tok, out_tok, count_call=count_call)
 
 def is_pro_budget_exceeded() -> tuple[bool, float, float]:
-    """당월 누적 요금이 한도(20,000원)를 초과했는지 확인합니다."""
     stats = get_monthly_usage()
     cur_krw = float(stats.get("total_krw", 0.0))
     limit_krw = float(stats.get("limit_krw", MONTHLY_PRO_LIMIT_KRW))
@@ -213,7 +209,6 @@ _SEARCH_LIMIT = {"law": 7, "eflaw": 4, "prec": 3, "decc": 3, "expc": 2, "admrul"
 _DETAIL_LIMIT = {"law": 12, "eflaw": 6, "prec": 3, "decc": 3, "expc": 2, "admrul": 2, "ordin": 2}
 
 def _over_limit(kind: str, target: str) -> bool:
-    """kind: 'search' 또는 'detail'. Pro(unleash) 모드일 때는 상한을 3배로 자동 확장합니다."""
     trace = _TOOL_TRACE.get()
     if trace is None:
         return False
@@ -231,14 +226,12 @@ def _norm(text: str) -> str:
     return re.sub(r"[\s「」『』\"'“”‘’]", "", text or "")
 
 def _record(kind: str, text: str) -> str:
-    """kind: 'list'(목록 검색 결과) 또는 'detail'(원문 조회 결과)"""
     trace = _TOOL_TRACE.get()
     if trace is not None:
         trace[kind].append(text or "")
     return text
 
 def _record_law_articles(text: str) -> None:
-    """법령 원문 조회 결과에서 '법령명 + 조문번호'를 뽑아 조회 완료 목록에 추가합니다."""
     trace = _TOOL_TRACE.get()
     if trace is None or not text:
         return
@@ -357,7 +350,6 @@ def _article_label(ref: tuple) -> str:
     return f"{name} 제{jo}조" + (f"의{gaji}" if gaji else "")
 
 def _scan_violations(answer: str, trace: dict) -> list[tuple]:
-    """답변을 줄 단위로 검사해 [(줄번호, [위반 설명...]), ...]을 돌려줍니다."""
     detail_blob = _norm(" ".join(trace["detail"]))
     list_blob = _norm(" ".join(trace["list"]))
     fetched = trace["articles"]
@@ -611,7 +603,7 @@ def _apply_semantic_results(answer: str, claims: list, verdicts: dict, sources: 
 
 
 # ---------------------------------------------------------
-# ✨ 스마트 법령 텍스트 압축기 (최근 2025~2029년 개정·신설·시행일 태그는 보존하여 신·구법 비교 지원!)
+# ✨ 스마트 법령 텍스트 압축기 (복수 조문·항 번호 정규식 매칭 패치 완료)
 # ---------------------------------------------------------
 def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
     if not raw_text:
@@ -631,8 +623,13 @@ def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
     cleaned = re.sub(r"\[(전문개정\vert{}본조신설\vert{}제목개정\vert{}제\d+조에서 이동)[^\]]*\]", _keep_recent_rev_tag, cleaned)
 
     mult = 3 if _is_unleashed() else 1
-    qf = query_filter.strip().replace(" ", "")
-    if qf.startswith("제") and "조" in qf:
+    art_matches = re.findall(r"제?\s*(\d+)\s*조(?:\s*의\s*(\d+))?", query_filter or "")
+
+    if art_matches:
+        target_prefixes = [
+            f"제{m[0]}조" + (f"의{m[1]}" if m[1] else "")
+            for m in art_matches
+        ]
         blocks = cleaned.split("\n\n")
         header = blocks[0] if blocks else ""
         exact_articles = []
@@ -640,25 +637,35 @@ def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
 
         for blk in blocks[1:]:
             blk_clean = blk.strip().replace(" ", "")
-            if blk_clean.startswith(qf + "(") or blk_clean.startswith(qf + " ") or blk_clean == qf:
+            if any(
+                blk_clean.startswith(tp + "(") or blk_clean.startswith(tp + " ") or blk_clean == tp
+                for tp in target_prefixes
+            ):
                 exact_articles.append(blk.strip())
-            else:
+            elif any(tp in blk_clean for tp in target_prefixes):
                 other_mentions.append(blk.strip())
 
         if exact_articles:
             cleaned = header + "\n\n" + "\n\n".join(exact_articles)
-        else:
+        elif other_mentions:
             cleaned = header + "\n\n" + "\n\n".join(other_mentions[:3 * mult])
+    elif query_filter and query_filter.strip():
+        kw_clean = query_filter.strip().replace(" ", "")
+        blocks = cleaned.split("\n\n")
+        header = blocks[0] if blocks else ""
+        matched_blks = [b.strip() for b in blocks[1:] if kw_clean in b.replace(" ", "")]
+        if matched_blks:
+            cleaned = header + "\n\n" + "\n\n".join(matched_blks[:5 * mult])
 
     cleaned = re.sub(r"[ \t]+", " ", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
 
-    base_limit = 12000 if (qf.startswith("제") and "조" in qf) else 3500
+    base_limit = 12000 if art_matches else 3500
     limit = base_limit * mult
     if len(cleaned) > limit:
         return (cleaned[:limit]
-                + f"\n\n[※ 원문 {len(cleaned):,}자 중 {limit:,}자까지만 표시됨. 필요한 항이 없으면 "
-                  "query_filter에 '제78조의3 제8항'처럼 항 번호까지 넣어 다시 조회할 것]")
+                + f"\n\n[※ 원문 {len(cleaned):,}자 중 {limit:,}자까지만 표시됨. 필요한 조문이 더 있으면 "
+                  "query_filter에 해당 조문번호를 지정해 다시 조회할 것]")
     return cleaned
 
 
@@ -845,9 +852,6 @@ def search_historical_law_for_gemini(law_name: str, target_date: str, query_filt
     [고도화 1: 🕰️ 구법(연혁법령) 타임머신]
     과거 귀속연도(예: '2022', '2023-06-30', '20211231') 세무조사·경정청구·기한후신고 검토 시
     국가법령정보센터 연혁·시행일법령(target=eflaw) DB에서 해당 과거 시점에 실제로 시행 중이던 구법 조문 원문을 조회합니다.
-    - law_name: 정식 법령명 (예: '조세특례제한법', '법인세법 시행령')
-    - target_date: 조회할 과거 기준연도 또는 일자 (예: '2022' 또는 '20221231')
-    - query_filter: 조회할 조문번호 (예: '제29조의7', '제10조')
     """
     if _over_limit("detail", "eflaw"):
         return "[구법 조회 한도 도달] 이번 질문에서 추가 연혁법령 조회는 더 할 수 없습니다."
@@ -907,12 +911,10 @@ def search_historical_law_for_gemini(law_name: str, target_date: str, query_filt
         if not candidates:
             return f"'{law_name}'의 {ymd_int} 기준 연혁법령 목록을 찾지 못했습니다. 일반 get_law_details_for_gemini 도구로 현행 조문 및 부칙을 확인하세요."
 
-        # 기준일(ymd_int) 당시에 시행 중이던 가장 최신 버전 선택
         candidates.sort(key=lambda x: (x["ef_yd"], x["anc_yd"]), reverse=True)
         chosen = candidates[0]
         mst_id = chosen["mst"]
 
-        # 해당 과거 버전(MST)의 조문 원문 XML 요청
         detail_url = f"http://www.law.go.kr/DRF/lawService.do?OC={oc}&target=eflaw&MST={mst_id}&type=XML"
         req2 = urllib.request.Request(detail_url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req2, timeout=20) as resp2:
@@ -1008,7 +1010,7 @@ def run_tax_calculator_for_gemini(formula_expression: str, description: str = ""
     except Exception as e:
         return f"❌ 수식 계산 오류 ({formula_expression}): {e} -> 올바른 파이썬 사칙연산 수식으로 다시 호출하세요."
 
-# 3. 에이전트 시스템 프롬프트 템플릿 (완전체 3단 체크 + 구법 타임머신 + 신·구법 비교표 자동 생성)
+# 3. 에이전트 시스템 프롬프트 템플릿
 SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문 에이전트입니다.
 사용자의 질문 성격에 따라 아래의 **[투트랙(Two-Track) 운영 프로토콜]**을 지능적으로 구분하여 작동하세요.
 
@@ -1229,9 +1231,6 @@ def _execute_with_key_and_model(
     final_text = re.sub(r"\s*<br\s*/?>\s*", " / ", stripped_body)
     final_text = _clean_latex_for_export(final_text)
 
-    # ---------------------------------------------------------
-    # 🔒 근거 강제 검증 (트랙 1: 정식 보고서 양식이고 도구 기록이 수집된 경우에만 작동)
-    # ---------------------------------------------------------
     citation_note = ""
 
     if is_formal_report and trace and (trace["list"] or trace["detail"]):
@@ -1335,7 +1334,7 @@ def _execute_with_key_and_model(
 
     return _clean_latex_for_export(final_text), len(precheck_text)
 
-# 4. 실행 순서(유료키 전용): 3.8-flash → 3.6-flash (PRO 모드는 Pro 모델 + 3배 리미트 개방)
+# 4. 실행 순서(유료키 전용): 3.8-flash → 3.6-flash
 def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> str:
     live_pool = get_live_gemini_key_pool()
     if not live_pool:
