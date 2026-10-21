@@ -4,6 +4,8 @@ import re
 import json
 import hashlib
 import urllib.request
+from datetime import datetime
+from zoneinfo import ZoneInfo
 import streamlit as st
 import pandas as pd
 from pypdf import PdfReader
@@ -21,7 +23,9 @@ from reportlab.platypus import (
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
-from agent import run_agent, get_monthly_usage, is_pro_budget_exceeded
+# 🔒 ImportError 원천 방지 안전 임포트
+import agent
+from agent import run_agent
 
 # 1. 웹 페이지 기본 설정
 st.set_page_config(
@@ -164,11 +168,86 @@ footer {visibility: hidden;}
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# 0. 작업공간(Workspace)별 서버 자동 저장소 설정 및 키 체크
+# 0. 작업공간(Workspace) 및 월간 요금 계량기 자체 내장 (ImportError 완벽 방지)
 # ---------------------------------------------------------
 ROOM_IDS = [f"대화방 {i}" for i in range(1, 11)]
 STORAGE_DIR = ".workspace_storage"
 os.makedirs(STORAGE_DIR, exist_ok=True)
+USAGE_FILE_PATH = os.path.join(STORAGE_DIR, "api_usage_stats.json")
+MONTHLY_PRO_LIMIT_KRW = 20000.0
+USD_TO_KRW_RATE = 1400.0
+
+def get_monthly_usage() -> dict:
+    """agent.py 버전에 관계없이 안전하게 당월 누적 요금 데이터를 조회합니다."""
+    if hasattr(agent, "get_monthly_usage"):
+        try:
+            return agent.get_monthly_usage()
+        except Exception:
+            pass
+    ym = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m")
+    default_stats = {
+        "year_month": ym,
+        "total_krw": 0.0,
+        "total_usd": 0.0,
+        "pro_calls": 0,
+        "flash_calls": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "limit_krw": MONTHLY_PRO_LIMIT_KRW,
+        "updated_at": "-"
+    }
+    if os.path.exists(USAGE_FILE_PATH):
+        try:
+            with open(USAGE_FILE_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if data.get("year_month") == ym:
+                for k, v in default_stats.items():
+                    data.setdefault(k, v)
+                data["limit_krw"] = MONTHLY_PRO_LIMIT_KRW
+                return data
+        except Exception:
+            pass
+    return default_stats
+
+def is_pro_budget_exceeded() -> tuple[bool, float, float]:
+    """당월 누적 요금이 20,000원을 초과했는지 확인합니다."""
+    if hasattr(agent, "is_pro_budget_exceeded"):
+        try:
+            return agent.is_pro_budget_exceeded()
+        except Exception:
+            pass
+    stats = get_monthly_usage()
+    cur_krw = float(stats.get("total_krw", 0.0))
+    limit_krw = float(stats.get("limit_krw", MONTHLY_PRO_LIMIT_KRW))
+    return (cur_krw >= limit_krw), cur_krw, limit_krw
+
+def _record_usage_fallback(user_input: str, response_text: str, is_pro: bool) -> None:
+    """만약 agent.py가 구버전이더라도 app.py에서 자동으로 토큰과 요금을 계산해 기록합니다."""
+    if hasattr(agent, "_record_token_usage"):
+        return
+    stats = get_monthly_usage()
+    # 도구 호출 및 시스템 프롬프트 포함 평균 입출력 토큰 정밀 추정
+    in_tok = int((len(user_input) + 12000) * 0.7) * (3 if is_pro else 1)
+    out_tok = int(len(response_text) * 0.8)
+    in_price, out_price = (1.50, 10.00) if is_pro else (0.15, 0.60)
+    cost_usd = (in_tok / 1_000_000.0) * in_price + (out_tok / 1_000_000.0) * out_price
+    cost_krw = cost_usd * USD_TO_KRW_RATE
+
+    stats["total_usd"] = round(stats.get("total_usd", 0.0) + cost_usd, 6)
+    stats["total_krw"] = round(stats.get("total_krw", 0.0) + cost_krw, 2)
+    stats["input_tokens"] = int(stats.get("input_tokens", 0)) + in_tok
+    stats["output_tokens"] = int(stats.get("output_tokens", 0)) + out_tok
+    if is_pro:
+        stats["pro_calls"] = int(stats.get("pro_calls", 0)) + 1
+    else:
+        stats["flash_calls"] = int(stats.get("flash_calls", 0)) + 1
+    stats["updated_at"] = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%m/%d %H:%M:%S")
+
+    try:
+        with open(USAGE_FILE_PATH, "w", encoding="utf-8") as f:
+            json.dump(stats, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
 
 def _check_api_configured(key_names: list[str]) -> bool:
     """환경변수 또는 st.secrets에 해당 API 키가 설정되어 있는지 확인합니다."""
@@ -916,7 +995,10 @@ if prompt := st.chat_input(
     key=f"chat_input_{effective_ws_id}_{selected_room}"
 ):
     effective_prompt = prompt.strip()
-    if pro_toggle_on and not budget_exceeded and not effective_prompt.startswith("[프로]"):
+    # 월 20,000원 한도 초과 시 사용자가 직접 [프로]를 입력해도 자동으로 제거하여 Flash로 안전 실행
+    if budget_exceeded and effective_prompt.startswith("[프로]"):
+        effective_prompt = effective_prompt.replace("[프로]", "", 1).strip()
+    elif pro_toggle_on and not budget_exceeded and not effective_prompt.startswith("[프로]"):
         effective_prompt = f"[프로] {effective_prompt}"
 
     has_attached_file = bool(current_file_info["name"] and current_file_info["text"])
@@ -981,6 +1063,7 @@ if prompt := st.chat_input(
                 raw_query=effective_prompt,
                 has_file=has_attached_file
             )
+            _record_usage_fallback(full_input_for_agent, response, is_pro_request)
             status_box.update(label="✅ 정밀 검토 및 무결성 감수 완료", state="complete", expanded=False)
         st.markdown(response)
             
