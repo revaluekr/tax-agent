@@ -1,8 +1,10 @@
 import os
 import io
 import re
+import time
 import json
 import hashlib
+import threading
 import urllib.request
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -33,6 +35,15 @@ st.set_page_config(
     page_icon="⚖️",
     layout="wide"
 )
+
+# 백그라운드 스레드에서도 st.secrets의 모든 API 키를 읽을 수 있도록 환경변수로 안전 동기화
+try:
+    if hasattr(st, "secrets"):
+        for k, v in st.secrets.items():
+            if isinstance(v, (str, int, float)) and k not in os.environ:
+                os.environ[k] = str(v).strip()
+except Exception:
+    pass
 
 # ---------------------------------------------------------
 # 💎 프리미엄 오피스 커스텀 CSS 스킨 (기존 로봇 디자인 유지 + 초록 배경 & 흰색 아이콘)
@@ -168,7 +179,7 @@ footer {visibility: hidden;}
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# 0. 작업공간(Workspace) 및 월간 요금 계량기 자체 내장 (ImportError 완벽 방지)
+# 0. 작업공간(Workspace) · 월간 요금 계량기 · 백그라운드 스레드 매니저
 # ---------------------------------------------------------
 ROOM_IDS = [f"대화방 {i}" for i in range(1, 11)]
 STORAGE_DIR = ".workspace_storage"
@@ -176,6 +187,11 @@ os.makedirs(STORAGE_DIR, exist_ok=True)
 USAGE_FILE_PATH = os.path.join(STORAGE_DIR, "api_usage_stats.json")
 MONTHLY_PRO_LIMIT_KRW = 20000.0
 USD_TO_KRW_RATE = 1400.0
+
+@st.cache_resource
+def get_background_task_manager() -> dict:
+    """대화방을 이동하거나 버튼을 눌러도 AI 검색이 끊기지 않도록 백그라운드 작업을 관리합니다."""
+    return {"tasks": {}, "lock": threading.Lock()}
 
 def get_monthly_usage() -> dict:
     """agent.py 버전에 관계없이 안전하게 당월 누적 요금 데이터를 조회합니다."""
@@ -226,7 +242,6 @@ def _record_usage_fallback(user_input: str, response_text: str, is_pro: bool) ->
     if hasattr(agent, "_record_token_usage"):
         return
     stats = get_monthly_usage()
-    # 도구 호출 및 시스템 프롬프트 포함 평균 입출력 토큰 정밀 추정
     in_tok = int((len(user_input) + 12000) * 0.7) * (3 if is_pro else 1)
     out_tok = int(len(response_text) * 0.8)
     in_price, out_price = (1.50, 10.00) if is_pro else (0.15, 0.60)
@@ -307,8 +322,9 @@ def save_workspace_to_disk(workspace_id: str):
         "room_files": st.session_state.room_files
     }
     try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        with get_background_task_manager()["lock"]:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"⚠️ 자동 저장 오류: {e}")
 
@@ -322,6 +338,47 @@ def delete_workspace_from_disk(workspace_id: str):
             os.remove(path)
         except Exception as e:
             print(f"⚠️ 파일 삭제 오류: {e}")
+
+def _background_agent_worker(
+    ws_id: str,
+    room_id: str,
+    full_input: str,
+    raw_query: str,
+    has_file: bool,
+    is_pro: bool,
+    task_info: dict
+) -> None:
+    """
+    화면 이동이나 버튼 클릭으로 Streamlit이 새로고침되더라도
+    백그라운드에서 끝까지 법령 검색과 답변 생성을 완수하고 디스크에 저장하는 독립 워커입니다.
+    """
+    try:
+        response_text = run_agent(
+            user_input=full_input,
+            raw_query=raw_query,
+            has_file=has_file
+        )
+        _record_usage_fallback(full_input, response_text, is_pro)
+    except Exception as e:
+        response_text = f"❌ 에이전트 실행 중 오류가 발생했습니다: {e}"
+
+    # 백그라운드 작업 완료 즉시 디스크 파일(ws_xxxx.json)에 안전하게 기록
+    try:
+        mgr = get_background_task_manager()
+        with mgr["lock"]:
+            disk_data = load_workspace_from_disk(ws_id)
+            room_msgs = disk_data["chat_rooms"].get(room_id, [])
+            if not room_msgs or room_msgs[-1].get("role") != "assistant" or room_msgs[-1].get("content") != response_text:
+                room_msgs.append({"role": "assistant", "content": response_text})
+                disk_data["chat_rooms"][room_id] = room_msgs
+                path = get_storage_path(ws_id)
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(disk_data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"⚠️ 백그라운드 디스크 저장 오류: {e}")
+
+    task_info["response"] = response_text
+    task_info["status"] = "done"
 
 # ---------------------------------------------------------
 # 헬퍼 함수 1: 업로드된 파일(Excel, PDF, Word) 텍스트 추출 (Pro 3배 한도: 150,000자)
@@ -409,7 +466,7 @@ def _extract_clean_copy_text(report_text: str) -> str:
     return "\n".join(out_lines).strip()
 
 # ---------------------------------------------------------
-# 헬퍼 함수 2: AI 답변을 워드(.docx)로 변환 (상단 타이틀 없이 본문부터 깔끔하게 출력)
+# 헬퍼 함수 2: AI 답변을 워드(.docx)로 변환
 # ---------------------------------------------------------
 def _set_malgun_font(run):
     run.font.name = "Malgun Gothic"
@@ -483,7 +540,7 @@ def create_word_docx(report_text: str) -> bytes:
     return buffer.getvalue()
 
 # ---------------------------------------------------------
-# 헬퍼 함수 3: 정식 PDF 직접 생성 엔진 (상단 타이틀/검토안건/작성일자 제거, 1. 결론부터 조판)
+# 헬퍼 함수 3: 정식 PDF 직접 생성 엔진
 # ---------------------------------------------------------
 def _ensure_korean_font() -> tuple[str, str]:
     """서버 환경(Linux/Windows/Mac)에 한글 폰트를 자동 준비·등록하고 (일반폰트명, 굵은폰트명)을 반환합니다."""
@@ -693,6 +750,7 @@ def create_pdf_report(report_text: str) -> bytes:
 usage_stats = get_monthly_usage()
 budget_exceeded, cur_krw, limit_krw = is_pro_budget_exceeded()
 usage_ratio = min(1.0, cur_krw / limit_krw) if limit_krw > 0 else 0.0
+task_mgr = get_background_task_manager()
 
 with st.sidebar:
     st.title("⚙️ 에이전트 제어판")
@@ -744,6 +802,17 @@ with st.sidebar:
         if "current_room" not in st.session_state:
             st.session_state.current_room = ROOM_IDS[0]
 
+    # 🔄 백그라운드에서 완료된 모든 대화방의 답변을 현재 세션에 자동 반영
+    for r_id in ROOM_IDS:
+        t_key = f"{effective_ws_id}::{r_id}"
+        t_info = task_mgr["tasks"].get(t_key)
+        if t_info and t_info.get("status") == "done":
+            ans = t_info.get("response", "")
+            room_msgs = st.session_state.chat_rooms[r_id]
+            if ans and (not room_msgs or room_msgs[-1].get("role") != "assistant" or room_msgs[-1].get("content") != ans):
+                room_msgs.append({"role": "assistant", "content": ans})
+            del task_mgr["tasks"][t_key]
+
     if workspace_input.strip():
         st.success("🟢 전용 작업공간 실시간 자동 저장 중")
         if st.button("🔒 코드 풀기 (잠금 / 나가기)", use_container_width=True):
@@ -756,17 +825,19 @@ with st.sidebar:
 
     st.divider()
     
-    # 🗂️ 3) 멀티 대화방 선택 (1~10번)
+    # 🗂️ 3) 멀티 대화방 선택 (1~10번, 백그라운드 분석 중인 방 표시 지원)
     st.subheader("🗂️ 멀티 대화방 선택 (1~10번)")
     
     def format_room_label(r_id: str) -> str:
         title = st.session_state.room_titles.get(r_id, "")
-        q_cnt = len(st.session_state.chat_rooms[r_id]) // 2
+        q_cnt = (len(st.session_state.chat_rooms[r_id]) + 1) // 2
         file_mark = "📎" if st.session_state.room_files[r_id]["name"] else ""
-        return f"💬 {r_id} [{title}] ({q_cnt}건) {file_mark}"
+        t_info = task_mgr["tasks"].get(f"{effective_ws_id}::{r_id}")
+        running_mark = " ⏳분석중..." if (t_info and t_info.get("status") == "running") else ""
+        return f"💬 {r_id} [{title}] ({q_cnt}건) {file_mark}{running_mark}"
 
     selected_room = st.selectbox(
-        "진행 중인 프로젝트별로 방을 나누어 관리하세요.",
+        "질문 후 다른 방으로 이동해도 기존 방의 AI는 백그라운드에서 멈추지 않고 답변을 완성합니다.",
         options=ROOM_IDS,
         index=ROOM_IDS.index(st.session_state.current_room),
         format_func=format_room_label
@@ -785,6 +856,7 @@ with st.sidebar:
         st.rerun()
     
     if st.button(f"🗑️ [{selected_room}] 현재 방만 비우기", use_container_width=True):
+        task_mgr["tasks"].pop(f"{effective_ws_id}::{selected_room}", None)
         st.session_state.chat_rooms[selected_room] = []
         st.session_state.room_files[selected_room] = {"name": None, "text": ""}
         st.session_state.room_titles[selected_room] = "빈 대화방"
@@ -803,11 +875,14 @@ with st.sidebar:
                 st.session_state.room_titles = fresh_data["room_titles"]
                 st.session_state.room_files = fresh_data["room_files"]
                 for r_id in ROOM_IDS:
+                    task_mgr["tasks"].pop(f"{effective_ws_id}::{r_id}", None)
                     st.session_state[f"reset_cnt_{r_id}"] = st.session_state.get(f"reset_cnt_{r_id}", 0) + 1
                 save_workspace_to_disk(effective_ws_id)
                 st.rerun()
         with col_r2:
             if st.button("🔥 작업공간 파기", disabled=(not unlock_all_reset or not workspace_input.strip()), use_container_width=True):
+                for r_id in ROOM_IDS:
+                    task_mgr["tasks"].pop(f"{effective_ws_id}::{r_id}", None)
                 delete_workspace_from_disk(effective_ws_id)
                 st.session_state.active_workspace_id = ""
                 st.session_state.loaded_workspace_id = None
@@ -936,11 +1011,14 @@ with st.sidebar:
         st.link_button("🔑 내 API 키 확인", "https://aistudio.google.com/apikey", use_container_width=True)
 
 # ---------------------------------------------------------
-# 3. 메인 화면 및 현재 선택된 대화방 렌더링 (순정 로봇 아이콘 + 초록 배경 CSS 적용)
+# 3. 메인 화면 및 현재 선택된 대화방 렌더링
 # ---------------------------------------------------------
 current_messages = st.session_state.chat_rooms[selected_room]
 current_room_title = st.session_state.room_titles[selected_room]
 current_file_info = st.session_state.room_files[selected_room]
+current_task_key = f"{effective_ws_id}::{selected_room}"
+active_task = task_mgr["tasks"].get(current_task_key)
+is_current_room_running = bool(active_task and active_task.get("status") == "running")
 
 if budget_exceeded:
     mode_status_str = f"⛔ **Pro 차단됨 (월 한도 {limit_krw:,.0f}원 도달 → Flash 안전 작동 중)**"
@@ -989,13 +1067,17 @@ for idx, message in enumerate(current_messages):
             with st.expander("📋 카톡·이메일 전송용 텍스트 원클릭 복사 (우측 상단 복사 아이콘 클릭)"):
                 st.code(_extract_clean_copy_text(message["content"]), language="markdown")
 
-# 4. 사용자 질문 입력 및 실시간 3단계 아코디언 상태창(st.status) 처리
+# 4. 새로운 질문 입력 시 -> 백그라운드 독립 스레드로 작업 시작
 if prompt := st.chat_input(
-    placeholder=f"[{selected_room}] 검토할 이슈를 입력하세요 (좌측 Pro 토글 ON 또는 맨 앞에 [프로] 입력 시 3배 개방)",
+    placeholder=(
+        f"⏳ [{selected_room}] 현재 백그라운드 정밀 검토 진행 중입니다... (다른 대화방으로 이동하여 추가 질문을 하실 수 있습니다)"
+        if is_current_room_running else
+        f"[{selected_room}] 검토할 이슈를 입력하세요 (좌측 Pro 토글 ON 또는 맨 앞에 [프로] 입력 시 3배 개방)"
+    ),
+    disabled=is_current_room_running,
     key=f"chat_input_{effective_ws_id}_{selected_room}"
 ):
     effective_prompt = prompt.strip()
-    # 월 20,000원 한도 초과 시 사용자가 직접 [프로]를 입력해도 자동으로 제거하여 Flash로 안전 실행
     if budget_exceeded and effective_prompt.startswith("[프로]"):
         effective_prompt = effective_prompt.replace("[프로]", "", 1).strip()
     elif pro_toggle_on and not budget_exceeded and not effective_prompt.startswith("[프로]"):
@@ -1029,9 +1111,6 @@ if prompt := st.chat_input(
 
     current_messages.append({"role": "user", "content": display_prompt})
     save_workspace_to_disk(effective_ws_id)
-    
-    with st.chat_message("user"):
-        st.markdown(display_prompt)
 
     if has_attached_file:
         doc_cap = MAX_DOC_CHARS_PRO if is_pro_request else MAX_DOC_CHARS_STANDARD
@@ -1047,26 +1126,53 @@ if prompt := st.chat_input(
     else:
         full_input_for_agent = f"{history_context}[현재 사용자 질문]: {effective_prompt}" if history_context else effective_prompt
 
-    status_title = (
-        f"🧠 [{selected_room}] Pro 심층 모드 가동 중 (데이터·도구 한도 3배 개방)..."
-        if is_pro_request else
-        f"⚡ [{selected_room}] 실시간 법령·공시 DB 조회 및 정밀 검토 중..."
+    # 🚀 백그라운드 스레드 생성 및 등록 (방을 바꾸거나 버튼을 눌러도 절대 죽지 않음)
+    new_task_info = {
+        "status": "running",
+        "response": None,
+        "is_pro": is_pro_request,
+        "started_at": time.time()
+    }
+    worker_thread = threading.Thread(
+        target=_background_agent_worker,
+        args=(
+            effective_ws_id,
+            selected_room,
+            full_input_for_agent,
+            effective_prompt,
+            has_attached_file,
+            is_pro_request,
+            new_task_info
+        ),
+        daemon=True
     )
+    new_task_info["thread"] = worker_thread
+    task_mgr["tasks"][current_task_key] = new_task_info
+    worker_thread.start()
+    st.rerun()
 
+# 5. 현재 방에서 백그라운드 작업이 진행 중일 때 실시간 상태창 표시 (버튼 클릭/방 이동 후 돌아와도 자동 재연결)
+active_task = task_mgr["tasks"].get(current_task_key)
+if active_task and active_task.get("status") == "running":
+    is_pro_running = active_task.get("is_pro", False)
+    status_title = (
+        f"🧠 [{selected_room}] Pro 심층 모드 백그라운드 가동 중 (데이터·도구 한도 3배 개방)..."
+        if is_pro_running else
+        f"⚡ [{selected_room}] 실시간 법령·공시 DB 조회 및 백그라운드 정밀 검토 중..."
+    )
     with st.chat_message("assistant"):
         with st.status(status_title, expanded=True) as status_box:
             st.write("🔎 **1단계:** 질의 쟁점 분석 및 7대 국가·공공기관(법제처·국세청·DART·국토부·한은) DB 탐색 중...")
             st.write("🧮 **2단계:** 관련 법령·판례 원문 파싱 및 파이썬 1원 단위 정밀 수리 계산기 구동 중...")
             st.write("🛡️ **3단계:** 미조회 근거 강제 차단(`_scan_violations`) 및 듀얼 AI 의미 감수(`_semantic_verify`) 수행 중...")
-            response = run_agent(
-                user_input=full_input_for_agent,
-                raw_query=effective_prompt,
-                has_file=has_attached_file
-            )
-            _record_usage_fallback(full_input_for_agent, response, is_pro_request)
+            st.caption("💡 **백그라운드 멀티태스킹 작동 중:** 지금 좌측 버튼을 누르거나 다른 대화방으로 이동하셔도 이 방의 AI 검토는 멈추지 않고 끝까지 완료됩니다.")
+            while active_task.get("status") == "running":
+                time.sleep(0.4)
             status_box.update(label="✅ 정밀 검토 및 무결성 감수 완료", state="complete", expanded=False)
-        st.markdown(response)
-            
-    current_messages.append({"role": "assistant", "content": response})
-    save_workspace_to_disk(effective_ws_id)
+
+    # 완료 즉시 현재 세션에 반영하고 화면 새로고침
+    ans = active_task.get("response", "")
+    if ans and (not current_messages or current_messages[-1].get("role") != "assistant" or current_messages[-1].get("content") != ans):
+        current_messages.append({"role": "assistant", "content": ans})
+    task_mgr["tasks"].pop(current_task_key, None)
     st.rerun()
