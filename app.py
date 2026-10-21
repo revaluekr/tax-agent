@@ -260,7 +260,7 @@ footer {visibility: hidden;}
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# 0. 작업공간 · 요금 계량기 · API 만료일 · 🎯 맥락 연동형 법령 레이더 (3대 방식 통합)
+# 0. 작업공간 · 대화방당 2,000원 계량기 · API 만료일 · 🎯 맥락 연동형 법령 레이더
 # ---------------------------------------------------------
 ROOM_IDS = [f"대화방 {i}" for i in range(1, 11)]
 STORAGE_DIR = ".workspace_storage"
@@ -268,10 +268,19 @@ os.makedirs(STORAGE_DIR, exist_ok=True)
 USAGE_FILE_PATH = os.path.join(STORAGE_DIR, "api_usage_stats.json")
 EXPIRY_FILE_PATH = os.path.join(STORAGE_DIR, "api_expiry_dates.json")
 ROOM_LAW_ACK_PATH = os.path.join(STORAGE_DIR, "room_law_ack.json")
-MONTHLY_PRO_LIMIT_KRW = 20000.0
-USD_TO_KRW_RATE = 1400.0
 
-# 📢 실시간 공포 감지 및 『제·개정이유서』 직결 대상 핵심 세법·노동법
+def _safe_float(raw_val, default_val: float) -> float:
+    if raw_val is None or raw_val == "":
+        return float(default_val)
+    try:
+        cleaned = re.sub(r"[^0-9.\-]", "", str(raw_val))
+        return float(cleaned) if cleaned else float(default_val)
+    except Exception:
+        return float(default_val)
+
+ROOM_LIMIT_KRW = _safe_float(os.getenv("ROOM_LIMIT_KRW"), 2000.0)
+USD_TO_KRW_RATE = _safe_float(os.getenv("USD_TO_KRW_RATE"), 1400.0)
+
 WATCHED_TAX_LAWS = [
     "국세기본법",
     "법인세법",
@@ -285,12 +294,12 @@ WATCHED_TAX_LAWS = [
 ]
 
 def _get_law_oc() -> str:
-    """agent.py 또는 law_api.py, st.secrets, 환경변수에서 법제처 OC 키를 자동 추출합니다."""
+    """agent.py, law_api.py, config.py, st.secrets, 환경변수에서 법제처 OC 키(LAW_OPEN_API_KEY 최우선)를 자동 추출합니다."""
     if hasattr(agent, "get_law_oc_auto"):
         val = agent.get_law_oc_auto()
         if val:
             return val
-    for k in ["LAW_API_OC", "OC", "LAW_OC", "LAW_API_KEY", "MOLEG_OC", "DRF_OC"]:
+    for k in ["LAW_OPEN_API_KEY", "LAW_API_OC", "OC", "LAW_OC", "LAW_API_KEY", "MOLEG_OC", "DRF_OC"]:
         try:
             if hasattr(st, "secrets") and k in st.secrets and str(st.secrets[k]).strip():
                 return str(st.secrets[k]).strip()
@@ -298,22 +307,10 @@ def _get_law_oc() -> str:
             pass
         if os.getenv(k, "").strip():
             return os.getenv(k, "").strip()
-    for attr in ["OC", "LAW_API_OC", "LAW_OC", "LAW_API_KEY", "API_KEY", "USER_OC", "oc"]:
+    for attr in ["LAW_OPEN_API_KEY", "OC", "LAW_API_OC", "LAW_OC", "LAW_API_KEY", "API_KEY", "USER_OC", "oc"]:
         val = getattr(law_api, attr, None)
         if isinstance(val, str) and val.strip():
             return val.strip()
-    if os.path.exists("law_api.py"):
-        try:
-            with open("law_api.py", "r", encoding="utf-8") as f:
-                src = f.read()
-            m = re.search(r'(?:OC|LAW_API_OC|LAW_OC|LAW_API_KEY)\s*=\s*["\']([^"\']+)["\']', src)
-            if m and m.group(1).strip():
-                return m.group(1).strip()
-            m2 = re.search(r'OC=([A-Za-z0-9_.\-]+)', src)
-            if m2 and m2.group(1).strip() and not m2.group(1).startswith("{"):
-                return m2.group(1).strip()
-        except Exception:
-            pass
     return ""
 
 def _fmt_ymd_str(raw_ymd: str) -> str:
@@ -467,11 +464,6 @@ def extract_cited_laws_in_room(messages: list[dict], law_prom_map: dict[str, dic
     return [law_prom_map[cname] for cname in sorted(found_clean_names)]
 
 def get_room_revision_alerts(ws_id: str, room_id: str, messages: list[dict], law_prom_map: dict[str, dict]) -> tuple[list[dict], bool]:
-    """
-    (감지된 법령 리스트, 실제 사후 개정 여부 is_post_revision) 튜플을 반환합니다.
-    - 답변 생성 당시 기록된 버전(baseline)보다 법제처 버전이 새로워졌으면 is_post_revision=True (진짜 사후 개정)
-    - 최근 60일 내 공포/시행예정 법령이 인용되어 개정이유서 열람 안내 대상이면 is_post_revision=False
-    """
     cited_list = extract_cited_laws_in_room(messages, law_prom_map)
     if not cited_list:
         return [], False
@@ -508,7 +500,6 @@ def acknowledge_room_laws(ws_id: str, room_id: str, law_items: list[dict]) -> No
     ack_all[room_key] = room_ack
     save_room_law_ack(ack_all)
 
-# ⏰ 유효기간이 존재하는 3대 API의 기본 만료일 설정
 DEFAULT_API_EXPIRY_CONFIG = {
     "VWORLD": {
         "name": "브이월드(공시지가) API",
@@ -601,83 +592,43 @@ def check_api_expiry_alerts() -> tuple[list[dict], list[dict]]:
 def get_background_task_manager() -> dict:
     return {"tasks": {}, "lock": threading.Lock()}
 
-def get_monthly_usage() -> dict:
-    if hasattr(agent, "get_monthly_usage"):
+def get_room_usage_stats(room_key: str) -> dict:
+    """현재 선택된 대화방의 누적 요금·토큰 데이터를 조회합니다."""
+    if hasattr(agent, "get_room_usage"):
         try:
-            return agent.get_monthly_usage()
+            return agent.get_room_usage(room_key)
         except Exception:
             pass
-    ym = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m")
-    default_stats = {
-        "year_month": ym,
+    return {
         "total_krw": 0.0,
         "total_usd": 0.0,
         "pro_calls": 0,
         "flash_calls": 0,
         "input_tokens": 0,
         "output_tokens": 0,
-        "limit_krw": MONTHLY_PRO_LIMIT_KRW,
+        "limit_krw": ROOM_LIMIT_KRW,
         "updated_at": "-"
     }
-    if os.path.exists(USAGE_FILE_PATH):
-        try:
-            with open(USAGE_FILE_PATH, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if data.get("year_month") == ym:
-                for k, v in default_stats.items():
-                    data.setdefault(k, v)
-                data["limit_krw"] = MONTHLY_PRO_LIMIT_KRW
-                return data
-        except Exception:
-            pass
-    return default_stats
 
-def is_pro_budget_exceeded() -> tuple[bool, float, float]:
+def is_room_budget_exceeded(room_key: str) -> tuple[bool, float, float]:
+    """현재 대화방 누적 요금이 2,000원 한도를 초과했는지 확인합니다."""
     if hasattr(agent, "is_pro_budget_exceeded"):
         try:
-            return agent.is_pro_budget_exceeded()
+            return agent.is_pro_budget_exceeded(room_key)
         except Exception:
             pass
-    stats = get_monthly_usage()
+    stats = get_room_usage_stats(room_key)
     cur_krw = float(stats.get("total_krw", 0.0))
-    limit_krw = float(stats.get("limit_krw", MONTHLY_PRO_LIMIT_KRW))
+    limit_krw = float(stats.get("limit_krw", ROOM_LIMIT_KRW))
     return (cur_krw >= limit_krw), cur_krw, limit_krw
 
-def _log_custom_tokens(model_id: str, in_tok: int, out_tok: int, count_call: bool = True) -> None:
+def _log_custom_tokens(model_id: str, in_tok: int, out_tok: int, count_call: bool = True, room_key: str = "") -> None:
     if hasattr(agent, "_record_token_usage"):
         try:
-            agent._record_token_usage(model_id, in_tok, out_tok, count_call=count_call)
+            agent._record_token_usage(model_id, in_tok, out_tok, count_call=count_call, room_key=room_key)
             return
         except Exception:
             pass
-    stats = get_monthly_usage()
-    is_pro = ("pro" in model_id.lower()) or ("argon" in model_id.lower())
-    in_price, out_price = (1.50, 10.00) if is_pro else (0.15, 0.60)
-    cost_usd = (in_tok / 1_000_000.0) * in_price + (out_tok / 1_000_000.0) * out_price
-    cost_krw = cost_usd * USD_TO_KRW_RATE
-
-    stats["total_usd"] = round(stats.get("total_usd", 0.0) + cost_usd, 6)
-    stats["total_krw"] = round(stats.get("total_krw", 0.0) + cost_krw, 2)
-    stats["input_tokens"] = int(stats.get("input_tokens", 0)) + int(in_tok)
-    stats["output_tokens"] = int(stats.get("output_tokens", 0)) + int(out_tok)
-    if count_call:
-        if is_pro:
-            stats["pro_calls"] = int(stats.get("pro_calls", 0)) + 1
-        else:
-            stats["flash_calls"] = int(stats.get("flash_calls", 0)) + 1
-    stats["updated_at"] = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%m/%d %H:%M:%S")
-    try:
-        with open(USAGE_FILE_PATH, "w", encoding="utf-8") as f:
-            json.dump(stats, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
-
-def _record_usage_fallback(user_input: str, response_text: str, is_pro: bool) -> None:
-    if hasattr(agent, "_record_token_usage"):
-        return
-    in_tok = int((len(user_input) + 12000) * 0.7) * (3 if is_pro else 1)
-    out_tok = int(len(response_text) * 0.8)
-    _log_custom_tokens("pro" if is_pro else "flash", in_tok, out_tok, count_call=True)
 
 def _check_api_configured(key_names: list[str]) -> bool:
     for k in key_names:
@@ -717,7 +668,8 @@ def get_default_workspace_data() -> dict:
     return {
         "chat_rooms": {r_id: [] for r_id in ROOM_IDS},
         "room_titles": default_titles,
-        "room_files": {r_id: {"name": None, "text": "", "items": []} for r_id in ROOM_IDS}
+        "room_files": {r_id: {"name": None, "text": "", "items": []} for r_id in ROOM_IDS},
+        "room_usage": {r_id: {} for r_id in ROOM_IDS}
     }
 
 def load_workspace_from_disk(workspace_id: str) -> dict:
@@ -727,7 +679,7 @@ def load_workspace_from_disk(workspace_id: str) -> dict:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             default_data = get_default_workspace_data()
-            for key in ["chat_rooms", "room_titles", "room_files"]:
+            for key in ["chat_rooms", "room_titles", "room_files", "room_usage"]:
                 if key not in data:
                     data[key] = default_data[key]
                 else:
@@ -736,6 +688,8 @@ def load_workspace_from_disk(workspace_id: str) -> dict:
                             data[key][r_id] = default_data[key][r_id]
             for r_id in ROOM_IDS:
                 data["room_files"][r_id] = _normalize_room_file_entry(data["room_files"][r_id])
+                if data["room_usage"].get(r_id) and hasattr(agent, "set_room_usage_from_backup"):
+                    agent.set_room_usage_from_backup(f"{workspace_id}::{r_id}", data["room_usage"][r_id])
             return data
         except Exception:
             pass
@@ -745,10 +699,16 @@ def save_workspace_to_disk(workspace_id: str):
     if not workspace_id:
         return
     path = get_storage_path(workspace_id)
+    room_usage_map = {
+        r_id: get_room_usage_stats(f"{workspace_id}::{r_id}")
+        for r_id in ROOM_IDS
+    }
+    st.session_state.room_usage = room_usage_map
     data = {
         "chat_rooms": st.session_state.chat_rooms,
         "room_titles": st.session_state.room_titles,
-        "room_files": st.session_state.room_files
+        "room_files": st.session_state.room_files,
+        "room_usage": room_usage_map
     }
     try:
         with get_background_task_manager()["lock"]:
@@ -776,13 +736,14 @@ def _background_agent_worker(
     is_pro: bool,
     task_info: dict
 ) -> None:
+    room_key = f"{ws_id}::{room_id}"
     try:
         response_text = run_agent(
             user_input=full_input,
             raw_query=raw_query,
-            has_file=has_file
+            has_file=has_file,
+            room_key=room_key
         )
-        _record_usage_fallback(full_input, response_text, is_pro)
     except Exception as e:
         response_text = f"❌ 에이전트 실행 중 오류가 발생했습니다: {e}"
 
@@ -794,6 +755,7 @@ def _background_agent_worker(
             if not room_msgs or room_msgs[-1].get("role") != "assistant" or room_msgs[-1].get("content") != response_text:
                 room_msgs.append({"role": "assistant", "content": response_text})
                 disk_data["chat_rooms"][room_id] = room_msgs
+                disk_data.setdefault("room_usage", {})[room_id] = get_room_usage_stats(room_key)
                 path = get_storage_path(ws_id)
                 with open(path, "w", encoding="utf-8") as f:
                     json.dump(disk_data, f, ensure_ascii=False, indent=2)
@@ -809,7 +771,7 @@ def _background_agent_worker(
 MAX_DOC_CHARS_STANDARD = 50000
 MAX_DOC_CHARS_PRO      = 150000
 
-def _ocr_with_gemini_flash(file_bytes: bytes, mime_type: str, filename: str) -> str:
+def _ocr_with_gemini_flash(file_bytes: bytes, mime_type: str, filename: str, room_key: str = "") -> str:
     pool = agent.get_live_gemini_key_pool() if hasattr(agent, "get_live_gemini_key_pool") else []
     api_key = pool[0][1] if pool else (os.getenv("GEMINI_PAID_KEY") or os.getenv("GEMINI_API_KEY") or "")
     if not api_key:
@@ -839,8 +801,11 @@ def _ocr_with_gemini_flash(file_bytes: bytes, mime_type: str, filename: str) -> 
             extracted = agent.extract_safe_text(resp) if hasattr(agent, "extract_safe_text") else (resp.text or "")
             um = getattr(resp, "usage_metadata", None)
             in_tok = int(getattr(um, "prompt_token_count", 0) or 1500)
-            out_tok = int(getattr(um, "candidates_token_count", 0) or max(200, int(len(extracted) * 0.7)))
-            _log_custom_tokens(m_id, in_tok, out_tok, count_call=True)
+            out_tok = (
+                int(getattr(um, "candidates_token_count", 0) or max(200, int(len(extracted) * 0.7)))
+                + int(getattr(um, "thoughts_token_count", 0) or 0)
+            )
+            _log_custom_tokens(m_id, in_tok, out_tok, count_call=True, room_key=room_key)
             if extracted.strip():
                 return f"[📸 AI 비전 OCR 자동 판독 완료: {filename}]\n{extracted.strip()}"
         except Exception as e:
@@ -848,7 +813,7 @@ def _ocr_with_gemini_flash(file_bytes: bytes, mime_type: str, filename: str) -> 
             continue
     return f"❌ 이미지/스캔본 OCR 판독 실패 ({filename}): {last_err}"
 
-def extract_file_content(uploaded_file) -> str:
+def extract_file_content(uploaded_file, room_key: str = "") -> str:
     filename = uploaded_file.name
     lower_name = filename.lower()
     try:
@@ -882,7 +847,7 @@ def extract_file_content(uploaded_file) -> str:
                 pure_body_chars += len(page_text)
                 text_parts.append(f"\n--- {idx+1}페이지 ---\n{page_text}")
             if pure_body_chars < 40:
-                return _ocr_with_gemini_flash(raw_bytes, "application/pdf", filename)[:MAX_DOC_CHARS_PRO]
+                return _ocr_with_gemini_flash(raw_bytes, "application/pdf", filename, room_key=room_key)[:MAX_DOC_CHARS_PRO]
             return "\n".join(text_parts)[:MAX_DOC_CHARS_PRO]
 
         elif lower_name.endswith(".docx"):
@@ -902,7 +867,7 @@ def extract_file_content(uploaded_file) -> str:
 
         elif lower_name.endswith((".png", ".jpg", ".jpeg")):
             mime = "image/png" if lower_name.endswith(".png") else "image/jpeg"
-            return _ocr_with_gemini_flash(raw_bytes, mime, filename)[:MAX_DOC_CHARS_PRO]
+            return _ocr_with_gemini_flash(raw_bytes, mime, filename, room_key=room_key)[:MAX_DOC_CHARS_PRO]
 
         return "지원하지 않는 파일 형식입니다."
     except Exception as e:
@@ -1105,7 +1070,6 @@ def _md_to_rl_xml(text: str, bold_font: str) -> str:
     return s
 
 def _draw_page_footer(canvas, doc):
-    """[고도화 3] PDF 매 페이지 하단 좌측에 면책문구(약 410pt 폭)를, 우측 끝에 페이지 번호(- 1 -)를 겹침 없이 인쇄합니다."""
     canvas.saveState()
     reg_font, _ = _ensure_korean_font()
 
@@ -1440,14 +1404,20 @@ if _dialog_decorator:
         )
 
 # ---------------------------------------------------------
-# 2. 왼쪽 사이드바 제어판 (글자 잘림 완벽 해결 + 원스크린 화이트 카드 UI)
+# 2. 왼쪽 사이드바 제어판 (대화방별 2,000원 한도 계량기 연동)
 # ---------------------------------------------------------
-usage_stats = get_monthly_usage()
-budget_exceeded, cur_krw, limit_krw = is_pro_budget_exceeded()
-usage_ratio = min(1.0, cur_krw / limit_krw) if limit_krw > 0 else 0.0
 task_mgr = get_background_task_manager()
 expiry_alerts, expiry_all_status = check_api_expiry_alerts()
 law_prom_map = fetch_latest_tax_law_promulgations()
+
+saved_ws_preview = st.session_state.get("active_workspace_id", "").strip()
+effective_ws_preview = saved_ws_preview if saved_ws_preview else "default_public"
+selected_room_preview = st.session_state.get("current_room", ROOM_IDS[0])
+active_room_key_preview = f"{effective_ws_preview}::{selected_room_preview}"
+
+usage_stats = get_room_usage_stats(active_room_key_preview)
+budget_exceeded, cur_krw, limit_krw = is_room_budget_exceeded(active_room_key_preview)
+usage_ratio = min(1.0, cur_krw / limit_krw) if limit_krw > 0 else 0.0
 
 with st.sidebar:
     st.markdown(
@@ -1475,7 +1445,7 @@ with st.sidebar:
         )
         st.session_state.pro_toggle_state = pro_toggle_on
         if budget_exceeded:
-            st.caption(f"⛔ 월 한도({limit_krw:,.0f}원) 도달로 Pro 잠김")
+            st.caption(f"⛔ 이 방 한도({limit_krw:,.0f}원) 도달로 Pro 잠김")
 
     # 📦 [카드 2] 내 작업공간 (자동 동기화)
     with st.container(border=True):
@@ -1503,6 +1473,7 @@ with st.sidebar:
             st.session_state.chat_rooms = ws_data["chat_rooms"]
             st.session_state.room_titles = ws_data["room_titles"]
             st.session_state.room_files = ws_data["room_files"]
+            st.session_state.room_usage = ws_data.get("room_usage", {r_id: {} for r_id in ROOM_IDS})
             st.session_state.loaded_workspace_id = effective_ws_id
             st.session_state.active_workspace_id = workspace_input.strip()
             if "current_room" not in st.session_state:
@@ -1586,7 +1557,14 @@ with st.sidebar:
             label_visibility="collapsed",
             help="과거 검토에 인용된 법령이 개정되면 방 이름 옆에 자동으로 표시됩니다."
         )
-        st.session_state.current_room = selected_room
+        if selected_room != st.session_state.current_room:
+            st.session_state.current_room = selected_room
+            st.rerun()
+
+        active_room_key = f"{effective_ws_id}::{selected_room}"
+        usage_stats = get_room_usage_stats(active_room_key)
+        budget_exceeded, cur_krw, limit_krw = is_room_budget_exceeded(active_room_key)
+        usage_ratio = min(1.0, cur_krw / limit_krw) if limit_krw > 0 else 0.0
 
         new_title = st.text_input(
             "방 주제 메모",
@@ -1600,11 +1578,13 @@ with st.sidebar:
             save_workspace_to_disk(effective_ws_id)
             st.rerun()
 
-        if st.button(f"🗑️ [{selected_room}] 현재 방 비우기", use_container_width=True):
-            task_mgr["tasks"].pop(f"{effective_ws_id}::{selected_room}", None)
+        if st.button(f"🗑️ [{selected_room}] 현재 방 비우기 (요금 0원 초기화)", use_container_width=True):
+            task_mgr["tasks"].pop(active_room_key, None)
             st.session_state.chat_rooms[selected_room] = []
             st.session_state.room_files[selected_room] = {"name": None, "text": "", "items": []}
             st.session_state.room_titles[selected_room] = "빈 대화방"
+            if hasattr(agent, "reset_room_usage"):
+                agent.reset_room_usage(active_room_key)
             st.session_state[f"reset_cnt_{selected_room}"] = st.session_state.get(f"reset_cnt_{selected_room}", 0) + 1
             save_workspace_to_disk(effective_ws_id)
             st.rerun()
@@ -1633,7 +1613,7 @@ with st.sidebar:
             for uf in uploaded_files:
                 if uf.name not in existing_names:
                     with st.spinner(f"📄 '{uf.name}' 내용 추출 및 저장 중..."):
-                        extracted_text = extract_file_content(uf)
+                        extracted_text = extract_file_content(uf, room_key=active_room_key)
                         saved_items.append({"name": uf.name, "text": extracted_text})
                         existing_names.add(uf.name)
                         new_added = True
@@ -1664,7 +1644,7 @@ with st.sidebar:
     # 📦 [보조 메뉴] 7대 기관 연동 (`🟢 법제처` 자동 감지) · 📜 공식 개정이유서(0토큰) · API 만료일 · 백업
     exp_header_badge = " ⚠️" if expiry_alerts else ""
     with st.expander(f"📡 7대 기관 DB 연동 및 전체 백업{exp_header_badge}"):
-        led_law   = "🟢" if (bool(_get_law_oc()) or bool(law_prom_map)) else "🟡"
+        led_law   = "🟢" if (bool(_get_law_oc()) or _check_api_configured(["LAW_OPEN_API_KEY", "LAW_API_OC", "OC"]) or bool(law_prom_map)) else "🟡"
         led_nts   = "🟢" if _check_api_configured(["NTS_API_KEY", "DATA_GO_KR_KEY", "PUBLIC_DATA_KEY"]) else "🟡"
         led_dart  = "🟢" if _check_api_configured(["DART_API_KEY", "OPENDART_API_KEY"]) else "🟡"
         led_molit = "🟢" if _check_api_configured(["MOLIT_API_KEY", "DATA_GO_KR_KEY", "VWORLD_API_KEY"]) else "🟡"
@@ -1701,10 +1681,15 @@ with st.sidebar:
             st.rerun()
 
         st.divider()
+        room_usage_backup = {
+            r_id: get_room_usage_stats(f"{effective_ws_id}::{r_id}")
+            for r_id in ROOM_IDS
+        }
         backup_json_bytes = json.dumps({
             "chat_rooms": st.session_state.chat_rooms,
             "room_titles": st.session_state.room_titles,
-            "room_files": st.session_state.room_files
+            "room_files": st.session_state.room_files,
+            "room_usage": room_usage_backup
         }, ensure_ascii=False, indent=2).encode("utf-8")
         st.download_button(
             label="📥 10개 방 전체 백업 (.json)",
@@ -1724,6 +1709,11 @@ with st.sidebar:
                         r: _normalize_room_file_entry(loaded_backup.get("room_files", {}).get(r, {}))
                         for r in ROOM_IDS
                     }
+                    restored_usage = loaded_backup.get("room_usage", {})
+                    if hasattr(agent, "set_room_usage_from_backup"):
+                        for r in ROOM_IDS:
+                            if r in restored_usage:
+                                agent.set_room_usage_from_backup(f"{effective_ws_id}::{r}", restored_usage[r])
                     save_workspace_to_disk(effective_ws_id)
                     st.rerun()
                 except Exception as e:
@@ -1737,33 +1727,41 @@ with st.sidebar:
                 st.session_state.room_titles = fresh_data["room_titles"]
                 st.session_state.room_files = fresh_data["room_files"]
                 for r_id in ROOM_IDS:
-                    task_mgr["tasks"].pop(f"{effective_ws_id}::{r_id}", None)
+                    rk = f"{effective_ws_id}::{r_id}"
+                    task_mgr["tasks"].pop(rk, None)
+                    if hasattr(agent, "reset_room_usage"):
+                        agent.reset_room_usage(rk)
                     st.session_state[f"reset_cnt_{r_id}"] = st.session_state.get(f"reset_cnt_{r_id}", 0) + 1
                 save_workspace_to_disk(effective_ws_id)
                 st.rerun()
         with col_r2:
             if st.button("🔥 공간 파기", disabled=(not unlock_all_reset or not workspace_input.strip()), use_container_width=True):
                 for r_id in ROOM_IDS:
-                    task_mgr["tasks"].pop(f"{effective_ws_id}::{r_id}", None)
+                    rk = f"{effective_ws_id}::{r_id}"
+                    task_mgr["tasks"].pop(rk, None)
+                    if hasattr(agent, "reset_room_usage"):
+                        agent.reset_room_usage(rk)
                 delete_workspace_from_disk(effective_ws_id)
                 st.session_state.active_workspace_id = ""
                 st.session_state.loaded_workspace_id = None
                 st.session_state.ws_widget_ver = ws_widget_ver + 1
                 st.rerun()
 
-    # 📦 [카드 5 — 최하단 고정 & 3버튼 1줄 배치]
+    # 📦 [카드 5 — 최하단 고정: 현재 대화방 2,000원 한도 계량기 & 3버튼 1줄 배치]
     with st.container(border=True):
         total_tokens_k = (usage_stats.get("input_tokens", 0) + usage_stats.get("output_tokens", 0)) / 1000.0
+        cur_usd = float(usage_stats.get("total_usd", 0.0))
+        badge_cls = "sb-badge-amber" if budget_exceeded else "sb-badge-green"
         st.markdown(
-            f"<div class='sb-card-title'><span>💳 {usage_stats['year_month']}월 요금 계량기</span>"
-            f"<span class='sb-badge-green'>{usage_ratio*100:.1f}%</span></div>",
+            f"<div class='sb-card-title'><span>💳 [{selected_room}] 요금 계량기</span>"
+            f"<span class='{badge_cls}'>{usage_ratio*100:.1f}%</span></div>",
             unsafe_allow_html=True
         )
         st.markdown(
             f"<div style='display:flex; justify-content:space-between; align-items:baseline; line-height:1.4; margin-bottom:4px;'>"
-            f"<span style='font-size:1.02rem; font-weight:800; color:#0f172a;'>{cur_krw:,.0f}원 "
-            f"<span style='font-size:0.74rem; font-weight:500; color:#64748b;'>/ {limit_krw:,.0f}원</span></span>"
-            f"<span style='font-size:0.72rem; color:#475569;'>Flash <b>{usage_stats.get('flash_calls', 0)}</b> · Pro <b>{usage_stats.get('pro_calls', 0)}</b> ({total_tokens_k:,.1f}K)</span>"
+            f"<span style='font-size:1.00rem; font-weight:800; color:#0f172a;'>{cur_krw:,.0f}원 "
+            f"<span style='font-size:0.72rem; font-weight:500; color:#64748b;'>(${cur_usd:.3f} / {limit_krw:,.0f}원)</span></span>"
+            f"<span style='font-size:0.71rem; color:#475569;'>Flash <b>{usage_stats.get('flash_calls', 0)}</b> · Pro <b>{usage_stats.get('pro_calls', 0)}</b> ({total_tokens_k:,.1f}K)</span>"
             f"</div>",
             unsafe_allow_html=True
         )
@@ -1789,7 +1787,7 @@ active_task = task_mgr["tasks"].get(current_task_key)
 is_current_room_running = bool(active_task and active_task.get("status") == "running")
 
 if budget_exceeded:
-    mode_status_str = f"⛔ **Pro 차단됨 (월 한도 {limit_krw:,.0f}원 도달 → Flash 안전 작동 중)**"
+    mode_status_str = f"⛔ **Pro 차단됨 (이 대화방 한도 {limit_krw:,.0f}원 도달 → Flash 안전 작동 중)**"
 elif pro_toggle_on:
     mode_status_str = "🧠 **Pro 심층 모드 (3배 리미트 개방 ON)**"
 else:
@@ -1797,7 +1795,7 @@ else:
 
 st.title(f"⚖️ 세무·법령·회계 자율 에이전트 — [{selected_room}: {current_room_title}]")
 st.markdown(
-    f"💡 **현재 엔진 상태:** {mode_status_str} &nbsp;|&nbsp; 당월 누적 예상 요금: **`{cur_krw:,.0f}원 / {limit_krw:,.0f}원`**"
+    f"💡 **현재 엔진 상태:** {mode_status_str} &nbsp;|&nbsp; **[{selected_room}] 누적 예상 요금:** **`{cur_krw:,.0f}원 / {limit_krw:,.0f}원`**"
 )
 
 # 🚨 1) [API 유효기간 1개월(30일) 전 자동 경고 배너]
@@ -1991,4 +1989,5 @@ if active_task and active_task.get("status") == "running":
     if ans and (not current_messages or current_messages[-1].get("role") != "assistant" or current_messages[-1].get("content") != ans):
         current_messages.append({"role": "assistant", "content": ans})
     task_mgr["tasks"].pop(current_task_key, None)
+    save_workspace_to_disk(effective_ws_id)
     st.rerun()
