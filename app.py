@@ -48,7 +48,7 @@ except Exception:
     pass
 
 # ---------------------------------------------------------
-# 💎 프리미엄 화이트 카드 사이드바 & 오피스 커스텀 CSS 스킨
+# 💎 프리미엄 화이트 카드 사이드바(원스크린 압축) & 상단 수평 정렬 CSS
 # ---------------------------------------------------------
 st.markdown("""
 <style>
@@ -58,28 +58,57 @@ html, body, [class*="css"] {
     font-family: 'Pretendard', 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif;
 }
 
-/* 🎨 사이드바 전체 배경: 차분한 쿨그레이 톤으로 본문 및 흰색 카드와 대비감 부여 */
+/* 📐 우측 본문 상단 여백 축소 -> 좌측 사이드바 타이틀과 수평 라인 정렬 */
+div.block-container {
+    padding-top: 2.0rem !important;
+    padding-bottom: 2.0rem !important;
+}
+
+/* 🎨 사이드바 전체 배경 및 상하 여백 압축 (스크롤 없이 한 화면에 100% 들어오도록 조정) */
 section[data-testid="stSidebar"] {
     background-color: #f1f5f9 !important;
     border-right: 1px solid #cbd5e1 !important;
 }
+section[data-testid="stSidebar"] div[data-testid="stSidebarUserContent"] {
+    padding-top: 1.0rem !important;
+    padding-bottom: 0.8rem !important;
+}
 
-/* 📦 사이드바 내부 블록(st.container(border=True))을 입체감 있는 순백색 카드로 변환 */
+/* 📦 사이드바 내부 화이트 카드 패딩·간격 슬림화 */
 section[data-testid="stSidebar"] div[data-testid="stVerticalBlockBorderWrapper"] {
     background-color: #ffffff !important;
     border: 1px solid #e2e8f0 !important;
-    border-radius: 12px !important;
-    padding: 12px 14px !important;
-    margin-bottom: 10px !important;
-    box-shadow: 0 2px 5px rgba(15, 23, 42, 0.04) !important;
+    border-radius: 10px !important;
+    padding: 8px 11px !important;
+    margin-bottom: 6px !important;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.03) !important;
+}
+
+/* 사이드바 내부 위젯 간격 및 버튼 높이 컴팩트화 */
+section[data-testid="stSidebar"] div[data-testid="stVerticalBlock"] {
+    gap: 0.38rem !important;
+}
+section[data-testid="stSidebar"] button {
+    min-height: 2.05rem !important;
+    padding: 0.2rem 0.6rem !important;
+    font-size: 0.82rem !important;
+    border-radius: 7px !important;
+    font-weight: 600 !important;
+}
+section[data-testid="stSidebar"] a[data-testid="stBaseLinkButton-secondary"] {
+    min-height: 2.05rem !important;
+    padding: 0.2rem 0.5rem !important;
+    font-size: 0.80rem !important;
+    border-radius: 7px !important;
+    font-weight: 600 !important;
 }
 
 /* 사이드바 카드 소제목(라벨) 스타일 */
 .sb-card-title {
-    font-size: 0.88rem;
+    font-size: 0.84rem;
     font-weight: 800;
     color: #0f172a;
-    margin-bottom: 8px;
+    margin-bottom: 2px;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -88,25 +117,25 @@ section[data-testid="stSidebar"] div[data-testid="stVerticalBlockBorderWrapper"]
 .sb-badge-green {
     background-color: #dcfce7;
     color: #15803d;
-    font-size: 0.72rem;
+    font-size: 0.70rem;
     font-weight: 700;
-    padding: 2px 8px;
+    padding: 1px 7px;
     border-radius: 999px;
 }
 .sb-badge-amber {
     background-color: #fef3c7;
     color: #b45309;
-    font-size: 0.72rem;
+    font-size: 0.70rem;
     font-weight: 700;
-    padding: 2px 8px;
+    padding: 1px 7px;
     border-radius: 999px;
 }
 .sb-badge-pro {
     background-color: #dbeafe;
     color: #1d4ed8;
-    font-size: 0.72rem;
+    font-size: 0.70rem;
     font-weight: 700;
-    padding: 2px 8px;
+    padding: 1px 7px;
     border-radius: 999px;
 }
 
@@ -114,10 +143,12 @@ section[data-testid="stSidebar"] div[data-testid="stVerticalBlockBorderWrapper"]
 h1 {
     color: #0f172a !important;
     font-weight: 800 !important;
+    font-size: 1.85rem !important;
     letter-spacing: -0.5px;
     border-bottom: 2px solid #e2e8f0;
-    padding-bottom: 12px !important;
-    margin-bottom: 16px !important;
+    padding-bottom: 10px !important;
+    margin-top: 0px !important;
+    margin-bottom: 12px !important;
 }
 
 /* 🤖 기본 답변 로봇 아이콘 디자인 100% 유지 + 초록색 배경(#22c55e) & 흰색 아이콘(#ffffff) */
@@ -193,8 +224,8 @@ div[data-testid="stChatMessageContent"] blockquote {
     margin-bottom: 12px;
 }
 
-/* 버튼 디자인 정돈 */
-div.stDownloadButton > button, section[data-testid="stSidebar"] button {
+/* 본문 다운로드 버튼 디자인 */
+div.stDownloadButton > button {
     border-radius: 8px !important;
     font-weight: 600 !important;
     transition: all 0.15s ease-in-out !important;
@@ -522,7 +553,6 @@ def extract_file_content(uploaded_file) -> str:
                 page_text = (page.extract_text() or "").strip()
                 pure_body_chars += len(page_text)
                 text_parts.append(f"\n--- {idx+1}페이지 ---\n{page_text}")
-            # 스캔본 PDF 감지: 페이지당 텍스트가 거의 없으면(총 40자 미만) 자동으로 Gemini Flash 비전 OCR 가동
             if pure_body_chars < 40:
                 return _ocr_with_gemini_flash(raw_bytes, "application/pdf", filename)[:MAX_DOC_CHARS_PRO]
             return "\n".join(text_parts)[:MAX_DOC_CHARS_PRO]
@@ -608,7 +638,6 @@ def create_excel_from_markdown_tables(report_text: str) -> bytes | None:
             max_cols = max(len(r) for r in t_rows)
             padded = [r + [""] * (max_cols - len(r)) for r in t_rows]
             header = padded[0]
-            # 중복 컬럼명 방지
             seen_cols = {}
             safe_header = []
             for col_name in header:
@@ -955,7 +984,6 @@ def _trigger_agent_task(
     current_messages.append({"role": "user", "content": display_prompt})
     save_workspace_to_disk(effective_ws_id)
 
-    # 카톡/이메일 변환(force_flash=True)일 때는 이미 직전 답변에 내용이 있으므로 대용량 첨부파일 재전송을 생략해 토큰을 절약
     if has_attached_file and not force_flash:
         doc_cap = MAX_DOC_CHARS_PRO if is_pro_request else MAX_DOC_CHARS_STANDARD
         full_input_for_agent = (
@@ -995,7 +1023,7 @@ def _trigger_agent_task(
     st.rerun()
 
 # ---------------------------------------------------------
-# 2. 왼쪽 사이드바 제어판 (화이트 카드 UI + 10개 방 통합 검색 + 다중 파일/OCR 업로드)
+# 2. 왼쪽 사이드바 제어판 (스크롤 없이 한 화면에 들어오는 컴팩트 화이트 카드 UI)
 # ---------------------------------------------------------
 usage_stats = get_monthly_usage()
 budget_exceeded, cur_krw, limit_krw = is_pro_budget_exceeded()
@@ -1003,7 +1031,11 @@ usage_ratio = min(1.0, cur_krw / limit_krw) if limit_krw > 0 else 0.0
 task_mgr = get_background_task_manager()
 
 with st.sidebar:
-    st.markdown("### ⚙️ 에이전트 제어판")
+    st.markdown(
+        "<div style='font-size:1.12rem; font-weight:800; color:#0f172a; margin-bottom:6px; letter-spacing:-0.4px;'>"
+        "⚙️ 에이전트 제어판</div>",
+        unsafe_allow_html=True
+    )
     
     # 📦 [카드 1] 엔진 출력 모드 제어
     with st.container(border=True):
@@ -1081,7 +1113,6 @@ with st.sidebar:
     with st.container(border=True):
         st.markdown("<div class='sb-card-title'><span>🗂️ 멀티 대화방 (1~10번)</span></div>", unsafe_allow_html=True)
 
-        # 🔍 10개 대화방 통합 키워드 검색창
         room_search_kw = st.text_input(
             "전체 대화방 통합 검색",
             placeholder="🔎 1~10번 방 통합 키워드 검색",
@@ -1263,7 +1294,7 @@ with st.sidebar:
                 st.session_state.ws_widget_ver = ws_widget_ver + 1
                 st.rerun()
 
-    # 📦 [카드 5 — 최하단 고정] 당월 API 실시간 요금 계량기 및 확인 버튼
+    # 📦 [카드 5 — 최하단 고정 & 3버튼 1줄 배치로 스크롤 완전 제거]
     with st.container(border=True):
         total_tokens_k = (usage_stats.get("input_tokens", 0) + usage_stats.get("output_tokens", 0)) / 1000.0
         st.markdown(
@@ -1272,21 +1303,23 @@ with st.sidebar:
             unsafe_allow_html=True
         )
         st.markdown(
-            f"<div style='font-size:1.1rem; font-weight:800; color:#0f172a; margin-bottom:4px;'>"
-            f"{cur_krw:,.0f}원 <span style='font-size:0.78rem; font-weight:500; color:#64748b;'>/ 한도 {limit_krw:,.0f}원</span></div>"
-            f"<div style='font-size:0.75rem; color:#475569; margin-bottom:6px;'>"
-            f"Flash <b>{usage_stats.get('flash_calls', 0)}회</b> · Pro <b>{usage_stats.get('pro_calls', 0)}회</b> · {total_tokens_k:,.1f}K 토큰</div>",
+            f"<div style='display:flex; justify-content:space-between; align-items:baseline; margin-bottom:2px;'>"
+            f"<span style='font-size:1.02rem; font-weight:800; color:#0f172a;'>{cur_krw:,.0f}원 "
+            f"<span style='font-size:0.74rem; font-weight:500; color:#64748b;'>/ {limit_krw:,.0f}원</span></span>"
+            f"<span style='font-size:0.72rem; color:#475569;'>Flash <b>{usage_stats.get('flash_calls', 0)}</b> · Pro <b>{usage_stats.get('pro_calls', 0)}</b> ({total_tokens_k:,.1f}K)</span>"
+            f"</div>",
             unsafe_allow_html=True
         )
         st.progress(usage_ratio)
 
-        if st.button("🔄 사용량 새로고침", use_container_width=True):
-            st.rerun()
-
-        col_b1, col_b2 = st.columns(2)
+        # 3개 버튼을 1줄(3컬럼)로 나란히 배치하여 세로 높이를 절반으로 절약
+        col_b1, col_b2, col_b3 = st.columns(3)
         with col_b1:
-            st.link_button("💳 결제내역", "https://console.cloud.google.com/billing", use_container_width=True)
+            if st.button("🔄 갱신", use_container_width=True, help="실시간 사용량 새로고침"):
+                st.rerun()
         with col_b2:
+            st.link_button("💳 결제", "https://console.cloud.google.com/billing", use_container_width=True)
+        with col_b3:
             st.link_button("🔑 API키", "https://aistudio.google.com/apikey", use_container_width=True)
 
 # ---------------------------------------------------------
