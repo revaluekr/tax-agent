@@ -816,12 +816,12 @@ def run_tax_calculator_for_gemini(formula_expression: str, description: str = ""
     except Exception as e:
         return f"❌ 수식 계산 오류 ({formula_expression}): {e} -> 올바른 파이썬 사칙연산 수식으로 다시 호출하세요."
 
-# 3. 에이전트 시스템 프롬프트 템플릿 (히든 <precheck> 3단 크로스체크 강제 + 1. 결론 -> 2. 내용 -> 3. 관련법령)
+# 3. 에이전트 시스템 프롬프트 템플릿 (귀속시기·일몰 / 농특세·소득처분 연쇄효과 / 지방소득세·가산세 감면율까지 보강된 완전체 3단 체크)
 SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문 에이전트입니다.
 사용자의 질문 성격에 따라 아래의 **[투트랙(Two-Track) 운영 프로토콜]**을 지능적으로 구분하여 작동하세요.
 
 [투트랙(Two-Track) 운영 프로토콜 — 최우선 판단 기준]
-- **📋 트랙 1 [전문 검토 보고서 모드]**: 세무·법령·회계·노무·4대보험에 관한 법리 검토, 요건 판정, 수당·세액·공제 계산, 기업 공시·실거래가·공시지가·사업자 상태 조회 등 **법령 검색이나 데이터/수식 계산이 필요한 모든 전문 질문**일 때 작동합니다. 반드시 먼저 제공된 도구(API)들을 사용하여 실제 원문 데이터와 통계를 확인한 뒤, **3번의 `<precheck>` 내부 3단 크로스체크를 먼저 수행하고 이어서 [1. 결론 -> 2. 내용 -> 3. 관련법령] 보고서 양식**으로 출력하세요.
+- **📋 트랙 1 [전문 검토 보고서 모드]**: 세무·법령·회계·노무·4대보험에 관한 법리 검토, 요건 판정, 수당·세액·공제 계산, 기업 공시·실거래가·공시지가·사업자 상태 조회 등 **법령 검색이나 데이터/수식 계산이 필요한 모든 전문 질문**일 때 작동합니다. 반드시 먼저 제공된 도구(API)들을 사용하여 실제 원문 데이터와 통계를 확인한 뒤, **3번의 `<precheck>` 정식 3단 크로스체크 검수표를 한 글자도 축약 없이 먼저 작성하고 이어서 [1. 결론 -> 2. 내용 -> 3. 관련법령] 보고서 양식**으로 출력하세요.
 - **💬 트랙 2 [자유 대화 및 실무 초안 모드]**: 사용자가 일상적인 대화·인사·브레인스토밍을 하거나, 직전 검토 결과를 바탕으로 **'거래처/고객 안내용 카톡·문자·이메일 초안 작성', '쉬운 요약 설명', '문장 다듬기', '일반 양식 작성'** 등을 요청한 경우에 작동합니다. 이때는 `<precheck>`나 보고서 양식, 대괄호 출처 태그([조문:...])를 모두 생략하고 자연스럽고 친절한 대화체나 사용자가 요청한 실무 양식(카톡/이메일 등)으로 자유롭게 답변하세요.
 
 [트랙 1 (전문 검토 보고서 모드) 필수 도구 호출 원칙]
@@ -837,7 +837,7 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
 - **법령명은 반드시 정식 명칭**으로 쓸 것 (예: 「상속세 및 증여세법」, 「조세특례제한법 시행령」, 「근로기준법」).
 - **근거 표시는 그 문장의 내용이 실제로 해당 원문에 있을 때만** 붙일 것. 한 판례에 없는 내용을 그 판례 근거 표시로 묶지 말 것.
 - **따옴표(“ ”) 인용은 조회한 원문을 글자 그대로 옮길 때만** 사용하고, 요약·의역할 때는 따옴표를 쓰지 말 것.
-- **[수식 및 표 작성 규칙]**: 인쇄용 문서 출력 시 글자가 깨지는 LaTeX 수식 문법($$,$, \\frac, \\times, \\text 등)은 절대 사용하지 말고 일반 텍스트 기호(×, ÷, +, -, =)로만 깔끔하게 표기할 것. 마크다운 표를 작성할 때는 반드시 표 위아래로 빈 줄을 띄우고 헤더 구분선(| --- | --- |)을 정확히 작성할 것.
+- **[수식 및 표 작성 규칙]**: 인쇄용 문서 출력 시 글자가 깨지는 LaTeX 수식 문법($$, $, \\frac, \\times, \\text 등)은 절대 사용하지 말고 일반 텍스트 기호(×, ÷, +, -, =)로만 깔끔하게 표기할 것. 마크다운 표를 작성할 때는 반드시 표 위아래로 빈 줄을 띄우고 헤더 구분선(| --- | --- |)을 정확히 작성할 것.
 - 법령·판례·심판례·예규·지방세조례 확인: 'search_law_for_gemini'로 ID를 찾은 뒤 'get_law_details_for_gemini'(반드시 query_filter에 조문번호 입력)로 핵심 조문만 읽을 것.
 - 기업 공시·재무·지분·배당·출자 확인: 'search_dart_corp_for_gemini' 호출.
 - 사업자 상태(휴·폐업/과세유형) 및 진위확인: 'check_nts_biz_status_for_gemini' 또는 'verify_nts_biz_info_for_gemini' 호출.
@@ -854,17 +854,16 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
 2. 할루시네이션(임의 생성) 금지 규칙
 - 확인되지 않은 법조문 번호, 통칙·집행기준 번호, 예규·판례·심판례 번호, 업종코드(6자리), 환율·금리·재무제표·지분율·실거래가·공시지가 수치, 깨진 상세 URL을 절대 임의로 추측하거나 조합해 만들어내지 말 것.
 
-3. 트랙 1 (전문 검토 보고서 모드) 필수 출력 양식
-**[절대 원칙]** 트랙 1 보고서를 작성할 때는 대충 요약하거나 단서 조항을 누락하는 것을 방지하기 위해, 반드시 맨 처음에 `<precheck>`와 `</precheck>` 태그를 열고 그 안에 **[사전 3단 크로스체크]**를 먼저 글자로 꼼꼼히 작성한 뒤, 바로 이어서 `### 1. 결론`을 시작할 것! (시스템이 `<precheck>...</precheck>` 구간만 화면 출력 직전에 자동 제거하므로, 태그를 정확히 닫고 그 뒤는 반드시 `### 1. 결론`으로 시작할 것.)
+3. 트랙 1 (전문 검토 보고서 모드) 필수 출력 양식 (반드시 아래 `<precheck>` 3단 크로스체크 검수표를 최소 200자 이상 구체적인 조문·수치로 작성한 뒤, 그 검증 결과를 바탕으로 `### 1. 결론`을 도출할 것. `<precheck>`가 누락되거나 부실하면 감사 시스템에서 즉시 반려됨!)
 
 <precheck>
-- [1단: 법령·판례 원문 대조] 이번에 도구로 실제 원문을 조회한 법률·시행령·시행규칙 조문 번호 및 판례·심판례 번호 점검
-- [2단: 단서·예외·배제 요건 체크] 특수관계인·지배주주 배제, 업종·규모 제한, 최저한세, 중복공제 배제, 사후관리(추징) 요건 등 예외 단서 해당 여부 점검
-- [3단: 수리 계산 및 한도 검산] 파이썬 정밀 계산기 산출값, 세율 구간, 안분 비율, 공제 한도 오차 여부 최종 점검 (계산이 없는 법리 질문이면 '계산 해당 없음' 기재)
+- [1단: 법령·판례 원문 및 귀속시기·일몰기한 대조] 이번에 도구로 실제 원문을 조회한 법률·시행령·시행규칙의 정확한 조·항·호 번호와 판례·심판례 사건번호를 구체적으로 열거하고, 질문 사안의 귀속연도(과세기간) 적용 기준 및 조세특례 일몰기한(예: ~2026.12.31.) 유효 여부를 대조할 것
+- [2단: 단서·배제 요건 및 연쇄 세목(농특세·소득처분) 정밀 점검] 해당 조문의 단서(다만, ~제외한다), 특수관계인·지배주주·업종·규모 배제 요건, 최저한세(조세특례제한법 제132조), 중복지원 배제(제127조), 농어촌특별세(20%) 부과 여부, 사후관리 추징 요건, 그리고 법인세 손금불산입 시 소득처분(상여·배당·기타사외유출)에 따른 원천세·4대보험 연쇄 리스크 중 본 사안에 적용되는 항목을 빠짐없이 짚어낼 것
+- [3단: 수리 계산식·지방소득세·가산세 감면율 최종 검산] 파이썬 정밀 계산기로 산출한 수식, 세율 구간·누진공제, 안분 비율, 공제 한도액의 오차 여부 및 지방소득세(10%) 별도 부과 여부를 수치로 직접 검산할 것 (수치 계산이 없는 법리·절차 질문인 경우 법정 신고·경정청구 기한, 가산세율 및 수정신고·기한후신고 감면율 요건을 수치로 재확인할 것)
 </precheck>
 
 ### 1. 결론
-- 질문에 대한 핵심 결론(가능/불가능 여부, 적용 세율·산출세액·공제액·수당·과세유형·업종코드·회계처리 등)을 명확하고 간결하게 요약
+- 위 3단 크로스체크 결과를 바탕으로 질문에 대한 핵심 결론(가능/불가능 여부, 적용 세율·산출세액·공제액·수당·과세유형·업종코드·회계처리 등)을 명확하고 간결하게 요약
 
 ---
 
@@ -877,7 +876,7 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
 - 정밀 계산기(run_tax_calculator_for_gemini)로 산출한 단계별 계산 과정 및 산출 내역 (※ 단, 질문에 세액·수당·비율 등 수치 계산 내용이 전혀 없는 단순 법리 질의라면 이 '(2) 계산' 소제목과 항목은 완전히 생략하고 바로 아래 항목을 '(2) 실무 적용 및 리스크 주의사항'으로 당겨서 작성할 것)
 
 #### (3) 실무 적용 및 리스크 주의사항
-- 가산세 및 사후관리(고용감소 추징 등) 리스크, 최저한세 적용 여부, 중복공제 배제 여부, 증빙 수취 요건, 홈택스/위택스 신고 시 주의할 점 정리 (※ 위 계산 항목이 생략된 경우 '(2) 실무 적용 및 리스크 주의사항'으로 번호를 맞춰 기재할 것)
+- 가산세 및 사후관리(고용감소 추징 등) 리스크, 최저한세·농어촌특별세·중복공제 배제 여부, 소득처분·지방소득세 등 연쇄 세목 영향, 증빙 수취 요건, 홈택스/위택스 신고 시 주의할 점 정리 (※ 위 계산 항목이 생략된 경우 '(2) 실무 적용 및 리스크 주의사항'으로 번호를 맞춰 기재할 것)
 
 ---
 
@@ -891,25 +890,37 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
   * 국세청 홈택스(사업자상태/업종코드): https://www.hometax.go.kr
 """
 
-def _strip_hidden_precheck(text: str) -> str:
-    """AI가 추론 정밀도를 높이기 위해 먼저 작성한 <precheck>...</precheck> 내부 3단 크로스체크를 로그에만 남기고 화면 본문에서는 깔끔하게 제거합니다."""
+def _extract_and_strip_precheck(text: str) -> tuple[str, str]:
+    """
+    원문에서 <precheck>...</precheck> 내용을 추출해 (정제된_본문, 추출된_3단체크_원문) 튜플로 반환합니다.
+    """
     if not text:
-        return ""
+        return "", ""
     m = re.search(r"<precheck>(.*?)</precheck>", text, flags=re.DOTALL | re.IGNORECASE)
     if m:
-        precheck_log = m.group(1).strip()
-        print(f"\n[시스템] 🧠 내부 3단 크로스체크 수행 완료 (화면 자동 숨김):\n{precheck_log}")
-        text = re.sub(r"<precheck>.*?</precheck>\s*", "", text, flags=re.DOTALL | re.IGNORECASE)
+        precheck_body = m.group(1).strip()
+        cleaned = re.sub(r"<precheck>.*?</precheck>\s*", "", text, flags=re.DOTALL | re.IGNORECASE).lstrip()
+        return cleaned, precheck_body
     elif "<precheck>" in text.lower() and "### 1. 결론" in text:
         idx = text.find("### 1. 결론")
-        text = text[idx:]
-    return text.lstrip()
+        precheck_body = re.sub(r"</?precheck>", "", text[:idx], flags=re.IGNORECASE).strip()
+        return text[idx:].lstrip(), precheck_body
+    return text.lstrip(), ""
+
+def _is_precheck_thorough(precheck_body: str) -> bool:
+    """3단 크로스체크가 대충 작성되지 않고 1·2·3단 모두 구체적으로(최소 120자 이상) 작성되었는지 엄격히 검사합니다."""
+    if not precheck_body or len(precheck_body.strip()) < 120:
+        return False
+    has_step1 = ("1단" in precheck_body) or ("원문" in precheck_body) or ("법령" in precheck_body)
+    has_step2 = ("2단" in precheck_body) or ("단서" in precheck_body) or ("예외" in precheck_body) or ("배제" in precheck_body)
+    has_step3 = ("3단" in precheck_body) or ("검산" in precheck_body) or ("계산" in precheck_body) or ("수치" in precheck_body)
+    return bool(has_step1 and has_step2 and has_step3)
 
 def _clean_latex_for_export(text: str) -> str:
-    """히든 <precheck> 블록을 제거하고, 인쇄용 문서(.html/PDF) 및 워드 출력 시 깨지는 모든 LaTeX 수식 문법을 일반 텍스트로 정제합니다."""
+    """히든 <precheck> 블록을 분리·제거하고, 인쇄용 문서(.html/PDF) 및 워드 출력 시 깨지는 모든 LaTeX 수식 문법을 일반 텍스트로 정제합니다."""
     if not text:
         return ""
-    s = _strip_hidden_precheck(text)
+    s, _ = _extract_and_strip_precheck(text)
     s = re.sub(r"\$\$(.*?)\$\$", r"\1", s, flags=re.DOTALL)
     s = re.sub(r"\$([^$\n]+)\$", r"\1", s)
     s = re.sub(r"\\text(?:bf|rm|it)?\{([^}]*)\}", r"\1", s)
@@ -949,7 +960,8 @@ def _execute_with_key_and_model(
     tools_list: list,
     safety_settings: list,
     unleash: bool = False
-) -> str:
+) -> tuple[str, int]:
+    """(정제된 최종 보고서 본문, 수행된 3단 크로스체크 글자 수)를 반환합니다."""
     timeout_ms = 120000 if unleash else 60000
     max_remote_calls = 30 if unleash else 16
 
@@ -972,30 +984,66 @@ def _execute_with_key_and_model(
     trace_token = _TOOL_TRACE.set(_new_trace(unleash=unleash))
     try:
         response = chat.send_message(user_input)
-        final_text = extract_safe_text(response)
+        raw_output = extract_safe_text(response)
         _extract_and_log_response_usage(
             response, model_id, count_call=True,
             est_in_chars=len(user_input) + len(dynamic_prompt),
-            est_out_chars=len(final_text)
+            est_out_chars=len(raw_output)
         )
 
-        if not final_text:
-            follow_up = chat.send_message("지금까지 조회한 법령 조문과 계산 결과를 바탕으로 추가 도구 호출 없이 즉시 <precheck> 3단 크로스체크 후 [1. 결론 -> 2. 내용 -> 3. 관련법령] 순서로 답변을 작성해 주세요.")
-            final_text = extract_safe_text(follow_up)
-            _extract_and_log_response_usage(follow_up, model_id, count_call=False, est_in_chars=500, est_out_chars=len(final_text))
+        if not raw_output:
+            follow_up = chat.send_message(
+                "지금까지 조회한 법령 조문과 계산 결과를 바탕으로 추가 도구 호출 없이 즉시 <precheck> 3단 크로스체크(최소 200자 이상)를 먼저 작성한 뒤 [1. 결론 -> 2. 내용 -> 3. 관련법령] 순서로 답변을 작성해 주세요."
+            )
+            raw_output = extract_safe_text(follow_up)
+            _extract_and_log_response_usage(follow_up, model_id, count_call=False, est_in_chars=500, est_out_chars=len(raw_output))
         trace = _TOOL_TRACE.get()
     finally:
         _TOOL_TRACE.reset(trace_token)
 
-    if not final_text:
+    if not raw_output:
         raise ValueError("빈 응답이 반환되었습니다.")
-    final_text = re.sub(r"\s*<br\s*/?>\s*", " / ", final_text)
+
+    stripped_body, precheck_text = _extract_and_strip_precheck(raw_output)
+    is_formal_report = bool(re.search(r"###\s*1\.\s*결론|###\s*2\.\s*내용|###\s*3\.\s*관련법령", stripped_body))
+
+    # 🛡️ 정식 보고서인데 <precheck> 3단 크로스체크를 건너뛰었거나 120자 미만으로 대충 적었다면 강제 재작성!
+    if is_formal_report and not _is_precheck_thorough(precheck_text):
+        print(f"[시스템] ⚠️ 사전 3단 크로스체크 누락/부실 감지({len(precheck_text)}자) → 정밀 3단 체크 후 재작성 강제")
+        enforce_precheck_msg = (
+            "방금 답변에서 `<precheck> ... </precheck>` 사전 3단 크로스체크가 누락되었거나 너무 간략하게 작성되었습니다. "
+            "결론을 내리기 전에 반드시 `<precheck>` 태그 안에 ① [1단: 법령·판례 원문 및 귀속시기·일몰기한 대조], "
+            "② [2단: 단서·배제 요건 및 연쇄 세목(농특세·소득처분) 정밀 점검], ③ [3단: 수리 계산식·지방소득세·가산세 감면율 최종 검산]을 "
+            "구체적인 조문 번호와 수치로 최소 200자 이상 꼼꼼히 먼저 작성한 뒤, "
+            "그 검증 결과를 반영하여 `### 1. 결론`부터 `### 3. 관련법령`까지 전체 보고서를 다시 작성하세요."
+        )
+        trace_token_p = _TOOL_TRACE.set(trace)
+        try:
+            p_resp = chat.send_message(enforce_precheck_msg)
+            p_raw = extract_safe_text(p_resp)
+            _extract_and_log_response_usage(p_resp, model_id, count_call=False, est_in_chars=len(enforce_precheck_msg), est_out_chars=len(p_raw))
+            if p_raw:
+                s_body2, p_text2 = _extract_and_strip_precheck(p_raw)
+                if s_body2:
+                    raw_output = p_raw
+                    stripped_body = s_body2
+                    if p_text2:
+                        precheck_text = p_text2
+                    response = p_resp
+        except Exception as e:
+            print(f"[시스템]    ↳ 3단 크로스체크 재작성 호출 오류: {e}")
+        finally:
+            _TOOL_TRACE.reset(trace_token_p)
+
+    if precheck_text:
+        print(f"\n[시스템] 🛡️ 사전 3단 크로스체크 정밀 수행 완료 ({len(precheck_text):,}자):\n{precheck_text}")
+
+    final_text = re.sub(r"\s*<br\s*/?>\s*", " / ", stripped_body)
     final_text = _clean_latex_for_export(final_text)
 
     # ---------------------------------------------------------
     # 🔒 근거 강제 검증 (트랙 1: 정식 보고서 양식이고 도구 기록이 수집된 경우에만 작동)
     # ---------------------------------------------------------
-    is_formal_report = bool(re.search(r"###\s*1\.\s*결론|###\s*2\.\s*내용|###\s*3\.\s*관련법령", final_text))
     citation_note = ""
 
     if is_formal_report and trace and (trace["list"] or trace["detail"]):
@@ -1010,7 +1058,7 @@ def _execute_with_key_and_model(
                   "([판례:사건번호], [조문:정식법령명 제N조], [예규:문서명] 등)를 붙여 인용하거나, "
                   "② 조회할 수 없으면 그 근거와 관련 서술을 답변에서 완전히 삭제하세요. "
                   "'대법원은 ~ 판시' 같은 서술에도 반드시 근거 표시가 있어야 합니다. "
-                  "조회하지 않은 근거는 다시 쓰지 말고, 양식(1. 결론 → 2. 내용 → 3. 관련법령)을 유지해 전체 답변을 다시 작성하세요. "
+                  "조회하지 않은 근거는 다시 쓰지 말고, `<precheck>` 3단 크로스체크와 양식(1. 결론 → 2. 내용 → 3. 관련법령)을 유지해 전체 답변을 다시 작성하세요. "
                   "다시 쓴 답변에는 이 검증 요청이나 삭제 사실, 시스템에 대한 언급을 절대 넣지 마세요."
             )
             trace_token2 = _TOOL_TRACE.set(trace)
@@ -1025,6 +1073,9 @@ def _execute_with_key_and_model(
                 _TOOL_TRACE.reset(trace_token2)
 
             if retry_text:
+                _, retry_precheck = _extract_and_strip_precheck(retry_text)
+                if retry_precheck:
+                    precheck_text = retry_precheck
                 final_text = re.sub(r"\s*<br\s*/?>\s*", " / ", retry_text)
                 final_text = _clean_latex_for_export(final_text)
                 response = retry_resp
@@ -1094,7 +1145,7 @@ def _execute_with_key_and_model(
         print("[시스템] 📋 진단 정보(화면 미표시):" + diag.replace("\n> ", "\n   ").replace("\n\n---", ""))
     final_text = re.sub(r"\s*<br\s*/?>\s*", " / ", final_text)
 
-    return _clean_latex_for_export(final_text)
+    return _clean_latex_for_export(final_text), len(precheck_text)
 
 # 4. 실행 순서(유료키 전용): 3.8-flash → 3.6-flash (PRO 모드는 Pro 모델 + 3배 리미트 개방)
 def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> str:
@@ -1162,7 +1213,7 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> s
             continue
         for attempt in range(2):
             try:
-                final_text = _execute_with_key_and_model(
+                final_text, precheck_len = _execute_with_key_and_model(
                     api_key=current_key,
                     model_id=target_model,
                     user_input=user_input,
@@ -1171,14 +1222,15 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> s
                     safety_settings=safety_settings,
                     unleash=unleash_mode
                 )
-                diag_header = f"> {final_badge}\n"
+                precheck_badge = f" · 🛡️ **3단 크로스체크 완료({precheck_len:,}자 검증)**" if precheck_len > 0 else ""
+                diag_header = f"> {final_badge}{precheck_badge}\n"
                 if recommend_pro_notice:
                     diag_header += recommend_pro_notice
                 if diag_notes:
                     if _show_diag():
                         diag_header += f"> *(ℹ️ 앞선 시도 실패: {' | '.join(diag_notes)})*\n"
                     else:
-                        print("[시스템] ℹ️ 앞선 시도 실패: " + " | '.join(diag_notes)")
+                        print("[시스템] ℹ️ 앞선 시도 실패: " + " | ".join(diag_notes))
                 return diag_header + "\n" + final_text
             except Exception as e:
                 if _is_model_not_found(e):
