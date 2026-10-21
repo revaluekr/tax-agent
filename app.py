@@ -3,12 +3,26 @@ import io
 import re
 import json
 import hashlib
+import urllib.request
+from datetime import datetime
+from zoneinfo import ZoneInfo
 import streamlit as st
 import pandas as pd
 from pypdf import PdfReader
 from docx import Document
 from docx.shared import Pt
 from docx.oxml.ns import qn
+
+# PDF 직접 생성을 위한 ReportLab 모듈
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import (
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+)
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+
 from agent import run_agent
 
 # 1. 웹 페이지 기본 설정
@@ -191,7 +205,6 @@ def create_word_docx(report_text: str) -> bytes:
             i += 1
             continue
 
-        # 마크다운 표(| ... |) 감지 및 워드 표(Table)로 변환
         if stripped.startswith("|") and stripped.endswith("|"):
             table_rows = []
             while i < len(lines):
@@ -242,38 +255,188 @@ def create_word_docx(report_text: str) -> bytes:
     return buffer.getvalue()
 
 # ---------------------------------------------------------
-# 헬퍼 함수 3: 한글·표·수식 깨짐 없는 인쇄용 문서(.html / PDF 변환용) 생성
+# 헬퍼 함수 3: 정식 비즈니스 양식 PDF 직접 생성 엔진 (ReportLab 기반)
 # ---------------------------------------------------------
-def _format_inline_md(escaped_line: str) -> str:
-    """HTML 이스케이프된 한 줄 텍스트에 굵게(**), 기울임(*), 인라인 코드(`) 서식을 적용합니다."""
-    s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", escaped_line)
-    s = re.sub(r"\*(.+?)\*", r"<em>\1</em>", s)
-    s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
+def _ensure_korean_font() -> tuple[str, str]:
+    """서버 환경(Linux/Windows/Mac)에 한글 폰트를 자동 준비·등록하고 (일반폰트명, 굵은폰트명)을 반환합니다."""
+    reg_name = "KoreanFont"
+    bold_name = "KoreanFontBold"
+    if reg_name in pdfmetrics.getRegisteredFontNames():
+        return reg_name, bold_name
+
+    # 1순위: 로컬/프로젝트에 이미 다운로드된 폰트 또는 OS 내장 폰트 탐색
+    font_dir = STORAGE_DIR
+    reg_path = os.path.join(font_dir, "NanumGothic.ttf")
+    bold_path = os.path.join(font_dir, "NanumGothicBold.ttf")
+
+    win_malgun = "C:/Windows/Fonts/malgun.ttf"
+    win_malgun_bd = "C:/Windows/Fonts/malgunbd.ttf"
+
+    if os.path.exists(win_malgun) and os.path.exists(win_malgun_bd):
+        reg_path, bold_path = win_malgun, win_malgun_bd
+    else:
+        # 리눅스(Streamlit Cloud 등) 환경을 위해 최초 1회 구글 폰트에서 나눔고딕 자동 다운로드
+        try:
+            if not os.path.exists(reg_path):
+                urllib.request.urlretrieve(
+                    "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Regular.ttf",
+                    reg_path
+                )
+            if not os.path.exists(bold_path):
+                urllib.request.urlretrieve(
+                    "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Bold.ttf",
+                    bold_path
+                )
+        except Exception as e:
+            print(f"⚠️ 한글 폰트 다운로드 오류: {e}")
+
+    try:
+        pdfmetrics.registerFont(TTFont(reg_name, reg_path))
+        pdfmetrics.registerFont(TTFont(bold_name, bold_path if os.path.exists(bold_path) else reg_path))
+        return reg_name, bold_name
+    except Exception:
+        return "Helvetica", "Helvetica-Bold"
+
+def _strip_emojis_for_pdf(text: str) -> str:
+    """TTF 기본 폰트에서 네모(□)로 깨질 수 있는 컬러 이모지만 깔끔하게 제거합니다 (특수기호 •, ※, ⚖, → 등은 유지)."""
+    return re.sub(r"[\U00010000-\U0010ffff]", "", text or "")
+
+def _md_to_rl_xml(text: str, bold_font: str) -> str:
+    """마크다운 인라인 문법(**굵게**, `코드`)을 ReportLab Paragraph용 XML 태그로 안전하게 변환합니다."""
+    s = _strip_emojis_for_pdf(text).strip()
+    s = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    s = re.sub(r"\*\*(.+?)\*\*", rf'<font name="{bold_font}">\1</font>', s)
+    s = re.sub(r"`([^`]+)`", r'<font backColor="#f1f5f9">\1</font>', s)
     return s
 
-def create_printable_html(report_text: str) -> bytes:
-    """마크다운 표, 소제목(####), 목록, 수식을 완벽한 HTML 태그로 변환하여 인쇄용 문서를 생성합니다."""
+def _draw_page_header_footer(canvas, doc):
+    """모든 PDF 페이지 상단 보더라인과 하단 페이지 번호(- 1 -)를 그립니다."""
+    canvas.saveState()
+    reg_font, _ = _ensure_korean_font()
+    canvas.setStrokeColor(colors.HexColor("#cbd5e1"))
+    canvas.setLineWidth(0.6)
+    canvas.line(40, A4[1] - 32, A4[0] - 40, A4[1] - 32)
+    
+    canvas.setFont(reg_font, 8.5)
+    canvas.setFillColor(colors.HexColor("#64748b"))
+    canvas.drawString(40, A4[1] - 26, "세무·법령·회계 정밀 검토 보고서 (AI Autonomous Agent Report)")
+    
+    page_num_str = f"- {doc.page} -"
+    canvas.drawCentredString(A4[0] / 2.0, 25, page_num_str)
+    canvas.restoreState()
+
+def create_pdf_report(report_text: str, room_title: str = "세무·법령 검토") -> bytes:
+    """AI 답변을 정식 비즈니스 보고서 양식(헤더 표, 본문 조판, 자동 줄바꿈 표, 페이지 번호)의 진짜 .pdf 파일로 생성합니다."""
+    reg_font, bold_font = _ensure_korean_font()
     cleaned_text = _sanitize_math_text(report_text)
     raw_lines = cleaned_text.split("\n")
-    html_parts = []
-    i = 0
 
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=40,
+        rightMargin=40,
+        topMargin=48,
+        bottomMargin=45
+    )
+    usable_width = A4[0] - 80
+
+    styles = getSampleStyleSheet()
+    style_title = ParagraphStyle(
+        "DocTitle", parent=styles["Normal"], fontName=bold_font,
+        fontSize=17, leading=23, textColor=colors.HexColor("#1e3a8a"), alignment=1, spaceAfter=6
+    )
+    style_h2 = ParagraphStyle(
+        "DocH2", parent=styles["Normal"], fontName=bold_font,
+        fontSize=12.5, leading=18, textColor=colors.HexColor("#1f4e78"),
+        spaceBefore=14, spaceAfter=6
+    )
+    style_h3 = ParagraphStyle(
+        "DocH3", parent=styles["Normal"], fontName=bold_font,
+        fontSize=11, leading=16, textColor=colors.HexColor("#2e5cb8"),
+        spaceBefore=10, spaceAfter=4
+    )
+    style_body = ParagraphStyle(
+        "DocBody", parent=styles["Normal"], fontName=reg_font,
+        fontSize=9.8, leading=15.5, textColor=colors.HexColor("#1e293b"),
+        spaceAfter=4, wordWrap="CJK"
+    )
+    style_bullet = ParagraphStyle(
+        "DocBullet", parent=style_body, leftIndent=12, firstLineIndent=-8, spaceAfter=3.5
+    )
+    style_quote = ParagraphStyle(
+        "DocQuote", parent=style_body, fontSize=9.0, leading=14,
+        textColor=colors.HexColor("#475569"), backColor=colors.HexColor("#f8fafc"),
+        borderPadding=6, leftIndent=6, rightIndent=6, spaceBefore=4, spaceAfter=6
+    )
+    style_th = ParagraphStyle(
+        "DocTH", parent=style_body, fontName=bold_font, fontSize=9.2, leading=13.5,
+        textColor=colors.HexColor("#0f172a"), alignment=0
+    )
+    style_td = ParagraphStyle(
+        "DocTD", parent=style_body, fontName=reg_font, fontSize=9.0, leading=13.5,
+        textColor=colors.HexColor("#1e293b"), alignment=0
+    )
+
+    story = []
+
+    # 1) 보고서 상단 공식 타이틀 및 메타데이터 요약 표
+    today_str = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y년 %m월 %d일")
+    clean_room_title = _md_to_rl_xml(room_title, bold_font)
+
+    header_box_data = [
+        [Paragraph("세무 · 법령 · 회계 전문 검토 보고서", style_title)],
+    ]
+    header_table = Table(header_box_data, colWidths=[usable_width])
+    header_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f0f4f8")),
+        ("BOX", (0, 0), (-1, -1), 1.2, colors.HexColor("#1e3a8a")),
+        ("TOPPADDING", (0, 0), (-1, -1), 12),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 12),
+    ]))
+    story.append(header_table)
+
+    meta_data = [
+        [
+            Paragraph(f'<font name="{bold_font}">검토 안건</font>', style_td),
+            Paragraph(clean_room_title, style_td),
+            Paragraph(f'<font name="{bold_font}">작성 일자</font>', style_td),
+            Paragraph(today_str, style_td),
+        ]
+    ]
+    meta_table = Table(meta_data, colWidths=[usable_width * 0.16, usable_width * 0.44, usable_width * 0.16, usable_width * 0.24])
+    meta_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, 0), colors.HexColor("#e2e8f0")),
+        ("BACKGROUND", (2, 0), (2, 0), colors.HexColor("#e2e8f0")),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    story.append(meta_table)
+    story.append(Spacer(1, 12))
+
+    # 2) 본문 마크다운 파싱 및 조판
+    i = 0
     while i < len(raw_lines):
         line = raw_lines[i]
         stripped = line.strip()
 
         if not stripped:
-            html_parts.append('<div style="height: 8px;"></div>')
+            story.append(Spacer(1, 4))
             i += 1
             continue
 
-        # 1) 구분선 (---)
+        # 구분선 (---)
         if re.match(r"^-{3,}$", stripped):
-            html_parts.append("<hr>")
+            story.append(Spacer(1, 4))
+            story.append(HRFlowable(width="100%", thickness=0.7, color=colors.HexColor("#cbd5e1")))
+            story.append(Spacer(1, 6))
             i += 1
             continue
 
-        # 2) 마크다운 표 (| ... |) 블록 감지 -> HTML <table> 변환
+        # 마크다운 표 (| ... |) 감지 -> PDF 자동 줄바꿈 Table 변환
         if stripped.startswith("|") and stripped.endswith("|"):
             table_lines = []
             while i < len(raw_lines):
@@ -291,85 +454,65 @@ def create_printable_html(report_text: str) -> bytes:
                 rows_data.append(cells)
 
             if rows_data:
-                t_html = ['<table class="report-table">']
-                t_html.append("<thead><tr>")
-                for c in rows_data[0]:
-                    esc_c = _format_inline_md(c.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
-                    t_html.append(f"<th>{esc_c}</th>")
-                t_html.append("</tr></thead>")
-                if len(rows_data) > 1:
-                    t_html.append("<tbody>")
-                    for r in rows_data[1:]:
-                        t_html.append("<tr>")
-                        for c in r:
-                            esc_c = _format_inline_md(c.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
-                            t_html.append(f"<td>{esc_c}</td>")
-                        t_html.append("</tr>")
-                    t_html.append("</tbody>")
-                t_html.append("</table>")
-                html_parts.append("".join(t_html))
+                max_cols = max(len(r) for r in rows_data)
+                pdf_table_data = []
+                for r_idx, r in enumerate(rows_data):
+                    padded_r = r + [""] * (max_cols - len(r))
+                    row_paras = []
+                    for c_text in padded_r:
+                        cell_xml = _md_to_rl_xml(c_text, bold_font)
+                        row_paras.append(Paragraph(cell_xml, style_th if r_idx == 0 else style_td))
+                    pdf_table_data.append(row_paras)
+
+                col_w = usable_width / max_cols
+                pdf_table = Table(pdf_table_data, colWidths=[col_w] * max_cols, repeatRows=1)
+                t_style = [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e2e8f0")),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("TOPPADDING", (0, 0), (-1, -1), 6),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ]
+                for r_idx in range(1, len(pdf_table_data)):
+                    if r_idx % 2 == 0:
+                        t_style.append(("BACKGROUND", (0, r_idx), (-1, r_idx), colors.HexColor("#f8fafc")))
+                pdf_table.setStyle(TableStyle(t_style))
+                story.append(Spacer(1, 4))
+                story.append(pdf_table)
+                story.append(Spacer(1, 8))
             continue
 
-        esc = stripped.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-        # 3) 제목 (#### -> h3, ###/## -> h2, # -> h1)
+        # 제목 (#### -> H3, ###/##/# -> H2)
         if stripped.startswith("#### "):
-            html_parts.append(f"<h3>{_format_inline_md(esc[5:])}</h3>")
+            story.append(Paragraph(_md_to_rl_xml(stripped[5:], bold_font), style_h3))
         elif stripped.startswith("### "):
-            html_parts.append(f"<h2>{_format_inline_md(esc[4:])}</h2>")
+            story.append(Paragraph("■ " + _md_to_rl_xml(stripped[4:], bold_font), style_h2))
         elif stripped.startswith("## "):
-            html_parts.append(f"<h2>{_format_inline_md(esc[3:])}</h2>")
+            story.append(Paragraph("■ " + _md_to_rl_xml(stripped[3:], bold_font), style_h2))
         elif stripped.startswith("# "):
-            html_parts.append(f"<h2>{_format_inline_md(esc[2:])}</h2>")
-        # 4) 상단 모드 배지 / 인용구 (> ...)
+            story.append(Paragraph("■ " + _md_to_rl_xml(stripped[2:], bold_font), style_h2))
+        # 인용구 / 상단 배지 (> ...)
         elif stripped.startswith(">"):
-            quote_body = _format_inline_md(re.sub(r"^&gt;\s*", "", esc))
-            html_parts.append(f'<div class="quote-box">{quote_body}</div>')
-        # 5) 불릿 및 번호 목록
+            q_body = re.sub(r"^>\s*", "", stripped)
+            story.append(Paragraph(_md_to_rl_xml(q_body, bold_font), style_quote))
+        # 불릿 목록 (- , * )
         elif stripped.startswith(("- ", "* ")):
-            indent_px = (len(line) - len(line.lstrip(" "))) * 10
-            html_parts.append(f'<div class="list-item" style="margin-left: {indent_px}px;">• {_format_inline_md(esc[2:])}</div>')
+            indent_level = (len(line) - len(line.lstrip(" "))) // 2
+            b_style = ParagraphStyle(
+                f"Bullet_{indent_level}", parent=style_bullet,
+                leftIndent=12 + (indent_level * 10)
+            )
+            story.append(Paragraph("• " + _md_to_rl_xml(stripped[2:], bold_font), b_style))
         else:
-            indent_px = (len(line) - len(line.lstrip(" "))) * 10
-            html_parts.append(f'<div class="para-line" style="margin-left: {indent_px}px;">{_format_inline_md(esc)}</div>')
+            story.append(Paragraph(_md_to_rl_xml(stripped, bold_font), style_body))
 
         i += 1
 
-    html_body = "\n".join(html_parts)
-    
-    html_str = f"""<!DOCTYPE html>
-<html lang="ko">
-<head>
-<meta charset="UTF-8">
-<title>세무·법령·회계 검토 보고서</title>
-<style>
-    body {{ font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', 'NanumGothic', sans-serif; line-height: 1.75; color: #222; max-width: 880px; margin: 35px auto; padding: 20px; font-size: 14.5px; }}
-    h1 {{ border-bottom: 2px solid #1f4e78; padding-bottom: 10px; color: #1f4e78; font-size: 23px; }}
-    h2 {{ margin-top: 26px; margin-bottom: 10px; color: #1f4e78; border-left: 4px solid #2e5cb8; padding-left: 10px; font-size: 18px; }}
-    h3 {{ margin-top: 18px; margin-bottom: 8px; color: #2e5cb8; font-size: 16px; }}
-    hr {{ border: 0; border-top: 1px solid #d0d7de; margin: 20px 0; }}
-    .quote-box {{ background: #f6f8fa; border-left: 4px solid #8c959f; padding: 6px 12px; margin: 6px 0; color: #57606a; font-size: 13px; border-radius: 4px; }}
-    .list-item {{ margin: 4px 0; padding-left: 12px; text-indent: -12px; }}
-    .para-line {{ margin: 5px 0; }}
-    .report-table {{ width: 100%; border-collapse: collapse; margin: 14px 0 18px 0; font-size: 13.5px; }}
-    .report-table th, .report-table td {{ border: 1px solid #cbd5e1; padding: 8px 10px; text-align: left; vertical-align: top; }}
-    .report-table th {{ background-color: #f1f5f9; color: #1e293b; font-weight: bold; }}
-    .report-table tr:nth-child(even) td {{ background-color: #f8fafc; }}
-    code {{ background: #f1f5f9; padding: 2px 5px; border-radius: 4px; font-family: monospace; font-size: 13px; }}
-    .print-guide {{ background: #f0f4f8; padding: 12px 16px; border-radius: 8px; margin-bottom: 25px; font-size: 14px; }}
-    @media print {{ .print-guide {{ display: none; }} body {{ margin: 0; padding: 10px; }} }}
-</style>
-</head>
-<body>
-    <div class="print-guide">
-        💡 <b>인쇄 및 PDF 저장 안내:</b> 우측 버튼을 누르거나 키보드에서 <b>Ctrl + P</b>를 누른 후 대상 프린터를 <b>'PDF로 저장'</b>으로 선택하면 한글 깨짐 없이 깔끔한 PDF로 저장됩니다.
-        <button onclick="window.print()" style="margin-left:15px; padding:6px 14px; cursor:pointer; font-weight:bold;">🖨️ 인쇄 / PDF로 저장하기</button>
-    </div>
-    <h1>⚖️ 세무·법령·회계 전문 검토 보고서</h1>
-    <div>{html_body}</div>
-</body>
-</html>"""
-    return html_str.encode("utf-8-sig")
+    doc.build(story, onFirstPage=_draw_page_header_footer, onLaterPages=_draw_page_header_footer)
+    buffer.seek(0)
+    return buffer.getvalue()
 
 # ---------------------------------------------------------
 # 2. 왼쪽 사이드바 제어판 (작업공간 원클릭 잠금 해제/파기 버튼 장착)
@@ -377,7 +520,6 @@ def create_printable_html(report_text: str) -> bytes:
 with st.sidebar:
     st.title("⚙️ 에이전트 제어판")
     
-    # 🔐 1) 작업공간 ID(암호) 입력창 및 원클릭 코드 풀기(잠금) 버튼
     st.subheader("🔐 내 작업공간 (자동 동기화)")
     
     ws_widget_ver = st.session_state.get("ws_widget_ver", 0)
@@ -414,7 +556,6 @@ with st.sidebar:
 
     st.divider()
     
-    # 🗂️ 2) 멀티 대화방 선택 (1~10번)
     st.subheader("🗂️ 멀티 대화방 선택 (1~10번)")
     
     def format_room_label(r_id: str) -> str:
@@ -442,7 +583,6 @@ with st.sidebar:
         save_workspace_to_disk(effective_ws_id)
         st.rerun()
     
-    # 🗑️ 3) 비우기 버튼 설계
     if st.button(f"🗑️ [{selected_room}] 현재 방만 비우기", use_container_width=True):
         st.session_state.chat_rooms[selected_room] = []
         st.session_state.room_files[selected_room] = {"name": None, "text": ""}
@@ -504,7 +644,6 @@ with st.sidebar:
         
     st.divider()
     
-    # 📂 4) 방별 독립 파일 업로드 (최대 150,000자 추출)
     st.subheader(f"📂 [{selected_room}] 전용 자료 업로드")
     reset_cnt = st.session_state.get(f"reset_cnt_{selected_room}", 0)
     uploaded_file = st.file_uploader(
@@ -558,20 +697,20 @@ for idx, message in enumerate(current_messages):
             col1, col2, col3 = st.columns(3)
             with col1:
                 st.download_button(
+                    label="📕 정식 PDF 보고서 다운로드 (.pdf)",
+                    data=create_pdf_report(message["content"], current_room_title),
+                    file_name=f"검토보고서_{selected_room}_{current_room_title}_{idx}.pdf",
+                    mime="application/pdf",
+                    key=f"pdf_{effective_ws_id}_{selected_room}_{idx}",
+                    use_container_width=True
+                )
+            with col2:
+                st.download_button(
                     label="📘 워드 다운로드 (.docx)",
                     data=create_word_docx(message["content"]),
                     file_name=f"검토보고서_{selected_room}_{current_room_title}_{idx}.docx",
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     key=f"docx_{effective_ws_id}_{selected_room}_{idx}",
-                    use_container_width=True
-                )
-            with col2:
-                st.download_button(
-                    label="🖨️ 인쇄용 문서 (.html/PDF)",
-                    data=create_printable_html(message["content"]),
-                    file_name=f"검토보고서_{selected_room}_{current_room_title}_{idx}.html",
-                    mime="text/html",
-                    key=f"print_{effective_ws_id}_{selected_room}_{idx}",
                     use_container_width=True
                 )
             with col3:
@@ -602,7 +741,6 @@ if prompt := st.chat_input(
 
     history_context = ""
     if current_messages:
-        # 하이브리드 대화 기억: 최초 1차 문답(사례 원본 2개)은 항상 보존하고 + 직전 3턴(6개)을 결합
         recent_msgs = (current_messages[:2] + current_messages[-6:]) if len(current_messages) > 6 else current_messages
         history_lines = [
             "[이 대화방의 이전 대화 맥락 — 사용자가 별도 수식어 없이 후속 질문이나 조건 변경, 또는 '[프로] 다시 검토해 줘'라고 말하더라도 반드시 아래 직전 질문·답변의 사례 금액, 자산 정보, 계산 내역을 그대로 이어받아 답변할 것]"
