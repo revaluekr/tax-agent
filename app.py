@@ -48,7 +48,7 @@ except Exception:
     pass
 
 # ---------------------------------------------------------
-# 💎 프리미엄 화이트 카드 사이드바(원스크린 압축) & 상단 수평 정렬 CSS
+# 💎 프리미엄 화이트 카드 사이드바(글자 잘림 방지 + 원스크린 배치) CSS
 # ---------------------------------------------------------
 st.markdown("""
 <style>
@@ -64,7 +64,7 @@ div.block-container {
     padding-bottom: 2.0rem !important;
 }
 
-/* 🎨 사이드바 전체 배경 및 상하 여백 압축 (스크롤 없이 한 화면에 100% 들어오도록 조정) */
+/* 🎨 사이드바 전체 배경 및 상하 여백 */
 section[data-testid="stSidebar"] {
     background-color: #f1f5f9 !important;
     border-right: 1px solid #cbd5e1 !important;
@@ -74,41 +74,54 @@ section[data-testid="stSidebar"] div[data-testid="stSidebarUserContent"] {
     padding-bottom: 0.8rem !important;
 }
 
-/* 📦 사이드바 내부 화이트 카드 패딩·간격 슬림화 */
+/* 📦 사이드바 내부 화이트 카드 패딩 및 간격 */
 section[data-testid="stSidebar"] div[data-testid="stVerticalBlockBorderWrapper"] {
     background-color: #ffffff !important;
     border: 1px solid #e2e8f0 !important;
     border-radius: 10px !important;
-    padding: 8px 11px !important;
-    margin-bottom: 6px !important;
+    padding: 10px 12px !important;
+    margin-bottom: 7px !important;
     box-shadow: 0 1px 3px rgba(15, 23, 42, 0.03) !important;
 }
 
-/* 사이드바 내부 위젯 간격 및 버튼 높이 컴팩트화 */
+/* 사이드바 내부 위젯 간격 (입력창이 위 제목을 덮지 않도록 안전 간격 확보) */
 section[data-testid="stSidebar"] div[data-testid="stVerticalBlock"] {
-    gap: 0.38rem !important;
+    gap: 0.55rem !important;
 }
+section[data-testid="stSidebar"] div[data-testid="stMarkdownContainer"] {
+    overflow: visible !important;
+}
+section[data-testid="stSidebar"] div[data-testid="stTextInput"],
+section[data-testid="stSidebar"] div[data-testid="stSelectbox"],
+section[data-testid="stSidebar"] div[data-testid="stFileUploader"] {
+    margin-top: 2px !important;
+}
+
+/* 사이드바 버튼 높이 컴팩트화 */
 section[data-testid="stSidebar"] button {
-    min-height: 2.05rem !important;
-    padding: 0.2rem 0.6rem !important;
+    min-height: 2.1rem !important;
+    padding: 0.22rem 0.6rem !important;
     font-size: 0.82rem !important;
     border-radius: 7px !important;
     font-weight: 600 !important;
 }
 section[data-testid="stSidebar"] a[data-testid="stBaseLinkButton-secondary"] {
-    min-height: 2.05rem !important;
-    padding: 0.2rem 0.5rem !important;
+    min-height: 2.1rem !important;
+    padding: 0.22rem 0.5rem !important;
     font-size: 0.80rem !important;
     border-radius: 7px !important;
     font-weight: 600 !important;
 }
 
-/* 사이드바 카드 소제목(라벨) 스타일 */
+/* 사이드바 카드 소제목(라벨) 스타일 — 줄높이와 하단 여백을 넉넉히 주어 글자 잘림 완벽 방지 */
 .sb-card-title {
-    font-size: 0.84rem;
+    font-size: 0.85rem;
     font-weight: 800;
     color: #0f172a;
-    margin-bottom: 2px;
+    line-height: 1.45 !important;
+    padding-top: 1px !important;
+    padding-bottom: 4px !important;
+    margin-bottom: 4px !important;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -119,24 +132,27 @@ section[data-testid="stSidebar"] a[data-testid="stBaseLinkButton-secondary"] {
     color: #15803d;
     font-size: 0.70rem;
     font-weight: 700;
-    padding: 1px 7px;
+    padding: 2px 7px;
     border-radius: 999px;
+    line-height: 1.2 !important;
 }
 .sb-badge-amber {
     background-color: #fef3c7;
     color: #b45309;
     font-size: 0.70rem;
     font-weight: 700;
-    padding: 1px 7px;
+    padding: 2px 7px;
     border-radius: 999px;
+    line-height: 1.2 !important;
 }
 .sb-badge-pro {
     background-color: #dbeafe;
     color: #1d4ed8;
     font-size: 0.70rem;
     font-weight: 700;
-    padding: 1px 7px;
+    padding: 2px 7px;
     border-radius: 999px;
+    line-height: 1.2 !important;
 }
 
 /* 메인 타이틀 스타일 */
@@ -1023,7 +1039,7 @@ def _trigger_agent_task(
     st.rerun()
 
 # ---------------------------------------------------------
-# 2. 왼쪽 사이드바 제어판 (스크롤 없이 한 화면에 들어오는 컴팩트 화이트 카드 UI)
+# 2. 왼쪽 사이드바 제어판 (글자 잘림 완벽 해결 + 원스크린 화이트 카드 UI)
 # ---------------------------------------------------------
 usage_stats = get_monthly_usage()
 budget_exceeded, cur_krw, limit_krw = is_pro_budget_exceeded()
@@ -1032,7 +1048,7 @@ task_mgr = get_background_task_manager()
 
 with st.sidebar:
     st.markdown(
-        "<div style='font-size:1.12rem; font-weight:800; color:#0f172a; margin-bottom:6px; letter-spacing:-0.4px;'>"
+        "<div style='font-size:1.12rem; font-weight:800; color:#0f172a; line-height:1.4; margin-bottom:8px; letter-spacing:-0.4px;'>"
         "⚙️ 에이전트 제어판</div>",
         unsafe_allow_html=True
     )
@@ -1294,7 +1310,7 @@ with st.sidebar:
                 st.session_state.ws_widget_ver = ws_widget_ver + 1
                 st.rerun()
 
-    # 📦 [카드 5 — 최하단 고정 & 3버튼 1줄 배치로 스크롤 완전 제거]
+    # 📦 [카드 5 — 최하단 고정 & 3버튼 1줄 배치]
     with st.container(border=True):
         total_tokens_k = (usage_stats.get("input_tokens", 0) + usage_stats.get("output_tokens", 0)) / 1000.0
         st.markdown(
@@ -1303,7 +1319,7 @@ with st.sidebar:
             unsafe_allow_html=True
         )
         st.markdown(
-            f"<div style='display:flex; justify-content:space-between; align-items:baseline; margin-bottom:2px;'>"
+            f"<div style='display:flex; justify-content:space-between; align-items:baseline; line-height:1.4; margin-bottom:4px;'>"
             f"<span style='font-size:1.02rem; font-weight:800; color:#0f172a;'>{cur_krw:,.0f}원 "
             f"<span style='font-size:0.74rem; font-weight:500; color:#64748b;'>/ {limit_krw:,.0f}원</span></span>"
             f"<span style='font-size:0.72rem; color:#475569;'>Flash <b>{usage_stats.get('flash_calls', 0)}</b> · Pro <b>{usage_stats.get('pro_calls', 0)}</b> ({total_tokens_k:,.1f}K)</span>"
@@ -1312,7 +1328,6 @@ with st.sidebar:
         )
         st.progress(usage_ratio)
 
-        # 3개 버튼을 1줄(3컬럼)로 나란히 배치하여 세로 높이를 절반으로 절약
         col_b1, col_b2, col_b3 = st.columns(3)
         with col_b1:
             if st.button("🔄 갱신", use_container_width=True, help="실시간 사용량 새로고침"):
