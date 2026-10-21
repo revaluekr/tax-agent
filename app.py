@@ -14,6 +14,8 @@ from pypdf import PdfReader
 from docx import Document
 from docx.shared import Pt
 from docx.oxml.ns import qn
+from google import genai
+from google.genai import types
 
 # PDF 직접 생성을 위한 ReportLab 모듈
 from reportlab.lib.pagesizes import A4
@@ -267,32 +269,43 @@ def is_pro_budget_exceeded() -> tuple[bool, float, float]:
     limit_krw = float(stats.get("limit_krw", MONTHLY_PRO_LIMIT_KRW))
     return (cur_krw >= limit_krw), cur_krw, limit_krw
 
-def _record_usage_fallback(user_input: str, response_text: str, is_pro: bool) -> None:
-    """만약 agent.py가 구버전이더라도 app.py에서 자동으로 토큰과 요금을 계산해 기록합니다."""
+def _log_custom_tokens(model_id: str, in_tok: int, out_tok: int, count_call: bool = True) -> None:
+    """OCR 등 app.py에서 직접 호출한 소액 토큰도 실시간 요금 계량기에 합산합니다."""
     if hasattr(agent, "_record_token_usage"):
-        return
+        try:
+            agent._record_token_usage(model_id, in_tok, out_tok, count_call=count_call)
+            return
+        except Exception:
+            pass
     stats = get_monthly_usage()
-    in_tok = int((len(user_input) + 12000) * 0.7) * (3 if is_pro else 1)
-    out_tok = int(len(response_text) * 0.8)
+    is_pro = ("pro" in model_id.lower()) or ("argon" in model_id.lower())
     in_price, out_price = (1.50, 10.00) if is_pro else (0.15, 0.60)
     cost_usd = (in_tok / 1_000_000.0) * in_price + (out_tok / 1_000_000.0) * out_price
     cost_krw = cost_usd * USD_TO_KRW_RATE
 
     stats["total_usd"] = round(stats.get("total_usd", 0.0) + cost_usd, 6)
     stats["total_krw"] = round(stats.get("total_krw", 0.0) + cost_krw, 2)
-    stats["input_tokens"] = int(stats.get("input_tokens", 0)) + in_tok
-    stats["output_tokens"] = int(stats.get("output_tokens", 0)) + out_tok
-    if is_pro:
-        stats["pro_calls"] = int(stats.get("pro_calls", 0)) + 1
-    else:
-        stats["flash_calls"] = int(stats.get("flash_calls", 0)) + 1
+    stats["input_tokens"] = int(stats.get("input_tokens", 0)) + int(in_tok)
+    stats["output_tokens"] = int(stats.get("output_tokens", 0)) + int(out_tok)
+    if count_call:
+        if is_pro:
+            stats["pro_calls"] = int(stats.get("pro_calls", 0)) + 1
+        else:
+            stats["flash_calls"] = int(stats.get("flash_calls", 0)) + 1
     stats["updated_at"] = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%m/%d %H:%M:%S")
-
     try:
         with open(USAGE_FILE_PATH, "w", encoding="utf-8") as f:
             json.dump(stats, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
+
+def _record_usage_fallback(user_input: str, response_text: str, is_pro: bool) -> None:
+    """만약 agent.py가 구버전이더라도 app.py에서 자동으로 토큰과 요금을 계산해 기록합니다."""
+    if hasattr(agent, "_record_token_usage"):
+        return
+    in_tok = int((len(user_input) + 12000) * 0.7) * (3 if is_pro else 1)
+    out_tok = int(len(response_text) * 0.8)
+    _log_custom_tokens("pro" if is_pro else "flash", in_tok, out_tok, count_call=True)
 
 def _check_api_configured(key_names: list[str]) -> bool:
     """환경변수 또는 st.secrets에 해당 API 키가 설정되어 있는지 확인합니다."""
@@ -311,6 +324,24 @@ def get_storage_path(workspace_id: str) -> str:
     safe_hash = hashlib.sha256(workspace_id.strip().encode("utf-8")).hexdigest()[:16]
     return os.path.join(STORAGE_DIR, f"ws_{safe_hash}.json")
 
+def _normalize_room_file_entry(entry: dict) -> dict:
+    """단일 파일 구조와 다중 파일(items) 구조를 모두 호환하도록 정규화합니다."""
+    if not isinstance(entry, dict):
+        return {"name": None, "text": "", "items": []}
+    items = entry.get("items")
+    if items is None:
+        if entry.get("name") and entry.get("text"):
+            items = [{"name": entry["name"], "text": entry["text"]}]
+        else:
+            items = []
+    if not items:
+        return {"name": None, "text": "", "items": []}
+    summary_name = items[0]["name"] if len(items) == 1 else f"{items[0]['name']} 외 {len(items)-1}건"
+    combined_text = "\n\n========================================\n\n".join(
+        f"📄 [파일 {idx+1}: {it['name']}]\n{it['text']}" for idx, it in enumerate(items)
+    )
+    return {"name": summary_name, "text": combined_text, "items": items}
+
 def get_default_workspace_data() -> dict:
     """깨끗한 초기 10개 방 데이터 구조를 생성합니다."""
     default_titles = {r_id: "빈 대화방" for r_id in ROOM_IDS}
@@ -318,7 +349,7 @@ def get_default_workspace_data() -> dict:
     return {
         "chat_rooms": {r_id: [] for r_id in ROOM_IDS},
         "room_titles": default_titles,
-        "room_files": {r_id: {"name": None, "text": ""} for r_id in ROOM_IDS}
+        "room_files": {r_id: {"name": None, "text": "", "items": []} for r_id in ROOM_IDS}
     }
 
 def load_workspace_from_disk(workspace_id: str) -> dict:
@@ -336,6 +367,8 @@ def load_workspace_from_disk(workspace_id: str) -> dict:
                     for r_id in ROOM_IDS:
                         if r_id not in data[key]:
                             data[key][r_id] = default_data[key][r_id]
+            for r_id in ROOM_IDS:
+                data["room_files"][r_id] = _normalize_room_file_entry(data["room_files"][r_id])
             return data
         except Exception:
             pass
@@ -410,50 +443,96 @@ def _background_agent_worker(
     task_info["status"] = "done"
 
 # ---------------------------------------------------------
-# 헬퍼 함수 1: 업로드된 파일(Excel, PDF, Word) 텍스트 추출 (Pro 3배 한도: 150,000자)
+# 헬퍼 함수 1: 파일 추출 + 📸 사진/스캔본 PDF 1회 자동 OCR (Gemini Flash 비전)
 # ---------------------------------------------------------
 MAX_DOC_CHARS_STANDARD = 50000
 MAX_DOC_CHARS_PRO      = 150000
 
+def _ocr_with_gemini_flash(file_bytes: bytes, mime_type: str, filename: str) -> str:
+    """사진(.jpg/.png)이나 텍스트가 없는 스캔본 PDF를 업로드 시 딱 1회만 저렴한 Flash 모델로 OCR 추출해 저장합니다."""
+    pool = agent.get_live_gemini_key_pool() if hasattr(agent, "get_live_gemini_key_pool") else []
+    api_key = pool[0][1] if pool else (os.getenv("GEMINI_PAID_KEY") or os.getenv("GEMINI_API_KEY") or "")
+    if not api_key:
+        return "❌ [OCR 오류] 설정된 Gemini API 키가 없어 이미지/스캔본 글자를 인식할 수 없습니다."
+
+    ocr_prompt = (
+        f"첨부된 문서/이미지({filename})의 모든 텍스트, 숫자, 사업자등록번호, 날짜, 금액, 계약 조항, "
+        "그리고 표(Table) 내용을 단 한 글자도 누락하거나 요약하지 말고 원문 그대로 추출하세요. "
+        "표가 있다면 마크다운 표(| 컬럼 | ... |) 형식으로 정확히 옮겨 적으세요."
+    )
+    models_to_try = [
+        getattr(agent, "FLASH_MODEL_ID", "gemini-3.8-flash"),
+        getattr(agent, "FLASH_BACKUP_ID", "gemini-3.6-flash"),
+        "gemini-2.5-flash"
+    ]
+    last_err = ""
+    for m_id in dict.fromkeys(models_to_try):
+        try:
+            client = genai.Client(api_key=api_key, http_options={"timeout": 90000})
+            resp = client.models.generate_content(
+                model=m_id,
+                contents=[
+                    types.Part.from_bytes(data=file_bytes, mime_type=mime_type),
+                    ocr_prompt
+                ]
+            )
+            extracted = agent.extract_safe_text(resp) if hasattr(agent, "extract_safe_text") else (resp.text or "")
+            um = getattr(resp, "usage_metadata", None)
+            in_tok = int(getattr(um, "prompt_token_count", 0) or 1500)
+            out_tok = int(getattr(um, "candidates_token_count", 0) or max(200, int(len(extracted) * 0.7)))
+            _log_custom_tokens(m_id, in_tok, out_tok, count_call=True)
+            if extracted.strip():
+                return f"[📸 AI 비전 OCR 자동 판독 완료: {filename}]\n{extracted.strip()}"
+        except Exception as e:
+            last_err = str(e)
+            continue
+    return f"❌ 이미지/스캔본 OCR 판독 실패 ({filename}): {last_err}"
+
 def extract_file_content(uploaded_file) -> str:
-    """업로드된 엑셀, CSV, PDF, 워드(.docx) 파일에서 최대 150,000자(Pro 3배 한도)까지 텍스트와 표를 추출합니다."""
-    filename = uploaded_file.name.lower()
+    """엑셀, CSV, 텍스트 PDF, 워드는 무료 파이썬으로 추출하고, 사진이나 스캔본 PDF만 1회 Flash OCR을 가동합니다."""
+    filename = uploaded_file.name
+    lower_name = filename.lower()
     try:
-        if filename.endswith((".xlsx", ".xls")):
-            excel_file = pd.ExcelFile(uploaded_file)
-            text_parts = [f"[첨부 엑셀 파일명: {uploaded_file.name}]"]
+        uploaded_file.seek(0)
+        raw_bytes = uploaded_file.read()
+
+        if lower_name.endswith((".xlsx", ".xls")):
+            excel_file = pd.ExcelFile(io.BytesIO(raw_bytes))
+            text_parts = [f"[첨부 엑셀 파일명: {filename}]"]
             for sheet in excel_file.sheet_names:
                 df = excel_file.parse(sheet)
                 text_parts.append(f"\n--- 시트명: {sheet} (총 {len(df)}행) ---")
                 text_parts.append(df.head(1500).to_string(index=False))
             return "\n".join(text_parts)[:MAX_DOC_CHARS_PRO]
 
-        elif filename.endswith(".csv"):
+        elif lower_name.endswith(".csv"):
             for enc in ["utf-8-sig", "utf-8", "cp949", "euc-kr"]:
                 try:
-                    uploaded_file.seek(0)
-                    df = pd.read_csv(uploaded_file, encoding=enc)
-                    return (f"[첨부 CSV 파일명: {uploaded_file.name} (총 {len(df)}행)]\n" + df.head(1500).to_string(index=False))[:MAX_DOC_CHARS_PRO]
+                    df = pd.read_csv(io.BytesIO(raw_bytes), encoding=enc)
+                    return (f"[첨부 CSV 파일명: {filename} (총 {len(df)}행)]\n" + df.head(1500).to_string(index=False))[:MAX_DOC_CHARS_PRO]
                 except Exception:
                     continue
             return "❌ CSV 파일의 한글 인코딩을 읽을 수 없습니다. 엑셀(.xlsx)로 저장 후 다시 올려주세요."
 
-        elif filename.endswith(".pdf"):
-            reader = PdfReader(uploaded_file)
-            text_parts = [f"[첨부 PDF 파일명: {uploaded_file.name} (총 {len(reader.pages)}페이지)]"]
+        elif lower_name.endswith(".pdf"):
+            reader = PdfReader(io.BytesIO(raw_bytes))
+            text_parts = [f"[첨부 PDF 파일명: {filename} (총 {len(reader.pages)}페이지)]"]
+            pure_body_chars = 0
             for idx, page in enumerate(reader.pages[:150]):
-                page_text = page.extract_text() or ""
+                page_text = (page.extract_text() or "").strip()
+                pure_body_chars += len(page_text)
                 text_parts.append(f"\n--- {idx+1}페이지 ---\n{page_text}")
+            # 스캔본 PDF 감지: 페이지당 텍스트가 거의 없으면(총 40자 미만) 자동으로 Gemini Flash 비전 OCR 가동
+            if pure_body_chars < 40:
+                return _ocr_with_gemini_flash(raw_bytes, "application/pdf", filename)[:MAX_DOC_CHARS_PRO]
             return "\n".join(text_parts)[:MAX_DOC_CHARS_PRO]
 
-        elif filename.endswith(".docx"):
-            doc = Document(uploaded_file)
-            text_parts = [f"[첨부 워드 파일명: {uploaded_file.name}]"]
-            
+        elif lower_name.endswith(".docx"):
+            doc = Document(io.BytesIO(raw_bytes))
+            text_parts = [f"[첨부 워드 파일명: {filename}]"]
             for p in doc.paragraphs:
                 if p.text.strip():
                     text_parts.append(p.text.strip())
-                    
             if doc.tables:
                 text_parts.append("\n--- [워드 문서 내 표(Table) 데이터] ---")
                 for t_idx, table in enumerate(doc.tables):
@@ -461,15 +540,18 @@ def extract_file_content(uploaded_file) -> str:
                     for row in table.rows:
                         row_cells = [cell.text.strip().replace("\n", " ") for cell in row.cells]
                         text_parts.append(" | ".join(row_cells))
-                        
             return "\n".join(text_parts)[:MAX_DOC_CHARS_PRO]
+
+        elif lower_name.endswith((".png", ".jpg", ".jpeg")):
+            mime = "image/png" if lower_name.endswith(".png") else "image/jpeg"
+            return _ocr_with_gemini_flash(raw_bytes, mime, filename)[:MAX_DOC_CHARS_PRO]
 
         return "지원하지 않는 파일 형식입니다."
     except Exception as e:
         return f"❌ 파일 읽기 오류: {e}"
 
 # ---------------------------------------------------------
-# 공통 정제 도우미: LaTeX 수식 기호 정제 및 클립보드 복사용 순수 본문 추출
+# 공통 정제 도우미 및 📊 마크다운 표 -> 엑셀(.xlsx) 변환기 (0토큰·무료)
 # ---------------------------------------------------------
 def _sanitize_math_text(text: str) -> str:
     if not text:
@@ -493,6 +575,54 @@ def _extract_clean_copy_text(report_text: str) -> str:
             continue
         out_lines.append(line)
     return "\n".join(out_lines).strip()
+
+def create_excel_from_markdown_tables(report_text: str) -> bytes | None:
+    """답변 안의 마크다운 표(| ... |)들을 자동 감지하여 시트별로 정리된 엑셀(.xlsx) 바이트로 변환합니다 (0토큰)."""
+    cleaned = _sanitize_math_text(report_text)
+    lines = cleaned.split("\n")
+    tables = []
+    i = 0
+    while i < len(lines):
+        s = lines[i].strip()
+        if s.startswith("|") and s.endswith("|"):
+            t_rows = []
+            while i < len(lines):
+                rs = lines[i].strip()
+                if not (rs.startswith("|") and rs.endswith("|")):
+                    break
+                if not re.match(r"^\|[\s\-:|]+\|$", rs):
+                    cells = [re.sub(r"\*\*(.*?)\*\*", r"\1", c.strip()) for c in rs.strip("|").split("|")]
+                    t_rows.append(cells)
+                i += 1
+            if len(t_rows) >= 2:
+                tables.append(t_rows)
+            continue
+        i += 1
+
+    if not tables:
+        return None
+
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        for idx, t_rows in enumerate(tables):
+            max_cols = max(len(r) for r in t_rows)
+            padded = [r + [""] * (max_cols - len(r)) for r in t_rows]
+            header = padded[0]
+            # 중복 컬럼명 방지
+            seen_cols = {}
+            safe_header = []
+            for col_name in header:
+                c_label = col_name or "항목"
+                if c_label in seen_cols:
+                    seen_cols[c_label] += 1
+                    safe_header.append(f"{c_label}_{seen_cols[c_label]}")
+                else:
+                    seen_cols[c_label] = 1
+                    safe_header.append(c_label)
+            df = pd.DataFrame(padded[1:], columns=safe_header)
+            df.to_excel(writer, sheet_name=f"표_{idx+1}", index=False)
+    buffer.seek(0)
+    return buffer.getvalue()
 
 # ---------------------------------------------------------
 # 헬퍼 함수 2: AI 답변을 워드(.docx)로 변환
@@ -774,7 +904,98 @@ def create_pdf_report(report_text: str) -> bytes:
     return buffer.getvalue()
 
 # ---------------------------------------------------------
-# 2. 왼쪽 사이드바 제어판 (화이트 카드 박스 UI로 한눈에 구분되도록 개편)
+# 헬퍼 함수 4: 질문/원클릭 액션 통합 백그라운드 실행기
+# ---------------------------------------------------------
+def _trigger_agent_task(
+    effective_ws_id: str,
+    selected_room: str,
+    raw_prompt: str,
+    pro_toggle_on: bool,
+    budget_exceeded: bool,
+    force_flash: bool = False
+) -> None:
+    """채팅창 질문 입력과 원클릭 후속 버튼(카톡/이메일/Pro재검토)을 공통 처리하여 백그라운드 스레드로 실행합니다."""
+    task_mgr = get_background_task_manager()
+    current_messages = st.session_state.chat_rooms[selected_room]
+    current_file_info = _normalize_room_file_entry(st.session_state.room_files[selected_room])
+    st.session_state.room_files[selected_room] = current_file_info
+
+    effective_prompt = raw_prompt.strip()
+    if force_flash or budget_exceeded:
+        if effective_prompt.startswith("[프로]"):
+            effective_prompt = effective_prompt.replace("[프로]", "", 1).strip()
+    elif pro_toggle_on and not effective_prompt.startswith("[프로]"):
+        effective_prompt = f"[프로] {effective_prompt}"
+
+    has_attached_file = bool(current_file_info["name"] and current_file_info["text"])
+    display_prompt = f"📎 **[첨부파일: {current_file_info['name']}]**\n\n{effective_prompt}" if has_attached_file else effective_prompt
+
+    if st.session_state.room_titles[selected_room] in ["빈 대화방", "메인 대화"] and not current_messages:
+        auto_title = raw_prompt.strip().replace("[프로]", "").strip().replace("\n", " ")[:12]
+        st.session_state.room_titles[selected_room] = auto_title
+
+    is_pro_request = (
+        not force_flash and not budget_exceeded and (
+            effective_prompt.startswith("[프로]") or (has_attached_file and len(current_file_info["text"]) >= 15000)
+        )
+    )
+    msg_char_cap = 24000 if is_pro_request else 8000
+
+    history_context = ""
+    if current_messages:
+        recent_msgs = (current_messages[:2] + current_messages[-6:]) if len(current_messages) > 6 else current_messages
+        history_lines = [
+            "[이 대화방의 이전 대화 맥락 — 사용자가 별도 수식어 없이 후속 질문이나 조건 변경, 카톡/이메일 초안 변환, 또는 '[프로] 다시 검토해 줘'라고 말하더라도 반드시 아래 직전 질문·답변의 사례 금액, 자산 정보, 계산 내역을 그대로 이어받아 답변할 것]"
+        ]
+        for m in recent_msgs:
+            role_label = "사용자" if m["role"] == "user" else "에이전트"
+            history_lines.append(f"- {role_label}: {m['content'][:msg_char_cap]}")
+        history_context = "\n".join(history_lines) + "\n\n"
+
+    current_messages.append({"role": "user", "content": display_prompt})
+    save_workspace_to_disk(effective_ws_id)
+
+    # 카톡/이메일 변환(force_flash=True)일 때는 이미 직전 답변에 내용이 있으므로 대용량 첨부파일 재전송을 생략해 토큰을 절약
+    if has_attached_file and not force_flash:
+        doc_cap = MAX_DOC_CHARS_PRO if is_pro_request else MAX_DOC_CHARS_STANDARD
+        full_input_for_agent = (
+            f"{history_context}"
+            f"[현재 사용자 질문]: {effective_prompt}\n\n"
+            f"아래는 사용자가 현재 대화방에 업로드한 첨부파일({current_file_info['name']})의 데이터입니다. "
+            f"직전 대화 맥락과 이 파일 데이터를 바탕으로 관련 법령·예규·판례·환율을 정밀 대조하여 답변하세요:\n"
+            f"========================================\n"
+            f"{current_file_info['text'][:doc_cap]}\n"
+            f"========================================"
+        )
+    else:
+        full_input_for_agent = f"{history_context}[현재 사용자 질문]: {effective_prompt}" if history_context else effective_prompt
+
+    new_task_info = {
+        "status": "running",
+        "response": None,
+        "is_pro": is_pro_request,
+        "started_at": time.time()
+    }
+    worker_thread = threading.Thread(
+        target=_background_agent_worker,
+        args=(
+            effective_ws_id,
+            selected_room,
+            full_input_for_agent,
+            effective_prompt,
+            (has_attached_file and not force_flash),
+            is_pro_request,
+            new_task_info
+        ),
+        daemon=True
+    )
+    new_task_info["thread"] = worker_thread
+    task_mgr["tasks"][f"{effective_ws_id}::{selected_room}"] = new_task_info
+    worker_thread.start()
+    st.rerun()
+
+# ---------------------------------------------------------
+# 2. 왼쪽 사이드바 제어판 (화이트 카드 UI + 10개 방 통합 검색 + 다중 파일/OCR 업로드)
 # ---------------------------------------------------------
 usage_stats = get_monthly_usage()
 budget_exceeded, cur_krw, limit_krw = is_pro_budget_exceeded()
@@ -839,6 +1060,7 @@ with st.sidebar:
 
         # 백그라운드 완료 작업 자동 반영
         for r_id in ROOM_IDS:
+            st.session_state.room_files[r_id] = _normalize_room_file_entry(st.session_state.room_files.get(r_id, {}))
             t_key = f"{effective_ws_id}::{r_id}"
             t_info = task_mgr["tasks"].get(t_key)
             if t_info and t_info.get("status") == "done":
@@ -855,14 +1077,42 @@ with st.sidebar:
                 st.session_state.ws_widget_ver = ws_widget_ver + 1
                 st.rerun()
 
-    # 📦 [카드 3] 멀티 대화방 선택 및 관리 (1~10번)
+    # 📦 [카드 3] 멀티 대화방 선택 및 🔍 10개 방 통합 키워드 검색 (0토큰)
     with st.container(border=True):
         st.markdown("<div class='sb-card-title'><span>🗂️ 멀티 대화방 (1~10번)</span></div>", unsafe_allow_html=True)
+
+        # 🔍 10개 대화방 통합 키워드 검색창
+        room_search_kw = st.text_input(
+            "전체 대화방 통합 검색",
+            placeholder="🔎 1~10번 방 통합 키워드 검색",
+            label_visibility="collapsed",
+            key=f"room_search_{effective_ws_id}"
+        )
+        if room_search_kw.strip():
+            kw_lower = room_search_kw.strip().lower()
+            matched_rooms = []
+            for r_id in ROOM_IDS:
+                r_title = st.session_state.room_titles.get(r_id, "")
+                r_fname = st.session_state.room_files[r_id].get("name") or ""
+                r_msgs = st.session_state.chat_rooms.get(r_id, [])
+                hit_cnt = sum(1 for m in r_msgs if kw_lower in m.get("content", "").lower())
+                if kw_lower in r_title.lower() or kw_lower in r_fname.lower():
+                    hit_cnt += 1
+                if hit_cnt > 0:
+                    matched_rooms.append((r_id, r_title, hit_cnt))
+            if matched_rooms:
+                for m_rid, m_title, m_cnt in matched_rooms:
+                    if st.button(f"👉 {m_rid} [{m_title}] ({m_cnt}건 일치)", key=f"jump_{m_rid}", use_container_width=True):
+                        st.session_state.current_room = m_rid
+                        st.rerun()
+            else:
+                st.caption(f"'{room_search_kw}' 검색 결과가 없습니다.")
 
         def format_room_label(r_id: str) -> str:
             title = st.session_state.room_titles.get(r_id, "")
             q_cnt = (len(st.session_state.chat_rooms[r_id]) + 1) // 2
-            file_mark = "📎" if st.session_state.room_files[r_id]["name"] else ""
+            f_items = st.session_state.room_files[r_id].get("items", [])
+            file_mark = f"📎({len(f_items)})" if f_items else ""
             t_info = task_mgr["tasks"].get(f"{effective_ws_id}::{r_id}")
             running_mark = " ⏳분석중" if (t_info and t_info.get("status") == "running") else ""
             return f"💬 {r_id} [{title}] ({q_cnt}건) {file_mark}{running_mark}"
@@ -892,48 +1142,65 @@ with st.sidebar:
         if st.button(f"🗑️ [{selected_room}] 현재 방 비우기", use_container_width=True):
             task_mgr["tasks"].pop(f"{effective_ws_id}::{selected_room}", None)
             st.session_state.chat_rooms[selected_room] = []
-            st.session_state.room_files[selected_room] = {"name": None, "text": ""}
+            st.session_state.room_files[selected_room] = {"name": None, "text": "", "items": []}
             st.session_state.room_titles[selected_room] = "빈 대화방"
             st.session_state[f"reset_cnt_{selected_room}"] = st.session_state.get(f"reset_cnt_{selected_room}", 0) + 1
             save_workspace_to_disk(effective_ws_id)
             st.rerun()
 
-    # 📦 [카드 4] 현재 방 전용 자료 업로드
+    # 📦 [카드 4] 현재 방 다중 자료 업로드 (엑셀/PDF/워드 + 📸 사진·스캔본 자동 OCR)
     with st.container(border=True):
-        saved_file_name = st.session_state.room_files[selected_room]["name"]
-        saved_file_text = st.session_state.room_files[selected_room]["text"]
-        file_pill = "<span class='sb-badge-green'>📎 첨부됨</span>" if saved_file_name else ""
-        st.markdown(f"<div class='sb-card-title'><span>📂 [{selected_room}] 자료 첨부</span>{file_pill}</div>", unsafe_allow_html=True)
+        room_file_entry = _normalize_room_file_entry(st.session_state.room_files[selected_room])
+        st.session_state.room_files[selected_room] = room_file_entry
+        saved_items = room_file_entry["items"]
+        file_pill = f"<span class='sb-badge-green'>📎 {len(saved_items)}개 유지중</span>" if saved_items else ""
+        st.markdown(f"<div class='sb-card-title'><span>📂 [{selected_room}] 다중 자료·사진 첨부</span>{file_pill}</div>", unsafe_allow_html=True)
 
         reset_cnt = st.session_state.get(f"reset_cnt_{selected_room}", 0)
-        uploaded_file = st.file_uploader(
-            "엑셀, PDF, 워드 업로드",
-            type=["xlsx", "xls", "csv", "pdf", "docx"],
+        uploaded_files = st.file_uploader(
+            "엑셀, PDF(스캔본 포함), 워드, 사진(.jpg/.png) 다중 업로드",
+            type=["xlsx", "xls", "csv", "pdf", "docx", "png", "jpg", "jpeg"],
+            accept_multiple_files=True,
             label_visibility="collapsed",
             key=f"uploader_{effective_ws_id}_{selected_room}_{reset_cnt}",
-            help="15,000자 이상 대용량 문서는 자동으로 Pro 3배 개방 모드가 작동합니다."
+            help="여러 파일을 동시에 올릴 수 있습니다. 사진이나 스캔본 PDF는 최초 1회만 Flash 비전으로 글자를 자동 추출해 저장합니다."
         )
 
-        if uploaded_file is not None:
-            if st.session_state.room_files[selected_room]["name"] != uploaded_file.name:
-                with st.spinner("문서 저장 중..."):
-                    extracted_text = extract_file_content(uploaded_file)
-                    st.session_state.room_files[selected_room] = {
-                        "name": uploaded_file.name,
-                        "text": extracted_text
-                    }
-                    save_workspace_to_disk(effective_ws_id)
-                    st.rerun()
-
-        if saved_file_name:
-            st.caption(f"📄 **{saved_file_name}** ({len(saved_file_text):,}자)")
-            if st.button("❌ 첨부파일 제거", key=f"remove_file_{selected_room}", use_container_width=True):
-                st.session_state.room_files[selected_room] = {"name": None, "text": ""}
-                st.session_state[f"reset_cnt_{selected_room}"] = reset_cnt + 1
+        if uploaded_files:
+            existing_names = {it["name"] for it in saved_items}
+            new_added = False
+            for uf in uploaded_files:
+                if uf.name not in existing_names:
+                    with st.spinner(f"📄 '{uf.name}' 내용 추출 및 저장 중..."):
+                        extracted_text = extract_file_content(uf)
+                        saved_items.append({"name": uf.name, "text": extracted_text})
+                        existing_names.add(uf.name)
+                        new_added = True
+            if new_added:
+                st.session_state.room_files[selected_room] = _normalize_room_file_entry({"items": saved_items})
                 save_workspace_to_disk(effective_ws_id)
                 st.rerun()
 
-    # 📦 [보조 메뉴] 백업/초기화 & 7대 기관 연동 상태는 깔끔하게 접이식(Expander)으로 정리
+        if saved_items:
+            for f_idx, f_item in enumerate(saved_items):
+                c_f1, c_f2 = st.columns([4, 1])
+                with c_f1:
+                    st.caption(f"📄 **{f_item['name']}** ({len(f_item['text']):,}자)")
+                with c_f2:
+                    if st.button("✕", key=f"del_f_{selected_room}_{f_idx}", help=f"{f_item['name']} 삭제"):
+                        saved_items.pop(f_idx)
+                        st.session_state.room_files[selected_room] = _normalize_room_file_entry({"items": saved_items})
+                        st.session_state[f"reset_cnt_{selected_room}"] = reset_cnt + 1
+                        save_workspace_to_disk(effective_ws_id)
+                        st.rerun()
+            if len(saved_items) > 1:
+                if st.button("❌ 이 방의 첨부파일 전체 비우기", key=f"clear_all_f_{selected_room}", use_container_width=True):
+                    st.session_state.room_files[selected_room] = {"name": None, "text": "", "items": []}
+                    st.session_state[f"reset_cnt_{selected_room}"] = reset_cnt + 1
+                    save_workspace_to_disk(effective_ws_id)
+                    st.rerun()
+
+    # 📦 [보조 메뉴] 백업/초기화 & 7대 기관 연동 상태 접이식(Expander)
     with st.expander("📡 7대 기관 DB 연동 및 전체 백업"):
         led_law   = "🟢" if _check_api_configured(["LAW_API_OC", "OC"]) else "🟡"
         led_nts   = "🟢" if _check_api_configured(["NTS_API_KEY", "DATA_GO_KR_KEY", "PUBLIC_DATA_KEY"]) else "🟡"
@@ -965,7 +1232,10 @@ with st.sidebar:
                     loaded_backup = json.loads(restored_file.read().decode("utf-8"))
                     st.session_state.chat_rooms = loaded_backup["chat_rooms"]
                     st.session_state.room_titles = loaded_backup["room_titles"]
-                    st.session_state.room_files = loaded_backup["room_files"]
+                    st.session_state.room_files = {
+                        r: _normalize_room_file_entry(loaded_backup.get("room_files", {}).get(r, {}))
+                        for r in ROOM_IDS
+                    }
                     save_workspace_to_disk(effective_ws_id)
                     st.rerun()
                 except Exception as e:
@@ -1024,7 +1294,7 @@ with st.sidebar:
 # ---------------------------------------------------------
 current_messages = st.session_state.chat_rooms[selected_room]
 current_room_title = st.session_state.room_titles[selected_room]
-current_file_info = st.session_state.room_files[selected_room]
+current_file_info = _normalize_room_file_entry(st.session_state.room_files[selected_room])
 current_task_key = f"{effective_ws_id}::{selected_room}"
 active_task = task_mgr["tasks"].get(current_task_key)
 is_current_room_running = bool(active_task and active_task.get("status") == "running")
@@ -1045,10 +1315,12 @@ for idx, message in enumerate(current_messages):
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
         if message["role"] == "assistant":
-            col1, col2, col3 = st.columns(3)
+            # 📥 1줄: 문서 다운로드 버튼 4종 (PDF / 워드 / 표 엑셀(.xlsx) / 마크다운)
+            excel_bytes = create_excel_from_markdown_tables(message["content"])
+            col1, col2, col3, col4 = st.columns(4)
             with col1:
                 st.download_button(
-                    label="📕 정식 PDF 보고서 다운로드 (.pdf)",
+                    label="📕 정식 PDF (.pdf)",
                     data=create_pdf_report(message["content"]),
                     file_name=f"검토보고서_{selected_room}_{current_room_title}_{idx}.pdf",
                     mime="application/pdf",
@@ -1057,7 +1329,7 @@ for idx, message in enumerate(current_messages):
                 )
             with col2:
                 st.download_button(
-                    label="📘 워드 다운로드 (.docx)",
+                    label="📘 워드 (.docx)",
                     data=create_word_docx(message["content"]),
                     file_name=f"검토보고서_{selected_room}_{current_room_title}_{idx}.docx",
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -1065,18 +1337,70 @@ for idx, message in enumerate(current_messages):
                     use_container_width=True
                 )
             with col3:
+                if excel_bytes:
+                    st.download_button(
+                        label="📊 표 엑셀 (.xlsx)",
+                        data=excel_bytes,
+                        file_name=f"검토표_{selected_room}_{current_room_title}_{idx}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key=f"xlsx_{effective_ws_id}_{selected_room}_{idx}",
+                        use_container_width=True
+                    )
+                else:
+                    st.button("📊 표 없음 (.xlsx)", disabled=True, key=f"no_xlsx_{effective_ws_id}_{selected_room}_{idx}", use_container_width=True)
+            with col4:
                 st.download_button(
-                    label="📝 마크다운 다운로드 (.md)",
+                    label="📝 마크다운 (.md)",
                     data=message["content"].encode("utf-8-sig"),
                     file_name=f"검토보고서_{selected_room}_{current_room_title}_{idx}.md",
                     mime="text/markdown",
                     key=f"md_{effective_ws_id}_{selected_room}_{idx}",
                     use_container_width=True
                 )
+
+            # ⚡ 2줄: 타이핑 제로 원클릭 후속 작업 버튼 3종 (카톡/이메일은 Flash 초저가 강제 실행)
+            act1, act2, act3 = st.columns(3)
+            with act1:
+                if st.button(
+                    "💬 카톡 안내문 변환 (Flash)",
+                    key=f"kakao_{effective_ws_id}_{selected_room}_{idx}",
+                    disabled=is_current_room_running,
+                    use_container_width=True
+                ):
+                    _trigger_agent_task(
+                        effective_ws_id, selected_room,
+                        "방금 작성한 검토 결과를 바탕으로, 거래처 대표님이나 고객에게 카카오톡으로 바로 복사해서 보낼 수 있도록 핵심 결론과 주의사항만 친절하고 정중한 실무 대화체로 요약해 줘.",
+                        pro_toggle_on, budget_exceeded, force_flash=True
+                    )
+            with act2:
+                if st.button(
+                    "📧 이메일 회신 초안 (Flash)",
+                    key=f"email_{effective_ws_id}_{selected_room}_{idx}",
+                    disabled=is_current_room_running,
+                    use_container_width=True
+                ):
+                    _trigger_agent_task(
+                        effective_ws_id, selected_room,
+                        "방금 작성한 검토 결과를 바탕으로, 거래처에 발송할 정식 비즈니스 이메일 회신 초안(제목, 인사말, 핵심 검토 결과 요약, 실무 유의사항, 맺음말 포함)을 깔끔하게 작성해 줘.",
+                        pro_toggle_on, budget_exceeded, force_flash=True
+                    )
+            with act3:
+                if st.button(
+                    "🧠 [프로] 3배 개방 재검토",
+                    key=f"repro_{effective_ws_id}_{selected_room}_{idx}",
+                    disabled=(is_current_room_running or budget_exceeded),
+                    use_container_width=True
+                ):
+                    _trigger_agent_task(
+                        effective_ws_id, selected_room,
+                        "[프로] 직전 질문 사안에 대해 관련 법령·시행령·판례·심판례·예규와 예외 요건까지 데이터·도구 한도를 3배 개방하여 심층 재검토해 줘.",
+                        pro_toggle_on, budget_exceeded, force_flash=False
+                    )
+
             with st.expander("📋 카톡·이메일 전송용 텍스트 원클릭 복사 (우측 상단 복사 아이콘 클릭)"):
                 st.code(_extract_clean_copy_text(message["content"]), language="markdown")
 
-# 4. 새로운 질문 입력 시 -> 백그라운드 독립 스레드로 작업 시작
+# 4. 새로운 질문 입력 시 -> 공통 백그라운드 실행기 호출
 if prompt := st.chat_input(
     placeholder=(
         f"⏳ [{selected_room}] 현재 백그라운드 정밀 검토 진행 중입니다... (다른 대화방으로 이동하여 추가 질문을 하실 수 있습니다)"
@@ -1086,78 +1410,14 @@ if prompt := st.chat_input(
     disabled=is_current_room_running,
     key=f"chat_input_{effective_ws_id}_{selected_room}"
 ):
-    effective_prompt = prompt.strip()
-    if budget_exceeded and effective_prompt.startswith("[프로]"):
-        effective_prompt = effective_prompt.replace("[프로]", "", 1).strip()
-    elif pro_toggle_on and not budget_exceeded and not effective_prompt.startswith("[프로]"):
-        effective_prompt = f"[프로] {effective_prompt}"
-
-    has_attached_file = bool(current_file_info["name"] and current_file_info["text"])
-    display_prompt = f"📎 **[첨부파일: {current_file_info['name']}]**\n\n{effective_prompt}" if has_attached_file else effective_prompt
-    
-    if st.session_state.room_titles[selected_room] in ["빈 대화방", "메인 대화"] and not current_messages:
-        auto_title = prompt.strip().replace("[프로]", "").strip().replace("\n", " ")[:12]
-        st.session_state.room_titles[selected_room] = auto_title
-        current_room_title = auto_title
-
-    is_pro_request = (
-        not budget_exceeded and (
-            effective_prompt.startswith("[프로]") or (has_attached_file and len(current_file_info["text"]) >= 15000)
-        )
+    _trigger_agent_task(
+        effective_ws_id=effective_ws_id,
+        selected_room=selected_room,
+        raw_prompt=prompt,
+        pro_toggle_on=pro_toggle_on,
+        budget_exceeded=budget_exceeded,
+        force_flash=False
     )
-    msg_char_cap = 24000 if is_pro_request else 8000
-
-    history_context = ""
-    if current_messages:
-        recent_msgs = (current_messages[:2] + current_messages[-6:]) if len(current_messages) > 6 else current_messages
-        history_lines = [
-            "[이 대화방의 이전 대화 맥락 — 사용자가 별도 수식어 없이 후속 질문이나 조건 변경, 또는 '[프로] 다시 검토해 줘'라고 말하더라도 반드시 아래 직전 질문·답변의 사례 금액, 자산 정보, 계산 내역을 그대로 이어받아 답변할 것]"
-        ]
-        for m in recent_msgs:
-            role_label = "사용자" if m["role"] == "user" else "에이전트"
-            history_lines.append(f"- {role_label}: {m['content'][:msg_char_cap]}")
-        history_context = "\n".join(history_lines) + "\n\n"
-
-    current_messages.append({"role": "user", "content": display_prompt})
-    save_workspace_to_disk(effective_ws_id)
-
-    if has_attached_file:
-        doc_cap = MAX_DOC_CHARS_PRO if is_pro_request else MAX_DOC_CHARS_STANDARD
-        full_input_for_agent = (
-            f"{history_context}"
-            f"[현재 사용자 질문]: {effective_prompt}\n\n"
-            f"아래는 사용자가 현재 대화방에 업로드한 첨부파일({current_file_info['name']})의 데이터입니다. "
-            f"직전 대화 맥락과 이 파일 데이터를 바탕으로 관련 법령·예규·판례·환율을 정밀 대조하여 답변하세요:\n"
-            f"========================================\n"
-            f"{current_file_info['text'][:doc_cap]}\n"
-            f"========================================"
-        )
-    else:
-        full_input_for_agent = f"{history_context}[현재 사용자 질문]: {effective_prompt}" if history_context else effective_prompt
-
-    new_task_info = {
-        "status": "running",
-        "response": None,
-        "is_pro": is_pro_request,
-        "started_at": time.time()
-    }
-    worker_thread = threading.Thread(
-        target=_background_agent_worker,
-        args=(
-            effective_ws_id,
-            selected_room,
-            full_input_for_agent,
-            effective_prompt,
-            has_attached_file,
-            is_pro_request,
-            new_task_info
-        ),
-        daemon=True
-    )
-    new_task_info["thread"] = worker_thread
-    task_mgr["tasks"][current_task_key] = new_task_info
-    worker_thread.start()
-    st.rerun()
 
 # 5. 현재 방에서 백그라운드 작업이 진행 중일 때 실시간 상태창 표시
 active_task = task_mgr["tasks"].get(current_task_key)
