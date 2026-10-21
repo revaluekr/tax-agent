@@ -21,7 +21,7 @@ from reportlab.platypus import (
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
-from agent import run_agent
+from agent import run_agent, get_monthly_usage, is_pro_budget_exceeded
 
 # 1. 웹 페이지 기본 설정
 st.set_page_config(
@@ -31,7 +31,7 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------
-# 💎 프리미엄 오피스 커스텀 CSS 스킨 (폰트, 표, 헤더, 워터마크 숨김)
+# 💎 프리미엄 오피스 커스텀 CSS 스킨 (기존 로봇 디자인 유지 + 초록 배경 & 흰색 아이콘)
 # ---------------------------------------------------------
 st.markdown("""
 <style>
@@ -49,6 +49,18 @@ h1 {
     border-bottom: 2px solid #e2e8f0;
     padding-bottom: 12px !important;
     margin-bottom: 16px !important;
+}
+
+/* 🤖 기본 답변 로봇 아이콘 디자인 100% 유지 + 초록색 배경(#22c55e) & 흰색 아이콘(#ffffff) */
+[data-testid="chatAvatarIcon-assistant"],
+div[data-testid="stChatMessageAvatarAssistant"] {
+    background-color: #22c55e !important;
+    color: #ffffff !important;
+}
+[data-testid="chatAvatarIcon-assistant"] svg,
+div[data-testid="stChatMessageAvatarAssistant"] svg {
+    fill: #ffffff !important;
+    color: #ffffff !important;
 }
 
 /* 보고서 대제목 (### 1. 결론, ### 2. 내용, ### 3. 관련법령) */
@@ -104,7 +116,7 @@ div[data-testid="stChatMessageContent"] tr:nth-child(even) td {
 /* 상단 모드 안내 인용구 박스 (> ⚡ / > 🧠) */
 div[data-testid="stChatMessageContent"] blockquote {
     background-color: #f8fafc;
-    border-left: 4px solid #3b82f6;
+    border-left: 4px solid #22c55e;
     padding: 8px 14px;
     border-radius: 6px;
     color: #334155;
@@ -120,12 +132,12 @@ div.stDownloadButton > button {
     transition: all 0.15s ease-in-out !important;
 }
 div.stDownloadButton > button:hover {
-    border-color: #1e3a8a !important;
-    color: #1e3a8a !important;
-    background-color: #f1f5f9 !important;
+    border-color: #16a34a !important;
+    color: #15803d !important;
+    background-color: #f0fdf4 !important;
 }
 
-/* API 연동 상태 LED 카드 */
+/* API 연동 상태 및 요금 계량기 카드 */
 .api-led-box {
     background-color: #ffffff;
     border: 1px solid #e2e8f0;
@@ -135,6 +147,15 @@ div.stDownloadButton > button:hover {
     line-height: 1.75;
     color: #334155;
     box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+}
+.billing-card {
+    background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
+    border: 1px solid #86efac;
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin-bottom: 8px;
+    font-size: 0.85rem;
+    color: #14532d;
 }
 
 /* 불필요한 Streamlit 기본 푸터 숨김 */
@@ -588,23 +609,34 @@ def create_pdf_report(report_text: str) -> bytes:
     return buffer.getvalue()
 
 # ---------------------------------------------------------
-# 2. 왼쪽 사이드바 제어판 (Pro 토글 스위치 + 7대 기관 LED 상태창 장착)
+# 2. 왼쪽 사이드바 제어판 (요금 계량기 및 확인 버튼 좌측 최하단 배치)
 # ---------------------------------------------------------
+usage_stats = get_monthly_usage()
+budget_exceeded, cur_krw, limit_krw = is_pro_budget_exceeded()
+usage_ratio = min(1.0, cur_krw / limit_krw) if limit_krw > 0 else 0.0
+
 with st.sidebar:
     st.title("⚙️ 에이전트 제어판")
     
-    # 🎛️ 1) Pro 심층 모드(3배 리미트 해제) 원클릭 토글 스위치
+    # 🎛️ 1) Pro 심층 모드(3배 리미트 해제) 원클릭 토글 스위치 (월 20,000원 초과 시 자동 잠금)
     st.subheader("🚀 엔진 출력 모드 제어")
+    if budget_exceeded:
+        st.session_state.pro_toggle_state = False
+
     pro_toggle_on = st.toggle(
         "🧠 Pro 심층 모드 (3배 리미트 해제)",
         value=st.session_state.get("pro_toggle_state", False),
-        help="켜두면 질문 앞에 [프로]를 직접 입력하지 않아도 자동으로 Pro 모델 가동 및 법령·판례·첨부파일 한도가 3배로 전면 개방됩니다."
+        disabled=budget_exceeded,
+        help="켜두면 질문 앞에 [프로]를 입력하지 않아도 Pro 모델 가동 및 데이터·도구 한도가 3배로 확장됩니다. (월 20,000원 초과 시 자동 잠김)"
     )
     st.session_state.pro_toggle_state = pro_toggle_on
-    if pro_toggle_on:
-        st.info("🔥 **Pro 3배 리미트 개방 ON:** 모든 질의에 대해 최대 15만 자 문서 독해 및 30회 도구 호출이 작동합니다.")
+
+    if budget_exceeded:
+        st.error(f"⛔ **월 요금 한도({limit_krw:,.0f}원) 도달:** 과금 보호를 위해 이번 달 Pro 모드가 자동 차단되었습니다. (Flash 모드는 정상 사용 가능)")
+    elif pro_toggle_on:
+        st.info("🔥 **Pro 3배 리미트 개방 ON:** 최대 15만 자 문서 독해 및 30회 도구 호출이 작동합니다.")
     else:
-        st.caption("⚡ **Flash 표준 모드 작동 중:** 빠르고 경제적인 표준 모드로 응답합니다. (대용량 파일 첨부 시 자동 Pro 전환)")
+        st.caption("⚡ **Flash 표준 모드 작동 중:** 빠르고 경제적인 표준 모드로 응답합니다.")
 
     st.divider()
 
@@ -758,7 +790,7 @@ with st.sidebar:
     saved_file_text = st.session_state.room_files[selected_room]["text"]
     
     if saved_file_name:
-        pro_file_tag = " 🧠 [Pro 자동 전환 대상]" if len(saved_file_text) >= 15000 else ""
+        pro_file_tag = " 🧠 [Pro 자동 전환 대상]" if (len(saved_file_text) >= 15000 and not budget_exceeded) else ""
         st.success(f"📎 현재 유지 중인 파일: **{saved_file_name}** ({len(saved_file_text):,}자){pro_file_tag}")
         if st.button("❌ 이 방의 첨부파일만 제거", key=f"remove_file_{selected_room}", use_container_width=True):
             st.session_state.room_files[selected_room] = {"name": None, "text": ""}
@@ -770,7 +802,7 @@ with st.sidebar:
 
     st.divider()
 
-    # 📊 5) 사이드바 하단: 7대 국가·공공기관 API 실시간 연동 상태 그린 라이트(LED) 패널
+    # 📊 5) 7대 국가·공공기관 API 실시간 연동 상태 그린 라이트(LED) 패널
     st.subheader("📡 7대 기관 DB 실시간 연동 상태")
     led_law   = "🟢" if _check_api_configured(["LAW_API_OC", "OC"]) else "🟡"
     led_nts   = "🟢" if _check_api_configured(["NTS_API_KEY", "DATA_GO_KR_KEY", "PUBLIC_DATA_KEY"]) else "🟡"
@@ -791,17 +823,56 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
 
+    st.divider()
+
+    # 💳 6) [좌측 최하단 배치] 당월 API 실시간 요금 계량기 및 과금/키 확인 버튼
+    st.subheader("💳 당월 API 사용량 및 요금 관리")
+    total_tokens_k = (usage_stats.get("input_tokens", 0) + usage_stats.get("output_tokens", 0)) / 1000.0
+    status_color = "#dc2626" if budget_exceeded else ("#d97706" if usage_ratio >= 0.8 else "#15803d")
+
+    st.markdown(f"""
+    <div class="billing-card">
+        <div style="font-weight:700; color:{status_color}; margin-bottom:4px;">
+            📊 {usage_stats['year_month']}월 실시간 요금 계량기
+        </div>
+        <div style="font-size:1.15rem; font-weight:800; color:#0f172a;">
+            {cur_krw:,.0f}원 <span style="font-size:0.82rem; font-weight:500; color:#475569;">/ 한도 {limit_krw:,.0f}원 ({usage_ratio*100:.1f}%)</span>
+        </div>
+        <div style="font-size:0.78rem; color:#334155; margin-top:4px;">
+            • 호출: Flash <b>{usage_stats.get('flash_calls', 0)}회</b> · Pro <b>{usage_stats.get('pro_calls', 0)}회</b><br>
+            • 누적 토큰: <b>{total_tokens_k:,.1f}K</b> (갱신: {usage_stats.get('updated_at', '-')})<br>
+            • <b>월 {limit_krw:,.0f}원 초과 시 Pro 모드 자동 차단</b>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    st.progress(usage_ratio)
+
+    if st.button("🔄 실시간 사용량 새로고침", use_container_width=True):
+        st.rerun()
+
+    col_b1, col_b2 = st.columns(2)
+    with col_b1:
+        st.link_button("💳 구글 결제내역", "https://console.cloud.google.com/billing", use_container_width=True)
+    with col_b2:
+        st.link_button("🔑 내 API 키 확인", "https://aistudio.google.com/apikey", use_container_width=True)
+
 # ---------------------------------------------------------
-# 3. 메인 화면 및 현재 선택된 대화방 렌더링
+# 3. 메인 화면 및 현재 선택된 대화방 렌더링 (순정 로봇 아이콘 + 초록 배경 CSS 적용)
 # ---------------------------------------------------------
 current_messages = st.session_state.chat_rooms[selected_room]
 current_room_title = st.session_state.room_titles[selected_room]
 current_file_info = st.session_state.room_files[selected_room]
 
-mode_status_str = "🧠 **Pro 심층 모드 (3배 리미트 개방 ON)**" if pro_toggle_on else "⚡ **Flash 표준 모드 (고속 검토)**"
+if budget_exceeded:
+    mode_status_str = f"⛔ **Pro 차단됨 (월 한도 {limit_krw:,.0f}원 도달 → Flash 안전 작동 중)**"
+elif pro_toggle_on:
+    mode_status_str = "🧠 **Pro 심층 모드 (3배 리미트 개방 ON)**"
+else:
+    mode_status_str = "⚡ **Flash 표준 모드 (고속 검토)**"
+
 st.title(f"⚖️ 세무·법령·회계 자율 에이전트 — [{selected_room}: {current_room_title}]")
 st.markdown(
-    f"💡 **현재 엔진 상태:** {mode_status_str} &nbsp;|&nbsp; 좌측 사이드바의 **토글 스위치**를 켜거나 질문 맨 앞에 **`[프로]`**를 입력하면 데이터·도구 한도가 3배로 확장됩니다."
+    f"💡 **현재 엔진 상태:** {mode_status_str} &nbsp;|&nbsp; 당월 누적 예상 요금: **`{cur_krw:,.0f}원 / {limit_krw:,.0f}원`**"
 )
 
 for idx, message in enumerate(current_messages):
@@ -836,7 +907,6 @@ for idx, message in enumerate(current_messages):
                     key=f"md_{effective_ws_id}_{selected_room}_{idx}",
                     use_container_width=True
                 )
-            # 📋 4) 카톡·이메일·문서 붙여넣기용 원클릭 클립보드 복사 블록
             with st.expander("📋 카톡·이메일 전송용 텍스트 원클릭 복사 (우측 상단 복사 아이콘 클릭)"):
                 st.code(_extract_clean_copy_text(message["content"]), language="markdown")
 
@@ -845,9 +915,8 @@ if prompt := st.chat_input(
     placeholder=f"[{selected_room}] 검토할 이슈를 입력하세요 (좌측 Pro 토글 ON 또는 맨 앞에 [프로] 입력 시 3배 개방)",
     key=f"chat_input_{effective_ws_id}_{selected_room}"
 ):
-    # 좌측 토글 스위치가 켜져 있으면 자동으로 질문 앞에 [프로] 태그 부착
     effective_prompt = prompt.strip()
-    if pro_toggle_on and not effective_prompt.startswith("[프로]"):
+    if pro_toggle_on and not budget_exceeded and not effective_prompt.startswith("[프로]"):
         effective_prompt = f"[프로] {effective_prompt}"
 
     has_attached_file = bool(current_file_info["name"] and current_file_info["text"])
@@ -858,7 +927,11 @@ if prompt := st.chat_input(
         st.session_state.room_titles[selected_room] = auto_title
         current_room_title = auto_title
 
-    is_pro_request = effective_prompt.startswith("[프로]") or (has_attached_file and len(current_file_info["text"]) >= 15000)
+    is_pro_request = (
+        not budget_exceeded and (
+            effective_prompt.startswith("[프로]") or (has_attached_file and len(current_file_info["text"]) >= 15000)
+        )
+    )
     msg_char_cap = 24000 if is_pro_request else 8000
 
     history_context = ""
