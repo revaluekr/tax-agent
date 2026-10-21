@@ -1556,4 +1556,69 @@ for idx, message in enumerate(current_messages):
                     "📧 이메일 회신 초안 (Flash)",
                     key=f"email_{effective_ws_id}_{selected_room}_{idx}",
                     disabled=is_current_room_running,
-                    use_container_width=
+                    use_container_width=True
+                ):
+                    _trigger_agent_task(
+                        effective_ws_id, selected_room,
+                        "방금 작성한 검토 결과를 바탕으로, 거래처에 발송할 정식 비즈니스 이메일 회신 초안(제목, 인사말, 핵심 검토 결과 요약, 실무 유의사항, 맺음말 포함)을 깔끔하게 작성해 줘.",
+                        pro_toggle_on, budget_exceeded, force_flash=True
+                    )
+            with act3:
+                if st.button(
+                    "🧠 [프로] 3배 개방 재검토",
+                    key=f"repro_{effective_ws_id}_{selected_room}_{idx}",
+                    disabled=(is_current_room_running or budget_exceeded),
+                    use_container_width=True
+                ):
+                    _trigger_agent_task(
+                        effective_ws_id, selected_room,
+                        "[프로] 직전 질문 사안에 대해 관련 법령·시행령·판례·심판례·예규와 예외 요건까지 데이터·도구 한도를 3배 개방하여 심층 재검토해 줘.",
+                        pro_toggle_on, budget_exceeded, force_flash=False
+                    )
+
+            with st.expander("📋 카톡·이메일 전송용 텍스트 원클릭 복사 (우측 상단 복사 아이콘 클릭)"):
+                st.code(_extract_clean_copy_text(message["content"]), language="markdown")
+
+# 4. 새로운 질문 입력 시 -> 공통 백그라운드 실행기 호출
+if prompt := st.chat_input(
+    placeholder=(
+        f"⏳ [{selected_room}] 현재 백그라운드 정밀 검토 진행 중입니다... (다른 대화방으로 이동하여 추가 질문을 하실 수 있습니다)"
+        if is_current_room_running else
+        f"[{selected_room}] 검토할 이슈를 입력하세요 (좌측 Pro 토글 ON 또는 맨 앞에 [프로] 입력 시 3배 개방)"
+    ),
+    disabled=is_current_room_running,
+    key=f"chat_input_{effective_ws_id}_{selected_room}"
+):
+    _trigger_agent_task(
+        effective_ws_id=effective_ws_id,
+        selected_room=selected_room,
+        raw_prompt=prompt,
+        pro_toggle_on=pro_toggle_on,
+        budget_exceeded=budget_exceeded,
+        force_flash=False
+    )
+
+# 5. 현재 방에서 백그라운드 작업이 진행 중일 때 실시간 상태창 표시
+active_task = task_mgr["tasks"].get(current_task_key)
+if active_task and active_task.get("status") == "running":
+    is_pro_running = active_task.get("is_pro", False)
+    status_title = (
+        f"🧠 [{selected_room}] Pro 심층 모드 백그라운드 가동 중 (데이터·도구 한도 3배 개방)..."
+        if is_pro_running else
+        f"⚡ [{selected_room}] 실시간 법령·공시 DB 조회 및 백그라운드 정밀 검토 중..."
+    )
+    with st.chat_message("assistant"):
+        with st.status(status_title, expanded=True) as status_box:
+            st.write("🔎 **1단계:** 질의 쟁점 분석 및 7대 국가·공공기관(법제처·국세청·DART·국토부·한은) DB 탐색 중...")
+            st.write("🧮 **2단계:** 관련 법령·판례 원문 파싱 및 파이썬 1원 단위 정밀 수리 계산기 구동 중...")
+            st.write("🛡️ **3단계:** 미조회 근거 강제 차단(`_scan_violations`) 및 듀얼 AI 의미 감수(`_semantic_verify`) 수행 중...")
+            st.caption("💡 **백그라운드 멀티태스킹 작동 중:** 지금 좌측 버튼을 누르거나 다른 대화방으로 이동하셔도 이 방의 AI 검토는 멈추지 않고 끝까지 완료됩니다.")
+            while active_task.get("status") == "running":
+                time.sleep(0.4)
+            status_box.update(label="✅ 정밀 검토 및 무결성 감수 완료", state="complete", expanded=False)
+
+    ans = active_task.get("response", "")
+    if ans and (not current_messages or current_messages[-1].get("role") != "assistant" or current_messages[-1].get("content") != ans):
+        current_messages.append({"role": "assistant", "content": ans})
+    task_mgr["tasks"].pop(current_task_key, None)
+    st.rerun()
