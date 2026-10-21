@@ -1,5 +1,6 @@
 import os
 import re
+import ast
 import math
 import time
 import contextvars
@@ -28,6 +29,16 @@ def _get_secret_or_env(key_name: str) -> str:
         pass
     return os.getenv(key_name, "").strip().strip('"').strip("'")
 
+def _safe_float(raw_val, default_val: float) -> float:
+    """Secrets에 '2,000'이나 '1,400원'처럼 쉼표·단위가 포함되어 있어도 오류 없이 숫자로 변환합니다."""
+    if raw_val is None or raw_val == "":
+        return float(default_val)
+    try:
+        cleaned = re.sub(r"[^0-9.\-]", "", str(raw_val))
+        return float(cleaned) if cleaned else float(default_val)
+    except Exception:
+        return float(default_val)
+
 def get_live_gemini_key_pool() -> list[tuple[str, str]]:
     """
     유료키만 사용합니다.
@@ -45,31 +56,40 @@ def get_live_gemini_key_pool() -> list[tuple[str, str]]:
 import law_api
 
 def get_law_oc_auto() -> str:
-    """st.secrets, 환경변수, law_api 모듈 속성 및 law_api.py 파일 내부에서 법제처 OC 키를 자동 추출합니다."""
-    for k in ["LAW_API_OC", "OC", "LAW_OC", "LAW_API_KEY", "MOLEG_OC", "DRF_OC"]:
+    """st.secrets, 환경변수, config.py, law_api 모듈 속성 및 파일 내부에서 법제처 OC 키(LAW_OPEN_API_KEY 최우선)를 자동 추출합니다."""
+    for k in ["LAW_OPEN_API_KEY", "LAW_API_OC", "OC", "LAW_OC", "LAW_API_KEY", "MOLEG_OC", "DRF_OC"]:
         val = _get_secret_or_env(k)
         if val:
             return val
-    for attr in ["OC", "LAW_API_OC", "LAW_OC", "LAW_API_KEY", "API_KEY", "USER_OC", "oc"]:
+    for attr in ["LAW_OPEN_API_KEY", "OC", "LAW_API_OC", "LAW_OC", "LAW_API_KEY", "API_KEY", "USER_OC", "oc"]:
         val = getattr(law_api, attr, None)
         if isinstance(val, str) and val.strip():
             return val.strip()
-    if os.path.exists("law_api.py"):
-        try:
-            with open("law_api.py", "r", encoding="utf-8") as f:
-                src = f.read()
-            m = re.search(r'(?:OC|LAW_API_OC|LAW_OC|LAW_API_KEY)\s*=\s*["\']([^"\']+)["\']', src)
-            if m and m.group(1).strip():
-                return m.group(1).strip()
-            m2 = re.search(r'OC=([A-Za-z0-9_.\-]+)', src)
-            if m2 and m2.group(1).strip() and not m2.group(1).startswith("{"):
-                return m2.group(1).strip()
-        except Exception:
-            pass
+    try:
+        import config
+        for attr in ["LAW_OPEN_API_KEY", "OC", "LAW_API_OC", "LAW_OC", "LAW_API_KEY"]:
+            val = getattr(config, attr, None)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+    except Exception:
+        pass
+    for fname in ["law_api.py", "config.py"]:
+        if os.path.exists(fname):
+            try:
+                with open(fname, "r", encoding="utf-8") as f:
+                    src = f.read()
+                m = re.search(r'(?:LAW_OPEN_API_KEY|OC|LAW_API_OC|LAW_OC|LAW_API_KEY)\s*=\s*["\']([^"\']+)["\']', src)
+                if m and m.group(1).strip():
+                    return m.group(1).strip()
+                m2 = re.search(r'OC=([A-Za-z0-9_.\-]+)', src)
+                if m2 and m2.group(1).strip() and not m2.group(1).startswith("{"):
+                    return m2.group(1).strip()
+            except Exception:
+                pass
     return ""
 
 # ---------------------------------------------------------
-# ⚡ [고도화 2] 자주 쓰는 법령 목록·조문 원문 당일 메모리 캐싱 (12시간 TTL)
+# ⚡ 자주 쓰는 법령 목록·조문 원문 당일 메모리 캐싱 (12시간 TTL)
 # ---------------------------------------------------------
 _LAW_MEMORY_CACHE = {}
 _LAW_CACHE_LOCK = threading.Lock()
@@ -92,53 +112,100 @@ def _cache_set(key: tuple, val) -> None:
         _LAW_MEMORY_CACHE[key] = (time.time(), val)
 
 # ---------------------------------------------------------
-# 💰 월간 API 사용량·요금 실시간 추적 및 월 20,000원 Pro 자동 차단기
+# 💰 대화방 1개당 2,000원(ROOM_LIMIT_KRW) 정밀 요금 계량기 및 Pro 차단기
 # ---------------------------------------------------------
 USAGE_STORAGE_DIR = ".workspace_storage"
 os.makedirs(USAGE_STORAGE_DIR, exist_ok=True)
 USAGE_FILE_PATH = os.path.join(USAGE_STORAGE_DIR, "api_usage_stats.json")
+_USAGE_LOCK = threading.Lock()
 
-MONTHLY_PRO_LIMIT_KRW = float(_get_secret_or_env("MONTHLY_PRO_LIMIT_KRW") or 20000.0)
-USD_TO_KRW_RATE = 1400.0
+ROOM_LIMIT_KRW = _safe_float(_get_secret_or_env("ROOM_LIMIT_KRW"), 2000.0)
+MONTHLY_PRO_LIMIT_KRW = ROOM_LIMIT_KRW  # 하위 호환용 별칭
+USD_TO_KRW_RATE = _safe_float(_get_secret_or_env("USD_TO_KRW_RATE"), 1400.0)
 
 _MODEL_PRICING_USD_PER_1M = {
-    "PRO":   {"in": 1.50, "out": 10.00},
-    "FLASH": {"in": 0.15, "out": 0.60},
+    "PRO":   {"in": 2.00, "out": 12.00},   # gemini-3.1-pro-preview 기준
+    "FLASH": {"in": 0.75, "out": 3.75},    # gemini-3.8-flash 기준
 }
 
-def _current_ym() -> str:
-    return datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m")
+_ACTIVE_ROOM_KEY = contextvars.ContextVar("active_room_key", default="default_public::대화방 1")
 
-def get_monthly_usage() -> dict:
-    ym = _current_ym()
-    default_stats = {
-        "year_month": ym,
+def set_active_room_key(room_key: str):
+    return _ACTIVE_ROOM_KEY.set(room_key or "default_public::대화방 1")
+
+def _default_bucket() -> dict:
+    return {
         "total_krw": 0.0,
         "total_usd": 0.0,
         "pro_calls": 0,
         "flash_calls": 0,
         "input_tokens": 0,
         "output_tokens": 0,
-        "limit_krw": MONTHLY_PRO_LIMIT_KRW,
+        "limit_krw": ROOM_LIMIT_KRW,
         "updated_at": "-"
     }
+
+def _load_all_usage_store() -> dict:
     if os.path.exists(USAGE_FILE_PATH):
         try:
             with open(USAGE_FILE_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            if data.get("year_month") == ym:
-                for k, v in default_stats.items():
-                    data.setdefault(k, v)
-                data["limit_krw"] = MONTHLY_PRO_LIMIT_KRW
+            if isinstance(data, dict) and "rooms" in data:
                 return data
         except Exception:
             pass
-    return default_stats
+    return {"rooms": {}}
 
-def _record_token_usage(model_id: str, in_tokens: int, out_tokens: int, count_call: bool = True) -> None:
+def _save_all_usage_store(store: dict) -> None:
+    try:
+        with open(USAGE_FILE_PATH, "w", encoding="utf-8") as f:
+            json.dump(store, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"⚠️ 사용량 기록 저장 오류: {e}")
+
+def get_room_usage(room_key: str = "") -> dict:
+    """특정 대화방(room_key)의 누적 토큰 및 원화/달러 환산 요금 데이터를 반환합니다."""
+    r_key = room_key or _ACTIVE_ROOM_KEY.get()
+    with _USAGE_LOCK:
+        store = _load_all_usage_store()
+        bucket = store.get("rooms", {}).get(r_key, {})
+        res = _default_bucket()
+        for k in res:
+            if k in bucket:
+                res[k] = bucket[k]
+        res["limit_krw"] = ROOM_LIMIT_KRW
+        return res
+
+def set_room_usage_from_backup(room_key: str, usage_data: dict) -> None:
+    """대화방 백업 복원 또는 디스크 로드 시 해당 방의 요금 데이터를 동기화합니다."""
+    if not room_key or not isinstance(usage_data, dict):
+        return
+    with _USAGE_LOCK:
+        store = _load_all_usage_store()
+        b = _default_bucket()
+        for k in b:
+            if k in usage_data:
+                b[k] = usage_data[k]
+        b["limit_krw"] = ROOM_LIMIT_KRW
+        store.setdefault("rooms", {})[room_key] = b
+        _save_all_usage_store(store)
+
+def reset_room_usage(room_key: str) -> None:
+    """[현재 방 비우기] 시 해당 대화방의 요금·토큰 계량기를 즉시 0원으로 초기화합니다."""
+    if not room_key:
+        return
+    with _USAGE_LOCK:
+        store = _load_all_usage_store()
+        store.setdefault("rooms", {})[room_key] = _default_bucket()
+        _save_all_usage_store(store)
+
+def get_monthly_usage(room_key: str = "") -> dict:
+    return get_room_usage(room_key)
+
+def _record_token_usage(model_id: str, in_tokens: int, out_tokens: int, count_call: bool = True, room_key: str = "") -> None:
     if in_tokens <= 0 and out_tokens <= 0:
         return
-    stats = get_monthly_usage()
+    r_key = room_key or _ACTIVE_ROOM_KEY.get()
     is_pro_model = ("pro" in model_id.lower()) or ("argon" in model_id.lower())
     tier_key = "PRO" if is_pro_model else "FLASH"
     price_info = _MODEL_PRICING_USD_PER_1M[tier_key]
@@ -146,49 +213,76 @@ def _record_token_usage(model_id: str, in_tokens: int, out_tokens: int, count_ca
     cost_usd = (in_tokens / 1_000_000.0) * price_info["in"] + (out_tokens / 1_000_000.0) * price_info["out"]
     cost_krw = cost_usd * USD_TO_KRW_RATE
 
-    stats["total_usd"] = round(stats.get("total_usd", 0.0) + cost_usd, 6)
-    stats["total_krw"] = round(stats.get("total_krw", 0.0) + cost_krw, 2)
-    stats["input_tokens"] = int(stats.get("input_tokens", 0)) + int(in_tokens)
-    stats["output_tokens"] = int(stats.get("output_tokens", 0)) + int(out_tokens)
-    if count_call:
-        if is_pro_model:
-            stats["pro_calls"] = int(stats.get("pro_calls", 0)) + 1
-        else:
-            stats["flash_calls"] = int(stats.get("flash_calls", 0)) + 1
-    stats["updated_at"] = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%m/%d %H:%M:%S")
+    with _USAGE_LOCK:
+        store = _load_all_usage_store()
+        rooms = store.setdefault("rooms", {})
+        stats = rooms.get(r_key, _default_bucket())
 
-    try:
-        with open(USAGE_FILE_PATH, "w", encoding="utf-8") as f:
-            json.dump(stats, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"⚠️ 사용량 기록 저장 오류: {e}")
+        stats["total_usd"] = round(float(stats.get("total_usd", 0.0)) + cost_usd, 6)
+        stats["total_krw"] = round(float(stats.get("total_krw", 0.0)) + cost_krw, 2)
+        stats["input_tokens"] = int(stats.get("input_tokens", 0)) + int(in_tokens)
+        stats["output_tokens"] = int(stats.get("output_tokens", 0)) + int(out_tokens)
+        if count_call:
+            if is_pro_model:
+                stats["pro_calls"] = int(stats.get("pro_calls", 0)) + 1
+            else:
+                stats["flash_calls"] = int(stats.get("flash_calls", 0)) + 1
+        stats["limit_krw"] = ROOM_LIMIT_KRW
+        stats["updated_at"] = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%m/%d %H:%M:%S")
+        rooms[r_key] = stats
+        _save_all_usage_store(store)
 
-def _extract_and_log_response_usage(response, model_id: str, count_call: bool = True, est_in_chars: int = 0, est_out_chars: int = 0) -> None:
+def _extract_and_log_response_usage(
+    response,
+    model_id: str,
+    count_call: bool = True,
+    est_in_chars: int = 0,
+    est_out_chars: int = 0,
+    tool_calls_count: int = 0,
+    tool_result_chars: int = 0
+) -> None:
     in_tok, out_tok = 0, 0
     try:
         um = getattr(response, "usage_metadata", None)
         if um:
             in_tok = int(getattr(um, "prompt_token_count", 0) or 0)
-            out_tok = int(getattr(um, "candidates_token_count", 0) or 0)
+            out_tok = (
+                int(getattr(um, "candidates_token_count", 0) or 0)
+                + int(getattr(um, "thoughts_token_count", 0) or 0)
+            )
     except Exception:
         pass
     if in_tok == 0 and est_in_chars > 0:
         in_tok = int(est_in_chars * 0.7)
     if out_tok == 0 and est_out_chars > 0:
         out_tok = int(est_out_chars * 0.7)
+
+    if tool_calls_count > 0:
+        base_prompt_tok = int(est_in_chars * 0.7)
+        avg_tool_tok = int((tool_result_chars * 0.7) / max(1, tool_calls_count))
+        intermediate_in_tok = sum(base_prompt_tok + (avg_tool_tok * step) for step in range(tool_calls_count))
+        intermediate_out_tok = tool_calls_count * 250
+        in_tok += intermediate_in_tok
+        out_tok += intermediate_out_tok
+
     _record_token_usage(model_id, in_tok, out_tok, count_call=count_call)
 
-def is_pro_budget_exceeded() -> tuple[bool, float, float]:
-    stats = get_monthly_usage()
+def is_pro_budget_exceeded(room_key: str = "") -> tuple[bool, float, float]:
+    stats = get_room_usage(room_key)
     cur_krw = float(stats.get("total_krw", 0.0))
-    limit_krw = float(stats.get("limit_krw", MONTHLY_PRO_LIMIT_KRW))
+    limit_krw = float(stats.get("limit_krw", ROOM_LIMIT_KRW))
     return (cur_krw >= limit_krw), cur_krw, limit_krw
 
 
 # ---------------------------------------------------------
-# 🔎 근거 추적·검증 및 Pro 모드 3배 리미트 해제(Unleash) 동적 제어
+# 🔎 근거 추적·검증 및 VERIFY_MODE ('strict' 기본 설정) 제어
 # ---------------------------------------------------------
 _TOOL_TRACE = contextvars.ContextVar("tool_trace", default=None)
+
+def _verify_mode() -> str:
+    """기본값을 'strict'(미조회 근거·불일치 문장 즉시 삭제, 일부 불일치만 ⚠️ 표시)로 작동합니다."""
+    m = (_get_secret_or_env("VERIFY_MODE") or "strict").lower().strip()
+    return m if m in ("balanced", "strict", "loose") else "strict"
 
 def _new_trace(unleash: bool = False) -> dict:
     return {
@@ -205,7 +299,7 @@ def _is_unleashed() -> bool:
     trace = _TOOL_TRACE.get()
     return bool(trace and trace.get("unleash"))
 
-_SEARCH_LIMIT = {"law": 7, "eflaw": 4, "prec": 3, "decc": 3, "expc": 2, "admrul": 2, "ordin": 2}
+_SEARCH_LIMIT = {"law": 7, "prec": 3, "decc": 3, "expc": 2, "admrul": 2, "ordin": 2}
 _DETAIL_LIMIT = {"law": 12, "eflaw": 6, "prec": 3, "decc": 3, "expc": 2, "admrul": 2, "ordin": 2}
 
 def _over_limit(kind: str, target: str) -> bool:
@@ -256,7 +350,7 @@ _ARTICLE_NO = re.compile(r"제\s*(\d+)\s*조(?:\s*의\s*(\d+))?")
 _COMMON_LAWS = [
     "상속세및증여세법", "조세특례제한법", "국세기본법", "국세징수법", "법인세법", "소득세법", "부가가치세법",
     "지방세법", "지방세기본법", "지방세특례제한법", "종합부동산세법", "개별소비세법", "교육세법", "농어촌특별세법",
-    "인지세법", "증권거래세법", "국제조세조정에관한법률", "조세범처벌법", "근로기준법", "근로자퇴직급여보장법",
+    "인지세법", "증권거래세법", "국제조세조정에관한법률", "조세범처벌법", "중소기업기본법", "근로기준법", "근로자퇴직급여보장법",
     "국민연금법", "국민건강보험법", "노인장기요양보험법", "고용보험법", "고용보험및산업재해보상보험의보험료징수등에관한법률",
     "주식회사등의외부감사에관한법률", "상법", "민법", "부동산등기법", "공익법인의설립ㆍ운영에관한법률",
 ]
@@ -275,9 +369,13 @@ def _known_law_titles(trace: dict = None) -> list[str]:
     return sorted(titles, key=len, reverse=True)
 
 def _resolve_law_name(prefix: str, titles: list[str]):
+    """
+    '국세기본법', '중소기업기본법', '지방세기본법'이 '본법'으로 끝난다고 오판되어 검증에서 빠지지 않도록
+    앞 글자가 한글이 아닐 때(독립 단어일 때)만 지시대명사('본법', '이법' 등)로 처리합니다.
+    """
     tail = _norm(prefix)[-40:]
     for suf in _REF_SKIP_SUFFIX:
-        if tail.endswith(suf):
+        if tail == suf or (tail.endswith(suf) and not re.search(r"[가-힣]$", tail[:-len(suf)])):
             return None
     for alias, full in _LAW_ALIASES.items():
         for ext in ("시행규칙", "시행령", ""):
@@ -290,6 +388,8 @@ def _resolve_law_name(prefix: str, titles: list[str]):
     if not m:
         return None
     partial = m.group(1)
+    if partial in _REF_SKIP_SUFFIX:
+        return None
     for t in titles:
         if t.endswith(partial) and len(partial) >= 3:
             return t
@@ -350,6 +450,7 @@ def _article_label(ref: tuple) -> str:
     return f"{name} 제{jo}조" + (f"의{gaji}" if gaji else "")
 
 def _scan_violations(answer: str, trace: dict) -> list[tuple]:
+    """답변을 줄 단위로 검사해 [(줄번호, [위반 설명...], in_refs_section), ...]을 돌려줍니다."""
     detail_blob = _norm(" ".join(trace["detail"]))
     list_blob = _norm(" ".join(trace["list"]))
     fetched = trace["articles"]
@@ -430,12 +531,13 @@ def _scan_violations(answer: str, trace: dict) -> list[tuple]:
 
         parent_stack.append((indent, verified_source and not problems, line_cases))
         if problems:
-            violations.append((i, problems))
+            violations.append((i, problems, in_refs_section))
     return violations
 
 def _violation_labels(violations: list[tuple]) -> list[str]:
     labels = []
-    for _, probs in violations:
+    for item in violations:
+        probs = item[1]
         for p in probs:
             if p not in labels:
                 labels.append(p)
@@ -445,28 +547,71 @@ def _show_diag() -> bool:
     return _get_secret_or_env("SHOW_DIAGNOSTICS").lower() in ("on", "true", "1")
 
 def _redact_lines(answer: str, violations: list[tuple]) -> str:
-    bad = {i: probs for i, probs in violations}
+    """
+    - 지어낸 사건번호('조회 기록 없음')는 어느 모드에서나 즉시 삭제합니다. (사건 소제목 형태의 줄을 지울 때만 하위 들여쓰기 줄을 함께 지우고, 일반 문장이면 하위 요건 목록을 건드리지 않습니다.)
+    - VERIFY_MODE == 'strict' (기본): 재작성 후에도 남은 모든 미검증 근거 줄을 조용히 삭제합니다.
+    - VERIFY_MODE == 'balanced': 지어낸 사건번호 외의 미확인 근거에는 '⚠️(원문 확인 필요)'를 붙입니다.
+    - VERIFY_MODE == 'loose': 지어낸 사건번호만 지우고 나머지는 그대로 둡니다.
+    """
+    vmode = _verify_mode()
+    bad = {item[0]: item[1] for item in violations}
+    lines = answer.split("\n")
     out = []
-    for i, line in enumerate(answer.split("\n")):
+    skip_children_indent = None
+
+    for i, line in enumerate(lines):
+        s = line.strip()
+        indent = len(line) - len(line.lstrip(" "))
+        if skip_children_indent is not None:
+            if s and indent > skip_children_indent:
+                continue
+            elif s:
+                skip_children_indent = None
+
         if i in bad:
             probs = bad[i]
             has_fake_case = any("판례·심판례" in p and "조회 기록 없음" in p for p in probs)
-            if not has_fake_case:
-                out.append(line)
+            should_delete = has_fake_case or (vmode == "strict")
+
+            if should_delete:
+                if has_fake_case and len(s) < 65 and (s.endswith(":") or s.endswith(")") or s.endswith("]**")):
+                    skip_children_indent = indent
+                reasons = [r.split(":")[0] for r in probs]
+                reason_txt = "; ".join(dict.fromkeys(reasons))[:120]
+                if not _show_diag():
+                    print(f"[시스템] 🚫 미검증 근거 삭제: {reason_txt} | {s[:60]}")
+                    continue
+                out.append(" " * indent + f"- 🚫 *(미검증 근거 삭제: {reason_txt})*")
                 continue
-            reasons = [r.split(":")[0] for r in probs]
-            reason_txt = "; ".join(dict.fromkeys(reasons))[:120]
-            if not _show_diag():
-                print(f"[시스템] 🚫 미조회 사건번호 삭제: {reason_txt} | {line.strip()[:60]}")
+            elif vmode == "balanced":
+                if "⚠️" not in line:
+                    out.append(line + " ⚠️*(원문 확인 필요)*")
+                else:
+                    out.append(line)
                 continue
-            indent = len(line) - len(line.lstrip(" "))
-            out.append(" " * indent + f"- 🚫 *(미조회 판례·심판례 삭제: {reason_txt})*")
-            continue
         out.append(line)
     return "\n".join(out)
 
+def _strip_fake_cases_in_track2(answer: str, trace: dict) -> str:
+    """트랙 2(카톡·이메일 초안 등 자유 양식)에서도 조회 기록에 전혀 없는 사건번호가 날조되면 해당 줄을 제거합니다."""
+    if not answer or trace is None:
+        return answer
+    detail_blob = _norm(" ".join(trace["detail"]))
+    list_blob = _norm(" ".join(trace["list"]))
+    out_lines = []
+    for line in answer.split("\n"):
+        fake_nos = [
+            no for no in _find_case_numbers(line)
+            if (no not in detail_blob and no not in list_blob)
+        ]
+        if fake_nos:
+            print(f"[시스템] 🚫 트랙 2 미조회 사건번호 제거: {fake_nos}")
+            continue
+        out_lines.append(line)
+    return "\n".join(out_lines)
+
 # ---------------------------------------------------------
-# 🧪 의미 검증 (검증 모델)
+# 🧪 의미 검증 (검증 모델 — 긴 원문 생략 표시 및 strict 모드 연동)
 # ---------------------------------------------------------
 def _strip_md(text: str) -> str:
     return re.sub(r"[*_`>#]", "", text or "").strip(" -")
@@ -485,7 +630,14 @@ def _extract_claims(answer: str, trace: dict, max_claims: int = 20) -> tuple[lis
         if label not in src_index:
             sid = f"S{len(src_index) + 1}"
             src_index[label] = sid
-            sources[sid] = (label, text[:src_char_cap])
+            if len(text) > src_char_cap:
+                clipped = (
+                    text[:src_char_cap]
+                    + f"\n...[※ 원문 총 {len(text):,}자 중 앞 {src_char_cap:,}자만 표시됨. 생략된 뒷부분에 있을 수 있는 내용은 unsupported로 단정하지 말 것]"
+                )
+            else:
+                clipped = text
+            sources[sid] = (label, clipped)
         return src_index[label]
 
     claims = []
@@ -557,7 +709,7 @@ def _semantic_verify(api_key: str, claims: list, sources: dict, user_query: str 
         "당신은 세무 답변의 근거를 검증하는 감수자입니다. 아래 [사용자 질문(사례 전제)]와 [원문(법령·판례·계산 결과)] 전체를 기준으로 각 [주장]의 '핵심 법적 명제'가 뒷받침되는지 판정하세요.\n"
         "- supported: 핵심 법리가 [원문]에 부합하고, 사례 금액·계산값이 [사용자 질문] 또는 [정밀 계산 완료] 내역과 일치함. 특히 법령 원문의 천분율·만분율(예: 1천분의 70.9, 1천분의 90, 1만분의 91.82)을 백분율(%)로 환산한 수치나 노사 절반(50%, 1/2) 부담분으로 나눈 수치(예: 3.545%, 4.5%, 0.4591%, 건보료 대비 12.95% 등), 같은 뜻의 요약·의역, 원문들을 결합해 도출되는 당연한 세무조정·소득처분 결론은 모두 supported로 판정할 것\n"
         "- partial: 법령상의 고정 기준 수치(예: 세율, 법정한도율, 기준금액)를 [원문]의 환산값과도 다르게 잘못 적은 경우에만 부여할 것. (사용자 질문의 사례 금액이나 단위 환산·절반 분담 계산값이 법조문 글자와 표기 형태만 다르다는 이유로 partial을 주지 말 것!)\n"
-        "- unsupported: 핵심 법리 자체가 [원문] 어디에도 없거나 [원문]과 정면으로 모순되는 경우\n"
+        "- unsupported: 핵심 법리 자체가 [원문]과 정면으로 모순되는 경우 (원문이 일부 생략된 표시가 있을 때는 생략된 부분에 있을 수 있으므로 함부로 unsupported를 주지 말 것)\n"
         "원문 밖의 지식으로 판단하지 마세요. 사소한 표현 차이로 partial/unsupported를 주지 말 것. "
         "reason은 한국어 30자 이내로, 'S1' 같은 번호 대신 법령·판례 이름으로 쓰세요.\n"
         '출력은 JSON 배열만: [{"id": 1, "verdict": "supported", "reason": "..."}]\n\n'
@@ -591,20 +743,85 @@ def _semantic_verify(api_key: str, claims: list, sources: dict, user_query: str 
     return result
 
 def _apply_semantic_results(answer: str, claims: list, verdicts: dict, sources: dict = None) -> tuple[str, dict]:
+    vmode = _verify_mode()
     counts = {"supported": 0, "partial": 0, "unsupported": 0, "unknown": 0}
+    line_actions = {}
     for n, c in enumerate(claims):
         verdict, reason = verdicts.get(n + 1, ("unknown", ""))
-        if verdict == "unsupported" and sources:
-            verdict = "partial"
         counts[verdict] = counts.get(verdict, 0) + 1
         if verdict in ("partial", "unsupported"):
-            print(f"[시스템] ℹ️ 의미 검증 참고({verdict}): {reason} | {c['text'][:60]}")
-    return answer, counts
+            line_actions[c["line"]] = (verdict, reason)
+            print(f"[시스템] 🧪 의미 검증 감지({verdict}): {reason} | {c['text'][:60]}")
+
+    if not line_actions or vmode == "loose":
+        return answer, counts
+
+    out_lines = []
+    for idx, line in enumerate(answer.split("\n")):
+        if idx in line_actions:
+            v_type, r_txt = line_actions[idx]
+            if v_type == "unsupported" and vmode == "strict":
+                if _show_diag():
+                    indent = len(line) - len(line.lstrip(" "))
+                    out_lines.append(" " * indent + f"- 🚫 *(의미 검증 불일치 삭제: {r_txt})*")
+                continue
+            else:
+                if "⚠️" not in line:
+                    note_str = f" ⚠️*(원문 확인 필요: {r_txt})*" if r_txt else " ⚠️*(원문 확인 필요)*"
+                    out_lines.append(line + note_str)
+                else:
+                    out_lines.append(line)
+                continue
+        out_lines.append(line)
+    return "\n".join(out_lines), counts
 
 
 # ---------------------------------------------------------
-# ✨ 스마트 법령 텍스트 압축기 (복수 조문·항 번호 정규식 매칭 패치 완료)
+# ✨ 스마트 법령 텍스트 압축기 & law_api.py 15,000자 절단 우회 직접 파서
 # ---------------------------------------------------------
+def _fetch_full_law_xml_direct(doc_id: str, query_filter: str = "") -> str:
+    """
+    law_api.py가 조문을 15,000자에서 자르는 한계를 우회하기 위해,
+    원문이 잘렸거나 Pro 모드일 때 법제처 DRF XML에서 직접 조문 전체를 무손실로 읽어옵니다.
+    """
+    oc = get_law_oc_auto()
+    if not oc or not str(doc_id).strip().isdigit():
+        return ""
+    for id_param in ("ID", "MST"):
+        url = f"http://www.law.go.kr/DRF/lawService.do?OC={oc}&target=law&{id_param}={str(doc_id).strip()}&type=XML"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                xml_bytes = resp.read()
+            root = ET.fromstring(xml_bytes)
+            lname = (root.findtext(".//법령명_한글") or root.findtext(".//법령명한글") or "").strip()
+            if not lname:
+                continue
+            article_blocks = []
+            for unit in root.findall(".//조문단위"):
+                jo_content = (unit.findtext("조문내용") or "").strip()
+                if not jo_content:
+                    continue
+                lines = [jo_content]
+                for hang in unit.findall(".//항"):
+                    h_txt = (hang.findtext("항내용") or "").strip()
+                    if h_txt:
+                        lines.append(h_txt)
+                    for ho in hang.findall(".//호"):
+                        ho_txt = (ho.findtext("호내용") or "").strip()
+                        if ho_txt:
+                            lines.append("  " + ho_txt)
+                        for mok in ho.findall(".//목"):
+                            mok_txt = (mok.findtext("목내용") or "").strip()
+                            if mok_txt:
+                                lines.append("    " + mok_txt)
+                article_blocks.append("\n".join(lines))
+            if article_blocks:
+                return f"📘 [{lname}]\n\n" + "\n\n".join(article_blocks)
+        except Exception:
+            continue
+    return ""
+
 def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
     if not raw_text:
         return ""
@@ -670,7 +887,7 @@ def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
 
 
 # ---------------------------------------------------------
-# 1. 모델 설정 및 개편된 3대 라우팅 프로토콜 + 월 2만원 Pro 차단기
+# 1. 모델 설정 및 개편된 3대 라우팅 프로토콜 + 대화방당 2,000원 Pro 차단기
 # ---------------------------------------------------------
 def _model_id(env_key: str, default: str) -> str:
     return _get_secret_or_env(env_key) or default
@@ -678,7 +895,11 @@ def _model_id(env_key: str, default: str) -> str:
 FLASH_MODEL_ID     = _model_id("GEMINI_FLASH_MODEL", "gemini-3.8-flash")
 FLASH_BACKUP_ID    = _model_id("GEMINI_FLASH_BACKUP_MODEL", "gemini-3.6-flash")
 VERIFIER_MODEL_ID  = _model_id("GEMINI_VERIFIER_MODEL", "gemini-3.8-flash")
-SEMANTIC_VERIFY_ON = _get_secret_or_env("SEMANTIC_VERIFY").lower() not in ("off", "false", "0")
+SEMANTIC_VERIFY_ON = (
+    (_get_secret_or_env("SEMANTIC_VERIFY").lower() in ("on", "true", "1"))
+    if _verify_mode() == "loose"
+    else (_get_secret_or_env("SEMANTIC_VERIFY").lower() not in ("off", "false", "0"))
+)
 PAID_PRO_MODEL_IDS = [
     _model_id("GEMINI_PAID_PRO_MODEL", "gemini-3.1-pro-preview"),
     "gemini-4-argon",
@@ -705,11 +926,11 @@ def select_optimal_model(user_query: str, has_file: bool = False, full_input_len
 
     if (wants_manual_pro or wants_file_pro) and budget_exceeded:
         block_notice = (
-            f"> ⛔ **[월간 요금 한도({limit_krw:,.0f}원) 도달 — Pro 모드 자동 차단됨]** "
-            f"당월 누적 API 예상 요금(**{cur_krw:,.0f}원**)이 설정된 월 한도({limit_krw:,.0f}원)를 초과하여 "
-            "과금 보호를 위해 **Flash 표준 모드**로 자동 전환되었습니다.\n"
+            f"> ⛔ **[이 대화방 한도({limit_krw:,.0f}원) 도달 — Pro 모드 자동 차단됨]** "
+            f"현재 대화방의 누적 예상 요금(**{cur_krw:,.0f}원**)이 방 한도({limit_krw:,.0f}원)를 초과하여 "
+            "과금 보호를 위해 **Flash 표준 모드**로 자동 전환되었습니다. (새 대화방을 이용하거나 현재 방을 비우시면 Pro가 다시 활성화됩니다.)\n"
         )
-        return "FLASH", "⚡ **[Flash 표준 모드 (월 한도 초과 보호 작동)]** 실무 표준 검토", block_notice
+        return "FLASH", "⚡ **[Flash 표준 모드 (대화방 한도 보호 작동)]** 실무 표준 검토", block_notice
 
     if wants_manual_pro:
         return (
@@ -737,8 +958,16 @@ def select_optimal_model(user_query: str, has_file: bool = False, full_input_len
 
     return "FLASH", "⚡ **[Flash 빠른 검토 모드]** 실무 표준 검토", ""
 
-# 2. Gemini 도구 정의 (당일 12시간 메모리 캐싱 + 구법 타임머신 도구 포함)
+# ---------------------------------------------------------
+# 2. Gemini 도구 정의 (12개 도구 전체 docstring 완벽 복원 및 안전 예외 처리)
+# ---------------------------------------------------------
 def search_law_for_gemini(keyword: str, target: str = "law") -> str:
+    """
+    국가법령정보센터에서 법령, 판례, 행정규칙, 법령해석례, 조세심판원 결정례, 지방세 자치법규(조례) 목록과 일련번호(ID)를 검색합니다.
+    - target: 'law'(법령), 'prec'(판례), 'decc'(조세심판원 결정례), 'admrul'(훈령·예규·고시), 'expc'(법령해석례), 'ordin'(지자체 조례)
+    - target='law'일 때 keyword에는 '법령명만' 넣을 것 (예: '소득세법', '소득세법 시행령'). 주제어는 넣지 말 것.
+    - target='prec'/'decc'/'expc'는 핵심 주제어(예: '업무무관 가지급금')나 사건번호(예: '2005두9415')로 검색할 것.
+    """
     if _over_limit("search", target):
         print(f"\n[시스템] ⛔ 검색 한도 도달 → 차단: '{keyword}' (대상: {target})")
         return (f"[검색 한도 도달] 이번 질문에서 '{target}' 검색은 더 할 수 없습니다. "
@@ -751,12 +980,19 @@ def search_law_for_gemini(keyword: str, target: str = "law") -> str:
         print(f"\n[시스템] ⚡ [메모리 캐시 즉시 히트(0.001초)] 목록 검색: '{keyword}' (대상: {target})")
     else:
         print(f"\n[시스템] 💡 목록 검색 도구 가동: '{keyword}' (대상: {target})")
-        results = law_api.search_law_data(keyword, target)
+        try:
+            results = law_api.search_law_data(keyword, target)
+        except Exception as e:
+            print(f"[시스템] ⚠️ 법제처 검색 오류: {e}")
+            results = None
         used_keyword = keyword
 
         if not results and target in ("prec", "decc", "expc", "admrul"):
             print(f"[시스템]    ↳ 제목 검색 결과 없음 → 본문 검색으로 재시도")
-            results = law_api.search_law_data(keyword, target, search_mode=2)
+            try:
+                results = law_api.search_law_data(keyword, target, search_mode=2)
+            except Exception:
+                results = None
             if results:
                 used_keyword = keyword + " (본문검색)"
 
@@ -765,9 +1001,12 @@ def search_law_for_gemini(keyword: str, target: str = "law") -> str:
             words = words[:-1]
             used_keyword = " ".join(words)
             print(f"[시스템]    ↳ 결과 없음 → '{used_keyword}'로 자동 재검색")
-            results = law_api.search_law_data(used_keyword, target)
-            if not results and target in ("prec", "decc", "expc", "admrul"):
-                results = law_api.search_law_data(used_keyword, target, search_mode=2)
+            try:
+                results = law_api.search_law_data(used_keyword, target)
+                if not results and target in ("prec", "decc", "expc", "admrul"):
+                    results = law_api.search_law_data(used_keyword, target, search_mode=2)
+            except Exception:
+                results = None
 
         if results:
             _cache_set(cache_key, (results, used_keyword))
@@ -810,13 +1049,15 @@ def search_law_for_gemini(keyword: str, target: str = "law") -> str:
     return _record("list", summary)
 
 def get_law_details_for_gemini(doc_id: str, target: str = "law", query_filter: str = "") -> str:
+    """
+    검색된 일련번호(ID)로 원문을 조회합니다. 법령('law') 조회 시 반드시 query_filter에 조문번호(예: '제29조의8', '제78조의3 제8항')를 넣어 호출하세요.
+    """
     trace = _TOOL_TRACE.get()
     if trace is not None and target != "law":
         seen = trace.setdefault("seen_docs", set())
         if (target, str(doc_id)) in seen:
             print(f"\n[시스템] ♻️ 이미 조회한 원문 → 재조회 생략: ID '{doc_id}' (대상: {target})")
             return "[이미 조회한 원문] 이 문서는 이번 질문에서 이미 전체 원문을 조회했습니다. 앞의 조회 결과를 그대로 참고하세요."
-        seen.add((target, str(doc_id)))
     if _over_limit("detail", target):
         print(f"\n[시스템] ⛔ 원문 조회 한도 도달 → 차단: ID '{doc_id}' (대상: {target})")
         return (f"[원문 조회 한도 도달] 이번 질문에서 '{target}' 원문 조회는 더 할 수 없습니다. "
@@ -828,19 +1069,31 @@ def get_law_details_for_gemini(doc_id: str, target: str = "law", query_filter: s
         print(f"\n[시스템] ⚡ [메모리 캐시 즉시 히트(0.001초)] 원문 조회: ID '{doc_id}' (대상: {target}, 필터: '{query_filter}')")
     else:
         print(f"\n[시스템] 📖 원문 정밀 조회 가동: ID '{doc_id}' (대상: {target}, 필터: '{query_filter}')")
-        raw_text = law_api.get_law_content(doc_id, target, query_filter)
+        try:
+            raw_text = law_api.get_law_content(doc_id, target, query_filter)
+        except Exception as e:
+            raw_text = f"❌ 원문 조회 오류: {e}"
+
+        if target == "law" and (_is_unleashed() or len(raw_text or "") >= 14500):
+            full_direct = _fetch_full_law_xml_direct(doc_id, query_filter)
+            if full_direct and len(full_direct) > len(raw_text or ""):
+                raw_text = full_direct
+
         if raw_text and not str(raw_text).startswith("❌"):
             _cache_set(cache_key, raw_text)
 
     result = compress_legal_text(raw_text, query_filter)
+    body_ok = bool(result and not result.startswith("❌") and len(result) >= 80)
+
+    if trace is not None and target != "law" and body_ok:
+        trace.setdefault("seen_docs", set()).add((target, str(doc_id)))
+
     preview = result[:150].replace("\n", " ")
     print(f"[시스템]    ↳ 원문 {len(raw_text or ''):,}자 → 전달 {len(result):,}자 | 앞부분: {preview}")
-    if target == "law":
+    if target == "law" and body_ok:
         _record_law_articles(result)
-    trace = _TOOL_TRACE.get()
     if trace is not None and target in ("prec", "decc"):
         rno = trace["id_map"].get(str(doc_id).strip())
-        body_ok = result and not result.startswith("❌") and len(result) >= 300
         if rno and body_ok and _norm(rno) not in _norm(result):
             result = f"[사건(청구)번호: {rno}]\n" + result
         if not body_ok:
@@ -849,9 +1102,11 @@ def get_law_details_for_gemini(doc_id: str, target: str = "law", query_filter: s
 
 def search_historical_law_for_gemini(law_name: str, target_date: str, query_filter: str = "") -> str:
     """
-    [고도화 1: 🕰️ 구법(연혁법령) 타임머신]
     과거 귀속연도(예: '2022', '2023-06-30', '20211231') 세무조사·경정청구·기한후신고 검토 시
-    국가법령정보센터 연혁·시행일법령(target=eflaw) DB에서 해당 과거 시점에 실제로 시행 중이던 구법 조문 원문을 조회합니다.
+    국가법령정보센터 연혁·시행일법령(target='eflaw') DB에서 해당 과거 시점에 실제로 시행 중이던 구법 조문 원문을 조회합니다.
+    - law_name: 정식 법령명만 입력 (예: '조세특례제한법', '법인세법 시행령')
+    - target_date: 과거 기준연도 또는 일자 (예: '2022', '20221231')
+    - query_filter: 조회할 조문번호 (예: '제29조의7', '제10조')
     """
     if _over_limit("detail", "eflaw"):
         return "[구법 조회 한도 도달] 이번 질문에서 추가 연혁법령 조회는 더 할 수 없습니다."
@@ -879,34 +1134,36 @@ def search_historical_law_for_gemini(law_name: str, target_date: str, query_filt
 
     print(f"\n[시스템] 🕰️ 구법(연혁법령) 타임머신 가동: '{law_name}' (과거 기준일: {ymd_int}, 조문필터: '{query_filter}')")
     encoded_q = urllib.parse.quote(law_name.strip())
-    search_url = f"http://www.law.go.kr/DRF/lawSearch.do?OC={oc}&target=eflaw&type=XML&query={encoded_q}&display=50"
 
     try:
-        req = urllib.request.Request(search_url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            xml_data = resp.read()
-        root = ET.fromstring(xml_data)
-
-        target_clean = law_name.replace(" ", "").strip()
         candidates = []
-        for law_node in root.findall(".//law"):
-            lname = (law_node.findtext("법령명한글") or "").strip()
-            if lname.replace(" ", "") != target_clean:
-                continue
-            ef_yd = re.sub(r"[^0-9]", "", law_node.findtext("시행일자") or "")
-            anc_yd = re.sub(r"[^0-9]", "", law_node.findtext("공포일자") or "")
-            mst = (law_node.findtext("법령일련번호") or law_node.findtext("MST") or "").strip()
-            anc_no = (law_node.findtext("공포번호") or "").strip()
-            rev_nm = (law_node.findtext("제개정구분명") or "").strip()
-            if ef_yd.isdigit() and int(ef_yd) <= ymd_int and mst:
-                candidates.append({
-                    "lname": lname,
-                    "ef_yd": int(ef_yd),
-                    "anc_yd": int(anc_yd) if anc_yd.isdigit() else 0,
-                    "mst": mst,
-                    "anc_no": anc_no,
-                    "rev_nm": rev_nm
-                })
+        target_clean = law_name.replace(" ", "").strip()
+        for s_target in ("eflaw", "law"):
+            search_url = f"http://www.law.go.kr/DRF/lawSearch.do?OC={oc}&target={s_target}&type=XML&query={encoded_q}&display=50"
+            req = urllib.request.Request(search_url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                xml_data = resp.read()
+            root = ET.fromstring(xml_data)
+            for law_node in root.findall(".//law"):
+                lname = (law_node.findtext("법령명한글") or "").strip()
+                if lname.replace(" ", "") != target_clean:
+                    continue
+                ef_yd = re.sub(r"[^0-9]", "", law_node.findtext("시행일자") or "")
+                anc_yd = re.sub(r"[^0-9]", "", law_node.findtext("공포일자") or "")
+                mst = (law_node.findtext("법령일련번호") or law_node.findtext("MST") or "").strip()
+                anc_no = (law_node.findtext("공포번호") or "").strip()
+                rev_nm = (law_node.findtext("제개정구분명") or "").strip()
+                if ef_yd.isdigit() and int(ef_yd) <= ymd_int and mst:
+                    candidates.append({
+                        "lname": lname,
+                        "ef_yd": int(ef_yd),
+                        "anc_yd": int(anc_yd) if anc_yd.isdigit() else 0,
+                        "mst": mst,
+                        "anc_no": anc_no,
+                        "rev_nm": rev_nm
+                    })
+            if candidates:
+                break
 
         if not candidates:
             return f"'{law_name}'의 {ymd_int} 기준 연혁법령 목록을 찾지 못했습니다. 일반 get_law_details_for_gemini 도구로 현행 조문 및 부칙을 확인하세요."
@@ -914,32 +1171,46 @@ def search_historical_law_for_gemini(law_name: str, target_date: str, query_filt
         candidates.sort(key=lambda x: (x["ef_yd"], x["anc_yd"]), reverse=True)
         chosen = candidates[0]
         mst_id = chosen["mst"]
+        ef_yd_str = str(chosen["ef_yd"])
 
-        detail_url = f"http://www.law.go.kr/DRF/lawService.do?OC={oc}&target=eflaw&MST={mst_id}&type=XML"
-        req2 = urllib.request.Request(detail_url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req2, timeout=20) as resp2:
-            detail_xml = resp2.read()
-        d_root = ET.fromstring(detail_xml)
-
+        detail_urls = [
+            f"http://www.law.go.kr/DRF/lawService.do?OC={oc}&target=eflaw&MST={mst_id}&efYd={ef_yd_str}&type=XML",
+            f"http://www.law.go.kr/DRF/lawService.do?OC={oc}&target=law&MST={mst_id}&type=XML",
+            f"http://www.law.go.kr/DRF/lawService.do?OC={oc}&target=law&ID={mst_id}&type=XML",
+        ]
         article_blocks = []
-        for unit in d_root.findall(".//조문단위"):
-            jo_content = (unit.findtext("조문내용") or "").strip()
-            if not jo_content:
+        for d_url in detail_urls:
+            try:
+                req2 = urllib.request.Request(d_url, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req2, timeout=20) as resp2:
+                    detail_xml = resp2.read()
+                d_root = ET.fromstring(detail_xml)
+                for unit in d_root.findall(".//조문단위"):
+                    jo_content = (unit.findtext("조문내용") or "").strip()
+                    if not jo_content:
+                        continue
+                    lines = [jo_content]
+                    for hang in unit.findall(".//항"):
+                        h_txt = (hang.findtext("항내용") or "").strip()
+                        if h_txt:
+                            lines.append(h_txt)
+                        for ho in hang.findall(".//호"):
+                            ho_txt = (ho.findtext("호내용") or "").strip()
+                            if ho_txt:
+                                lines.append("  " + ho_txt)
+                            for mok in ho.findall(".//목"):
+                                mok_txt = (mok.findtext("목내용") or "").strip()
+                                if mok_txt:
+                                    lines.append("    " + mok_txt)
+                    article_blocks.append("\n".join(lines))
+                if article_blocks:
+                    break
+            except Exception:
                 continue
-            lines = [jo_content]
-            for hang in unit.findall(".//항"):
-                h_txt = (hang.findtext("항내용") or "").strip()
-                if h_txt:
-                    lines.append(h_txt)
-                for ho in hang.findall(".//호"):
-                    ho_txt = (ho.findtext("호내용") or "").strip()
-                    if ho_txt:
-                        lines.append("  " + ho_txt)
-                    for mok in ho.findall(".//목"):
-                        mok_txt = (mok.findtext("목내용") or "").strip()
-                        if mok_txt:
-                            lines.append("    " + mok_txt)
-            article_blocks.append("\n".join(lines))
+
+        if not article_blocks:
+            fallback_txt = law_api.get_law_content(mst_id, "law", query_filter)
+            return _record("detail", compress_legal_text(fallback_txt, query_filter))
 
         header_str = (
             f"📘 [{chosen['lname']} | 🕰️ 구법(연혁법령) 타임머신 조회 (기준일: {ymd_int}) | "
@@ -954,45 +1225,100 @@ def search_historical_law_for_gemini(law_name: str, target_date: str, query_filt
         return f"❌ 구법(연혁법령) 조회 중 오류 발생 ({law_name}, 기준일 {ymd_int}): {e}"
 
 def search_exchange_rate_for_gemini(start_date: str, end_date: str, currency: str = "USD") -> str:
+    """한국은행(ECOS) 공식 환율을 조회합니다. start_date/end_date는 'YYYYMMDD', currency는 'USD','JPY','EUR','CNY' 등."""
     print(f"\n[시스템] 💱 한국은행 환율 조회 도구 가동: {currency} ({start_date}~{end_date})")
-    return _record("detail", law_api.get_bok_exchange_rate(start_date, end_date, currency))
+    try:
+        return _record("detail", law_api.get_bok_exchange_rate(start_date, end_date, currency))
+    except Exception as e:
+        return f"환율 조회 오류: {e}"
 
 def search_base_rate_for_gemini(start_date: str, end_date: str) -> str:
+    """한국은행 기준금리를 조회합니다. start_date/end_date는 'YYYYMMDD' 형식입니다."""
     print(f"\n[시스템] 📈 한국은행 기준금리 조회 도구 가동: ({start_date}~{end_date})")
-    return _record("detail", law_api.get_bok_base_rate(start_date, end_date))
+    try:
+        return _record("detail", law_api.get_bok_base_rate(start_date, end_date))
+    except Exception as e:
+        return f"기준금리 조회 오류: {e}"
 
 def search_industry_code_for_gemini(keyword: str) -> str:
+    """국세청 업종코드(6자리) 및 기준·단순경비율을 검색합니다. keyword에 업종명이나 6자리 코드를 넣으세요."""
     print(f"\n[시스템] 🏢 국세청 업종코드 검색 도구 가동: '{keyword}'")
-    return _record("detail", law_api.search_industry_code(keyword))
+    try:
+        return _record("detail", law_api.search_industry_code(keyword))
+    except Exception as e:
+        return f"업종코드 조회 오류: {e}"
 
 def search_dart_corp_for_gemini(corp_name: str, bsns_year: str = "2025") -> str:
+    """DART 전자공시에서 기업개황·요약재무제표·최대주주 지분·배당 정보를 조회합니다. bsns_year는 '2025' 등 4자리 연도."""
     print(f"\n[시스템] 📊 DART 전자공시 통합 조회 가동: '{corp_name}' ({bsns_year}년)")
     cap = 12000 if _is_unleashed() else 4000
-    return _record("detail", law_api.get_dart_corp_info(corp_name, bsns_year)[:cap])
+    try:
+        return _record("detail", law_api.get_dart_corp_info(corp_name, bsns_year)[:cap])
+    except Exception as e:
+        return f"DART 공시 조회 오류: {e}"
 
 def check_nts_biz_status_for_gemini(biz_numbers: str) -> str:
+    """국세청 사업자등록 상태(계속/휴·폐업) 및 과세유형(일반/간이/면세)을 실시간 조회합니다."""
     print(f"\n[시스템] 🔎 국세청 사업자등록 상태·과세유형 실시간 조회 가동: '{biz_numbers}'")
-    return _record("detail", law_api.get_nts_biz_status(biz_numbers))
+    try:
+        return _record("detail", law_api.get_nts_biz_status(biz_numbers))
+    except Exception as e:
+        return f"사업자 상태 조회 오류: {e}"
 
 def verify_nts_biz_info_for_gemini(b_no: str, start_dt: str, p_nm: str, b_nm: str = "") -> str:
+    """국세청 사업자등록 진위확인을 수행합니다. b_no(10자리), start_dt(개업일 YYYYMMDD), p_nm(대표자명)."""
     print(f"\n[시스템] 🛡️ 국세청 사업자등록 진위확인 가동: {b_no} | {start_dt} | {p_nm}")
-    if hasattr(law_api, "verify_nts_biz_info"):
-        return _record("detail", law_api.verify_nts_biz_info(b_no, start_dt, p_nm, b_nm))
-    return "현재 law_api.py에 진위확인 함수가 없습니다."
+    try:
+        if hasattr(law_api, "verify_nts_biz_info"):
+            return _record("detail", law_api.verify_nts_biz_info(b_no, start_dt, p_nm, b_nm))
+        return "현재 law_api.py에 진위확인 함수가 없습니다."
+    except Exception as e:
+        return f"사업자 진위확인 오류: {e}"
 
 def search_real_estate_trade_for_gemini(property_type: str, region: str, deal_ymd: str, filter_keyword: str = "") -> str:
+    """국토부 부동산 실거래가를 조회합니다. property_type('apt','offi','commercial','land'), region(지역명), deal_ymd('YYYYMM')."""
     print(f"\n[시스템] 🏘️ 국토교통부 부동산 실거래가 조회 가동: 유형={property_type} | 지역={region} | 연월={deal_ymd} | 필터='{filter_keyword}'")
-    if hasattr(law_api, "get_molit_real_estate_trade"):
-        return _record("detail", law_api.get_molit_real_estate_trade(property_type, region, deal_ymd, filter_keyword))
-    return "현재 law_api.py에 부동산 실거래가 조회 함수가 없습니다."
+    try:
+        if hasattr(law_api, "get_molit_real_estate_trade"):
+            return _record("detail", law_api.get_molit_real_estate_trade(property_type, region, deal_ymd, filter_keyword))
+        return "현재 law_api.py에 부동산 실거래가 조회 함수가 없습니다."
+    except Exception as e:
+        return f"실거래가 조회 오류: {e}"
 
 def search_official_land_price_for_gemini(address: str, stdr_year: str = "") -> str:
+    """브이월드 API로 부동산 개별공시지가 및 공동주택 공시가격을 조회합니다."""
     print(f"\n[시스템] 🏛️ 브이월드 공시지가·공동주택공시가격 조회 가동: 주소='{address}' | 기준연도='{stdr_year}'")
-    if hasattr(law_api, "get_vworld_official_price"):
-        return _record("detail", law_api.get_vworld_official_price(address, stdr_year))
-    return "현재 law_api.py에 공시지가 조회 함수가 없습니다."
+    try:
+        if hasattr(law_api, "get_vworld_official_price"):
+            return _record("detail", law_api.get_vworld_official_price(address, stdr_year))
+        return "현재 law_api.py에 공시지가 조회 함수가 없습니다."
+    except Exception as e:
+        return f"공시지가 조회 오류: {e}"
+
+def _validate_safe_math_ast(expr: str) -> None:
+    """[1]*10**9 같은 메모리 고갈 수식이나 과도한 거듭제곱을 AST 단계에서 원천 차단합니다."""
+    if len(expr) > 400:
+        raise ValueError("수식이 너무 깁니다(400자 제한).")
+    tree = ast.parse(expr, mode="eval")
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp, ast.Lambda)):
+            raise ValueError("허용되지 않는 복합 표현식입니다.")
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Pow):
+            if isinstance(node.right, ast.Constant) and isinstance(node.right.value, (int, float)):
+                if abs(node.right.value) > 1000:
+                    raise ValueError("거듭제곱 지수가 너무 큽니다(최대 1000).")
+            elif not isinstance(node.right, ast.Constant):
+                raise ValueError("거듭제곱 지수는 상수만 허용됩니다.")
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
+            if isinstance(node.left, (ast.List, ast.Tuple)) or isinstance(node.right, (ast.List, ast.Tuple)):
+                raise ValueError("리스트/튜플 곱셈은 허용되지 않습니다.")
+            if isinstance(node.left, ast.Constant) and isinstance(node.left.value, (str, bytes)):
+                raise ValueError("문자열 곱셈은 허용되지 않습니다.")
+            if isinstance(node.right, ast.Constant) and isinstance(node.right.value, (str, bytes)):
+                raise ValueError("문자열 곱셈은 허용되지 않습니다.")
 
 def run_tax_calculator_for_gemini(formula_expression: str, description: str = "") -> str:
+    """파이썬 사칙연산 수식(formula_expression)을 입력받아 단 1원의 오차 없이 정밀 계산합니다."""
     print(f"\n[시스템] 🧮 파이썬 정밀 세액 계산기 가동: [{description}] 수식: {formula_expression}")
     allowed_names = {
         "abs": abs, "round": round, "min": min, "max": max, "sum": sum, "pow": pow,
@@ -1000,13 +1326,14 @@ def run_tax_calculator_for_gemini(formula_expression: str, description: str = ""
     }
     try:
         clean_expr = formula_expression.strip().replace(",", "")
+        _validate_safe_math_ast(clean_expr)
         result = eval(clean_expr, {"__builtins__": {}}, allowed_names)
         if isinstance(result, (int, float)):
             return _record(
                 "detail",
                 f"🧮 [정밀 계산 완료 - {description} | 수식: {clean_expr}]\n- 입력 수식: {clean_expr}\n- 정확한 산출값: {result:,.4f} (정수 반올림: {round(result):,}원)"
             )
-        return _record("detail", f"🧮 [정밀 계산 완료 - {description} | 수식: {clean_expr}]\n- 결과: {result}")
+        return _record("detail", f"🧮 [정밀 계산 완료 - {description} | 수식: {clean_expr}]\n- 결과: {str(result)[:300]}")
     except Exception as e:
         return f"❌ 수식 계산 오류 ({formula_expression}): {e} -> 올바른 파이썬 사칙연산 수식으로 다시 호출하세요."
 
@@ -1109,6 +1436,12 @@ def _is_precheck_thorough(precheck_body: str) -> bool:
     has_step3 = ("3단" in precheck_body) or ("검산" in precheck_body) or ("계산" in precheck_body) or ("수치" in precheck_body)
     return bool(has_step1 and has_step2 and has_step3)
 
+def _is_valid_report_body(text: str) -> bool:
+    """재작성 응답이 '알겠습니다' 같은 짧은 대답일 때 기존 보고서를 덮어쓰지 않도록 검증합니다."""
+    if not text or len(text.strip()) < 250:
+        return False
+    return bool(re.search(r"###\s*1\.\s*결론|###\s*2\.\s*내용", text))
+
 def _clean_latex_for_export(text: str) -> str:
     if not text:
         return ""
@@ -1120,7 +1453,7 @@ def _clean_latex_for_export(text: str) -> str:
     s = s.replace(r"\times", " × ").replace(r"\div", " ÷ ").replace(r"\cdot", "·")
     s = s.replace(r"\%", "%").replace(r"\_", "_").replace(r"\,", ",")
     s = re.sub(r"\\(left|right|quad|qquad|mathrm|mathbf)\b", "", s)
-    s = re.sub(r"(\[(?:조문|판례|심판례|해석례|예규)\s*:\s*[^\]\n(]+?)\s+(\()", r"\1] \2", s)
+    s = re.sub(r"(\[(?:조문|판례|심판례|해석례|예규)\s*:\s*[^\]\n(]+?)\s+(\()(?![^\n\[]*\])", r"\1] \2", s)
     return s
 
 def extract_safe_text(response) -> str:
@@ -1176,10 +1509,16 @@ def _execute_with_key_and_model(
     try:
         response = chat.send_message(user_input)
         raw_output = extract_safe_text(response)
+        trace = _TOOL_TRACE.get()
+
+        tool_res_chars = sum(len(x) for x in trace["list"]) + sum(len(x) for x in trace["detail"])
+        tool_call_cnt = sum(trace["counts"].values())
         _extract_and_log_response_usage(
             response, model_id, count_call=True,
             est_in_chars=len(user_input) + len(dynamic_prompt),
-            est_out_chars=len(raw_output)
+            est_out_chars=len(raw_output),
+            tool_calls_count=tool_call_cnt,
+            tool_result_chars=tool_res_chars
         )
 
         if not raw_output:
@@ -1188,7 +1527,6 @@ def _execute_with_key_and_model(
             )
             raw_output = extract_safe_text(follow_up)
             _extract_and_log_response_usage(follow_up, model_id, count_call=False, est_in_chars=500, est_out_chars=len(raw_output))
-        trace = _TOOL_TRACE.get()
     finally:
         _TOOL_TRACE.reset(trace_token)
 
@@ -1214,12 +1552,14 @@ def _execute_with_key_and_model(
             _extract_and_log_response_usage(p_resp, model_id, count_call=False, est_in_chars=len(enforce_precheck_msg), est_out_chars=len(p_raw))
             if p_raw:
                 s_body2, p_text2 = _extract_and_strip_precheck(p_raw)
-                if s_body2:
+                if _is_valid_report_body(s_body2):
                     raw_output = p_raw
                     stripped_body = s_body2
                     if p_text2:
                         precheck_text = p_text2
                     response = p_resp
+                elif p_text2 and not precheck_text:
+                    precheck_text = p_text2
         except Exception as e:
             print(f"[시스템]    ↳ 3단 크로스체크 재작성 호출 오류: {e}")
         finally:
@@ -1233,46 +1573,50 @@ def _execute_with_key_and_model(
 
     citation_note = ""
 
-    if is_formal_report and trace and (trace["list"] or trace["detail"]):
+    if is_formal_report and trace is not None:
         violations = _scan_violations(final_text, trace)
         if violations:
+            has_body_violation = any(not in_refs for _, _, in_refs in violations)
             first_labels = _violation_labels(violations)
-            print(f"[시스템] 🔒 미검증 근거 {len(first_labels)}건 감지 → 재작성 요청: {first_labels[:8]}")
-            fix_msg = (
-                "방금 답변에서 도구 조회 기록으로 확인되지 않는 근거가 발견되었습니다:\n- "
-                + "\n- ".join(first_labels[:15])
-                + "\n\n각 항목에 대해 ① get_law_details_for_gemini로 원문(판결요지·조문)을 조회해 확인한 뒤 근거 표시"
-                  "([판례:사건번호], [조문:정식법령명 제N조], [예규:문서명] 등)를 붙여 인용하거나, "
-                  "② 조회할 수 없으면 그 근거와 관련 서술을 답변에서 완전히 삭제하세요. "
-                  "'대법원은 ~ 판시' 같은 서술에도 반드시 근거 표시가 있어야 합니다. "
-                  "조회하지 않은 근거는 다시 쓰지 말고, `<precheck>` 3단 크로스체크와 양식(1. 결론 → 2. 내용 → 3. 관련법령)을 유지해 전체 답변을 다시 작성하세요. "
-                  "다시 쓴 답변에는 이 검증 요청이나 삭제 사실, 시스템에 대한 언급을 절대 넣지 마세요."
-            )
-            trace_token2 = _TOOL_TRACE.set(trace)
-            try:
-                retry_resp = chat.send_message(fix_msg)
-                retry_text = extract_safe_text(retry_resp)
-                _extract_and_log_response_usage(retry_resp, model_id, count_call=False, est_in_chars=len(fix_msg), est_out_chars=len(retry_text))
-            except Exception as e:
-                retry_text = ""
-                print(f"[시스템]    ↳ 재작성 요청 실패: {e}")
-            finally:
-                _TOOL_TRACE.reset(trace_token2)
 
-            if retry_text:
-                _, retry_precheck = _extract_and_strip_precheck(retry_text)
-                if retry_precheck:
-                    precheck_text = retry_precheck
-                final_text = re.sub(r"\s*<br\s*/?>\s*", " / ", retry_text)
-                final_text = _clean_latex_for_export(final_text)
-                response = retry_resp
+            if has_body_violation:
+                print(f"[시스템] 🔒 본문 미검증 근거 {len(first_labels)}건 감지 → 재작성 요청: {first_labels[:8]}")
+                fix_msg = (
+                    "방금 답변에서 도구 조회 기록으로 확인되지 않는 근거가 발견되었습니다:\n- "
+                    + "\n- ".join(first_labels[:15])
+                    + "\n\n각 항목에 대해 ① get_law_details_for_gemini로 원문(판결요지·조문)을 조회해 확인한 뒤 근거 표시"
+                      "([판례:사건번호], [조문:정식법령명 제N조], [예규:문서명] 등)를 붙여 인용하거나, "
+                      "② 조회할 수 없으면 그 근거와 관련 서술을 답변에서 완전히 삭제하세요. "
+                      "'대법원은 ~ 판시' 같은 서술에도 반드시 근거 표시가 있어야 합니다. "
+                      "조회하지 않은 근거는 다시 쓰지 말고, `<precheck>` 3단 크로스체크와 양식(1. 결론 → 2. 내용 → 3. 관련법령)을 유지해 전체 답변을 다시 작성하세요. "
+                      "다시 쓴 답변에는 이 검증 요청이나 삭제 사실, 시스템에 대한 언급을 절대 넣지 마세요."
+                )
+                trace_token2 = _TOOL_TRACE.set(trace)
+                try:
+                    retry_resp = chat.send_message(fix_msg)
+                    retry_text = extract_safe_text(retry_resp)
+                    _extract_and_log_response_usage(retry_resp, model_id, count_call=False, est_in_chars=len(fix_msg), est_out_chars=len(retry_text))
+                except Exception as e:
+                    retry_text = ""
+                    print(f"[시스템]    ↳ 재작성 요청 실패: {e}")
+                finally:
+                    _TOOL_TRACE.reset(trace_token2)
+
+                if retry_text:
+                    retry_body, retry_precheck = _extract_and_strip_precheck(retry_text)
+                    if _is_valid_report_body(retry_body):
+                        if retry_precheck:
+                            precheck_text = retry_precheck
+                        final_text = re.sub(r"\s*<br\s*/?>\s*", " / ", retry_body)
+                        final_text = _clean_latex_for_export(final_text)
+                        response = retry_resp
 
             remaining = _scan_violations(final_text, trace)
             if remaining:
                 final_text = _redact_lines(final_text, remaining)
                 short = [r.split(":")[0] if r.startswith(("출처 표시 없는", "판례 인용문")) else r for r in _violation_labels(remaining)]
                 short = list(dict.fromkeys(short))
-                citation_note = ("\n> 🚫 재작성 후에도 검증되지 않은 근거가 남아 **코드에서 삭제**했습니다: "
+                citation_note = (f"\n> 🚫 미검증 근거 후처리({_verify_mode()} 모드): "
                                  + "; ".join(short[:10]))
             else:
                 citation_note = ("\n> 🔒 미검증 근거가 감지되어 **재작성**(원문 조회 또는 삭제)했습니다. (최초 감지 "
@@ -1280,7 +1624,7 @@ def _execute_with_key_and_model(
         else:
             citation_note = "\n> ✅ 답변의 판례·조문·예규 근거가 모두 이번 조회 기록과 일치합니다."
 
-        if SEMANTIC_VERIFY_ON:
+        if SEMANTIC_VERIFY_ON and (trace["list"] or trace["detail"]):
             claims, sources = _extract_claims(final_text, trace)
             if claims:
                 print(f"[시스템] 🧪 의미 검증 가동: 주장 {len(claims)}건 / 원문 {len(sources)}건")
@@ -1288,11 +1632,13 @@ def _execute_with_key_and_model(
                     verdicts = _semantic_verify(api_key, claims, sources, user_input)
                     final_text, cnt = _apply_semantic_results(final_text, claims, verdicts, sources)
                     citation_note += (f"\n> 🧪 의미 검증 {len(claims)}건: 일치 {cnt['supported']} · "
-                                      f"원문 확인 필요 {cnt['partial']}(⚠️ 표시) · 불일치 {cnt['unsupported']}(삭제)"
+                                      f"원문 확인 필요 {cnt['partial']} · 불일치 {cnt['unsupported']}"
                                       + (f" · 판정 누락 {cnt['unknown']}" if cnt.get("unknown") else ""))
                 except Exception as e:
                     print(f"[시스템]    ↳ 의미 검증 실패: {e}")
                     citation_note += "\n> 🧪 의미 검증을 수행하지 못했습니다(검증 모델 오류). 근거 표시 문장은 직접 확인하세요."
+    elif trace is not None:
+        final_text = _strip_fake_cases_in_track2(final_text, trace)
 
     history = []
     try:
@@ -1335,102 +1681,107 @@ def _execute_with_key_and_model(
     return _clean_latex_for_export(final_text), len(precheck_text)
 
 # 4. 실행 순서(유료키 전용): 3.8-flash → 3.6-flash
-def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> str:
+def run_agent(user_input: str, raw_query: str = "", has_file: bool = False, room_key: str = "") -> str:
     live_pool = get_live_gemini_key_pool()
     if not live_pool:
         return "❌ 설정된 Gemini 유료 API 키가 없습니다. .env 또는 Streamlit Secrets에 GEMINI_PAID_KEY를 넣어 주세요."
 
-    query_for_routing = raw_query if raw_query else user_input
-    tier_mode, mode_badge, recommend_pro_notice = select_optimal_model(
-        user_query=query_for_routing,
-        has_file=has_file,
-        full_input_len=len(user_input)
-    )
-    unleash_mode = (tier_mode == "PRO")
+    rk_token = set_active_room_key(room_key) if room_key else None
+    try:
+        query_for_routing = raw_query if raw_query else user_input
+        tier_mode, mode_badge, recommend_pro_notice = select_optimal_model(
+            user_query=query_for_routing,
+            has_file=has_file,
+            full_input_len=len(user_input)
+        )
+        unleash_mode = (tier_mode == "PRO")
 
-    today_str = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y년 %m월 %d일")
-    unleash_guide = (
-        "\n[🚀 PRO 3배 리미트 해제 모드 가동 중: 법령 검색 최대 21회, 원문 조회 최대 36회, 판례·심판례·예규 조회 최대 6~9회, "
-        "원문 길이 최대 36,000자까지 한도가 3배 확장되었습니다. 관련 법령 조문과 판례·예규의 구체적 사실관계(이유)까지 빠짐없이 깊이 있게 대조하여 작성하세요.]\n"
-        if unleash_mode else ""
-    )
-    dynamic_prompt = (
-        f"[시스템 기준일 안내: 오늘 날짜는 {today_str}입니다. 질문에 등장하는 연도와 날짜의 과거/현재 여부를 반드시 오늘 날짜({today_str}) 기준으로 판단하세요.]"
-        f"{unleash_guide}\n\n" + SYSTEM_PROMPT
-    )
+        today_str = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y년 %m월 %d일")
+        unleash_guide = (
+            "\n[🚀 PRO 3배 리미트 해제 모드 가동 중: 법령 검색 최대 21회, 원문 조회 최대 36회, 판례·심판례·예규 조회 최대 6~9회, "
+            "원문 길이 최대 36,000자까지 한도가 3배 확장되었습니다. 관련 법령 조문과 판례·예규의 구체적 사실관계(이유)까지 빠짐없이 깊이 있게 대조하여 작성하세요.]\n"
+            if unleash_mode else ""
+        )
+        dynamic_prompt = (
+            f"[시스템 기준일 안내: 오늘 날짜는 {today_str}입니다. 질문에 등장하는 연도와 날짜의 과거/현재 여부를 반드시 오늘 날짜({today_str}) 기준으로 판단하세요.]"
+            f"{unleash_guide}\n\n" + SYSTEM_PROMPT
+        )
 
-    tools_list = [
-        search_law_for_gemini,
-        get_law_details_for_gemini,
-        search_historical_law_for_gemini,
-        search_exchange_rate_for_gemini,
-        search_base_rate_for_gemini,
-        search_industry_code_for_gemini,
-        search_dart_corp_for_gemini,
-        check_nts_biz_status_for_gemini,
-        verify_nts_biz_info_for_gemini,
-        search_real_estate_trade_for_gemini,
-        search_official_land_price_for_gemini,
-        run_tax_calculator_for_gemini
-    ]
+        tools_list = [
+            search_law_for_gemini,
+            get_law_details_for_gemini,
+            search_historical_law_for_gemini,
+            search_exchange_rate_for_gemini,
+            search_base_rate_for_gemini,
+            search_industry_code_for_gemini,
+            search_dart_corp_for_gemini,
+            check_nts_biz_status_for_gemini,
+            verify_nts_biz_info_for_gemini,
+            search_real_estate_trade_for_gemini,
+            search_official_land_price_for_gemini,
+            run_tax_calculator_for_gemini
+        ]
 
-    safety_settings = [
-        types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
-        types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
-        types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
-        types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
-    ]
+        safety_settings = [
+            types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
+            types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
+            types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
+            types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
+        ]
 
-    execution_plan = []
-    for lbl, k in live_pool:
-        if tier_mode == "PRO":
-            for m in PAID_PRO_MODEL_IDS:
-                execution_plan.append((lbl, k, m, f"{mode_badge} *(🔑 {lbl} · {m})*"))
-            for m in (FLASH_MODEL_ID, FLASH_BACKUP_ID):
-                execution_plan.append((lbl, k, m, f"⚡ **[Pro 실패 → Flash 백업 (3배 리미트 개방 유지)]** *(🔑 {lbl} · {m})*"))
-        else:
-            for m in (FLASH_MODEL_ID, FLASH_BACKUP_ID):
-                execution_plan.append((lbl, k, m, f"{mode_badge} *(🔑 {lbl} · {m})*"))
+        execution_plan = []
+        for lbl, k in live_pool:
+            if tier_mode == "PRO":
+                for m in PAID_PRO_MODEL_IDS:
+                    execution_plan.append((lbl, k, m, f"{mode_badge} *(🔑 {lbl} · {m})*"))
+                for m in (FLASH_MODEL_ID, FLASH_BACKUP_ID):
+                    execution_plan.append((lbl, k, m, f"⚡ **[Pro 실패 → Flash 백업 (3배 리미트 개방 유지)]** *(🔑 {lbl} · {m})*"))
+            else:
+                for m in (FLASH_MODEL_ID, FLASH_BACKUP_ID):
+                    execution_plan.append((lbl, k, m, f"{mode_badge} *(🔑 {lbl} · {m})*"))
 
-    last_error = None
-    diag_notes = []
-    dead_models = set()
+        last_error = None
+        diag_notes = []
+        dead_models = set()
 
-    for key_label, current_key, target_model, final_badge in execution_plan:
-        if target_model in dead_models:
-            continue
-        for attempt in range(2):
-            try:
-                final_text, precheck_len = _execute_with_key_and_model(
-                    api_key=current_key,
-                    model_id=target_model,
-                    user_input=user_input,
-                    dynamic_prompt=dynamic_prompt,
-                    tools_list=tools_list,
-                    safety_settings=safety_settings,
-                    unleash=unleash_mode
-                )
-                precheck_badge = f" · 🛡️ **3단 크로스체크 완료({precheck_len:,}자 검증)**" if precheck_len > 0 else ""
-                diag_header = f"> {final_badge}{precheck_badge}\n"
-                if recommend_pro_notice:
-                    diag_header += recommend_pro_notice
-                if diag_notes:
-                    if _show_diag():
-                        diag_header += f"> *(ℹ️ 앞선 시도 실패: {' | '.join(diag_notes)})*\n"
-                    else:
-                        print("[시스템] ℹ️ 앞선 시도 실패: " + " | ".join(diag_notes))
-                return diag_header + "\n" + final_text
-            except Exception as e:
-                if _is_model_not_found(e):
-                    dead_models.add(target_model)
-                m_code = re.search(r"\b(4\d\d|5\d\d)\b", str(e))
-                err_short = m_code.group(1) if m_code else str(e).splitlines()[0][:40]
-                retry_tag = "(재시도)" if attempt == 1 else ""
-                diag_notes.append(f"{key_label}({target_model}){retry_tag}: {err_short}")
-                last_error = e
-                if attempt == 0 and err_short in ("500", "503", "504"):
-                    time.sleep(2)
-                    continue
-                break
+        for key_label, current_key, target_model, final_badge in execution_plan:
+            if target_model in dead_models:
+                continue
+            for attempt in range(2):
+                try:
+                    final_text, precheck_len = _execute_with_key_and_model(
+                        api_key=current_key,
+                        model_id=target_model,
+                        user_input=user_input,
+                        dynamic_prompt=dynamic_prompt,
+                        tools_list=tools_list,
+                        safety_settings=safety_settings,
+                        unleash=unleash_mode
+                    )
+                    precheck_badge = f" · 🛡️ **3단 크로스체크 완료({precheck_len:,}자 검증)**" if precheck_len > 0 else ""
+                    diag_header = f"> {final_badge}{precheck_badge}\n"
+                    if recommend_pro_notice:
+                        diag_header += recommend_pro_notice
+                    if diag_notes:
+                        if _show_diag():
+                            diag_header += f"> *(ℹ️ 앞선 시도 실패: {' | '.join(diag_notes)})*\n"
+                        else:
+                            print("[시스템] ℹ️ 앞선 시도 실패: " + " | ".join(diag_notes))
+                    return diag_header + "\n" + final_text
+                except Exception as e:
+                    if _is_model_not_found(e):
+                        dead_models.add(target_model)
+                    m_code = re.search(r"\b(4\d\d|5\d\d)\b", str(e))
+                    err_short = m_code.group(1) if m_code else str(e).splitlines()[0][:40]
+                    retry_tag = "(재시도)" if attempt == 1 else ""
+                    diag_notes.append(f"{key_label}({target_model}){retry_tag}: {err_short}")
+                    last_error = e
+                    if attempt == 0 and err_short in ("500", "503", "504"):
+                        time.sleep(2)
+                        continue
+                    break
 
-    return f"❌ 모든 API 키 호출이 실패했습니다. 마지막 오류: {str(last_error)}"
+        return f"❌ 모든 API 키 호출이 실패했습니다. 마지막 오류: {str(last_error)}"
+    finally:
+        if rk_token is not None:
+            _ACTIVE_ROOM_KEY.reset(rk_token)
