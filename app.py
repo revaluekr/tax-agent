@@ -6,7 +6,7 @@ import json
 import hashlib
 import threading
 import urllib.request
-from datetime import datetime
+from datetime import datetime, date
 from zoneinfo import ZoneInfo
 import streamlit as st
 import pandas as pd
@@ -258,14 +258,109 @@ footer {visibility: hidden;}
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# 0. 작업공간(Workspace) · 월간 요금 계량기 · 백그라운드 스레드 매니저
+# 0. 작업공간 · 월간 요금 계량기 · 백그라운드 매니저 · ⏰ API 만료일 관리
 # ---------------------------------------------------------
 ROOM_IDS = [f"대화방 {i}" for i in range(1, 11)]
 STORAGE_DIR = ".workspace_storage"
 os.makedirs(STORAGE_DIR, exist_ok=True)
 USAGE_FILE_PATH = os.path.join(STORAGE_DIR, "api_usage_stats.json")
+EXPIRY_FILE_PATH = os.path.join(STORAGE_DIR, "api_expiry_dates.json")
 MONTHLY_PRO_LIMIT_KRW = 20000.0
 USD_TO_KRW_RATE = 1400.0
+
+# ⏰ 유효기간이 존재하는 3대 API의 기본 만료일 설정 (st.secrets에 설정 시 영구 우선 적용)
+DEFAULT_API_EXPIRY_CONFIG = {
+    "VWORLD": {
+        "name": "브이월드(공시지가) API",
+        "secret_key": "VWORLD_EXPIRY_DATE",
+        "default_date": "2027-04-20",
+        "cycle": "6개월",
+        "url": "https://www.vworld.kr/dev/v4dv_apikey_s001.do"
+    },
+    "DATA_GO_KR": {
+        "name": "공공데이터포털(국세청·실거래가) API",
+        "secret_key": "DATA_GO_KR_EXPIRY_DATE",
+        "default_date": "2028-10-20",
+        "cycle": "2년",
+        "url": "https://www.data.go.kr/iim/api/selectAcountList.do"
+    },
+    "BOK_ECOS": {
+        "name": "한국은행(ECOS 환율·금리) API",
+        "secret_key": "BOK_EXPIRY_DATE",
+        "default_date": "2028-10-20",
+        "cycle": "2년",
+        "url": "https://ecos.bok.or.kr/api/#/MyPage/CertKeyInfo"
+    }
+}
+
+def load_api_expiry_dates() -> dict:
+    """저장된 API 만료일(YYYY-MM-DD)을 불러옵니다."""
+    saved = {}
+    if os.path.exists(EXPIRY_FILE_PATH):
+        try:
+            with open(EXPIRY_FILE_PATH, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+        except Exception:
+            pass
+    result = {}
+    for code, info in DEFAULT_API_EXPIRY_CONFIG.items():
+        env_val = os.getenv(info["secret_key"], "").strip()
+        result[code] = saved.get(code) or env_val or info["default_date"]
+    return result
+
+def save_api_expiry_dates(expiry_dict: dict) -> None:
+    """사용자가 변경한 API 만료일을 디스크에 즉시 저장합니다."""
+    try:
+        with open(EXPIRY_FILE_PATH, "w", encoding="utf-8") as f:
+            json.dump(expiry_dict, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"⚠️ 만료일 저장 오류: {e}")
+
+def check_api_expiry_alerts() -> tuple[list[dict], list[dict]]:
+    """
+    모든 유효기간 API를 점검하여 (30일 이내 임박/만료 알림 리스트, 전체 상태 리스트)를 반환합니다.
+    """
+    expiry_map = load_api_expiry_dates()
+    today_d = datetime.now(ZoneInfo("Asia/Seoul")).date()
+    alerts = []
+    all_status = []
+
+    for code, info in DEFAULT_API_EXPIRY_CONFIG.items():
+        d_str = expiry_map.get(code, info["default_date"])
+        try:
+            exp_d = datetime.strptime(d_str, "%Y-%m-%d").date()
+        except Exception:
+            exp_d = date(2027, 4, 20)
+        days_left = (exp_d - today_d).days
+        fmt_kor = f"{str(exp_d.year)[2:]}년 {exp_d.month:02d}월 {exp_d.day:02d}일"
+
+        item_data = {
+            "code": code,
+            "name": info["name"],
+            "date_str": exp_d.strftime("%Y-%m-%d"),
+            "fmt_kor": fmt_kor,
+            "days_left": days_left,
+            "cycle": info["cycle"],
+            "url": info["url"]
+        }
+        all_status.append(item_data)
+
+        if days_left < 0:
+            item_data["level"] = "expired"
+            item_data["msg"] = (
+                f"🚨 **[{info['name']} 만료됨]** 키가 **{fmt_kor}**자로 만료되었습니다(D+{-days_left}). "
+                "새로운 API키를 발급받아주세요."
+            )
+            alerts.append(item_data)
+        elif days_left <= 30:
+            item_data["level"] = "warning"
+            item_data["msg"] = (
+                f"⚠️ **[API 만료 임박 알림]** **{info['name']}** 키가 **{fmt_kor}**자로 만료예정입니다(D-{days_left}). "
+                "새로운 API키를 발급받아주세요."
+            )
+            alerts.append(item_data)
+
+    return alerts, all_status
 
 @st.cache_resource
 def get_background_task_manager() -> dict:
@@ -1041,12 +1136,13 @@ def _trigger_agent_task(
     st.rerun()
 
 # ---------------------------------------------------------
-# 2. 왼쪽 사이드바 제어판 (글자 잘림 완벽 해결 + 원스크린 화이트 카드 UI)
+# 2. 왼쪽 사이드바 제어판 (글자 잘림 완벽 해결 + 원스크린 화이트 카드 UI + API 만료 관리)
 # ---------------------------------------------------------
 usage_stats = get_monthly_usage()
 budget_exceeded, cur_krw, limit_krw = is_pro_budget_exceeded()
 usage_ratio = min(1.0, cur_krw / limit_krw) if limit_krw > 0 else 0.0
 task_mgr = get_background_task_manager()
+expiry_alerts, expiry_all_status = check_api_expiry_alerts()
 
 with st.sidebar:
     st.markdown(
@@ -1249,8 +1345,9 @@ with st.sidebar:
                     save_workspace_to_disk(effective_ws_id)
                     st.rerun()
 
-    # 📦 [보조 메뉴] 백업/초기화 & 7대 기관 연동 상태 접이식(Expander)
-    with st.expander("📡 7대 기관 DB 연동 및 전체 백업"):
+    # 📦 [보조 메뉴] 7대 기관 연동 상태 · ⏰ API 만료일 설정 · 전체 백업 접이식(Expander)
+    exp_header_badge = " ⚠️(만료임박)" if expiry_alerts else ""
+    with st.expander(f"📡 7대 기관 DB 연동 및 전체 백업{exp_header_badge}"):
         led_law   = "🟢" if _check_api_configured(["LAW_API_OC", "OC"]) else "🟡"
         led_nts   = "🟢" if _check_api_configured(["NTS_API_KEY", "DATA_GO_KR_KEY", "PUBLIC_DATA_KEY"]) else "🟡"
         led_dart  = "🟢" if _check_api_configured(["DART_API_KEY", "OPENDART_API_KEY"]) else "🟡"
@@ -1258,9 +1355,29 @@ with st.sidebar:
         led_bok   = "🟢" if _check_api_configured(["BOK_API_KEY", "ECOS_API_KEY"]) else "🟡"
         led_ind   = "🟢" if os.path.exists("industry_codes.xlsx") else "🟡"
         st.caption(
-            f"{led_law} 법제처 DRF · {led_nts} 국세청 · {led_dart} DART\n\n"
+            f"{led_law} 법제처(무기한) · {led_nts} 국세청 · {led_dart} DART(무기한)\n\n"
             f"{led_molit} 국토부/브이월드 · {led_bok} 한국은행 · {led_ind} 업종DB"
         )
+        st.divider()
+        st.markdown("**⏰ 유효기간 있는 3대 API 만료일 설정** *(만료 30일 전부터 화면 상단 자동 경고)*")
+        current_expiry_map = load_api_expiry_dates()
+        updated_expiry_map = {}
+        for st_item in expiry_all_status:
+            code = st_item["code"]
+            d_left = st_item["days_left"]
+            status_tag = f"🔴 D-{d_left}" if d_left <= 30 else f"🟢 D-{d_left}"
+            val_str = st.text_input(
+                f"{st_item['name']} (주기: {st_item['cycle']}) [{status_tag}]",
+                value=current_expiry_map.get(code, st_item["date_str"]),
+                placeholder="YYYY-MM-DD",
+                key=f"exp_input_{code}"
+            )
+            updated_expiry_map[code] = val_str.strip()
+        if st.button("💾 API 만료일 저장", use_container_width=True):
+            save_api_expiry_dates(updated_expiry_map)
+            st.success("만료일이 저장되었습니다!")
+            st.rerun()
+
         st.divider()
         backup_json_bytes = json.dumps({
             "chat_rooms": st.session_state.chat_rooms,
@@ -1340,7 +1457,7 @@ with st.sidebar:
             st.link_button("🔑 API키", "https://aistudio.google.com/apikey", use_container_width=True)
 
 # ---------------------------------------------------------
-# 3. 메인 화면 및 현재 선택된 대화방 렌더링
+# 3. 메인 화면 및 현재 선택된 대화방 렌더링 (+ ⏰ API 만료 한 달 전 자동 배너)
 # ---------------------------------------------------------
 current_messages = st.session_state.chat_rooms[selected_room]
 current_room_title = st.session_state.room_titles[selected_room]
@@ -1360,6 +1477,18 @@ st.title(f"⚖️ 세무·법령·회계 자율 에이전트 — [{selected_room
 st.markdown(
     f"💡 **현재 엔진 상태:** {mode_status_str} &nbsp;|&nbsp; 당월 누적 예상 요금: **`{cur_krw:,.0f}원 / {limit_krw:,.0f}원`**"
 )
+
+# 🚨 [API 유효기간 1개월(30일) 전 자동 경고 배너] 평소에 30일 이상 남았을 때는 전혀 표시되지 않고 깔끔하게 숨어 있음
+if expiry_alerts:
+    for alert_item in expiry_alerts:
+        c_al1, c_al2 = st.columns([5, 1])
+        with c_al1:
+            if alert_item["level"] == "expired":
+                st.error(alert_item["msg"])
+            else:
+                st.warning(alert_item["msg"])
+        with c_al2:
+            st.link_button("🔗 연장·재발급", alert_item["url"], use_container_width=True)
 
 for idx, message in enumerate(current_messages):
     with st.chat_message(message["role"]):
@@ -1427,69 +1556,4 @@ for idx, message in enumerate(current_messages):
                     "📧 이메일 회신 초안 (Flash)",
                     key=f"email_{effective_ws_id}_{selected_room}_{idx}",
                     disabled=is_current_room_running,
-                    use_container_width=True
-                ):
-                    _trigger_agent_task(
-                        effective_ws_id, selected_room,
-                        "방금 작성한 검토 결과를 바탕으로, 거래처에 발송할 정식 비즈니스 이메일 회신 초안(제목, 인사말, 핵심 검토 결과 요약, 실무 유의사항, 맺음말 포함)을 깔끔하게 작성해 줘.",
-                        pro_toggle_on, budget_exceeded, force_flash=True
-                    )
-            with act3:
-                if st.button(
-                    "🧠 [프로] 3배 개방 재검토",
-                    key=f"repro_{effective_ws_id}_{selected_room}_{idx}",
-                    disabled=(is_current_room_running or budget_exceeded),
-                    use_container_width=True
-                ):
-                    _trigger_agent_task(
-                        effective_ws_id, selected_room,
-                        "[프로] 직전 질문 사안에 대해 관련 법령·시행령·판례·심판례·예규와 예외 요건까지 데이터·도구 한도를 3배 개방하여 심층 재검토해 줘.",
-                        pro_toggle_on, budget_exceeded, force_flash=False
-                    )
-
-            with st.expander("📋 카톡·이메일 전송용 텍스트 원클릭 복사 (우측 상단 복사 아이콘 클릭)"):
-                st.code(_extract_clean_copy_text(message["content"]), language="markdown")
-
-# 4. 새로운 질문 입력 시 -> 공통 백그라운드 실행기 호출
-if prompt := st.chat_input(
-    placeholder=(
-        f"⏳ [{selected_room}] 현재 백그라운드 정밀 검토 진행 중입니다... (다른 대화방으로 이동하여 추가 질문을 하실 수 있습니다)"
-        if is_current_room_running else
-        f"[{selected_room}] 검토할 이슈를 입력하세요 (좌측 Pro 토글 ON 또는 맨 앞에 [프로] 입력 시 3배 개방)"
-    ),
-    disabled=is_current_room_running,
-    key=f"chat_input_{effective_ws_id}_{selected_room}"
-):
-    _trigger_agent_task(
-        effective_ws_id=effective_ws_id,
-        selected_room=selected_room,
-        raw_prompt=prompt,
-        pro_toggle_on=pro_toggle_on,
-        budget_exceeded=budget_exceeded,
-        force_flash=False
-    )
-
-# 5. 현재 방에서 백그라운드 작업이 진행 중일 때 실시간 상태창 표시
-active_task = task_mgr["tasks"].get(current_task_key)
-if active_task and active_task.get("status") == "running":
-    is_pro_running = active_task.get("is_pro", False)
-    status_title = (
-        f"🧠 [{selected_room}] Pro 심층 모드 백그라운드 가동 중 (데이터·도구 한도 3배 개방)..."
-        if is_pro_running else
-        f"⚡ [{selected_room}] 실시간 법령·공시 DB 조회 및 백그라운드 정밀 검토 중..."
-    )
-    with st.chat_message("assistant"):
-        with st.status(status_title, expanded=True) as status_box:
-            st.write("🔎 **1단계:** 질의 쟁점 분석 및 7대 국가·공공기관(법제처·국세청·DART·국토부·한은) DB 탐색 중...")
-            st.write("🧮 **2단계:** 관련 법령·판례 원문 파싱 및 파이썬 1원 단위 정밀 수리 계산기 구동 중...")
-            st.write("🛡️ **3단계:** 미조회 근거 강제 차단(`_scan_violations`) 및 듀얼 AI 의미 감수(`_semantic_verify`) 수행 중...")
-            st.caption("💡 **백그라운드 멀티태스킹 작동 중:** 지금 좌측 버튼을 누르거나 다른 대화방으로 이동하셔도 이 방의 AI 검토는 멈추지 않고 끝까지 완료됩니다.")
-            while active_task.get("status") == "running":
-                time.sleep(0.4)
-            status_box.update(label="✅ 정밀 검토 및 무결성 감수 완료", state="complete", expanded=False)
-
-    ans = active_task.get("response", "")
-    if ans and (not current_messages or current_messages[-1].get("role") != "assistant" or current_messages[-1].get("content") != ans):
-        current_messages.append({"role": "assistant", "content": ans})
-    task_mgr["tasks"].pop(current_task_key, None)
-    st.rerun()
+                    use_container_width=
