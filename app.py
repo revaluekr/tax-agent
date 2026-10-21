@@ -324,9 +324,6 @@ def _fmt_ymd_str(raw_ymd: str) -> str:
 
 @st.cache_data(ttl=43200, show_spinner=False)
 def fetch_latest_tax_law_promulgations() -> dict[str, dict]:
-    """
-    법제처 API를 통해 핵심 법령(본법 및 시행령)의 최신 공포일자·공포번호·시행일자·제개정구분을 조회합니다 (12시간 캐싱, 0토큰).
-    """
     today_d = datetime.now(ZoneInfo("Asia/Seoul")).date()
     today_int = int(today_d.strftime("%Y%m%d"))
     results_map = {}
@@ -392,10 +389,6 @@ def fetch_latest_tax_law_promulgations() -> dict[str, dict]:
 
 @st.cache_data(ttl=43200, show_spinner=False)
 def fetch_official_revision_reason_zero_token(law_id: str, law_name: str) -> str:
-    """
-    [방식 3] AI 토큰을 단 1원도 쓰지 않고(0토큰), 국가법령정보센터(법제처 DRF) XML에서
-    법제처가 직접 작성한 공식 『제·개정이유 및 주요내용』 원문을 즉시 추출합니다.
-    """
     oc = _get_law_oc()
     if not oc:
         return "❌ 법제처 API 인증키(OC)를 확인할 수 없습니다."
@@ -473,16 +466,23 @@ def extract_cited_laws_in_room(messages: list[dict], law_prom_map: dict[str, dic
 
     return [law_prom_map[cname] for cname in sorted(found_clean_names)]
 
-def get_room_revision_alerts(ws_id: str, room_id: str, messages: list[dict], law_prom_map: dict[str, dict]) -> list[dict]:
+def get_room_revision_alerts(ws_id: str, room_id: str, messages: list[dict], law_prom_map: dict[str, dict]) -> tuple[list[dict], bool]:
+    """
+    (감지된 법령 리스트, 실제 사후 개정 여부 is_post_revision) 튜플을 반환합니다.
+    - 답변 생성 당시 기록된 버전(baseline)보다 법제처 버전이 새로워졌으면 is_post_revision=True (진짜 사후 개정)
+    - 최근 60일 내 공포/시행예정 법령이 인용되어 개정이유서 열람 안내 대상이면 is_post_revision=False
+    """
     cited_list = extract_cited_laws_in_room(messages, law_prom_map)
     if not cited_list:
-        return []
+        return [], False
 
     ack_all = load_room_law_ack()
     room_key = f"{ws_id}::{room_id}"
     room_ack = ack_all.get(room_key, {})
 
-    alerts = []
+    post_rev_alerts = []
+    recent_info_alerts = []
+
     for item in cited_list:
         cname = item["clean_name"]
         vkey = item["version_key"]
@@ -490,11 +490,14 @@ def get_room_revision_alerts(ws_id: str, room_id: str, messages: list[dict], law
 
         if acked_vkey == vkey:
             continue
+        if acked_vkey is not None and acked_vkey != vkey:
+            post_rev_alerts.append(item)
+        elif item["is_recent_promulgation"] or item["is_future_enforcement"]:
+            recent_info_alerts.append(item)
 
-        if (acked_vkey is not None and acked_vkey != vkey) or item["is_recent_promulgation"] or item["is_future_enforcement"]:
-            alerts.append(item)
-
-    return alerts
+    if post_rev_alerts:
+        return post_rev_alerts, True
+    return recent_info_alerts, False
 
 def acknowledge_room_laws(ws_id: str, room_id: str, law_items: list[dict]) -> None:
     ack_all = load_room_law_ack()
@@ -596,7 +599,6 @@ def check_api_expiry_alerts() -> tuple[list[dict], list[dict]]:
 
 @st.cache_resource
 def get_background_task_manager() -> dict:
-    """대화방을 이동하거나 버튼을 눌러도 AI 검색이 끊기지 않도록 백그라운드 작업을 관리합니다."""
     return {"tasks": {}, "lock": threading.Lock()}
 
 def get_monthly_usage() -> dict:
@@ -1053,7 +1055,7 @@ def create_word_docx(report_text: str) -> bytes:
     return buffer.getvalue()
 
 # ---------------------------------------------------------
-# 헬퍼 함수 3: 정식 PDF 직접 생성 엔진 (+ 📕 [고도화 3] 하단 표준 자문 면책문구 인쇄)
+# 헬퍼 함수 3: 정식 PDF 직접 생성 엔진 (+ 📕 하단 면책문구 여백 최적화 완료)
 # ---------------------------------------------------------
 def _ensure_korean_font() -> tuple[str, str]:
     reg_name = "KoreanFont"
@@ -1103,25 +1105,22 @@ def _md_to_rl_xml(text: str, bold_font: str) -> str:
     return s
 
 def _draw_page_footer(canvas, doc):
-    """[고도화 3] PDF 매 페이지 하단에 은은한 구분선과 함께 표준 세무·법령 자문 면책문구(Disclaimer) 및 페이지 번호를 인쇄합니다."""
+    """[고도화 3] PDF 매 페이지 하단 좌측에 면책문구(약 410pt 폭)를, 우측 끝에 페이지 번호(- 1 -)를 겹침 없이 인쇄합니다."""
     canvas.saveState()
     reg_font, _ = _ensure_korean_font()
 
-    # 하단 얇은 구분선
     canvas.setStrokeColor(colors.HexColor("#e2e8f0"))
     canvas.setLineWidth(0.6)
     canvas.line(40, 36, A4[0] - 40, 36)
 
-    # 좌측: 표준 세무·법령 자문 면책문구(Disclaimer)
-    canvas.setFont(reg_font, 7.2)
+    canvas.setFont(reg_font, 6.8)
     canvas.setFillColor(colors.HexColor("#64748b"))
     disclaimer_str = (
-        "※ 본 검토의견서는 질의하신 사실관계와 조회 시점의 현행 법령·예규를 기준으로 작성된 참고자료이며, "
-        "구체적 사실관계의 변동이나 과세관청·법원의 최종 해석에 따라 세무상 판단이 달라질 수 있습니다."
+        "※ 본 의견서는 질의하신 사실관계와 조회 시점 현행 법령을 기준으로 작성된 참고자료이며, "
+        "사실관계 변동이나 과세관청·법원의 해석에 따라 판단이 달라질 수 있습니다."
     )
     canvas.drawString(40, 24, disclaimer_str)
 
-    # 우측: 페이지 번호 (- 1 -)
     canvas.setFont(reg_font, 8.2)
     canvas.setFillColor(colors.HexColor("#475569"))
     page_num_str = f"- {doc.page} -"
@@ -1533,10 +1532,10 @@ with st.sidebar:
     with st.container(border=True):
         rooms_with_rev_cnt = sum(
             1 for r_id in ROOM_IDS
-            if get_room_revision_alerts(effective_ws_id, r_id, st.session_state.chat_rooms.get(r_id, []), law_prom_map)
+            if get_room_revision_alerts(effective_ws_id, r_id, st.session_state.chat_rooms.get(r_id, []), law_prom_map)[0]
         )
         rev_header_pill = (
-            f"<span class='sb-badge-amber'>🔄 {rooms_with_rev_cnt}개방 개정감지</span>"
+            f"<span class='sb-badge-amber'>🔄 {rooms_with_rev_cnt}개방 개정관련</span>"
             if rooms_with_rev_cnt > 0 else ""
         )
         st.markdown(f"<div class='sb-card-title'><span>🗂️ 멀티 대화방 (1~10번)</span>{rev_header_pill}</div>", unsafe_allow_html=True)
@@ -1575,8 +1574,8 @@ with st.sidebar:
             file_mark = f"📎({len(f_items)})" if f_items else ""
             t_info = task_mgr["tasks"].get(f"{effective_ws_id}::{r_id}")
             running_mark = " ⏳분석중" if (t_info and t_info.get("status") == "running") else ""
-            rev_alerts = get_room_revision_alerts(effective_ws_id, r_id, r_msgs, law_prom_map)
-            rev_mark = " 🔄개정감지" if rev_alerts else ""
+            rev_alerts, is_post = get_room_revision_alerts(effective_ws_id, r_id, r_msgs, law_prom_map)
+            rev_mark = (" 🔄사후개정" if is_post else " 📜개정법포함") if rev_alerts else ""
             return f"💬 {r_id} [{title}] ({q_cnt}건) {file_mark}{rev_mark}{running_mark}"
 
         selected_room = st.selectbox(
@@ -1585,7 +1584,7 @@ with st.sidebar:
             index=ROOM_IDS.index(st.session_state.current_room),
             format_func=format_room_label,
             label_visibility="collapsed",
-            help="과거 검토에 인용된 법령이 개정되면 방 이름 옆에 '🔄개정감지'가 자동으로 표시됩니다."
+            help="과거 검토에 인용된 법령이 개정되면 방 이름 옆에 자동으로 표시됩니다."
         )
         st.session_state.current_room = selected_room
 
@@ -1780,7 +1779,7 @@ with st.sidebar:
             st.link_button("🔑 API키", "https://aistudio.google.com/apikey", use_container_width=True)
 
 # ---------------------------------------------------------
-# 3. 메인 화면 및 현재 선택된 대화방 렌더링 (맥락 연동형 알림만 깔끔하게 작동)
+# 3. 메인 화면 및 현재 선택된 대화방 렌더링
 # ---------------------------------------------------------
 current_messages = st.session_state.chat_rooms[selected_room]
 current_room_title = st.session_state.room_titles[selected_room]
@@ -1813,8 +1812,10 @@ if expiry_alerts:
         with c_al2:
             st.link_button("🔗 연장·재발급", alert_item["url"], use_container_width=True)
 
-# 🔄 2) [방식 1: 현재 열려 있는 대화방의 과거 인용 법령에 개정이 감지되었을 때만 나타나는 맞춤형 컨텍스트 바]
-current_room_rev_alerts = get_room_revision_alerts(effective_ws_id, selected_room, current_messages, law_prom_map)
+# 🔄 2) [방식 1: 사후 개정 감지 vs 최근 공포·시행예정 법령 개정이유서 안내 구분 표시]
+current_room_rev_alerts, is_post_revision = get_room_revision_alerts(
+    effective_ws_id, selected_room, current_messages, law_prom_map
+)
 if current_room_rev_alerts:
     rev_names_str = ", ".join(
         f"「{it['law_name']}」(공포:{it['prom_date']}/시행:{it['enf_date']})" for it in current_room_rev_alerts
@@ -1822,9 +1823,14 @@ if current_room_rev_alerts:
     first_clean = current_room_rev_alerts[0]["clean_name"]
     c_rv1, c_rv2, c_rv3, c_rv4 = st.columns([3.5, 1.1, 1.1, 0.8])
     with c_rv1:
-        st.info(
-            f"🔄 **[이 대화방 인용 법령 개정 감지]** 기존 검토에 인용된 **{rev_names_str}**의 최신 개정 공포 내역이 있습니다."
-        )
+        if is_post_revision:
+            st.warning(
+                f"🔄 **[사후 법령 개정 감지]** 이 방의 과거 검토 이후에 **{rev_names_str}**이 새로 개정 공포되었습니다."
+            )
+        else:
+            st.info(
+                f"📜 **[최근 공포·시행예정 법령 인용 안내]** 이 방에서 인용된 **{rev_names_str}**의 공식 개정이유서를 0원으로 열람할 수 있습니다."
+            )
     with c_rv2:
         if st.button("📜 개정이유서(0원)", key=f"rsn_{selected_room}", use_container_width=True):
             if _dialog_decorator:
@@ -1832,16 +1838,16 @@ if current_room_rev_alerts:
             else:
                 st.session_state.show_inline_reason_viewer = True
     with c_rv3:
-        if st.button("⚡ 최신법 재검토", key=f"rerev_{selected_room}", disabled=is_current_room_running, use_container_width=True):
+        if st.button("⚡ 신·구법 비교", key=f"rerev_{selected_room}", disabled=is_current_room_running, use_container_width=True):
             acknowledge_room_laws(effective_ws_id, selected_room, current_room_rev_alerts)
             laws_only = ", ".join(f"「{it['law_name']}」" for it in current_room_rev_alerts)
             re_q = (
-                f"이 대화방의 직전 검토 사안에 대해, 최근 개정 공포된 {laws_only}의 최신 조문을 다시 조회하여 "
-                "기존 결론에 변동이 있는지 [종전 규정 vs 현행(개정) 규정] 비교표와 함께 재검토해 줘."
+                f"이 대화방의 직전 검토 사안과 관련하여, 최근 개정 공포된 {laws_only}의 최신 조문을 조회해 "
+                "[종전 규정 vs 현행(개정) 규정 vs 적용시기 및 실무 영향] 신·구 비교표와 함께 정리해 줘."
             )
             _trigger_agent_task(effective_ws_id, selected_room, re_q, pro_toggle_on, budget_exceeded, force_flash=False)
     with c_rv4:
-        if st.button("✅ 확인", key=f"ack_{selected_room}", use_container_width=True, help="이 대화방의 법령 개정 알림을 확인 처리합니다."):
+        if st.button("✅ 확인", key=f"ack_{selected_room}", use_container_width=True, help="이 대화방의 법령 알림을 확인 처리하여 숨깁니다."):
             acknowledge_room_laws(effective_ws_id, selected_room, current_room_rev_alerts)
             st.rerun()
 
