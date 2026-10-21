@@ -4,6 +4,10 @@ import math
 import time
 import contextvars
 import json
+import threading
+import urllib.request
+import urllib.parse
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import streamlit as st
@@ -39,6 +43,53 @@ def get_live_gemini_key_pool() -> list[tuple[str, str]]:
     return pool
 
 import law_api
+
+def get_law_oc_auto() -> str:
+    """st.secrets, 환경변수, law_api 모듈 속성 및 law_api.py 파일 내부에서 법제처 OC 키를 자동 추출합니다."""
+    for k in ["LAW_API_OC", "OC", "LAW_OC", "LAW_API_KEY", "MOLEG_OC", "DRF_OC"]:
+        val = _get_secret_or_env(k)
+        if val:
+            return val
+    for attr in ["OC", "LAW_API_OC", "LAW_OC", "LAW_API_KEY", "API_KEY", "USER_OC", "oc"]:
+        val = getattr(law_api, attr, None)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    if os.path.exists("law_api.py"):
+        try:
+            with open("law_api.py", "r", encoding="utf-8") as f:
+                src = f.read()
+            m = re.search(r'(?:OC|LAW_API_OC|LAW_OC|LAW_API_KEY)\s*=\s*["\']([^"\']+)["\']', src)
+            if m and m.group(1).strip():
+                return m.group(1).strip()
+            m2 = re.search(r'OC=([A-Za-z0-9_.\-]+)', src)
+            if m2 and m2.group(1).strip() and not m2.group(1).startswith("{"):
+                return m2.group(1).strip()
+        except Exception:
+            pass
+    return ""
+
+# ---------------------------------------------------------
+# ⚡ [고도화 2] 자주 쓰는 법령 목록·조문 원문 당일 메모리 캐싱 (12시간 TTL)
+# ---------------------------------------------------------
+_LAW_MEMORY_CACHE = {}
+_LAW_CACHE_LOCK = threading.Lock()
+_LAW_CACHE_TTL_SEC = 43200  # 12시간
+
+def _cache_get(key: tuple):
+    now = time.time()
+    with _LAW_CACHE_LOCK:
+        entry = _LAW_MEMORY_CACHE.get(key)
+        if entry and (now - entry[0]) < _LAW_CACHE_TTL_SEC:
+            return entry[1]
+    return None
+
+def _cache_set(key: tuple, val) -> None:
+    if val is None:
+        return
+    with _LAW_CACHE_LOCK:
+        if len(_LAW_MEMORY_CACHE) > 500:
+            _LAW_MEMORY_CACHE.clear()
+        _LAW_MEMORY_CACHE[key] = (time.time(), val)
 
 # ---------------------------------------------------------
 # 💰 월간 API 사용량·요금 실시간 추적 및 월 20,000원 Pro 자동 차단기
@@ -158,8 +209,8 @@ def _is_unleashed() -> bool:
     trace = _TOOL_TRACE.get()
     return bool(trace and trace.get("unleash"))
 
-_SEARCH_LIMIT = {"law": 7, "prec": 3, "decc": 3, "expc": 2, "admrul": 2, "ordin": 2}
-_DETAIL_LIMIT = {"law": 12, "prec": 3, "decc": 3, "expc": 2, "admrul": 2, "ordin": 2}
+_SEARCH_LIMIT = {"law": 7, "eflaw": 4, "prec": 3, "decc": 3, "expc": 2, "admrul": 2, "ordin": 2}
+_DETAIL_LIMIT = {"law": 12, "eflaw": 6, "prec": 3, "decc": 3, "expc": 2, "admrul": 2, "ordin": 2}
 
 def _over_limit(kind: str, target: str) -> bool:
     """kind: 'search' 또는 'detail'. Pro(unleash) 모드일 때는 상한을 3배로 자동 확장합니다."""
@@ -194,7 +245,8 @@ def _record_law_articles(text: str) -> None:
     m = re.search(r"📘 \[(.+?)\]", text)
     if not m:
         return
-    title = _norm(m.group(1))
+    raw_header = m.group(1).split("|")[0].strip()
+    title = _norm(raw_header)
     starts = list(re.finditer(r"(?m)^제(\d+)조(?:의(\d+))?\(", text))
     for n, am in enumerate(starts):
         key = (title, int(am.group(1)), int(am.group(2) or 0))
@@ -567,7 +619,6 @@ def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
 
     def _keep_recent_rev_tag(match: re.Match) -> str:
         full_tag = match.group(0)
-        # 2025년 이후 최근 개정·신설 이력은 보존하여 AI가 최근 개정 조문임을 즉시 파악하게 함
         if re.search(r"202[5-9]", full_tag):
             years = re.findall(r"202[5-9]\.\s*\d{1,2}\.\s*\d{1,2}\.?", full_tag)
             kind = match.group(1)
@@ -679,30 +730,40 @@ def select_optimal_model(user_query: str, has_file: bool = False, full_input_len
 
     return "FLASH", "⚡ **[Flash 빠른 검토 모드]** 실무 표준 검토", ""
 
-# 2. Gemini 도구 정의
+# 2. Gemini 도구 정의 (당일 12시간 메모리 캐싱 + 구법 타임머신 도구 포함)
 def search_law_for_gemini(keyword: str, target: str = "law") -> str:
     if _over_limit("search", target):
         print(f"\n[시스템] ⛔ 검색 한도 도달 → 차단: '{keyword}' (대상: {target})")
         return (f"[검색 한도 도달] 이번 질문에서 '{target}' 검색은 더 할 수 없습니다. "
                 "지금까지 조회한 원문만으로 답변을 작성하고, 찾지 못한 근거는 '관련 원문을 확인하지 못했다'고 쓰세요.")
-    print(f"\n[시스템] 💡 목록 검색 도구 가동: '{keyword}' (대상: {target})")
-    results = law_api.search_law_data(keyword, target)
-    used_keyword = keyword
 
-    if not results and target in ("prec", "decc", "expc", "admrul"):
-        print(f"[시스템]    ↳ 제목 검색 결과 없음 → 본문 검색으로 재시도")
-        results = law_api.search_law_data(keyword, target, search_mode=2)
-        if results:
-            used_keyword = keyword + " (본문검색)"
+    cache_key = ("search", datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d"), keyword.strip(), target)
+    cached_pack = _cache_get(cache_key)
+    if cached_pack is not None:
+        results, used_keyword = cached_pack
+        print(f"\n[시스템] ⚡ [메모리 캐시 즉시 히트(0.001초)] 목록 검색: '{keyword}' (대상: {target})")
+    else:
+        print(f"\n[시스템] 💡 목록 검색 도구 가동: '{keyword}' (대상: {target})")
+        results = law_api.search_law_data(keyword, target)
+        used_keyword = keyword
 
-    words = keyword.split()
-    while not results and len(words) > 1:
-        words = words[:-1]
-        used_keyword = " ".join(words)
-        print(f"[시스템]    ↳ 결과 없음 → '{used_keyword}'로 자동 재검색")
-        results = law_api.search_law_data(used_keyword, target)
         if not results and target in ("prec", "decc", "expc", "admrul"):
-            results = law_api.search_law_data(used_keyword, target, search_mode=2)
+            print(f"[시스템]    ↳ 제목 검색 결과 없음 → 본문 검색으로 재시도")
+            results = law_api.search_law_data(keyword, target, search_mode=2)
+            if results:
+                used_keyword = keyword + " (본문검색)"
+
+        words = keyword.split()
+        while not results and len(words) > 1:
+            words = words[:-1]
+            used_keyword = " ".join(words)
+            print(f"[시스템]    ↳ 결과 없음 → '{used_keyword}'로 자동 재검색")
+            results = law_api.search_law_data(used_keyword, target)
+            if not results and target in ("prec", "decc", "expc", "admrul"):
+                results = law_api.search_law_data(used_keyword, target, search_mode=2)
+
+        if results:
+            _cache_set(cache_key, (results, used_keyword))
 
     if not results:
         return _record("list", f"'{keyword}' (대상: {target}) 검색 결과가 없습니다. 법령은 법령명만, 판례는 핵심 주제어 1~2개로 다시 검색하세요.")
@@ -753,8 +814,17 @@ def get_law_details_for_gemini(doc_id: str, target: str = "law", query_filter: s
         print(f"\n[시스템] ⛔ 원문 조회 한도 도달 → 차단: ID '{doc_id}' (대상: {target})")
         return (f"[원문 조회 한도 도달] 이번 질문에서 '{target}' 원문 조회는 더 할 수 없습니다. "
                 "이미 조회한 원문만으로 답변을 작성하세요.")
-    print(f"\n[시스템] 📖 원문 정밀 조회 가동: ID '{doc_id}' (대상: {target}, 필터: '{query_filter}')")
-    raw_text = law_api.get_law_content(doc_id, target, query_filter)
+
+    cache_key = ("detail_raw", datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d"), str(doc_id).strip(), target, query_filter.strip())
+    raw_text = _cache_get(cache_key)
+    if raw_text is not None:
+        print(f"\n[시스템] ⚡ [메모리 캐시 즉시 히트(0.001초)] 원문 조회: ID '{doc_id}' (대상: {target}, 필터: '{query_filter}')")
+    else:
+        print(f"\n[시스템] 📖 원문 정밀 조회 가동: ID '{doc_id}' (대상: {target}, 필터: '{query_filter}')")
+        raw_text = law_api.get_law_content(doc_id, target, query_filter)
+        if raw_text and not str(raw_text).startswith("❌"):
+            _cache_set(cache_key, raw_text)
+
     result = compress_legal_text(raw_text, query_filter)
     preview = result[:150].replace("\n", " ")
     print(f"[시스템]    ↳ 원문 {len(raw_text or ''):,}자 → 전달 {len(result):,}자 | 앞부분: {preview}")
@@ -769,6 +839,117 @@ def get_law_details_for_gemini(doc_id: str, target: str = "law", query_filter: s
         if not body_ok:
             print(f"[시스템]    ↳ ⚠️ 원문이 비었거나 오류: {result[:120]}")
     return _record("detail", result)
+
+def search_historical_law_for_gemini(law_name: str, target_date: str, query_filter: str = "") -> str:
+    """
+    [고도화 1: 🕰️ 구법(연혁법령) 타임머신]
+    과거 귀속연도(예: '2022', '2023-06-30', '20211231') 세무조사·경정청구·기한후신고 검토 시
+    국가법령정보센터 연혁·시행일법령(target=eflaw) DB에서 해당 과거 시점에 실제로 시행 중이던 구법 조문 원문을 조회합니다.
+    - law_name: 정식 법령명 (예: '조세특례제한법', '법인세법 시행령')
+    - target_date: 조회할 과거 기준연도 또는 일자 (예: '2022' 또는 '20221231')
+    - query_filter: 조회할 조문번호 (예: '제29조의7', '제10조')
+    """
+    if _over_limit("detail", "eflaw"):
+        return "[구법 조회 한도 도달] 이번 질문에서 추가 연혁법령 조회는 더 할 수 없습니다."
+
+    digits = re.sub(r"[^0-9]", "", str(target_date or ""))
+    if len(digits) == 4:
+        ymd_int = int(digits + "1231")
+    elif len(digits) == 6:
+        ymd_int = int(digits + "28")
+    elif len(digits) >= 8:
+        ymd_int = int(digits[:8])
+    else:
+        ymd_int = int(datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d"))
+
+    oc = get_law_oc_auto()
+    if not oc:
+        return "❌ 법제처 API 인증키(OC)를 확인할 수 없어 연혁법령 조회가 불가능합니다."
+
+    cache_key = ("hist_law", law_name.strip(), ymd_int, query_filter.strip())
+    cached_res = _cache_get(cache_key)
+    if cached_res is not None:
+        print(f"\n[시스템] ⚡ [메모리 캐시 히트] 구법 타임머신: '{law_name}' (기준일: {ymd_int}, 필터: '{query_filter}')")
+        _record_law_articles(cached_res)
+        return _record("detail", cached_res)
+
+    print(f"\n[시스템] 🕰️ 구법(연혁법령) 타임머신 가동: '{law_name}' (과거 기준일: {ymd_int}, 조문필터: '{query_filter}')")
+    encoded_q = urllib.parse.quote(law_name.strip())
+    search_url = f"http://www.law.go.kr/DRF/lawSearch.do?OC={oc}&target=eflaw&type=XML&query={encoded_q}&display=50"
+
+    try:
+        req = urllib.request.Request(search_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            xml_data = resp.read()
+        root = ET.fromstring(xml_data)
+
+        target_clean = law_name.replace(" ", "").strip()
+        candidates = []
+        for law_node in root.findall(".//law"):
+            lname = (law_node.findtext("법령명한글") or "").strip()
+            if lname.replace(" ", "") != target_clean:
+                continue
+            ef_yd = re.sub(r"[^0-9]", "", law_node.findtext("시행일자") or "")
+            anc_yd = re.sub(r"[^0-9]", "", law_node.findtext("공포일자") or "")
+            mst = (law_node.findtext("법령일련번호") or law_node.findtext("MST") or "").strip()
+            anc_no = (law_node.findtext("공포번호") or "").strip()
+            rev_nm = (law_node.findtext("제개정구분명") or "").strip()
+            if ef_yd.isdigit() and int(ef_yd) <= ymd_int and mst:
+                candidates.append({
+                    "lname": lname,
+                    "ef_yd": int(ef_yd),
+                    "anc_yd": int(anc_yd) if anc_yd.isdigit() else 0,
+                    "mst": mst,
+                    "anc_no": anc_no,
+                    "rev_nm": rev_nm
+                })
+
+        if not candidates:
+            return f"'{law_name}'의 {ymd_int} 기준 연혁법령 목록을 찾지 못했습니다. 일반 get_law_details_for_gemini 도구로 현행 조문 및 부칙을 확인하세요."
+
+        # 기준일(ymd_int) 당시에 시행 중이던 가장 최신 버전 선택
+        candidates.sort(key=lambda x: (x["ef_yd"], x["anc_yd"]), reverse=True)
+        chosen = candidates[0]
+        mst_id = chosen["mst"]
+
+        # 해당 과거 버전(MST)의 조문 원문 XML 요청
+        detail_url = f"http://www.law.go.kr/DRF/lawService.do?OC={oc}&target=eflaw&MST={mst_id}&type=XML"
+        req2 = urllib.request.Request(detail_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req2, timeout=20) as resp2:
+            detail_xml = resp2.read()
+        d_root = ET.fromstring(detail_xml)
+
+        article_blocks = []
+        for unit in d_root.findall(".//조문단위"):
+            jo_content = (unit.findtext("조문내용") or "").strip()
+            if not jo_content:
+                continue
+            lines = [jo_content]
+            for hang in unit.findall(".//항"):
+                h_txt = (hang.findtext("항내용") or "").strip()
+                if h_txt:
+                    lines.append(h_txt)
+                for ho in hang.findall(".//호"):
+                    ho_txt = (ho.findtext("호내용") or "").strip()
+                    if ho_txt:
+                        lines.append("  " + ho_txt)
+                    for mok in ho.findall(".//목"):
+                        mok_txt = (mok.findtext("목내용") or "").strip()
+                        if mok_txt:
+                            lines.append("    " + mok_txt)
+            article_blocks.append("\n".join(lines))
+
+        header_str = (
+            f"📘 [{chosen['lname']} | 🕰️ 구법(연혁법령) 타임머신 조회 (기준일: {ymd_int}) | "
+            f"시행일: {chosen['ef_yd']} | 공포번호: 제{chosen['anc_no']}호 ({chosen['rev_nm']}) | MST: {mst_id}]"
+        )
+        full_raw = header_str + "\n\n" + "\n\n".join(article_blocks)
+        compressed = compress_legal_text(full_raw, query_filter)
+        _cache_set(cache_key, compressed)
+        _record_law_articles(compressed)
+        return _record("detail", compressed)
+    except Exception as e:
+        return f"❌ 구법(연혁법령) 조회 중 오류 발생 ({law_name}, 기준일 {ymd_int}): {e}"
 
 def search_exchange_rate_for_gemini(start_date: str, end_date: str, currency: str = "USD") -> str:
     print(f"\n[시스템] 💱 한국은행 환율 조회 도구 가동: {currency} ({start_date}~{end_date})")
@@ -827,7 +1008,7 @@ def run_tax_calculator_for_gemini(formula_expression: str, description: str = ""
     except Exception as e:
         return f"❌ 수식 계산 오류 ({formula_expression}): {e} -> 올바른 파이썬 사칙연산 수식으로 다시 호출하세요."
 
-# 3. 에이전트 시스템 프롬프트 템플릿 (완전체 3단 체크 + 최근 개정 조문 신·구법 비교표 자동 생성 지침 탑재)
+# 3. 에이전트 시스템 프롬프트 템플릿 (완전체 3단 체크 + 구법 타임머신 + 신·구법 비교표 자동 생성)
 SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문 에이전트입니다.
 사용자의 질문 성격에 따라 아래의 **[투트랙(Two-Track) 운영 프로토콜]**을 지능적으로 구분하여 작동하세요.
 
@@ -837,19 +1018,21 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
 
 [트랙 1 (전문 검토 보고서 모드) 필수 도구 호출 원칙]
 - **[핵심 조문 조회 원칙]**: 세법·노동법·공단 규정 등 법령 질문은 **법률과 시행령(필요시 시행규칙)의 해당 조문을 모두** 원문으로 조회한 뒤 답변할 것. 도구 호출은 필요한 만큼 하되, **이미 결과를 받은 검색을 같은 검색어로 반복하지 말 것.**
+- **[🕰️ 과거 귀속연도(경정청구·세무조사·구법) 조회 원칙]**: 질문에 특정 과거 연도나 과거 시점(예: '2021년 귀속', '2022년 양도분', '종전 규정')이 명시된 경우, 반드시 **`search_historical_law_for_gemini(law_name, target_date, query_filter)`** 도구를 호출하여 해당 과거 과세기간 당시에 시행되던 구법(연혁법령) 원문을 직접 대조할 것.
 - 법령 검색(search_law_for_gemini, target='law')의 keyword에는 **법령명만** 넣을 것 (예: '소득세법', '근로기준법', '소득세법 시행령'). 주제어는 넣지 말 것.
 - 조회한 원문에서 직접 확인하지 못한 금액·비율·연도는 단정하지 말고 **"(원문 미확인)"**이라고 표시할 것.
 - **[근거 표시 의무 (트랙 1 전용)]** 전문 검토 보고서(1. 결론 ~ 3. 관련법령)를 작성할 때 판례·심판례·해석례·예규·법령 조문을 근거로 쓰는 문장 끝에는 반드시 아래 형식의 근거 표시를 붙일 것(닫는 대괄호 ']'가 누락되지 않도록 주의).
   * 판례: [판례:2005두9415] / 조세심판: [심판례:조심2020서1234] / 법령해석례: [해석례:안건번호] / 예규·고시: [예규:문서명 또는 번호]
   * 법령 조문: [조문:법인세법 시행령 제89조] (반드시 정식 법령명 포함. '동법', '같은 법' 사용 금지)
 - **판례·심판례·해석례 인용 규칙**: 판결요지·결정요지를 서술하는 사건은 반드시 get_law_details_for_gemini(target='prec' 등)로 **원문을 조회한 사건만** 쓸 것. 목록 검색에서만 본 사건은 사건번호·선고일만 적고 "(요지 미조회)"로 표시할 것. **도구로 조회하지 않은 사건번호를 기억으로 적지 말 것.**
-- **법령 조문 인용 규칙**: 전문 검토 보고서에 법령명과 함께 적는 조문(예: 「법인세법」 제52조)은 반드시 get_law_details_for_gemini로 **그 조문을 조회한 것만** 쓸 것. 조회하지 않은 조문이 필요하면 먼저 조회할 것.
+- **법령 조문 인용 규칙**: 전문 검토 보고서에 법령명과 함께 적는 조문(예: 「법인세법」 제52조)은 반드시 get_law_details_for_gemini 또는 search_historical_law_for_gemini로 **그 조문을 조회한 것만** 쓸 것. 조회하지 않은 조문이 필요하면 먼저 조회할 것.
 - **답변에 시스템·도구·검증 절차·삭제 여부에 대한 언급을 절대 쓰지 말 것**. 근거가 부족하면 "관련 원문을 확인하지 못했다"고만 쓸 것.
 - **법령명은 반드시 정식 명칭**으로 쓸 것 (예: 「상속세 및 증여세법」, 「조세특례제한법 시행령」, 「근로기준법」).
 - **근거 표시는 그 문장의 내용이 실제로 해당 원문에 있을 때만** 붙일 것. 한 판례에 없는 내용을 그 판례 근거 표시로 묶지 말 것.
 - **따옴표(“ ”) 인용은 조회한 원문을 글자 그대로 옮길 때만** 사용하고, 요약·의역할 때는 따옴표를 쓰지 말 것.
 - **[수식 및 표 작성 규칙]**: 인쇄용 문서 출력 시 글자가 깨지는 LaTeX 수식 문법($$, $, \\frac, \\times, \\text 등)은 절대 사용하지 말고 일반 텍스트 기호(×, ÷, +, -, =)로만 깔끔하게 표기할 것. 마크다운 표를 작성할 때는 반드시 표 위아래로 빈 줄을 띄우고 헤더 구분선(| --- | --- |)을 정확히 작성할 것.
-- 법령·판례·심판례·예규·지방세조례 확인: 'search_law_for_gemini'로 ID를 찾은 뒤 'get_law_details_for_gemini'(반드시 query_filter에 조문번호 입력)로 핵심 조문만 읽을 것.
+- 현행 법령·판례·심판례·예규·지방세조례 확인: 'search_law_for_gemini'로 ID를 찾은 뒤 'get_law_details_for_gemini'(반드시 query_filter에 조문번호 입력)로 핵심 조문만 읽을 것.
+- 과거 시점 구법(연혁법령) 원문 확인: 'search_historical_law_for_gemini' 호출.
 - 기업 공시·재무·지분·배당·출자 확인: 'search_dart_corp_for_gemini' 호출.
 - 사업자 상태(휴·폐업/과세유형) 및 진위확인: 'check_nts_biz_status_for_gemini' 또는 'verify_nts_biz_info_for_gemini' 호출.
 - 부동산(아파트·오피스텔·상가·토지) 실거래가 확인: 'search_real_estate_trade_for_gemini' 호출.
@@ -857,7 +1040,7 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
 - 세액·공제액·수당·지분율 등 모든 숫자 계산: 반드시 'run_tax_calculator_for_gemini'를 호출하여 단 1원의 오차도 없이 정확히 계산할 것.
 
 1. 자료 검토 우선순위 및 기준
-- 1순위 (법령 및 자치법규/행정규칙): 국가법령정보센터 기준 가장 최근 개정된 [법률 / 시행령 / 시행규칙 / 지방세 조례 / 행정규칙(고시·훈령)]을 최우선 기준으로 삼을 것.
+- 1순위 (법령 및 자치법규/행정규칙): 국가법령정보센터 기준 가장 최근 개정된 [법률 / 시행령 / 시행규칙 / 지방세 조례 / 행정규칙(고시·훈령)]을 최우선 기준으로 삼되, 과거 귀속연도 사안은 해당 과세기간 시행 연혁법령(구법)을 대조할 것.
 - 2순위 (공식 유권해석·판례·조세심판례): [대법원 판례('prec') / 조세심판원 결정례('decc') / 법령해석례('expc') / 세법집행기준·예규]를 대조할 것.
 - 3순위 (회계기준·DART 전자공시·국세청·국토부·한국은행·업종DB): 한국회계기준원, 금융감독원(DART), 국세청 사업자 상태/진위확인, 국토교통부 실거래가 및 공시지가(브이월드), 한국은행(ECOS) 공식 환율·금리, 국세청 업종코드 데이터를 참고할 것.
 - 4순위 (실무 참고): 전문가 블로그 글은 전산 처리나 실무 흐름 파악용으로만 참고하되, 1~3순위 법령·예규와 충돌하거나 법적 근거가 없는 편법은 절대 채택하지 말 것.
@@ -882,7 +1065,7 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
 
 #### (1) 상세 법리 및 기준 검토
 - 1~3순위 근거(법령 조문, 단서·예외 요건, 지자체 조례, 회계기준, 각 기관 API 조회 데이터, 예규·판례·조세심판례)를 바탕으로 상세 법리 및 요건 설명
-- **[🔄 최근 개정 조문 자동 신·구 비교 원칙]**: 만약 조회한 핵심 조문에 최근 개정사항(2025~2026년 개정·신설 또는 시행예정 규정)이 포함되어 있거나 질문이 개정세법 관련 질의라면, 별도 요청이 없더라도 본 항목 안에 반드시 **`| 구분 | 종전 규정 | 현행(개정) 규정 | 적용시기 및 실무 영향 |`** 형식의 마크다운 신·구 비교표를 포함하여 무엇이 바뀌었는지 한눈에 보이도록 정리할 것.
+- **[🔄 최근 개정 조문 자동 신·구 비교 원칙]**: 만약 조회한 핵심 조문에 최근 개정사항(2025~2026년 개정·신설 또는 시행예정 규정)이 포함되어 있거나 과거 구법과 현행법을 비교하는 질의라면, 별도 요청이 없더라도 본 항목 안에 반드시 **`| 구분 | 종전 규정(구법) | 현행(개정) 규정 | 적용시기 및 실무 영향 |`** 형식의 마크다운 신·구 비교표를 포함하여 무엇이 바뀌었는지 한눈에 보이도록 정리할 것.
 
 #### (2) 계산
 - 정밀 계산기(run_tax_calculator_for_gemini)로 산출한 단계별 계산 과정 및 산출 내역 (※ 단, 질문에 세액·수당·비율 등 수치 계산 내용이 전혀 없는 단순 법리 질의라면 이 '(2) 계산' 소제목과 항목은 완전히 생략하고 바로 아래 항목을 '(2) 실무 적용 및 리스크 주의사항'으로 당겨서 작성할 것)
@@ -903,9 +1086,6 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
 """
 
 def _extract_and_strip_precheck(text: str) -> tuple[str, str]:
-    """
-    원문에서 <precheck>...</precheck> 내용을 추출해 (정제된_본문, 추출된_3단체크_원문) 튜플로 반환합니다.
-    """
     if not text:
         return "", ""
     m = re.search(r"<precheck>(.*?)</precheck>", text, flags=re.DOTALL | re.IGNORECASE)
@@ -920,7 +1100,6 @@ def _extract_and_strip_precheck(text: str) -> tuple[str, str]:
     return text.lstrip(), ""
 
 def _is_precheck_thorough(precheck_body: str) -> bool:
-    """3단 크로스체크가 대충 작성되지 않고 1·2·3단 모두 구체적으로(최소 120자 이상) 작성되었는지 엄격히 검사합니다."""
     if not precheck_body or len(precheck_body.strip()) < 120:
         return False
     has_step1 = ("1단" in precheck_body) or ("원문" in precheck_body) or ("법령" in precheck_body)
@@ -929,7 +1108,6 @@ def _is_precheck_thorough(precheck_body: str) -> bool:
     return bool(has_step1 and has_step2 and has_step3)
 
 def _clean_latex_for_export(text: str) -> str:
-    """히든 <precheck> 블록을 분리·제거하고, 인쇄용 문서(.html/PDF) 및 워드 출력 시 깨지는 모든 LaTeX 수식 문법을 일반 텍스트로 정제합니다."""
     if not text:
         return ""
     s, _ = _extract_and_strip_precheck(text)
@@ -973,7 +1151,6 @@ def _execute_with_key_and_model(
     safety_settings: list,
     unleash: bool = False
 ) -> tuple[str, int]:
-    """(정제된 최종 보고서 본문, 수행된 3단 크로스체크 글자 수)를 반환합니다."""
     timeout_ms = 120000 if unleash else 60000
     max_remote_calls = 30 if unleash else 16
 
@@ -1019,7 +1196,6 @@ def _execute_with_key_and_model(
     stripped_body, precheck_text = _extract_and_strip_precheck(raw_output)
     is_formal_report = bool(re.search(r"###\s*1\.\s*결론|###\s*2\.\s*내용|###\s*3\.\s*관련법령", stripped_body))
 
-    # 🛡️ 정식 보고서인데 <precheck> 3단 크로스체크를 건너뛰었거나 120자 미만으로 대충 적었다면 강제 재작성!
     if is_formal_report and not _is_precheck_thorough(precheck_text):
         print(f"[시스템] ⚠️ 사전 3단 크로스체크 누락/부실 감지({len(precheck_text)}자) → 정밀 3단 체크 후 재작성 강제")
         enforce_precheck_msg = (
@@ -1187,6 +1363,7 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False) -> s
     tools_list = [
         search_law_for_gemini,
         get_law_details_for_gemini,
+        search_historical_law_for_gemini,
         search_exchange_rate_for_gemini,
         search_base_rate_for_gemini,
         search_industry_code_for_gemini,
