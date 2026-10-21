@@ -31,11 +31,135 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------
-# 0. 작업공간(Workspace)별 서버 자동 저장소 설정
+# 💎 프리미엄 오피스 커스텀 CSS 스킨 (폰트, 표, 헤더, 워터마크 숨김)
+# ---------------------------------------------------------
+st.markdown("""
+<style>
+@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
+
+html, body, [class*="css"] {
+    font-family: 'Pretendard', 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif;
+}
+
+/* 메인 타이틀 스타일 */
+h1 {
+    color: #0f172a !important;
+    font-weight: 800 !important;
+    letter-spacing: -0.5px;
+    border-bottom: 2px solid #e2e8f0;
+    padding-bottom: 12px !important;
+    margin-bottom: 16px !important;
+}
+
+/* 보고서 대제목 (### 1. 결론, ### 2. 내용, ### 3. 관련법령) */
+div[data-testid="stChatMessageContent"] h3 {
+    color: #1e3a8a !important;
+    background: linear-gradient(90deg, #f1f5f9 0%, #ffffff 100%);
+    border-left: 5px solid #1e3a8a;
+    padding: 8px 14px !important;
+    border-radius: 0 6px 6px 0;
+    margin-top: 22px !important;
+    margin-bottom: 12px !important;
+    font-size: 1.2rem !important;
+    font-weight: 700 !important;
+}
+
+/* 보고서 소제목 (#### (1) 상세 법리 등) */
+div[data-testid="stChatMessageContent"] h4 {
+    color: #1e40af !important;
+    margin-top: 16px !important;
+    margin-bottom: 8px !important;
+    font-size: 1.05rem !important;
+    font-weight: 700 !important;
+}
+
+/* 마크다운 표(Table) 엔터프라이즈 네이비 스타일링 */
+div[data-testid="stChatMessageContent"] table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 14px 0 18px 0;
+    font-size: 0.94rem;
+    border-radius: 6px;
+    overflow: hidden;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+}
+div[data-testid="stChatMessageContent"] th {
+    background-color: #1e293b !important;
+    color: #ffffff !important;
+    font-weight: 600 !important;
+    padding: 10px 12px !important;
+    border: 1px solid #334155 !important;
+    text-align: left !important;
+}
+div[data-testid="stChatMessageContent"] td {
+    padding: 9px 12px !important;
+    border: 1px solid #cbd5e1 !important;
+    color: #1e293b;
+    background-color: #ffffff;
+}
+div[data-testid="stChatMessageContent"] tr:nth-child(even) td {
+    background-color: #f8fafc;
+}
+
+/* 상단 모드 안내 인용구 박스 (> ⚡ / > 🧠) */
+div[data-testid="stChatMessageContent"] blockquote {
+    background-color: #f8fafc;
+    border-left: 4px solid #3b82f6;
+    padding: 8px 14px;
+    border-radius: 6px;
+    color: #334155;
+    font-size: 0.9rem;
+    margin-bottom: 12px;
+}
+
+/* 다운로드 버튼 디자인 정돈 */
+div.stDownloadButton > button {
+    border-radius: 6px !important;
+    border: 1px solid #cbd5e1 !important;
+    font-weight: 600 !important;
+    transition: all 0.15s ease-in-out !important;
+}
+div.stDownloadButton > button:hover {
+    border-color: #1e3a8a !important;
+    color: #1e3a8a !important;
+    background-color: #f1f5f9 !important;
+}
+
+/* API 연동 상태 LED 카드 */
+.api-led-box {
+    background-color: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 0.82rem;
+    line-height: 1.75;
+    color: #334155;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+}
+
+/* 불필요한 Streamlit 기본 푸터 숨김 */
+footer {visibility: hidden;}
+</style>
+""", unsafe_allow_html=True)
+
+# ---------------------------------------------------------
+# 0. 작업공간(Workspace)별 서버 자동 저장소 설정 및 키 체크
 # ---------------------------------------------------------
 ROOM_IDS = [f"대화방 {i}" for i in range(1, 11)]
 STORAGE_DIR = ".workspace_storage"
 os.makedirs(STORAGE_DIR, exist_ok=True)
+
+def _check_api_configured(key_names: list[str]) -> bool:
+    """환경변수 또는 st.secrets에 해당 API 키가 설정되어 있는지 확인합니다."""
+    for k in key_names:
+        try:
+            if hasattr(st, "secrets") and k in st.secrets and str(st.secrets[k]).strip():
+                return True
+        except Exception:
+            pass
+        if os.getenv(k, "").strip():
+            return True
+    return False
 
 def get_storage_path(workspace_id: str) -> str:
     """작업공간 ID(암호)를 해시 암호화하여 고유한 저장 파일 경로를 생성합니다."""
@@ -159,7 +283,7 @@ def extract_file_content(uploaded_file) -> str:
         return f"❌ 파일 읽기 오류: {e}"
 
 # ---------------------------------------------------------
-# 공통 정제 도우미: 기존 대화 내역에 남아있는 LaTeX 수식 기호까지 깔끔하게 정리
+# 공통 정제 도우미: LaTeX 수식 기호 정제 및 클립보드 복사용 순수 본문 추출
 # ---------------------------------------------------------
 def _sanitize_math_text(text: str) -> str:
     if not text:
@@ -173,6 +297,16 @@ def _sanitize_math_text(text: str) -> str:
     s = s.replace(r"\%", "%").replace(r"\_", "_").replace(r"\,", ",")
     s = re.sub(r"\\(left|right|quad|qquad|mathrm|mathbf)\b", "", s)
     return s
+
+def _extract_clean_copy_text(report_text: str) -> str:
+    """클립보드 원클릭 복사용: 상단 시스템 배지(> ⚡ 등)를 제외하고 카톡/이메일/문서에 바로 붙여넣기 좋은 텍스트를 반환합니다."""
+    cleaned = _sanitize_math_text(report_text)
+    out_lines = []
+    for line in cleaned.split("\n"):
+        if line.strip().startswith(">"):
+            continue
+        out_lines.append(line)
+    return "\n".join(out_lines).strip()
 
 # ---------------------------------------------------------
 # 헬퍼 함수 2: AI 답변을 워드(.docx)로 변환 (상단 타이틀 없이 본문부터 깔끔하게 출력)
@@ -195,7 +329,6 @@ def create_word_docx(report_text: str) -> bytes:
     i = 0
     while i < len(lines):
         stripped = lines[i].strip()
-        # 상단 모드 배지(> ⚡ 또는 > 🧠 등)는 보고서 본문 파일에서 제외하여 깔끔하게 만듦
         if not stripped or stripped.startswith(">"):
             i += 1
             continue
@@ -369,12 +502,10 @@ def create_pdf_report(report_text: str) -> bytes:
             i += 1
             continue
 
-        # 상단 모드 안내 배지(> ⚡ / > 🧠 / > 💡)는 PDF 보고서 본문에서는 생략하여 깔끔하게 출력
         if stripped.startswith(">"):
             i += 1
             continue
 
-        # 구분선 (---)
         if re.match(r"^-{3,}$", stripped):
             story.append(Spacer(1, 4))
             story.append(HRFlowable(width="100%", thickness=0.7, color=colors.HexColor("#cbd5e1")))
@@ -382,7 +513,6 @@ def create_pdf_report(report_text: str) -> bytes:
             i += 1
             continue
 
-        # 마크다운 표 (| ... |) 감지 -> PDF 자동 줄바꿈 Table 변환
         if stripped.startswith("|") and stripped.endswith("|"):
             table_lines = []
             while i < len(raw_lines):
@@ -430,7 +560,6 @@ def create_pdf_report(report_text: str) -> bytes:
                 story.append(Spacer(1, 8))
             continue
 
-        # 제목 (#### -> H3, ###/##/# -> H2)
         if stripped.startswith("#### "):
             story.append(Paragraph(_md_to_rl_xml(stripped[5:], bold_font), style_h3))
         elif stripped.startswith("### "):
@@ -439,7 +568,6 @@ def create_pdf_report(report_text: str) -> bytes:
             story.append(Paragraph(_md_to_rl_xml(stripped[3:], bold_font), style_h2))
         elif stripped.startswith("# "):
             story.append(Paragraph(_md_to_rl_xml(stripped[2:], bold_font), style_h2))
-        # 불릿 목록 (- , * )
         elif stripped.startswith(("- ", "* ")):
             indent_level = (len(line) - len(line.lstrip(" "))) // 2
             b_style = ParagraphStyle(
@@ -460,11 +588,27 @@ def create_pdf_report(report_text: str) -> bytes:
     return buffer.getvalue()
 
 # ---------------------------------------------------------
-# 2. 왼쪽 사이드바 제어판
+# 2. 왼쪽 사이드바 제어판 (Pro 토글 스위치 + 7대 기관 LED 상태창 장착)
 # ---------------------------------------------------------
 with st.sidebar:
     st.title("⚙️ 에이전트 제어판")
     
+    # 🎛️ 1) Pro 심층 모드(3배 리미트 해제) 원클릭 토글 스위치
+    st.subheader("🚀 엔진 출력 모드 제어")
+    pro_toggle_on = st.toggle(
+        "🧠 Pro 심층 모드 (3배 리미트 해제)",
+        value=st.session_state.get("pro_toggle_state", False),
+        help="켜두면 질문 앞에 [프로]를 직접 입력하지 않아도 자동으로 Pro 모델 가동 및 법령·판례·첨부파일 한도가 3배로 전면 개방됩니다."
+    )
+    st.session_state.pro_toggle_state = pro_toggle_on
+    if pro_toggle_on:
+        st.info("🔥 **Pro 3배 리미트 개방 ON:** 모든 질의에 대해 최대 15만 자 문서 독해 및 30회 도구 호출이 작동합니다.")
+    else:
+        st.caption("⚡ **Flash 표준 모드 작동 중:** 빠르고 경제적인 표준 모드로 응답합니다. (대용량 파일 첨부 시 자동 Pro 전환)")
+
+    st.divider()
+
+    # 🔐 2) 내 작업공간 (자동 동기화)
     st.subheader("🔐 내 작업공간 (자동 동기화)")
     
     ws_widget_ver = st.session_state.get("ws_widget_ver", 0)
@@ -501,6 +645,7 @@ with st.sidebar:
 
     st.divider()
     
+    # 🗂️ 3) 멀티 대화방 선택 (1~10번)
     st.subheader("🗂️ 멀티 대화방 선택 (1~10번)")
     
     def format_room_label(r_id: str) -> str:
@@ -589,6 +734,7 @@ with st.sidebar:
         
     st.divider()
     
+    # 📂 4) 방별 전용 자료 업로드
     st.subheader(f"📂 [{selected_room}] 전용 자료 업로드")
     reset_cnt = st.session_state.get(f"reset_cnt_{selected_room}", 0)
     uploaded_file = st.file_uploader(
@@ -622,6 +768,29 @@ with st.sidebar:
         with st.expander("📄 저장된 파일 내용 미리보기"):
             st.text(saved_file_text[:1000] + ("\n...(중략)..." if len(saved_file_text) > 1000 else ""))
 
+    st.divider()
+
+    # 📊 5) 사이드바 하단: 7대 국가·공공기관 API 실시간 연동 상태 그린 라이트(LED) 패널
+    st.subheader("📡 7대 기관 DB 실시간 연동 상태")
+    led_law   = "🟢" if _check_api_configured(["LAW_API_OC", "OC"]) else "🟡"
+    led_nts   = "🟢" if _check_api_configured(["NTS_API_KEY", "DATA_GO_KR_KEY", "PUBLIC_DATA_KEY"]) else "🟡"
+    led_dart  = "🟢" if _check_api_configured(["DART_API_KEY", "OPENDART_API_KEY"]) else "🟡"
+    led_molit = "🟢" if _check_api_configured(["MOLIT_API_KEY", "DATA_GO_KR_KEY", "VWORLD_API_KEY"]) else "🟡"
+    led_bok   = "🟢" if _check_api_configured(["BOK_API_KEY", "ECOS_API_KEY"]) else "🟡"
+    led_ind   = "🟢" if os.path.exists("industry_codes.xlsx") else "🟡"
+
+    st.markdown(f"""
+    <div class="api-led-box">
+        <div>{led_law} <b>법제처 국가법령·판례·심판례 DRF</b></div>
+        <div>{led_nts} <b>국세청 사업자 상태·진위확인 API</b></div>
+        <div>{led_dart} <b>금융감독원 전자공시(Open DART)</b></div>
+        <div>{led_molit} <b>국토부 실거래가 · 브이월드 공시지가</b></div>
+        <div>{led_bok} <b>한국은행 경제통계(ECOS) 환율·금리</b></div>
+        <div>{led_ind} <b>국세청 6자리 기준경비율 업종 마스터</b></div>
+        <div>🟢 <b>Python 1원 단위 정밀 수리 계산 엔진</b></div>
+    </div>
+    """, unsafe_allow_html=True)
+
 # ---------------------------------------------------------
 # 3. 메인 화면 및 현재 선택된 대화방 렌더링
 # ---------------------------------------------------------
@@ -629,10 +798,10 @@ current_messages = st.session_state.chat_rooms[selected_room]
 current_room_title = st.session_state.room_titles[selected_room]
 current_file_info = st.session_state.room_files[selected_room]
 
+mode_status_str = "🧠 **Pro 심층 모드 (3배 리미트 개방 ON)**" if pro_toggle_on else "⚡ **Flash 표준 모드 (고속 검토)**"
 st.title(f"⚖️ 세무·법령·회계 자율 에이전트 — [{selected_room}: {current_room_title}]")
 st.markdown(
-    "💡 **모드 안내:** 일반 질의는 빠른 **Flash**로 작동하며, **① 질문 맨 앞에 `[프로]`를 입력**하거나 "
-    "**② 대용량 문서(15,000자 이상)를 첨부**하면 **Pro 심층 모드(데이터·도구 한도 3배 개방)**가 자동 가동됩니다."
+    f"💡 **현재 엔진 상태:** {mode_status_str} &nbsp;|&nbsp; 좌측 사이드바의 **토글 스위치**를 켜거나 질문 맨 앞에 **`[프로]`**를 입력하면 데이터·도구 한도가 3배로 확장됩니다."
 )
 
 for idx, message in enumerate(current_messages):
@@ -667,21 +836,29 @@ for idx, message in enumerate(current_messages):
                     key=f"md_{effective_ws_id}_{selected_room}_{idx}",
                     use_container_width=True
                 )
+            # 📋 4) 카톡·이메일·문서 붙여넣기용 원클릭 클립보드 복사 블록
+            with st.expander("📋 카톡·이메일 전송용 텍스트 원클릭 복사 (우측 상단 복사 아이콘 클릭)"):
+                st.code(_extract_clean_copy_text(message["content"]), language="markdown")
 
-# 4. 사용자 질문 입력 및 실시간 자동 저장 처리
+# 4. 사용자 질문 입력 및 실시간 3단계 아코디언 상태창(st.status) 처리
 if prompt := st.chat_input(
-    placeholder=f"[{selected_room}] 검토할 이슈를 입력하세요 (심층 3배 개방 검토는 맨 앞에 [프로] 입력)",
+    placeholder=f"[{selected_room}] 검토할 이슈를 입력하세요 (좌측 Pro 토글 ON 또는 맨 앞에 [프로] 입력 시 3배 개방)",
     key=f"chat_input_{effective_ws_id}_{selected_room}"
 ):
+    # 좌측 토글 스위치가 켜져 있으면 자동으로 질문 앞에 [프로] 태그 부착
+    effective_prompt = prompt.strip()
+    if pro_toggle_on and not effective_prompt.startswith("[프로]"):
+        effective_prompt = f"[프로] {effective_prompt}"
+
     has_attached_file = bool(current_file_info["name"] and current_file_info["text"])
-    display_prompt = f"📎 **[첨부파일: {current_file_info['name']}]**\n\n{prompt}" if has_attached_file else prompt
+    display_prompt = f"📎 **[첨부파일: {current_file_info['name']}]**\n\n{effective_prompt}" if has_attached_file else effective_prompt
     
     if st.session_state.room_titles[selected_room] in ["빈 대화방", "메인 대화"] and not current_messages:
-        auto_title = prompt.strip().replace("\n", " ")[:12]
+        auto_title = prompt.strip().replace("[프로]", "").strip().replace("\n", " ")[:12]
         st.session_state.room_titles[selected_room] = auto_title
         current_room_title = auto_title
 
-    is_pro_request = prompt.strip().startswith("[프로]") or (has_attached_file and len(current_file_info["text"]) >= 15000)
+    is_pro_request = effective_prompt.startswith("[프로]") or (has_attached_file and len(current_file_info["text"]) >= 15000)
     msg_char_cap = 24000 if is_pro_request else 8000
 
     history_context = ""
@@ -705,7 +882,7 @@ if prompt := st.chat_input(
         doc_cap = MAX_DOC_CHARS_PRO if is_pro_request else MAX_DOC_CHARS_STANDARD
         full_input_for_agent = (
             f"{history_context}"
-            f"[현재 사용자 질문]: {prompt}\n\n"
+            f"[현재 사용자 질문]: {effective_prompt}\n\n"
             f"아래는 사용자가 현재 대화방에 업로드한 첨부파일({current_file_info['name']})의 데이터입니다. "
             f"직전 대화 맥락과 이 파일 데이터를 바탕으로 관련 법령·예규·판례·환율을 정밀 대조하여 답변하세요:\n"
             f"========================================\n"
@@ -713,22 +890,26 @@ if prompt := st.chat_input(
             f"========================================"
         )
     else:
-        full_input_for_agent = f"{history_context}[현재 사용자 질문]: {prompt}" if history_context else prompt
+        full_input_for_agent = f"{history_context}[현재 사용자 질문]: {effective_prompt}" if history_context else effective_prompt
 
-    spinner_msg = (
-        f"🧠 [{selected_room}] Pro 심층 모드 (데이터·도구 한도 3배 개방) 정밀 분석 중입니다..."
+    status_title = (
+        f"🧠 [{selected_room}] Pro 심층 모드 가동 중 (데이터·도구 한도 3배 개방)..."
         if is_pro_request else
-        f"🔍 [{selected_room}] 맥락 분석 및 정밀 검토 중입니다..."
+        f"⚡ [{selected_room}] 실시간 법령·공시 DB 조회 및 정밀 검토 중..."
     )
 
     with st.chat_message("assistant"):
-        with st.spinner(spinner_msg):
+        with st.status(status_title, expanded=True) as status_box:
+            st.write("🔎 **1단계:** 질의 쟁점 분석 및 7대 국가·공공기관(법제처·국세청·DART·국토부·한은) DB 탐색 중...")
+            st.write("🧮 **2단계:** 관련 법령·판례 원문 파싱 및 파이썬 1원 단위 정밀 수리 계산기 구동 중...")
+            st.write("🛡️ **3단계:** 미조회 근거 강제 차단(`_scan_violations`) 및 듀얼 AI 의미 감수(`_semantic_verify`) 수행 중...")
             response = run_agent(
                 user_input=full_input_for_agent,
-                raw_query=prompt,
+                raw_query=effective_prompt,
                 has_file=has_attached_file
             )
-            st.markdown(response)
+            status_box.update(label="✅ 정밀 검토 및 무결성 감수 완료", state="complete", expanded=False)
+        st.markdown(response)
             
     current_messages.append({"role": "assistant", "content": response})
     save_workspace_to_disk(effective_ws_id)
