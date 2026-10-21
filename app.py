@@ -4,8 +4,6 @@ import re
 import json
 import hashlib
 import urllib.request
-from datetime import datetime
-from zoneinfo import ZoneInfo
 import streamlit as st
 import pandas as pd
 from pypdf import PdfReader
@@ -177,7 +175,7 @@ def _sanitize_math_text(text: str) -> str:
     return s
 
 # ---------------------------------------------------------
-# 헬퍼 함수 2: AI 답변을 워드(.docx)로 변환 (한글 폰트 + 마크다운 표 변환 지원)
+# 헬퍼 함수 2: AI 답변을 워드(.docx)로 변환 (상단 타이틀 없이 본문부터 깔끔하게 출력)
 # ---------------------------------------------------------
 def _set_malgun_font(run):
     run.font.name = "Malgun Gothic"
@@ -193,15 +191,12 @@ def create_word_docx(report_text: str) -> bytes:
     style.font.size = Pt(10.5)
     style._element.rPr.rFonts.set(qn("w:eastAsia"), "Malgun Gothic")
     
-    title = doc.add_heading("세무·법령·회계 전문 검토 보고서", level=0)
-    for run in title.runs:
-        _set_malgun_font(run)
-    
     lines = report_text.split("\n")
     i = 0
     while i < len(lines):
         stripped = lines[i].strip()
-        if not stripped:
+        # 상단 모드 배지(> ⚡ 또는 > 🧠 등)는 보고서 본문 파일에서 제외하여 깔끔하게 만듦
+        if not stripped or stripped.startswith(">"):
             i += 1
             continue
 
@@ -244,7 +239,7 @@ def create_word_docx(report_text: str) -> bytes:
         elif stripped.startswith("- ") or stripped.startswith("* "):
             p = doc.add_paragraph(clean_line[2:], style="List Bullet")
             p.paragraph_format.space_after = Pt(4)
-        else:
+        elif not re.match(r"^-{3,}$", stripped):
             p = doc.add_paragraph(clean_line)
             p.paragraph_format.space_after = Pt(6)
         i += 1
@@ -255,7 +250,7 @@ def create_word_docx(report_text: str) -> bytes:
     return buffer.getvalue()
 
 # ---------------------------------------------------------
-# 헬퍼 함수 3: 정식 비즈니스 양식 PDF 직접 생성 엔진 (ReportLab 기반)
+# 헬퍼 함수 3: 정식 PDF 직접 생성 엔진 (상단 타이틀/검토안건/작성일자 제거, 1. 결론부터 조판)
 # ---------------------------------------------------------
 def _ensure_korean_font() -> tuple[str, str]:
     """서버 환경(Linux/Windows/Mac)에 한글 폰트를 자동 준비·등록하고 (일반폰트명, 굵은폰트명)을 반환합니다."""
@@ -264,7 +259,6 @@ def _ensure_korean_font() -> tuple[str, str]:
     if reg_name in pdfmetrics.getRegisteredFontNames():
         return reg_name, bold_name
 
-    # 1순위: 로컬/프로젝트에 이미 다운로드된 폰트 또는 OS 내장 폰트 탐색
     font_dir = STORAGE_DIR
     reg_path = os.path.join(font_dir, "NanumGothic.ttf")
     bold_path = os.path.join(font_dir, "NanumGothicBold.ttf")
@@ -275,7 +269,6 @@ def _ensure_korean_font() -> tuple[str, str]:
     if os.path.exists(win_malgun) and os.path.exists(win_malgun_bd):
         reg_path, bold_path = win_malgun, win_malgun_bd
     else:
-        # 리눅스(Streamlit Cloud 등) 환경을 위해 최초 1회 구글 폰트에서 나눔고딕 자동 다운로드
         try:
             if not os.path.exists(reg_path):
                 urllib.request.urlretrieve(
@@ -298,7 +291,7 @@ def _ensure_korean_font() -> tuple[str, str]:
         return "Helvetica", "Helvetica-Bold"
 
 def _strip_emojis_for_pdf(text: str) -> str:
-    """TTF 기본 폰트에서 네모(□)로 깨질 수 있는 컬러 이모지만 깔끔하게 제거합니다 (특수기호 •, ※, ⚖, → 등은 유지)."""
+    """TTF 기본 폰트에서 네모(□)로 깨질 수 있는 컬러 이모지만 깔끔하게 제거합니다."""
     return re.sub(r"[\U00010000-\U0010ffff]", "", text or "")
 
 def _md_to_rl_xml(text: str, bold_font: str) -> str:
@@ -309,24 +302,18 @@ def _md_to_rl_xml(text: str, bold_font: str) -> str:
     s = re.sub(r"`([^`]+)`", r'<font backColor="#f1f5f9">\1</font>', s)
     return s
 
-def _draw_page_header_footer(canvas, doc):
-    """모든 PDF 페이지 상단 보더라인과 하단 페이지 번호(- 1 -)를 그립니다."""
+def _draw_page_footer(canvas, doc):
+    """PDF 하단 페이지 번호(- 1 -)만 깔끔하게 출력합니다."""
     canvas.saveState()
     reg_font, _ = _ensure_korean_font()
-    canvas.setStrokeColor(colors.HexColor("#cbd5e1"))
-    canvas.setLineWidth(0.6)
-    canvas.line(40, A4[1] - 32, A4[0] - 40, A4[1] - 32)
-    
     canvas.setFont(reg_font, 8.5)
     canvas.setFillColor(colors.HexColor("#64748b"))
-    canvas.drawString(40, A4[1] - 26, "세무·법령·회계 정밀 검토 보고서 (AI Autonomous Agent Report)")
-    
     page_num_str = f"- {doc.page} -"
     canvas.drawCentredString(A4[0] / 2.0, 25, page_num_str)
     canvas.restoreState()
 
-def create_pdf_report(report_text: str, room_title: str = "세무·법령 검토") -> bytes:
-    """AI 답변을 정식 비즈니스 보고서 양식(헤더 표, 본문 조판, 자동 줄바꿈 표, 페이지 번호)의 진짜 .pdf 파일로 생성합니다."""
+def create_pdf_report(report_text: str) -> bytes:
+    """상단 타이틀·검토안건·작성일자 없이 '1. 결론 -> 2. 내용 -> 3. 관련법령' 본문을 즉시 깔끔한 PDF로 조판합니다."""
     reg_font, bold_font = _ensure_korean_font()
     cleaned_text = _sanitize_math_text(report_text)
     raw_lines = cleaned_text.split("\n")
@@ -337,20 +324,16 @@ def create_pdf_report(report_text: str, room_title: str = "세무·법령 검토
         pagesize=A4,
         leftMargin=40,
         rightMargin=40,
-        topMargin=48,
-        bottomMargin=45
+        topMargin=42,
+        bottomMargin=42
     )
     usable_width = A4[0] - 80
 
     styles = getSampleStyleSheet()
-    style_title = ParagraphStyle(
-        "DocTitle", parent=styles["Normal"], fontName=bold_font,
-        fontSize=17, leading=23, textColor=colors.HexColor("#1e3a8a"), alignment=1, spaceAfter=6
-    )
     style_h2 = ParagraphStyle(
         "DocH2", parent=styles["Normal"], fontName=bold_font,
-        fontSize=12.5, leading=18, textColor=colors.HexColor("#1f4e78"),
-        spaceBefore=14, spaceAfter=6
+        fontSize=13, leading=19, textColor=colors.HexColor("#1f4e78"),
+        spaceBefore=12, spaceAfter=6
     )
     style_h3 = ParagraphStyle(
         "DocH3", parent=styles["Normal"], fontName=bold_font,
@@ -365,11 +348,6 @@ def create_pdf_report(report_text: str, room_title: str = "세무·법령 검토
     style_bullet = ParagraphStyle(
         "DocBullet", parent=style_body, leftIndent=12, firstLineIndent=-8, spaceAfter=3.5
     )
-    style_quote = ParagraphStyle(
-        "DocQuote", parent=style_body, fontSize=9.0, leading=14,
-        textColor=colors.HexColor("#475569"), backColor=colors.HexColor("#f8fafc"),
-        borderPadding=6, leftIndent=6, rightIndent=6, spaceBefore=4, spaceAfter=6
-    )
     style_th = ParagraphStyle(
         "DocTH", parent=style_body, fontName=bold_font, fontSize=9.2, leading=13.5,
         textColor=colors.HexColor("#0f172a"), alignment=0
@@ -381,43 +359,6 @@ def create_pdf_report(report_text: str, room_title: str = "세무·법령 검토
 
     story = []
 
-    # 1) 보고서 상단 공식 타이틀 및 메타데이터 요약 표
-    today_str = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y년 %m월 %d일")
-    clean_room_title = _md_to_rl_xml(room_title, bold_font)
-
-    header_box_data = [
-        [Paragraph("세무 · 법령 · 회계 전문 검토 보고서", style_title)],
-    ]
-    header_table = Table(header_box_data, colWidths=[usable_width])
-    header_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f0f4f8")),
-        ("BOX", (0, 0), (-1, -1), 1.2, colors.HexColor("#1e3a8a")),
-        ("TOPPADDING", (0, 0), (-1, -1), 12),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 12),
-    ]))
-    story.append(header_table)
-
-    meta_data = [
-        [
-            Paragraph(f'<font name="{bold_font}">검토 안건</font>', style_td),
-            Paragraph(clean_room_title, style_td),
-            Paragraph(f'<font name="{bold_font}">작성 일자</font>', style_td),
-            Paragraph(today_str, style_td),
-        ]
-    ]
-    meta_table = Table(meta_data, colWidths=[usable_width * 0.16, usable_width * 0.44, usable_width * 0.16, usable_width * 0.24])
-    meta_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (0, 0), colors.HexColor("#e2e8f0")),
-        ("BACKGROUND", (2, 0), (2, 0), colors.HexColor("#e2e8f0")),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, -1), 5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-    ]))
-    story.append(meta_table)
-    story.append(Spacer(1, 12))
-
-    # 2) 본문 마크다운 파싱 및 조판
     i = 0
     while i < len(raw_lines):
         line = raw_lines[i]
@@ -425,6 +366,11 @@ def create_pdf_report(report_text: str, room_title: str = "세무·법령 검토
 
         if not stripped:
             story.append(Spacer(1, 4))
+            i += 1
+            continue
+
+        # 상단 모드 안내 배지(> ⚡ / > 🧠 / > 💡)는 PDF 보고서 본문에서는 생략하여 깔끔하게 출력
+        if stripped.startswith(">"):
             i += 1
             continue
 
@@ -488,15 +434,11 @@ def create_pdf_report(report_text: str, room_title: str = "세무·법령 검토
         if stripped.startswith("#### "):
             story.append(Paragraph(_md_to_rl_xml(stripped[5:], bold_font), style_h3))
         elif stripped.startswith("### "):
-            story.append(Paragraph("■ " + _md_to_rl_xml(stripped[4:], bold_font), style_h2))
+            story.append(Paragraph(_md_to_rl_xml(stripped[4:], bold_font), style_h2))
         elif stripped.startswith("## "):
-            story.append(Paragraph("■ " + _md_to_rl_xml(stripped[3:], bold_font), style_h2))
+            story.append(Paragraph(_md_to_rl_xml(stripped[3:], bold_font), style_h2))
         elif stripped.startswith("# "):
-            story.append(Paragraph("■ " + _md_to_rl_xml(stripped[2:], bold_font), style_h2))
-        # 인용구 / 상단 배지 (> ...)
-        elif stripped.startswith(">"):
-            q_body = re.sub(r"^>\s*", "", stripped)
-            story.append(Paragraph(_md_to_rl_xml(q_body, bold_font), style_quote))
+            story.append(Paragraph(_md_to_rl_xml(stripped[2:], bold_font), style_h2))
         # 불릿 목록 (- , * )
         elif stripped.startswith(("- ", "* ")):
             indent_level = (len(line) - len(line.lstrip(" "))) // 2
@@ -510,12 +452,15 @@ def create_pdf_report(report_text: str, room_title: str = "세무·법령 검토
 
         i += 1
 
-    doc.build(story, onFirstPage=_draw_page_header_footer, onLaterPages=_draw_page_header_footer)
+    if not story:
+        story.append(Paragraph("내용 없음", style_body))
+
+    doc.build(story, onFirstPage=_draw_page_footer, onLaterPages=_draw_page_footer)
     buffer.seek(0)
     return buffer.getvalue()
 
 # ---------------------------------------------------------
-# 2. 왼쪽 사이드바 제어판 (작업공간 원클릭 잠금 해제/파기 버튼 장착)
+# 2. 왼쪽 사이드바 제어판
 # ---------------------------------------------------------
 with st.sidebar:
     st.title("⚙️ 에이전트 제어판")
@@ -698,7 +643,7 @@ for idx, message in enumerate(current_messages):
             with col1:
                 st.download_button(
                     label="📕 정식 PDF 보고서 다운로드 (.pdf)",
-                    data=create_pdf_report(message["content"], current_room_title),
+                    data=create_pdf_report(message["content"]),
                     file_name=f"검토보고서_{selected_room}_{current_room_title}_{idx}.pdf",
                     mime="application/pdf",
                     key=f"pdf_{effective_ws_id}_{selected_room}_{idx}",
@@ -773,7 +718,7 @@ if prompt := st.chat_input(
     spinner_msg = (
         f"🧠 [{selected_room}] Pro 심층 모드 (데이터·도구 한도 3배 개방) 정밀 분석 중입니다..."
         if is_pro_request else
-        f"🔍 [{selected_room}] 맥락 분석 및 3단계 크로스체크 중입니다..."
+        f"🔍 [{selected_room}] 맥락 분석 및 정밀 검토 중입니다..."
     )
 
     with st.chat_message("assistant"):
