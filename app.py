@@ -271,7 +271,7 @@ ROOM_LAW_ACK_PATH = os.path.join(STORAGE_DIR, "room_law_ack.json")
 MONTHLY_PRO_LIMIT_KRW = 20000.0
 USD_TO_KRW_RATE = 1400.0
 
-# 📢 실시간 공포 감지 및 『제·개정이유서』 직결 대상 핵심 세법·노동법 (시행령 인용도 자동 매핑)
+# 📢 실시간 공포 감지 및 『제·개정이유서』 직결 대상 핵심 세법·노동법
 WATCHED_TAX_LAWS = [
     "국세기본법",
     "법인세법",
@@ -283,6 +283,38 @@ WATCHED_TAX_LAWS = [
     "농어촌특별세법",
     "근로기준법"
 ]
+
+def _get_law_oc() -> str:
+    """agent.py 또는 law_api.py, st.secrets, 환경변수에서 법제처 OC 키를 자동 추출합니다."""
+    if hasattr(agent, "get_law_oc_auto"):
+        val = agent.get_law_oc_auto()
+        if val:
+            return val
+    for k in ["LAW_API_OC", "OC", "LAW_OC", "LAW_API_KEY", "MOLEG_OC", "DRF_OC"]:
+        try:
+            if hasattr(st, "secrets") and k in st.secrets and str(st.secrets[k]).strip():
+                return str(st.secrets[k]).strip()
+        except Exception:
+            pass
+        if os.getenv(k, "").strip():
+            return os.getenv(k, "").strip()
+    for attr in ["OC", "LAW_API_OC", "LAW_OC", "LAW_API_KEY", "API_KEY", "USER_OC", "oc"]:
+        val = getattr(law_api, attr, None)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    if os.path.exists("law_api.py"):
+        try:
+            with open("law_api.py", "r", encoding="utf-8") as f:
+                src = f.read()
+            m = re.search(r'(?:OC|LAW_API_OC|LAW_OC|LAW_API_KEY)\s*=\s*["\']([^"\']+)["\']', src)
+            if m and m.group(1).strip():
+                return m.group(1).strip()
+            m2 = re.search(r'OC=([A-Za-z0-9_.\-]+)', src)
+            if m2 and m2.group(1).strip() and not m2.group(1).startswith("{"):
+                return m2.group(1).strip()
+        except Exception:
+            pass
+    return ""
 
 def _fmt_ymd_str(raw_ymd: str) -> str:
     s = re.sub(r"[^0-9]", "", str(raw_ymd or ""))
@@ -364,13 +396,12 @@ def fetch_official_revision_reason_zero_token(law_id: str, law_name: str) -> str
     [방식 3] AI 토큰을 단 1원도 쓰지 않고(0토큰), 국가법령정보센터(법제처 DRF) XML에서
     법제처가 직접 작성한 공식 『제·개정이유 및 주요내용』 원문을 즉시 추출합니다.
     """
-    oc = os.getenv("LAW_API_OC") or os.getenv("OC") or ""
+    oc = _get_law_oc()
     if not oc:
-        return "❌ 법제처 API 키(LAW_API_OC)가 설정되어 있지 않습니다."
+        return "❌ 법제처 API 인증키(OC)를 확인할 수 없습니다."
     if not law_id:
         return "❌ 법령 일련번호(ID)를 확인할 수 없습니다."
 
-    # 1차: lawService.do?target=law XML 내부의 <제개정이유내용> 및 <개정문내용> 파싱
     urls_to_try = [
         f"http://www.law.go.kr/DRF/lawService.do?OC={oc}&target=law&ID={law_id}&type=XML",
         f"http://www.law.go.kr/DRF/lawService.do?OC={oc}&target=lsRsn&ID={law_id}&type=XML",
@@ -404,7 +435,7 @@ def fetch_official_revision_reason_zero_token(law_id: str, law_name: str) -> str
     if amend_texts:
         return f"📌 [공포 개정문 원문]\n{amend_texts[0][:3000]}"
 
-    return f"ℹ️ 「{law_name}」(ID: {law_id})의 해당 공포본에는 별도 제·개정이유서 텍스트가 등록되어 있지 않습니다. 우측의 '⚡ AI 신·구법 상세 분석' 버튼을 이용해 조문별 변경 내역을 확인하세요."
+    return f"ℹ️ 「{law_name}」(ID: {law_id})의 해당 공포본에는 별도 제·개정이유서 텍스트가 등록되어 있지 않습니다. 우측의 '⚡ AI 신·구법 비교표 생성' 버튼을 이용해 조문별 변경 내역을 확인하세요."
 
 def load_room_law_ack() -> dict:
     if os.path.exists(ROOM_LAW_ACK_PATH):
@@ -423,10 +454,6 @@ def save_room_law_ack(ack_data: dict) -> None:
         pass
 
 def extract_cited_laws_in_room(messages: list[dict], law_prom_map: dict[str, dict]) -> list[dict]:
-    """
-    [방식 1] 특정 대화방의 답변 메시지들에서 인용된 [조문:...] 태그를 스캔하여,
-    감시 대상 법령(본법·시행령) 중 인용된 법령 목록을 추출합니다.
-    """
     if not messages or not law_prom_map:
         return []
     blob = "\n".join(m.get("content", "") for m in messages if m.get("role") == "assistant")
@@ -434,7 +461,6 @@ def extract_cited_laws_in_room(messages: list[dict], law_prom_map: dict[str, dic
         return []
 
     found_clean_names = set()
-    # [조문:조세특례제한법 시행령 제26조의8] 등에서 법령명 추출
     for m in re.finditer(r"\[조문\s*:\s*([^\]]+)\]", blob):
         val = m.group(1)
         val_clean = re.sub(r"제\s*\d+\s*조.*", "", val).replace(" ", "").replace("「", "").replace("」", "").strip()
@@ -448,10 +474,6 @@ def extract_cited_laws_in_room(messages: list[dict], law_prom_map: dict[str, dic
     return [law_prom_map[cname] for cname in sorted(found_clean_names)]
 
 def get_room_revision_alerts(ws_id: str, room_id: str, messages: list[dict], law_prom_map: dict[str, dict]) -> list[dict]:
-    """
-    대화방에서 인용된 법령이 ① 최근 60일 이내 신규 공포되었거나, ② 미래 시행예정 신법이거나,
-    ③ 이 대화방에서 마지막으로 확인(Ack)했던 공포버전과 달라진 경우 해당 법령 리스트를 반환합니다.
-    """
     cited_list = extract_cited_laws_in_room(messages, law_prom_map)
     if not cited_list:
         return []
@@ -466,11 +488,9 @@ def get_room_revision_alerts(ws_id: str, room_id: str, messages: list[dict], law
         vkey = item["version_key"]
         acked_vkey = room_ack.get(cname)
 
-        # 이미 이 방에서 해당 버전을 '확인 완료' 눌렀다면 알림 제외
         if acked_vkey == vkey:
             continue
 
-        # 1) 이전에 기록된 버전이 있는데 새 버전으로 바뀐 경우, 또는 2) 최근 공포/미래 시행예정 법령인 경우 알림
         if (acked_vkey is not None and acked_vkey != vkey) or item["is_recent_promulgation"] or item["is_future_enforcement"]:
             alerts.append(item)
 
@@ -485,7 +505,7 @@ def acknowledge_room_laws(ws_id: str, room_id: str, law_items: list[dict]) -> No
     ack_all[room_key] = room_ack
     save_room_law_ack(ack_all)
 
-# ⏰ 유효기간이 존재하는 3대 API의 기본 만료일 설정 (st.secrets에 설정 시 영구 우선 적용)
+# ⏰ 유효기간이 존재하는 3대 API의 기본 만료일 설정
 DEFAULT_API_EXPIRY_CONFIG = {
     "VWORLD": {
         "name": "브이월드(공시지가) API",
@@ -1033,7 +1053,7 @@ def create_word_docx(report_text: str) -> bytes:
     return buffer.getvalue()
 
 # ---------------------------------------------------------
-# 헬퍼 함수 3: 정식 PDF 직접 생성 엔진
+# 헬퍼 함수 3: 정식 PDF 직접 생성 엔진 (+ 📕 [고도화 3] 하단 표준 자문 면책문구 인쇄)
 # ---------------------------------------------------------
 def _ensure_korean_font() -> tuple[str, str]:
     reg_name = "KoreanFont"
@@ -1083,12 +1103,29 @@ def _md_to_rl_xml(text: str, bold_font: str) -> str:
     return s
 
 def _draw_page_footer(canvas, doc):
+    """[고도화 3] PDF 매 페이지 하단에 은은한 구분선과 함께 표준 세무·법령 자문 면책문구(Disclaimer) 및 페이지 번호를 인쇄합니다."""
     canvas.saveState()
     reg_font, _ = _ensure_korean_font()
-    canvas.setFont(reg_font, 8.5)
+
+    # 하단 얇은 구분선
+    canvas.setStrokeColor(colors.HexColor("#e2e8f0"))
+    canvas.setLineWidth(0.6)
+    canvas.line(40, 36, A4[0] - 40, 36)
+
+    # 좌측: 표준 세무·법령 자문 면책문구(Disclaimer)
+    canvas.setFont(reg_font, 7.2)
     canvas.setFillColor(colors.HexColor("#64748b"))
+    disclaimer_str = (
+        "※ 본 검토의견서는 질의하신 사실관계와 조회 시점의 현행 법령·예규를 기준으로 작성된 참고자료이며, "
+        "구체적 사실관계의 변동이나 과세관청·법원의 최종 해석에 따라 세무상 판단이 달라질 수 있습니다."
+    )
+    canvas.drawString(40, 24, disclaimer_str)
+
+    # 우측: 페이지 번호 (- 1 -)
+    canvas.setFont(reg_font, 8.2)
+    canvas.setFillColor(colors.HexColor("#475569"))
     page_num_str = f"- {doc.page} -"
-    canvas.drawCentredString(A4[0] / 2.0, 25, page_num_str)
+    canvas.drawRightString(A4[0] - 40, 24, page_num_str)
     canvas.restoreState()
 
 def create_pdf_report(report_text: str) -> bytes:
@@ -1103,7 +1140,7 @@ def create_pdf_report(report_text: str) -> bytes:
         leftMargin=40,
         rightMargin=40,
         topMargin=42,
-        bottomMargin=42
+        bottomMargin=48
     )
     usable_width = A4[0] - 80
 
@@ -1340,7 +1377,7 @@ def _render_official_reason_viewer_body(
     )
     items = list(law_prom_map.values())
     if not items:
-        st.warning("법제처 공포 정보를 불러오지 못했습니다. API 키(LAW_API_OC)를 확인해 주세요.")
+        st.warning("법제처 공포 정보를 불러오지 못했습니다.")
         return
 
     options_clean = [it["clean_name"] for it in items]
@@ -1494,7 +1531,6 @@ with st.sidebar:
 
     # 📦 [카드 3] 멀티 대화방 선택 (`🔄개정감지` 역추적 태깅 연동) 및 🔍 10개 방 통합 키워드 검색
     with st.container(border=True):
-        # 전체 10개 방 중 인용 법령 개정이 감지된 방 개수 집계
         rooms_with_rev_cnt = sum(
             1 for r_id in ROOM_IDS
             if get_room_revision_alerts(effective_ws_id, r_id, st.session_state.chat_rooms.get(r_id, []), law_prom_map)
@@ -1626,17 +1662,17 @@ with st.sidebar:
                     save_workspace_to_disk(effective_ws_id)
                     st.rerun()
 
-    # 📦 [보조 메뉴] 7대 기관 연동 · 📜 법제처 공식 제·개정이유서(0토큰) · API 만료일 · 백업
+    # 📦 [보조 메뉴] 7대 기관 연동 (`🟢 법제처` 자동 감지) · 📜 공식 개정이유서(0토큰) · API 만료일 · 백업
     exp_header_badge = " ⚠️" if expiry_alerts else ""
     with st.expander(f"📡 7대 기관 DB 연동 및 전체 백업{exp_header_badge}"):
-        led_law   = "🟢" if _check_api_configured(["LAW_API_OC", "OC"]) else "🟡"
+        led_law   = "🟢" if (bool(_get_law_oc()) or bool(law_prom_map)) else "🟡"
         led_nts   = "🟢" if _check_api_configured(["NTS_API_KEY", "DATA_GO_KR_KEY", "PUBLIC_DATA_KEY"]) else "🟡"
         led_dart  = "🟢" if _check_api_configured(["DART_API_KEY", "OPENDART_API_KEY"]) else "🟡"
         led_molit = "🟢" if _check_api_configured(["MOLIT_API_KEY", "DATA_GO_KR_KEY", "VWORLD_API_KEY"]) else "🟡"
         led_bok   = "🟢" if _check_api_configured(["BOK_API_KEY", "ECOS_API_KEY"]) else "🟡"
         led_ind   = "🟢" if os.path.exists("industry_codes.xlsx") else "🟡"
         st.caption(
-            f"{led_law} 법제처(무기한) · {led_nts} 국세청 · {led_dart} DART(무기한)\n\n"
+            f"{led_law} 법제처(무기한·구법포함) · {led_nts} 국세청 · {led_dart} DART(무기한)\n\n"
             f"{led_molit} 국토부/브이월드 · {led_bok} 한국은행 · {led_ind} 업종DB"
         )
         if st.button("📜 공식 『제·개정이유서』 원문 열람 (0토큰)", use_container_width=True):
@@ -1765,7 +1801,7 @@ st.markdown(
     f"💡 **현재 엔진 상태:** {mode_status_str} &nbsp;|&nbsp; 당월 누적 예상 요금: **`{cur_krw:,.0f}원 / {limit_krw:,.0f}원`**"
 )
 
-# 🚨 1) [API 유효기간 1개월(30일) 전 자동 경고 배너] 평소에 30일 이상 남았을 때는 완전히 숨어 있음
+# 🚨 1) [API 유효기간 1개월(30일) 전 자동 경고 배너]
 if expiry_alerts:
     for alert_item in expiry_alerts:
         c_al1, c_al2 = st.columns([5, 1])
@@ -1937,7 +1973,7 @@ if active_task and active_task.get("status") == "running":
     )
     with st.chat_message("assistant"):
         with st.status(status_title, expanded=True) as status_box:
-            st.write("🔎 **1단계:** 질의 쟁점 분석 및 7대 국가·공공기관(법제처·국세청·DART·국토부·한은) DB 탐색 중...")
+            st.write("🔎 **1단계:** 질의 쟁점 분석 및 7대 국가·공공기관(법제처 현행·구법·국세청·DART·국토부·한은) DB 탐색 중...")
             st.write("🧮 **2단계:** 관련 법령·판례 원문 파싱 및 파이썬 1원 단위 정밀 수리 계산기 구동 중...")
             st.write("🛡️ **3단계:** 미조회 근거 강제 차단(`_scan_violations`) 및 듀얼 AI 의미 감수(`_semantic_verify`) 수행 중...")
             st.caption("💡 **백그라운드 멀티태스킹 작동 중:** 지금 좌측 버튼을 누르거나 다른 대화방으로 이동하셔도 이 방의 AI 검토는 멈추지 않고 끝까지 완료됩니다.")
