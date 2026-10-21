@@ -1676,4 +1676,277 @@ with st.sidebar:
             data=backup_json_bytes,
             file_name="세무에이전트_전체백업.json",
             mime="application/json",
-            use_container_
+            use_container_width=True
+        )
+        restored_file = st.file_uploader("📤 백업 복원 (.json)", type=["json"], key="restore_uploader")
+        if restored_file is not None:
+            if st.button("✅ 복원 실행", use_container_width=True):
+                try:
+                    loaded_backup = json.loads(restored_file.read().decode("utf-8"))
+                    st.session_state.chat_rooms = loaded_backup["chat_rooms"]
+                    st.session_state.room_titles = loaded_backup["room_titles"]
+                    st.session_state.room_files = {
+                        r: _normalize_room_file_entry(loaded_backup.get("room_files", {}).get(r, {}))
+                        for r in ROOM_IDS
+                    }
+                    save_workspace_to_disk(effective_ws_id)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"복원 실패: {e}")
+        unlock_all_reset = st.checkbox("전체 초기화/파기 동의", key="unlock_reset")
+        col_r1, col_r2 = st.columns(2)
+        with col_r1:
+            if st.button("🔄 전체 비우기", disabled=not unlock_all_reset, use_container_width=True):
+                fresh_data = get_default_workspace_data()
+                st.session_state.chat_rooms = fresh_data["chat_rooms"]
+                st.session_state.room_titles = fresh_data["room_titles"]
+                st.session_state.room_files = fresh_data["room_files"]
+                for r_id in ROOM_IDS:
+                    task_mgr["tasks"].pop(f"{effective_ws_id}::{r_id}", None)
+                    st.session_state[f"reset_cnt_{r_id}"] = st.session_state.get(f"reset_cnt_{r_id}", 0) + 1
+                save_workspace_to_disk(effective_ws_id)
+                st.rerun()
+        with col_r2:
+            if st.button("🔥 공간 파기", disabled=(not unlock_all_reset or not workspace_input.strip()), use_container_width=True):
+                for r_id in ROOM_IDS:
+                    task_mgr["tasks"].pop(f"{effective_ws_id}::{r_id}", None)
+                delete_workspace_from_disk(effective_ws_id)
+                st.session_state.active_workspace_id = ""
+                st.session_state.loaded_workspace_id = None
+                st.session_state.ws_widget_ver = ws_widget_ver + 1
+                st.rerun()
+
+    # 📦 [카드 5 — 최하단 고정 & 3버튼 1줄 배치]
+    with st.container(border=True):
+        total_tokens_k = (usage_stats.get("input_tokens", 0) + usage_stats.get("output_tokens", 0)) / 1000.0
+        st.markdown(
+            f"<div class='sb-card-title'><span>💳 {usage_stats['year_month']}월 요금 계량기</span>"
+            f"<span class='sb-badge-green'>{usage_ratio*100:.1f}%</span></div>",
+            unsafe_allow_html=True
+        )
+        st.markdown(
+            f"<div style='display:flex; justify-content:space-between; align-items:baseline; line-height:1.4; margin-bottom:4px;'>"
+            f"<span style='font-size:1.02rem; font-weight:800; color:#0f172a;'>{cur_krw:,.0f}원 "
+            f"<span style='font-size:0.74rem; font-weight:500; color:#64748b;'>/ {limit_krw:,.0f}원</span></span>"
+            f"<span style='font-size:0.72rem; color:#475569;'>Flash <b>{usage_stats.get('flash_calls', 0)}</b> · Pro <b>{usage_stats.get('pro_calls', 0)}</b> ({total_tokens_k:,.1f}K)</span>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
+        st.progress(usage_ratio)
+
+        col_b1, col_b2, col_b3 = st.columns(3)
+        with col_b1:
+            if st.button("🔄 갱신", use_container_width=True, help="실시간 사용량 새로고침"):
+                st.rerun()
+        with col_b2:
+            st.link_button("💳 결제", "https://console.cloud.google.com/billing", use_container_width=True)
+        with col_b3:
+            st.link_button("🔑 API키", "https://aistudio.google.com/apikey", use_container_width=True)
+
+# ---------------------------------------------------------
+# 3. 메인 화면 및 현재 선택된 대화방 렌더링 (맥락 연동형 알림만 깔끔하게 작동)
+# ---------------------------------------------------------
+current_messages = st.session_state.chat_rooms[selected_room]
+current_room_title = st.session_state.room_titles[selected_room]
+current_file_info = _normalize_room_file_entry(st.session_state.room_files[selected_room])
+current_task_key = f"{effective_ws_id}::{selected_room}"
+active_task = task_mgr["tasks"].get(current_task_key)
+is_current_room_running = bool(active_task and active_task.get("status") == "running")
+
+if budget_exceeded:
+    mode_status_str = f"⛔ **Pro 차단됨 (월 한도 {limit_krw:,.0f}원 도달 → Flash 안전 작동 중)**"
+elif pro_toggle_on:
+    mode_status_str = "🧠 **Pro 심층 모드 (3배 리미트 개방 ON)**"
+else:
+    mode_status_str = "⚡ **Flash 표준 모드 (고속 검토)**"
+
+st.title(f"⚖️ 세무·법령·회계 자율 에이전트 — [{selected_room}: {current_room_title}]")
+st.markdown(
+    f"💡 **현재 엔진 상태:** {mode_status_str} &nbsp;|&nbsp; 당월 누적 예상 요금: **`{cur_krw:,.0f}원 / {limit_krw:,.0f}원`**"
+)
+
+# 🚨 1) [API 유효기간 1개월(30일) 전 자동 경고 배너] 평소에 30일 이상 남았을 때는 완전히 숨어 있음
+if expiry_alerts:
+    for alert_item in expiry_alerts:
+        c_al1, c_al2 = st.columns([5, 1])
+        with c_al1:
+            if alert_item["level"] == "expired":
+                st.error(alert_item["msg"])
+            else:
+                st.warning(alert_item["msg"])
+        with c_al2:
+            st.link_button("🔗 연장·재발급", alert_item["url"], use_container_width=True)
+
+# 🔄 2) [방식 1: 현재 열려 있는 대화방의 과거 인용 법령에 개정이 감지되었을 때만 나타나는 맞춤형 컨텍스트 바]
+current_room_rev_alerts = get_room_revision_alerts(effective_ws_id, selected_room, current_messages, law_prom_map)
+if current_room_rev_alerts:
+    rev_names_str = ", ".join(
+        f"「{it['law_name']}」(공포:{it['prom_date']}/시행:{it['enf_date']})" for it in current_room_rev_alerts
+    )
+    first_clean = current_room_rev_alerts[0]["clean_name"]
+    c_rv1, c_rv2, c_rv3, c_rv4 = st.columns([3.5, 1.1, 1.1, 0.8])
+    with c_rv1:
+        st.info(
+            f"🔄 **[이 대화방 인용 법령 개정 감지]** 기존 검토에 인용된 **{rev_names_str}**의 최신 개정 공포 내역이 있습니다."
+        )
+    with c_rv2:
+        if st.button("📜 개정이유서(0원)", key=f"rsn_{selected_room}", use_container_width=True):
+            if _dialog_decorator:
+                open_official_reason_modal(law_prom_map, effective_ws_id, selected_room, pro_toggle_on, budget_exceeded, first_clean)
+            else:
+                st.session_state.show_inline_reason_viewer = True
+    with c_rv3:
+        if st.button("⚡ 최신법 재검토", key=f"rerev_{selected_room}", disabled=is_current_room_running, use_container_width=True):
+            acknowledge_room_laws(effective_ws_id, selected_room, current_room_rev_alerts)
+            laws_only = ", ".join(f"「{it['law_name']}」" for it in current_room_rev_alerts)
+            re_q = (
+                f"이 대화방의 직전 검토 사안에 대해, 최근 개정 공포된 {laws_only}의 최신 조문을 다시 조회하여 "
+                "기존 결론에 변동이 있는지 [종전 규정 vs 현행(개정) 규정] 비교표와 함께 재검토해 줘."
+            )
+            _trigger_agent_task(effective_ws_id, selected_room, re_q, pro_toggle_on, budget_exceeded, force_flash=False)
+    with c_rv4:
+        if st.button("✅ 확인", key=f"ack_{selected_room}", use_container_width=True, help="이 대화방의 법령 개정 알림을 확인 처리합니다."):
+            acknowledge_room_laws(effective_ws_id, selected_room, current_room_rev_alerts)
+            st.rerun()
+
+# 구버전 Streamlit 폴백용 인라인 뷰어
+if st.session_state.get("show_inline_reason_viewer"):
+    with st.container(border=True):
+        st.subheader("📜 법제처 공식 『제·개정이유 및 주요내용』 원문 뷰어 (0토큰)")
+        _render_official_reason_viewer_body(law_prom_map, effective_ws_id, selected_room, pro_toggle_on, budget_exceeded)
+        if st.button("✖️ 뷰어 닫기"):
+            st.session_state.show_inline_reason_viewer = False
+            st.rerun()
+
+for idx, message in enumerate(current_messages):
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+        if message["role"] == "assistant":
+            # 📥 1줄: 문서 다운로드 버튼 4종 (PDF / 워드 / 표 엑셀(.xlsx) / 마크다운)
+            excel_bytes = create_excel_from_markdown_tables(message["content"])
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.download_button(
+                    label="📕 정식 PDF (.pdf)",
+                    data=create_pdf_report(message["content"]),
+                    file_name=f"검토보고서_{selected_room}_{current_room_title}_{idx}.pdf",
+                    mime="application/pdf",
+                    key=f"pdf_{effective_ws_id}_{selected_room}_{idx}",
+                    use_container_width=True
+                )
+            with col2:
+                st.download_button(
+                    label="📘 워드 (.docx)",
+                    data=create_word_docx(message["content"]),
+                    file_name=f"검토보고서_{selected_room}_{current_room_title}_{idx}.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    key=f"docx_{effective_ws_id}_{selected_room}_{idx}",
+                    use_container_width=True
+                )
+            with col3:
+                if excel_bytes:
+                    st.download_button(
+                        label="📊 표 엑셀 (.xlsx)",
+                        data=excel_bytes,
+                        file_name=f"검토표_{selected_room}_{current_room_title}_{idx}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key=f"xlsx_{effective_ws_id}_{selected_room}_{idx}",
+                        use_container_width=True
+                    )
+                else:
+                    st.button("📊 표 없음 (.xlsx)", disabled=True, key=f"no_xlsx_{effective_ws_id}_{selected_room}_{idx}", use_container_width=True)
+            with col4:
+                st.download_button(
+                    label="📝 마크다운 (.md)",
+                    data=message["content"].encode("utf-8-sig"),
+                    file_name=f"검토보고서_{selected_room}_{current_room_title}_{idx}.md",
+                    mime="text/markdown",
+                    key=f"md_{effective_ws_id}_{selected_room}_{idx}",
+                    use_container_width=True
+                )
+
+            # ⚡ 2줄: 타이핑 제로 원클릭 후속 작업 버튼 3종 (카톡/이메일은 Flash 초저가 강제 실행)
+            act1, act2, act3 = st.columns(3)
+            with act1:
+                if st.button(
+                    "💬 카톡 안내문 변환 (Flash)",
+                    key=f"kakao_{effective_ws_id}_{selected_room}_{idx}",
+                    disabled=is_current_room_running,
+                    use_container_width=True
+                ):
+                    _trigger_agent_task(
+                        effective_ws_id, selected_room,
+                        "방금 작성한 검토 결과를 바탕으로, 거래처 대표님이나 고객에게 카카오톡으로 바로 복사해서 보낼 수 있도록 핵심 결론과 주의사항만 친절하고 정중한 실무 대화체로 요약해 줘.",
+                        pro_toggle_on, budget_exceeded, force_flash=True
+                    )
+            with act2:
+                if st.button(
+                    "📧 이메일 회신 초안 (Flash)",
+                    key=f"email_{effective_ws_id}_{selected_room}_{idx}",
+                    disabled=is_current_room_running,
+                    use_container_width=True
+                ):
+                    _trigger_agent_task(
+                        effective_ws_id, selected_room,
+                        "방금 작성한 검토 결과를 바탕으로, 거래처에 발송할 정식 비즈니스 이메일 회신 초안(제목, 인사말, 핵심 검토 결과 요약, 실무 유의사항, 맺음말 포함)을 깔끔하게 작성해 줘.",
+                        pro_toggle_on, budget_exceeded, force_flash=True
+                    )
+            with act3:
+                if st.button(
+                    "🧠 [프로] 3배 개방 재검토",
+                    key=f"repro_{effective_ws_id}_{selected_room}_{idx}",
+                    disabled=(is_current_room_running or budget_exceeded),
+                    use_container_width=True
+                ):
+                    _trigger_agent_task(
+                        effective_ws_id, selected_room,
+                        "[프로] 직전 질문 사안에 대해 관련 법령·시행령·판례·심판례·예규와 예외 요건까지 데이터·도구 한도를 3배 개방하여 심층 재검토해 줘.",
+                        pro_toggle_on, budget_exceeded, force_flash=False
+                    )
+
+            with st.expander("📋 카톡·이메일 전송용 텍스트 원클릭 복사 (우측 상단 복사 아이콘 클릭)"):
+                st.code(_extract_clean_copy_text(message["content"]), language="markdown")
+
+# 4. 새로운 질문 입력 시 -> 공통 백그라운드 실행기 호출
+if prompt := st.chat_input(
+    placeholder=(
+        f"⏳ [{selected_room}] 현재 백그라운드 정밀 검토 진행 중입니다... (다른 대화방으로 이동하여 추가 질문을 하실 수 있습니다)"
+        if is_current_room_running else
+        f"[{selected_room}] 검토할 이슈를 입력하세요 (좌측 Pro 토글 ON 또는 맨 앞에 [프로] 입력 시 3배 개방)"
+    ),
+    disabled=is_current_room_running,
+    key=f"chat_input_{effective_ws_id}_{selected_room}"
+):
+    _trigger_agent_task(
+        effective_ws_id=effective_ws_id,
+        selected_room=selected_room,
+        raw_prompt=prompt,
+        pro_toggle_on=pro_toggle_on,
+        budget_exceeded=budget_exceeded,
+        force_flash=False
+    )
+
+# 5. 현재 방에서 백그라운드 작업이 진행 중일 때 실시간 상태창 표시
+active_task = task_mgr["tasks"].get(current_task_key)
+if active_task and active_task.get("status") == "running":
+    is_pro_running = active_task.get("is_pro", False)
+    status_title = (
+        f"🧠 [{selected_room}] Pro 심층 모드 백그라운드 가동 중 (데이터·도구 한도 3배 개방)..."
+        if is_pro_running else
+        f"⚡ [{selected_room}] 실시간 법령·공시 DB 조회 및 백그라운드 정밀 검토 중..."
+    )
+    with st.chat_message("assistant"):
+        with st.status(status_title, expanded=True) as status_box:
+            st.write("🔎 **1단계:** 질의 쟁점 분석 및 7대 국가·공공기관(법제처·국세청·DART·국토부·한은) DB 탐색 중...")
+            st.write("🧮 **2단계:** 관련 법령·판례 원문 파싱 및 파이썬 1원 단위 정밀 수리 계산기 구동 중...")
+            st.write("🛡️ **3단계:** 미조회 근거 강제 차단(`_scan_violations`) 및 듀얼 AI 의미 감수(`_semantic_verify`) 수행 중...")
+            st.caption("💡 **백그라운드 멀티태스킹 작동 중:** 지금 좌측 버튼을 누르거나 다른 대화방으로 이동하셔도 이 방의 AI 검토는 멈추지 않고 끝까지 완료됩니다.")
+            while active_task.get("status") == "running":
+                time.sleep(0.4)
+            status_box.update(label="✅ 정밀 검토 및 무결성 감수 완료", state="complete", expanded=False)
+
+    ans = active_task.get("response", "")
+    if ans and (not current_messages or current_messages[-1].get("role") != "assistant" or current_messages[-1].get("content") != ans):
+        current_messages.append({"role": "assistant", "content": ans})
+    task_mgr["tasks"].pop(current_task_key, None)
+    st.rerun()
