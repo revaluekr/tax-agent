@@ -46,7 +46,7 @@ except Exception:
     pass
 
 # ---------------------------------------------------------
-# 💎 프리미엄 오피스 커스텀 CSS 스킨 (기존 로봇 디자인 유지 + 초록 배경 & 흰색 아이콘)
+# 💎 프리미엄 화이트 카드 사이드바 & 오피스 커스텀 CSS 스킨
 # ---------------------------------------------------------
 st.markdown("""
 <style>
@@ -54,6 +54,58 @@ st.markdown("""
 
 html, body, [class*="css"] {
     font-family: 'Pretendard', 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif;
+}
+
+/* 🎨 사이드바 전체 배경: 차분한 쿨그레이 톤으로 본문 및 흰색 카드와 대비감 부여 */
+section[data-testid="stSidebar"] {
+    background-color: #f1f5f9 !important;
+    border-right: 1px solid #cbd5e1 !important;
+}
+
+/* 📦 사이드바 내부 블록(st.container(border=True))을 입체감 있는 순백색 카드로 변환 */
+section[data-testid="stSidebar"] div[data-testid="stVerticalBlockBorderWrapper"] {
+    background-color: #ffffff !important;
+    border: 1px solid #e2e8f0 !important;
+    border-radius: 12px !important;
+    padding: 12px 14px !important;
+    margin-bottom: 10px !important;
+    box-shadow: 0 2px 5px rgba(15, 23, 42, 0.04) !important;
+}
+
+/* 사이드바 카드 소제목(라벨) 스타일 */
+.sb-card-title {
+    font-size: 0.88rem;
+    font-weight: 800;
+    color: #0f172a;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    letter-spacing: -0.3px;
+}
+.sb-badge-green {
+    background-color: #dcfce7;
+    color: #15803d;
+    font-size: 0.72rem;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 999px;
+}
+.sb-badge-amber {
+    background-color: #fef3c7;
+    color: #b45309;
+    font-size: 0.72rem;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 999px;
+}
+.sb-badge-pro {
+    background-color: #dbeafe;
+    color: #1d4ed8;
+    font-size: 0.72rem;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 999px;
 }
 
 /* 메인 타이틀 스타일 */
@@ -139,10 +191,9 @@ div[data-testid="stChatMessageContent"] blockquote {
     margin-bottom: 12px;
 }
 
-/* 다운로드 버튼 디자인 정돈 */
-div.stDownloadButton > button {
-    border-radius: 6px !important;
-    border: 1px solid #cbd5e1 !important;
+/* 버튼 디자인 정돈 */
+div.stDownloadButton > button, section[data-testid="stSidebar"] button {
+    border-radius: 8px !important;
     font-weight: 600 !important;
     transition: all 0.15s ease-in-out !important;
 }
@@ -150,27 +201,6 @@ div.stDownloadButton > button:hover {
     border-color: #16a34a !important;
     color: #15803d !important;
     background-color: #f0fdf4 !important;
-}
-
-/* API 연동 상태 및 요금 계량기 카드 */
-.api-led-box {
-    background-color: #ffffff;
-    border: 1px solid #e2e8f0;
-    border-radius: 8px;
-    padding: 10px 12px;
-    font-size: 0.82rem;
-    line-height: 1.75;
-    color: #334155;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.03);
-}
-.billing-card {
-    background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
-    border: 1px solid #86efac;
-    border-radius: 8px;
-    padding: 12px 14px;
-    margin-bottom: 8px;
-    font-size: 0.85rem;
-    color: #14532d;
 }
 
 /* 불필요한 Streamlit 기본 푸터 숨김 */
@@ -362,7 +392,6 @@ def _background_agent_worker(
     except Exception as e:
         response_text = f"❌ 에이전트 실행 중 오류가 발생했습니다: {e}"
 
-    # 백그라운드 작업 완료 즉시 디스크 파일(ws_xxxx.json)에 안전하게 기록
     try:
         mgr = get_background_task_manager()
         with mgr["lock"]:
@@ -745,7 +774,7 @@ def create_pdf_report(report_text: str) -> bytes:
     return buffer.getvalue()
 
 # ---------------------------------------------------------
-# 2. 왼쪽 사이드바 제어판 (요금 계량기 및 확인 버튼 좌측 최하단 배치)
+# 2. 왼쪽 사이드바 제어판 (화이트 카드 박스 UI로 한눈에 구분되도록 개편)
 # ---------------------------------------------------------
 usage_stats = get_monthly_usage()
 budget_exceeded, cur_krw, limit_krw = is_pro_budget_exceeded()
@@ -753,123 +782,198 @@ usage_ratio = min(1.0, cur_krw / limit_krw) if limit_krw > 0 else 0.0
 task_mgr = get_background_task_manager()
 
 with st.sidebar:
-    st.title("⚙️ 에이전트 제어판")
+    st.markdown("### ⚙️ 에이전트 제어판")
     
-    # 🎛️ 1) Pro 심층 모드(3배 리미트 해제) 원클릭 토글 스위치 (월 20,000원 초과 시 자동 잠금)
-    st.subheader("🚀 엔진 출력 모드 제어")
-    if budget_exceeded:
-        st.session_state.pro_toggle_state = False
+    # 📦 [카드 1] 엔진 출력 모드 제어
+    with st.container(border=True):
+        if budget_exceeded:
+            st.session_state.pro_toggle_state = False
+        is_pro_now = st.session_state.get("pro_toggle_state", False)
+        mode_pill = (
+            "<span class='sb-badge-pro'>🧠 Pro 3배 개방</span>"
+            if is_pro_now else
+            "<span class='sb-badge-green'>⚡ Flash 고속</span>"
+        )
+        st.markdown(f"<div class='sb-card-title'><span>🚀 엔진 출력 모드</span>{mode_pill}</div>", unsafe_allow_html=True)
+        pro_toggle_on = st.toggle(
+            "Pro 심층 모드 (3배 리미트 해제)",
+            value=is_pro_now,
+            disabled=budget_exceeded,
+            help="켜두면 질문 앞에 [프로]를 입력하지 않아도 최대 15만 자 문서 독해 및 30회 도구 호출 모드로 작동합니다."
+        )
+        st.session_state.pro_toggle_state = pro_toggle_on
+        if budget_exceeded:
+            st.caption(f"⛔ 월 한도({limit_krw:,.0f}원) 도달로 Pro 잠김")
 
-    pro_toggle_on = st.toggle(
-        "🧠 Pro 심층 모드 (3배 리미트 해제)",
-        value=st.session_state.get("pro_toggle_state", False),
-        disabled=budget_exceeded,
-        help="켜두면 질문 앞에 [프로]를 입력하지 않아도 Pro 모델 가동 및 데이터·도구 한도가 3배로 확장됩니다. (월 20,000원 초과 시 자동 잠김)"
-    )
-    st.session_state.pro_toggle_state = pro_toggle_on
+    # 📦 [카드 2] 내 작업공간 (자동 동기화)
+    with st.container(border=True):
+        ws_widget_ver = st.session_state.get("ws_widget_ver", 0)
+        saved_ws_val = st.session_state.get("active_workspace_id", "")
+        ws_pill = (
+            "<span class='sb-badge-green'>🟢 보안 저장중</span>"
+            if saved_ws_val.strip() else
+            "<span class='sb-badge-amber'>🔓 공용 임시</span>"
+        )
+        st.markdown(f"<div class='sb-card-title'><span>🔐 내 작업공간 코드</span>{ws_pill}</div>", unsafe_allow_html=True)
+        workspace_input = st.text_input(
+            "작업공간 코드",
+            value=saved_ws_val,
+            type="password",
+            placeholder="나만의 암호 입력 후 Enter",
+            label_visibility="collapsed",
+            key=f"ws_input_box_{ws_widget_ver}",
+            help="동일한 코드를 입력하면 다른 PC에서도 1~10번 방 대화와 파일이 그대로 유지됩니다."
+        )
+        effective_ws_id = workspace_input.strip() if workspace_input.strip() else "default_public"
 
-    if budget_exceeded:
-        st.error(f"⛔ **월 요금 한도({limit_krw:,.0f}원) 도달:** 과금 보호를 위해 이번 달 Pro 모드가 자동 차단되었습니다. (Flash 모드는 정상 사용 가능)")
-    elif pro_toggle_on:
-        st.info("🔥 **Pro 3배 리미트 개방 ON:** 최대 15만 자 문서 독해 및 30회 도구 호출이 작동합니다.")
-    else:
-        st.caption("⚡ **Flash 표준 모드 작동 중:** 빠르고 경제적인 표준 모드로 응답합니다.")
-
-    st.divider()
-
-    # 🔐 2) 내 작업공간 (자동 동기화)
-    st.subheader("🔐 내 작업공간 (자동 동기화)")
-    
-    ws_widget_ver = st.session_state.get("ws_widget_ver", 0)
-    workspace_input = st.text_input(
-        "작업공간 코드(ID/암호) 입력",
-        value=st.session_state.get("active_workspace_id", ""),
-        type="password",
-        placeholder="나만의 코드 입력 후 Enter (예: kbj1234)",
-        key=f"ws_input_box_{ws_widget_ver}",
-        help="창을 닫거나 다른 PC에서 접속해도 동일한 코드를 입력하면 1~10번 방의 대화와 첨부파일이 그대로 유지됩니다."
-    )
-    
-    effective_ws_id = workspace_input.strip() if workspace_input.strip() else "default_public"
-    
-    if st.session_state.get("loaded_workspace_id") != effective_ws_id:
-        ws_data = load_workspace_from_disk(effective_ws_id)
-        st.session_state.chat_rooms = ws_data["chat_rooms"]
-        st.session_state.room_titles = ws_data["room_titles"]
-        st.session_state.room_files = ws_data["room_files"]
-        st.session_state.loaded_workspace_id = effective_ws_id
-        st.session_state.active_workspace_id = workspace_input.strip()
-        if "current_room" not in st.session_state:
-            st.session_state.current_room = ROOM_IDS[0]
-
-    # 🔄 백그라운드에서 완료된 모든 대화방의 답변을 현재 세션에 자동 반영
-    for r_id in ROOM_IDS:
-        t_key = f"{effective_ws_id}::{r_id}"
-        t_info = task_mgr["tasks"].get(t_key)
-        if t_info and t_info.get("status") == "done":
-            ans = t_info.get("response", "")
-            room_msgs = st.session_state.chat_rooms[r_id]
-            if ans and (not room_msgs or room_msgs[-1].get("role") != "assistant" or room_msgs[-1].get("content") != ans):
-                room_msgs.append({"role": "assistant", "content": ans})
-            del task_mgr["tasks"][t_key]
-
-    if workspace_input.strip():
-        st.success("🟢 전용 작업공간 실시간 자동 저장 중")
-        if st.button("🔒 코드 풀기 (잠금 / 나가기)", use_container_width=True):
-            st.session_state.active_workspace_id = ""
-            st.session_state.loaded_workspace_id = None
-            st.session_state.ws_widget_ver = ws_widget_ver + 1
+        if st.session_state.get("loaded_workspace_id") != effective_ws_id:
+            ws_data = load_workspace_from_disk(effective_ws_id)
+            st.session_state.chat_rooms = ws_data["chat_rooms"]
+            st.session_state.room_titles = ws_data["room_titles"]
+            st.session_state.room_files = ws_data["room_files"]
+            st.session_state.loaded_workspace_id = effective_ws_id
+            st.session_state.active_workspace_id = workspace_input.strip()
+            if "current_room" not in st.session_state:
+                st.session_state.current_room = ROOM_IDS[0]
             st.rerun()
-    else:
-        st.warning("🔓 공용 임시 모드입니다. 상단에 나만의 작업공간 코드를 입력하면 대화가 안전하게 분리·보존됩니다.")
 
-    st.divider()
-    
-    # 🗂️ 3) 멀티 대화방 선택 (1~10번, 백그라운드 분석 중인 방 표시 지원)
-    st.subheader("🗂️ 멀티 대화방 선택 (1~10번)")
-    
-    def format_room_label(r_id: str) -> str:
-        title = st.session_state.room_titles.get(r_id, "")
-        q_cnt = (len(st.session_state.chat_rooms[r_id]) + 1) // 2
-        file_mark = "📎" if st.session_state.room_files[r_id]["name"] else ""
-        t_info = task_mgr["tasks"].get(f"{effective_ws_id}::{r_id}")
-        running_mark = " ⏳분석중..." if (t_info and t_info.get("status") == "running") else ""
-        return f"💬 {r_id} [{title}] ({q_cnt}건) {file_mark}{running_mark}"
+        # 백그라운드 완료 작업 자동 반영
+        for r_id in ROOM_IDS:
+            t_key = f"{effective_ws_id}::{r_id}"
+            t_info = task_mgr["tasks"].get(t_key)
+            if t_info and t_info.get("status") == "done":
+                ans = t_info.get("response", "")
+                room_msgs = st.session_state.chat_rooms[r_id]
+                if ans and (not room_msgs or room_msgs[-1].get("role") != "assistant" or room_msgs[-1].get("content") != ans):
+                    room_msgs.append({"role": "assistant", "content": ans})
+                del task_mgr["tasks"][t_key]
 
-    selected_room = st.selectbox(
-        "질문 후 다른 방으로 이동해도 기존 방의 AI는 백그라운드에서 멈추지 않고 답변을 완성합니다.",
-        options=ROOM_IDS,
-        index=ROOM_IDS.index(st.session_state.current_room),
-        format_func=format_room_label
-    )
-    st.session_state.current_room = selected_room
-    
-    new_title = st.text_input(
-        "✏️ 현재 대화방 주제(메모) 설정",
-        value=st.session_state.room_titles[selected_room],
-        placeholder="예: 인도네시아 자문, A사 세무조사 등",
-        key=f"title_input_{effective_ws_id}_{selected_room}"
-    )
-    if new_title != st.session_state.room_titles[selected_room]:
-        st.session_state.room_titles[selected_room] = new_title
-        save_workspace_to_disk(effective_ws_id)
-        st.rerun()
-    
-    if st.button(f"🗑️ [{selected_room}] 현재 방만 비우기", use_container_width=True):
-        task_mgr["tasks"].pop(f"{effective_ws_id}::{selected_room}", None)
-        st.session_state.chat_rooms[selected_room] = []
-        st.session_state.room_files[selected_room] = {"name": None, "text": ""}
-        st.session_state.room_titles[selected_room] = "빈 대화방"
-        st.session_state[f"reset_cnt_{selected_room}"] = st.session_state.get(f"reset_cnt_{selected_room}", 0) + 1
-        save_workspace_to_disk(effective_ws_id)
-        st.rerun()
+        if workspace_input.strip():
+            if st.button("🔒 작업공간 잠금 (나가기)", use_container_width=True):
+                st.session_state.active_workspace_id = ""
+                st.session_state.loaded_workspace_id = None
+                st.session_state.ws_widget_ver = ws_widget_ver + 1
+                st.rerun()
 
-    with st.expander("⚠️ 10개 방 전체 초기화 / 작업공간 파기"):
-        unlock_all_reset = st.checkbox("실수 방지: 전체 삭제·파기에 동의합니다", key="unlock_reset")
-        
+    # 📦 [카드 3] 멀티 대화방 선택 및 관리 (1~10번)
+    with st.container(border=True):
+        st.markdown("<div class='sb-card-title'><span>🗂️ 멀티 대화방 (1~10번)</span></div>", unsafe_allow_html=True)
+
+        def format_room_label(r_id: str) -> str:
+            title = st.session_state.room_titles.get(r_id, "")
+            q_cnt = (len(st.session_state.chat_rooms[r_id]) + 1) // 2
+            file_mark = "📎" if st.session_state.room_files[r_id]["name"] else ""
+            t_info = task_mgr["tasks"].get(f"{effective_ws_id}::{r_id}")
+            running_mark = " ⏳분석중" if (t_info and t_info.get("status") == "running") else ""
+            return f"💬 {r_id} [{title}] ({q_cnt}건) {file_mark}{running_mark}"
+
+        selected_room = st.selectbox(
+            "대화방 선택",
+            options=ROOM_IDS,
+            index=ROOM_IDS.index(st.session_state.current_room),
+            format_func=format_room_label,
+            label_visibility="collapsed",
+            help="질문 후 다른 대화방으로 이동해도 기존 방의 AI는 백그라운드에서 멈추지 않고 답변을 완성합니다."
+        )
+        st.session_state.current_room = selected_room
+
+        new_title = st.text_input(
+            "방 주제 메모",
+            value=st.session_state.room_titles[selected_room],
+            placeholder="✏️ 방 주제 메모 (예: A사 세무조사)",
+            label_visibility="collapsed",
+            key=f"title_input_{effective_ws_id}_{selected_room}"
+        )
+        if new_title != st.session_state.room_titles[selected_room]:
+            st.session_state.room_titles[selected_room] = new_title
+            save_workspace_to_disk(effective_ws_id)
+            st.rerun()
+
+        if st.button(f"🗑️ [{selected_room}] 현재 방 비우기", use_container_width=True):
+            task_mgr["tasks"].pop(f"{effective_ws_id}::{selected_room}", None)
+            st.session_state.chat_rooms[selected_room] = []
+            st.session_state.room_files[selected_room] = {"name": None, "text": ""}
+            st.session_state.room_titles[selected_room] = "빈 대화방"
+            st.session_state[f"reset_cnt_{selected_room}"] = st.session_state.get(f"reset_cnt_{selected_room}", 0) + 1
+            save_workspace_to_disk(effective_ws_id)
+            st.rerun()
+
+    # 📦 [카드 4] 현재 방 전용 자료 업로드
+    with st.container(border=True):
+        saved_file_name = st.session_state.room_files[selected_room]["name"]
+        saved_file_text = st.session_state.room_files[selected_room]["text"]
+        file_pill = "<span class='sb-badge-green'>📎 첨부됨</span>" if saved_file_name else ""
+        st.markdown(f"<div class='sb-card-title'><span>📂 [{selected_room}] 자료 첨부</span>{file_pill}</div>", unsafe_allow_html=True)
+
+        reset_cnt = st.session_state.get(f"reset_cnt_{selected_room}", 0)
+        uploaded_file = st.file_uploader(
+            "엑셀, PDF, 워드 업로드",
+            type=["xlsx", "xls", "csv", "pdf", "docx"],
+            label_visibility="collapsed",
+            key=f"uploader_{effective_ws_id}_{selected_room}_{reset_cnt}",
+            help="15,000자 이상 대용량 문서는 자동으로 Pro 3배 개방 모드가 작동합니다."
+        )
+
+        if uploaded_file is not None:
+            if st.session_state.room_files[selected_room]["name"] != uploaded_file.name:
+                with st.spinner("문서 저장 중..."):
+                    extracted_text = extract_file_content(uploaded_file)
+                    st.session_state.room_files[selected_room] = {
+                        "name": uploaded_file.name,
+                        "text": extracted_text
+                    }
+                    save_workspace_to_disk(effective_ws_id)
+                    st.rerun()
+
+        if saved_file_name:
+            st.caption(f"📄 **{saved_file_name}** ({len(saved_file_text):,}자)")
+            if st.button("❌ 첨부파일 제거", key=f"remove_file_{selected_room}", use_container_width=True):
+                st.session_state.room_files[selected_room] = {"name": None, "text": ""}
+                st.session_state[f"reset_cnt_{selected_room}"] = reset_cnt + 1
+                save_workspace_to_disk(effective_ws_id)
+                st.rerun()
+
+    # 📦 [보조 메뉴] 백업/초기화 & 7대 기관 연동 상태는 깔끔하게 접이식(Expander)으로 정리
+    with st.expander("📡 7대 기관 DB 연동 및 전체 백업"):
+        led_law   = "🟢" if _check_api_configured(["LAW_API_OC", "OC"]) else "🟡"
+        led_nts   = "🟢" if _check_api_configured(["NTS_API_KEY", "DATA_GO_KR_KEY", "PUBLIC_DATA_KEY"]) else "🟡"
+        led_dart  = "🟢" if _check_api_configured(["DART_API_KEY", "OPENDART_API_KEY"]) else "🟡"
+        led_molit = "🟢" if _check_api_configured(["MOLIT_API_KEY", "DATA_GO_KR_KEY", "VWORLD_API_KEY"]) else "🟡"
+        led_bok   = "🟢" if _check_api_configured(["BOK_API_KEY", "ECOS_API_KEY"]) else "🟡"
+        led_ind   = "🟢" if os.path.exists("industry_codes.xlsx") else "🟡"
+        st.caption(
+            f"{led_law} 법제처 DRF · {led_nts} 국세청 · {led_dart} DART\n\n"
+            f"{led_molit} 국토부/브이월드 · {led_bok} 한국은행 · {led_ind} 업종DB"
+        )
+        st.divider()
+        backup_json_bytes = json.dumps({
+            "chat_rooms": st.session_state.chat_rooms,
+            "room_titles": st.session_state.room_titles,
+            "room_files": st.session_state.room_files
+        }, ensure_ascii=False, indent=2).encode("utf-8")
+        st.download_button(
+            label="📥 10개 방 전체 백업 (.json)",
+            data=backup_json_bytes,
+            file_name="세무에이전트_전체백업.json",
+            mime="application/json",
+            use_container_width=True
+        )
+        restored_file = st.file_uploader("📤 백업 복원 (.json)", type=["json"], key="restore_uploader")
+        if restored_file is not None:
+            if st.button("✅ 복원 실행", use_container_width=True):
+                try:
+                    loaded_backup = json.loads(restored_file.read().decode("utf-8"))
+                    st.session_state.chat_rooms = loaded_backup["chat_rooms"]
+                    st.session_state.room_titles = loaded_backup["room_titles"]
+                    st.session_state.room_files = loaded_backup["room_files"]
+                    save_workspace_to_disk(effective_ws_id)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"복원 실패: {e}")
+        unlock_all_reset = st.checkbox("전체 초기화/파기 동의", key="unlock_reset")
         col_r1, col_r2 = st.columns(2)
         with col_r1:
-            if st.button("🔄 10개 방 비우기", disabled=not unlock_all_reset, use_container_width=True):
+            if st.button("🔄 전체 비우기", disabled=not unlock_all_reset, use_container_width=True):
                 fresh_data = get_default_workspace_data()
                 st.session_state.chat_rooms = fresh_data["chat_rooms"]
                 st.session_state.room_titles = fresh_data["room_titles"]
@@ -880,7 +984,7 @@ with st.sidebar:
                 save_workspace_to_disk(effective_ws_id)
                 st.rerun()
         with col_r2:
-            if st.button("🔥 작업공간 파기", disabled=(not unlock_all_reset or not workspace_input.strip()), use_container_width=True):
+            if st.button("🔥 공간 파기", disabled=(not unlock_all_reset or not workspace_input.strip()), use_container_width=True):
                 for r_id in ROOM_IDS:
                     task_mgr["tasks"].pop(f"{effective_ws_id}::{r_id}", None)
                 delete_workspace_from_disk(effective_ws_id)
@@ -888,127 +992,32 @@ with st.sidebar:
                 st.session_state.loaded_workspace_id = None
                 st.session_state.ws_widget_ver = ws_widget_ver + 1
                 st.rerun()
-            
-        st.caption("💾 서버 재부팅 대비 내 PC로 전체 대화 백업/복원:")
-        backup_json_bytes = json.dumps({
-            "chat_rooms": st.session_state.chat_rooms,
-            "room_titles": st.session_state.room_titles,
-            "room_files": st.session_state.room_files
-        }, ensure_ascii=False, indent=2).encode("utf-8")
-        
-        st.download_button(
-            label="📥 10개 방 통째로 내 PC에 백업 (.json)",
-            data=backup_json_bytes,
-            file_name="세무에이전트_전체백업.json",
-            mime="application/json",
-            use_container_width=True
+
+    # 📦 [카드 5 — 최하단 고정] 당월 API 실시간 요금 계량기 및 확인 버튼
+    with st.container(border=True):
+        total_tokens_k = (usage_stats.get("input_tokens", 0) + usage_stats.get("output_tokens", 0)) / 1000.0
+        st.markdown(
+            f"<div class='sb-card-title'><span>💳 {usage_stats['year_month']}월 요금 계량기</span>"
+            f"<span class='sb-badge-green'>{usage_ratio*100:.1f}%</span></div>",
+            unsafe_allow_html=True
         )
-        
-        restored_file = st.file_uploader("📤 백업 파일(.json) 불러오기", type=["json"], key="restore_uploader")
-        if restored_file is not None:
-            if st.button("✅ 이 백업 파일로 10개 방 복원하기", use_container_width=True):
-                try:
-                    loaded_backup = json.loads(restored_file.read().decode("utf-8"))
-                    st.session_state.chat_rooms = loaded_backup["chat_rooms"]
-                    st.session_state.room_titles = loaded_backup["room_titles"]
-                    st.session_state.room_files = loaded_backup["room_files"]
-                    save_workspace_to_disk(effective_ws_id)
-                    st.success("복원 완료!")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"복원 실패: {e}")
-        
-    st.divider()
-    
-    # 📂 4) 방별 전용 자료 업로드
-    st.subheader(f"📂 [{selected_room}] 전용 자료 업로드")
-    reset_cnt = st.session_state.get(f"reset_cnt_{selected_room}", 0)
-    uploaded_file = st.file_uploader(
-        "엑셀, PDF, 워드 파일을 올리면 이 방에 자동 보존됩니다. (15,000자 이상 대용량 문서는 자동으로 Pro 3배 개방 모드가 작동합니다)",
-        type=["xlsx", "xls", "csv", "pdf", "docx"],
-        key=f"uploader_{effective_ws_id}_{selected_room}_{reset_cnt}"
-    )
-    
-    if uploaded_file is not None:
-        if st.session_state.room_files[selected_room]["name"] != uploaded_file.name:
-            with st.spinner("문서 내용을 읽고 작업공간에 자동 저장하는 중..."):
-                extracted_text = extract_file_content(uploaded_file)
-                st.session_state.room_files[selected_room] = {
-                    "name": uploaded_file.name,
-                    "text": extracted_text
-                }
-                save_workspace_to_disk(effective_ws_id)
-                st.rerun()
-                
-    saved_file_name = st.session_state.room_files[selected_room]["name"]
-    saved_file_text = st.session_state.room_files[selected_room]["text"]
-    
-    if saved_file_name:
-        pro_file_tag = " 🧠 [Pro 자동 전환 대상]" if (len(saved_file_text) >= 15000 and not budget_exceeded) else ""
-        st.success(f"📎 현재 유지 중인 파일: **{saved_file_name}** ({len(saved_file_text):,}자){pro_file_tag}")
-        if st.button("❌ 이 방의 첨부파일만 제거", key=f"remove_file_{selected_room}", use_container_width=True):
-            st.session_state.room_files[selected_room] = {"name": None, "text": ""}
-            st.session_state[f"reset_cnt_{selected_room}"] = reset_cnt + 1
-            save_workspace_to_disk(effective_ws_id)
+        st.markdown(
+            f"<div style='font-size:1.1rem; font-weight:800; color:#0f172a; margin-bottom:4px;'>"
+            f"{cur_krw:,.0f}원 <span style='font-size:0.78rem; font-weight:500; color:#64748b;'>/ 한도 {limit_krw:,.0f}원</span></div>"
+            f"<div style='font-size:0.75rem; color:#475569; margin-bottom:6px;'>"
+            f"Flash <b>{usage_stats.get('flash_calls', 0)}회</b> · Pro <b>{usage_stats.get('pro_calls', 0)}회</b> · {total_tokens_k:,.1f}K 토큰</div>",
+            unsafe_allow_html=True
+        )
+        st.progress(usage_ratio)
+
+        if st.button("🔄 사용량 새로고침", use_container_width=True):
             st.rerun()
-        with st.expander("📄 저장된 파일 내용 미리보기"):
-            st.text(saved_file_text[:1000] + ("\n...(중략)..." if len(saved_file_text) > 1000 else ""))
 
-    st.divider()
-
-    # 📊 5) 7대 국가·공공기관 API 실시간 연동 상태 그린 라이트(LED) 패널
-    st.subheader("📡 7대 기관 DB 실시간 연동 상태")
-    led_law   = "🟢" if _check_api_configured(["LAW_API_OC", "OC"]) else "🟡"
-    led_nts   = "🟢" if _check_api_configured(["NTS_API_KEY", "DATA_GO_KR_KEY", "PUBLIC_DATA_KEY"]) else "🟡"
-    led_dart  = "🟢" if _check_api_configured(["DART_API_KEY", "OPENDART_API_KEY"]) else "🟡"
-    led_molit = "🟢" if _check_api_configured(["MOLIT_API_KEY", "DATA_GO_KR_KEY", "VWORLD_API_KEY"]) else "🟡"
-    led_bok   = "🟢" if _check_api_configured(["BOK_API_KEY", "ECOS_API_KEY"]) else "🟡"
-    led_ind   = "🟢" if os.path.exists("industry_codes.xlsx") else "🟡"
-
-    st.markdown(f"""
-    <div class="api-led-box">
-        <div>{led_law} <b>법제처 국가법령·판례·심판례 DRF</b></div>
-        <div>{led_nts} <b>국세청 사업자 상태·진위확인 API</b></div>
-        <div>{led_dart} <b>금융감독원 전자공시(Open DART)</b></div>
-        <div>{led_molit} <b>국토부 실거래가 · 브이월드 공시지가</b></div>
-        <div>{led_bok} <b>한국은행 경제통계(ECOS) 환율·금리</b></div>
-        <div>{led_ind} <b>국세청 6자리 기준경비율 업종 마스터</b></div>
-        <div>🟢 <b>Python 1원 단위 정밀 수리 계산 엔진</b></div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    st.divider()
-
-    # 💳 6) [좌측 최하단 배치] 당월 API 실시간 요금 계량기 및 과금/키 확인 버튼
-    st.subheader("💳 당월 API 사용량 및 요금 관리")
-    total_tokens_k = (usage_stats.get("input_tokens", 0) + usage_stats.get("output_tokens", 0)) / 1000.0
-    status_color = "#dc2626" if budget_exceeded else ("#d97706" if usage_ratio >= 0.8 else "#15803d")
-
-    st.markdown(f"""
-    <div class="billing-card">
-        <div style="font-weight:700; color:{status_color}; margin-bottom:4px;">
-            📊 {usage_stats['year_month']}월 실시간 요금 계량기
-        </div>
-        <div style="font-size:1.15rem; font-weight:800; color:#0f172a;">
-            {cur_krw:,.0f}원 <span style="font-size:0.82rem; font-weight:500; color:#475569;">/ 한도 {limit_krw:,.0f}원 ({usage_ratio*100:.1f}%)</span>
-        </div>
-        <div style="font-size:0.78rem; color:#334155; margin-top:4px;">
-            • 호출: Flash <b>{usage_stats.get('flash_calls', 0)}회</b> · Pro <b>{usage_stats.get('pro_calls', 0)}회</b><br>
-            • 누적 토큰: <b>{total_tokens_k:,.1f}K</b> (갱신: {usage_stats.get('updated_at', '-')})<br>
-            • <b>월 {limit_krw:,.0f}원 초과 시 Pro 모드 자동 차단</b>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-    st.progress(usage_ratio)
-
-    if st.button("🔄 실시간 사용량 새로고침", use_container_width=True):
-        st.rerun()
-
-    col_b1, col_b2 = st.columns(2)
-    with col_b1:
-        st.link_button("💳 구글 결제내역", "https://console.cloud.google.com/billing", use_container_width=True)
-    with col_b2:
-        st.link_button("🔑 내 API 키 확인", "https://aistudio.google.com/apikey", use_container_width=True)
+        col_b1, col_b2 = st.columns(2)
+        with col_b1:
+            st.link_button("💳 결제내역", "https://console.cloud.google.com/billing", use_container_width=True)
+        with col_b2:
+            st.link_button("🔑 API키", "https://aistudio.google.com/apikey", use_container_width=True)
 
 # ---------------------------------------------------------
 # 3. 메인 화면 및 현재 선택된 대화방 렌더링
@@ -1126,7 +1135,6 @@ if prompt := st.chat_input(
     else:
         full_input_for_agent = f"{history_context}[현재 사용자 질문]: {effective_prompt}" if history_context else effective_prompt
 
-    # 🚀 백그라운드 스레드 생성 및 등록 (방을 바꾸거나 버튼을 눌러도 절대 죽지 않음)
     new_task_info = {
         "status": "running",
         "response": None,
@@ -1151,7 +1159,7 @@ if prompt := st.chat_input(
     worker_thread.start()
     st.rerun()
 
-# 5. 현재 방에서 백그라운드 작업이 진행 중일 때 실시간 상태창 표시 (버튼 클릭/방 이동 후 돌아와도 자동 재연결)
+# 5. 현재 방에서 백그라운드 작업이 진행 중일 때 실시간 상태창 표시
 active_task = task_mgr["tasks"].get(current_task_key)
 if active_task and active_task.get("status") == "running":
     is_pro_running = active_task.get("is_pro", False)
@@ -1170,7 +1178,6 @@ if active_task and active_task.get("status") == "running":
                 time.sleep(0.4)
             status_box.update(label="✅ 정밀 검토 및 무결성 감수 완료", state="complete", expanded=False)
 
-    # 완료 즉시 현재 세션에 반영하고 화면 새로고침
     ans = active_task.get("response", "")
     if ans and (not current_messages or current_messages[-1].get("role") != "assistant" or current_messages[-1].get("content") != ans):
         current_messages.append({"role": "assistant", "content": ans})
