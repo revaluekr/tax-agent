@@ -28,11 +28,6 @@ from reportlab.platypus import (
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
-# 🔒 ImportError 원천 방지 안전 임포트
-import agent
-import law_api
-from agent import run_agent
-
 # 1. 웹 페이지 기본 설정
 st.set_page_config(
     page_title="세무·법령·회계 자율 에이전트",
@@ -40,7 +35,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# 백그라운드 스레드에서도 st.secrets의 모든 API 키를 읽을 수 있도록 환경변수로 안전 동기화
+# 백그라운드 스레드 및 하위 모듈(law_api, agent) 임포트 전에 st.secrets의 모든 API 키를 환경변수로 최우선 동기화
 try:
     if hasattr(st, "secrets"):
         for k, v in st.secrets.items():
@@ -48,6 +43,11 @@ try:
                 os.environ[k] = str(v).strip()
 except Exception:
     pass
+
+# 🔒 ImportError 원천 방지 및 환경변수 동기화 후 안전 임포트
+import agent
+import law_api
+from agent import run_agent
 
 # ---------------------------------------------------------
 # 💎 프리미엄 화이트 카드 사이드바(글자 잘림 방지 + 원스크린 배치) CSS
