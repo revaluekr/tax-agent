@@ -203,6 +203,17 @@ div[data-testid="stChatMessageContent"] h4 {
     font-weight: 700 !important;
 }
 
+/* 본문 근거 태그 직링크 스타일 (깔끔한 뱃지 형태 하이퍼링크) */
+div[data-testid="stChatMessageContent"] a {
+    color: #1d4ed8 !important;
+    font-weight: 600 !important;
+    text-decoration: none !important;
+}
+div[data-testid="stChatMessageContent"] a:hover {
+    text-decoration: underline !important;
+    color: #15803d !important;
+}
+
 /* 마크다운 표(Table) 엔터프라이즈 네이비 스타일링 */
 div[data-testid="stChatMessageContent"] table {
     width: 100%;
@@ -874,12 +885,17 @@ def extract_file_content(uploaded_file, room_key: str = "") -> str:
         return f"❌ 파일 읽기 오류: {e}"
 
 # ---------------------------------------------------------
-# 공통 정제 도우미 및 📊 마크다운 표 -> 엑셀(.xlsx) 변환기 (0토큰·무료)
+# 공통 정제 도우미 (PDF/워드/엑셀/복사 시 직링크 URL 인코딩 문자열 깔끔 정리)
 # ---------------------------------------------------------
 def _sanitize_math_text(text: str) -> str:
     if not text:
         return ""
     s = text
+    # 본문 직링크 [[조문:...]](https://...) -> [조문:...] 로 깔끔하게 복원 (인쇄물·복사본 가독성 유지)
+    s = re.sub(r"\[(\[(?:판례|심판례|해석례|예규|조문)\s*:\s*[^\]]+\])\]\((https?://[^\s)]+)\)", r"\1", s)
+    # 3. 관련법령 직링크 [🔗원문 바로가기(클릭)](https://...) -> https://www.law.go.kr 로 깔끔하게 정리
+    s = re.sub(r"\[🔗[^\]]*\]\((https?://[^\s)]+)\)", "https://www.law.go.kr", s)
+
     s = re.sub(r"\$\$(.*?)\$\$", r"\1", s, flags=re.DOTALL)
     s = re.sub(r"\$([^$\n]+)\$", r"\1", s)
     s = re.sub(r"\\text(?:bf|rm|it)?\{([^}]*)\}", r"\1", s)
