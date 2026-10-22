@@ -124,7 +124,7 @@ MONTHLY_PRO_LIMIT_KRW = ROOM_LIMIT_KRW  # 하위 호환용 별칭
 USD_TO_KRW_RATE = _safe_float(_get_secret_or_env("USD_TO_KRW_RATE"), 1400.0)
 
 _MODEL_PRICING_USD_PER_1M = {
-    "PRO":   {"in": 2.00, "out": 12.00},   # gemini-3.1-pro-preview 기준
+    "PRO":   {"in": 2.00, "out": 12.00},   # gemini-3.1-pro-preview / gemini-4-argon 기준
     "FLASH": {"in": 0.75, "out": 3.75},    # gemini-3.8-flash 기준
 }
 
@@ -838,7 +838,7 @@ def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
         return ""
 
     cleaned = re.sub(r"<(개정|신설|타법개정|일부개정|전문개정)[^>]*>", _keep_recent_rev_tag, raw_text)
-    cleaned = re.sub(r"\[(전문개정\vert{}본조신설\vert{}제목개정\vert{}제\d+조에서 이동)[^\]]*\]", _keep_recent_rev_tag, cleaned)
+    cleaned = re.sub(r"\[(전문개정|본조신설|제목개정|제\d+조에서 이동)[^\]]*\]", _keep_recent_rev_tag, cleaned)
 
     mult = 3 if _is_unleashed() else 1
     art_matches = re.findall(r"제?\s*(\d+)\s*조(?:\s*의\s*(\d+))?", query_filter or "")
@@ -901,10 +901,15 @@ SEMANTIC_VERIFY_ON = (
     if _verify_mode() == "loose"
     else (_get_secret_or_env("SEMANTIC_VERIFY").lower() not in ("off", "false", "0"))
 )
+# 🔒 Argon 모델 잠금 스위치 (추후 사용 시 Secrets/환경변수에 USE_ARGON_MODEL="true" 설정 또는 아래 주석 해제)
+USE_ARGON_MODEL = _get_secret_or_env("USE_ARGON_MODEL").lower() in ("on", "true", "1")
+ARGON_MODEL_ID  = "gemini-4-argon"  # 코드 내 보존 (기본 잠금 상태)
+
 PAID_PRO_MODEL_IDS = [
-    _model_id("GEMINI_PAID_PRO_MODEL", "gemini-3.1-pro-preview"),
-    "gemini-4-argon",
-]
+    _model_id("GEMINI_PAID_PRO_MODEL", "gemini-3.1-pro-preview"),  # 1순위: 최신 Pro 모델
+    "gemini-2.5-pro",                                              # 2순위: 안정형 Pro 백업 모델
+    # "gemini-4-argon",                                            # 🔒 Argon 잠금 (필요 시 주석 해제)
+] + ([ARGON_MODEL_ID] if USE_ARGON_MODEL else [])
 
 def _is_model_not_found(e: Exception) -> bool:
     s = str(e)
@@ -1505,6 +1510,7 @@ def _inject_direct_law_links(text: str, trace: dict = None) -> str:
     1) 본문의 [조문:...], [판례:...], [심판례:...], [해석례:...], [예규:...] 태그에 100% 검증된 법제처 원문 직링크를 결합합니다.
     2) '### 3. 관련법령' 섹션의 모든 하위 조문 줄(예: '◦ 「조세특례제한법」 제144조(세액공제액의 이월공제) 제1항·제2항') 및
        기본통칙 줄을 클릭하면 즉시 해당 법제처 조문·기본통칙 원문 페이지로 이동하도록 글자 자체에 직링크를 걸어줍니다.
+       (3. 관련법령 줄에 [조문:...] 태그가 함께 있어도 줄 전체가 깔끔하게 링크되도록 처리)
     """
     if not text:
         return ""
@@ -1525,15 +1531,7 @@ def _inject_direct_law_links(text: str, trace: dict = None) -> str:
             return f"[{full_tag}]({url})"
         return full_tag
 
-    # 1단계: 본문 대괄호 출처 태그를 클릭 가능한 마크다운 링크로 변환
-    linked_text = re.sub(
-        r"(?<!\[)\[(판례|심판례|해석례|예규|조문)\s*:\s*([^\]]+)\](?!\()",
-        _replace_tag_with_link,
-        text
-    )
-
-    # 2단계: '### 3. 관련법령' 섹션의 각 조문·판례·기본통칙 줄 자체를 클릭 가능한 링크로 변환
-    lines = linked_text.split("\n")
+    lines = text.split("\n")
     in_refs = False
     known_titles = _known_law_titles(trace)
     base_tax_laws = sorted(_COMMON_LAWS, key=len, reverse=True)
@@ -1546,12 +1544,23 @@ def _inject_direct_law_links(text: str, trace: dict = None) -> str:
             out_lines.append(line)
             continue
 
-        if in_refs and s:
-            # 이미 마크다운 링크 ](http 가 걸려 있는 줄이나 상위 사이트 도메인 안내 줄은 그대로 유지하되,
-            # 하위 조문/기본통칙/판례 항목 줄은 글자 전체를 클릭 가능한 직링크로 변환
+        if not in_refs:
+            # 본문(1. 결론, 2. 내용)에서는 대괄호 출처 태그를 클릭 가능한 마크다운 링크로 변환
+            linked_line = re.sub(
+                r"(?<!\[)\[(판례|심판례|해석례|예규|조문)\s*:\s*([^\]]+)\](?!\()",
+                _replace_tag_with_link,
+                line
+            )
+            out_lines.append(linked_line)
+            continue
+
+        # '### 3. 관련법령' 섹션: 불릿 항목 줄 전체를 클릭 가능한 직링크로 변환
+        if s:
             m_bullet = re.match(r"^(\s*(?:[-*•◦‣]|\d+\.)\s+)(.+)$", line)
             if m_bullet and "](" not in line and "http://" not in line and "https://" not in line:
                 prefix_bullet, item_body = m_bullet.group(1), m_bullet.group(2).strip()
+                # 관련법령 줄 끝에 중복 부착된 [조문:...] 태그가 있으면 깔끔히 정리 후 줄 전체에 직링크 부여
+                clean_item_body = re.sub(r"\s*\[(?:판례|심판례|해석례|예규|조문)\s*:\s*[^\]]+\]\s*$", "", item_body).strip() or item_body
                 direct_url = ""
                 compact_body = _norm(item_body)
 
@@ -1605,7 +1614,13 @@ def _inject_direct_law_links(text: str, trace: dict = None) -> str:
                             break
 
                 if direct_url:
-                    line = f"{prefix_bullet}[{item_body}]({direct_url})"
+                    line = f"{prefix_bullet}[{clean_item_body}]({direct_url})"
+                else:
+                    line = re.sub(
+                        r"(?<!\[)\[(판례|심판례|해석례|예규|조문)\s*:\s*([^\]]+)\](?!\()",
+                        _replace_tag_with_link,
+                        line
+                    )
 
         out_lines.append(line)
 
@@ -1853,7 +1868,7 @@ def _execute_with_key_and_model(
 
     return _clean_latex_for_export(final_text), len(precheck_text)
 
-# 4. 실행 순서(유료키 전용): 3.8-flash → 3.6-flash
+# 4. 실행 순서(유료키 전용): 3.8-flash → 3.6-flash (Pro 모드 시 3.1-pro-preview → 2.5-pro, Argon은 기본 잠금)
 def run_agent(user_input: str, raw_query: str = "", has_file: bool = False, room_key: str = "") -> str:
     live_pool = get_live_gemini_key_pool()
     if not live_pool:
