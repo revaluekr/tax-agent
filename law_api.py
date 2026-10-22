@@ -3,36 +3,79 @@ import io
 import re
 import json
 import zipfile
+import threading
 import urllib.parse
 import requests
 import xml.etree.ElementTree as ET
 import pandas as pd
+from dotenv import load_dotenv
 
-try:
-    from config import LAW_OPEN_API_KEY, BOK_API_KEY, DART_API_KEY, NTS_API_KEY
-except ImportError:
-    LAW_OPEN_API_KEY = os.getenv("LAW_OPEN_API_KEY", "").strip()
-    BOK_API_KEY = os.getenv("BOK_API_KEY", "").strip()
-    DART_API_KEY = os.getenv("DART_API_KEY", "").strip()
-    NTS_API_KEY = os.getenv("NTS_API_KEY", "").strip()
+load_dotenv()
+
+def _get_api_key(key_name: str, fallback_keys: list[str] = None) -> str:
+    """config.py, st.secrets, 환경변수(.env 포함)에서 실시간으로 API 키를 안전하게 추출합니다."""
+    keys_to_check = [key_name] + (fallback_keys or [])
+    try:
+        import config
+        for k in keys_to_check:
+            val = getattr(config, k, None)
+            if isinstance(val, str) and val.strip():
+                return val.strip().strip('"').strip("'")
+    except ImportError:
+        pass
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets"):
+            for k in keys_to_check:
+                if k in st.secrets:
+                    val = str(st.secrets[k]).strip().strip('"').strip("'")
+                    if val:
+                        return val
+    except Exception:
+        pass
+    for k in keys_to_check:
+        val = os.getenv(k, "").strip().strip('"').strip("'")
+        if val:
+            return val
+    return ""
+
+LAW_OPEN_API_KEY = _get_api_key("LAW_OPEN_API_KEY", ["LAW_API_OC", "OC", "LAW_OC", "LAW_API_KEY", "MOLEG_OC", "DRF_OC"])
+BOK_API_KEY = _get_api_key("BOK_API_KEY", ["ECOS_API_KEY"])
+DART_API_KEY = _get_api_key("DART_API_KEY", ["OPENDART_API_KEY"])
+NTS_API_KEY = _get_api_key("NTS_API_KEY", ["DATA_GO_KR_KEY", "PUBLIC_DATA_KEY", "MOLIT_API_KEY"])
+
+def _live_law_key() -> str:
+    return _get_api_key("LAW_OPEN_API_KEY", ["LAW_API_OC", "OC", "LAW_OC", "LAW_API_KEY", "MOLEG_OC", "DRF_OC"]) or LAW_OPEN_API_KEY
+
+def _live_bok_key() -> str:
+    return _get_api_key("BOK_API_KEY", ["ECOS_API_KEY"]) or BOK_API_KEY
+
+def _live_dart_key() -> str:
+    return _get_api_key("DART_API_KEY", ["OPENDART_API_KEY"]) or DART_API_KEY
+
+def _live_nts_key() -> str:
+    return _get_api_key("NTS_API_KEY", ["DATA_GO_KR_KEY", "PUBLIC_DATA_KEY", "MOLIT_API_KEY"]) or NTS_API_KEY
+
 
 # ---------------------------------------------------------
 # 1. 국가법령정보센터 (법령, 판례, 행정규칙, 법령해석례, 조세심판원 재결례, 지자체 조례)
 # ---------------------------------------------------------
 def search_law_data(keyword: str, target: str = "law", search_mode: int = None) -> list[dict]:
     """search_mode: None/1 = 제목(법령명·사건명·안건명) 검색, 2 = 본문 검색 (판례·해석례·행정규칙 주제어 검색용)"""
-    if not LAW_OPEN_API_KEY:
+    law_key = _live_law_key()
+    if not law_key:
         return []
 
     if target == "decc":
-        return _search_law_data_raw(keyword, "ttSpecialDecc", search_mode)
-    return _search_law_data_raw(keyword, target, search_mode)
+        return _search_law_data_raw(keyword, "ttSpecialDecc", search_mode, law_key)
+    return _search_law_data_raw(keyword, target, search_mode, law_key)
 
 
-def _search_law_data_raw(keyword: str, target: str, search_mode: int = None) -> list[dict]:
+def _search_law_data_raw(keyword: str, target: str, search_mode: int = None, law_key: str = "") -> list[dict]:
+    oc_key = law_key or _live_law_key()
     url = "http://www.law.go.kr/DRF/lawSearch.do"
     params = {
-        "OC": LAW_OPEN_API_KEY,
+        "OC": oc_key,
         "target": target,
         "type": "XML",
         "query": keyword,
@@ -145,9 +188,10 @@ def _fetch_xml_root(url: str, params: dict):
 
 def _get_statute_articles(doc_id: str, query_filter: str = "") -> str:
     """법령 원문에서 조문을 정밀 추출합니다."""
+    law_key = _live_law_key()
     url = "http://www.law.go.kr/DRF/lawService.do"
     art_filter = _parse_article_filter(query_filter)
-    base = {"OC": LAW_OPEN_API_KEY, "target": "law", "type": "XML"}
+    base = {"OC": law_key, "target": "law", "type": "XML"}
 
     attempts = []
     if art_filter:
@@ -210,7 +254,8 @@ def _get_statute_articles(doc_id: str, query_filter: str = "") -> str:
 
 
 def get_law_content(doc_id: str, target: str = "law", query_filter: str = "") -> str:
-    if not LAW_OPEN_API_KEY:
+    law_key = _live_law_key()
+    if not law_key:
         return "❌ LAW_OPEN_API_KEY가 설정되지 않았습니다."
 
     if target == "law":
@@ -222,7 +267,7 @@ def get_law_content(doc_id: str, target: str = "law", query_filter: str = "") ->
     url = "http://www.law.go.kr/DRF/lawService.do"
     api_target = "ttSpecialDecc" if target == "decc" else target
     params = {
-        "OC": LAW_OPEN_API_KEY,
+        "OC": law_key,
         "target": api_target,
         "ID": doc_id,
         "type": "XML"
@@ -330,7 +375,8 @@ def get_law_content(doc_id: str, target: str = "law", query_filter: str = "") ->
 # 2. 한국은행 경제통계시스템 (ECOS) 환율 및 기준금리 조회
 # ---------------------------------------------------------
 def get_bok_exchange_rate(start_date: str, end_date: str, currency: str = "USD") -> str:
-    if not BOK_API_KEY:
+    bok_key = _live_bok_key()
+    if not bok_key:
         return "❌ BOK_API_KEY가 설정되지 않았습니다."
 
     curr_map = {
@@ -343,7 +389,7 @@ def get_bok_exchange_rate(start_date: str, end_date: str, currency: str = "USD")
     s_date = start_date.replace("-", "").strip()
     e_date = end_date.replace("-", "").strip()
 
-    url = f"https://ecos.bok.or.kr/api/StatisticSearch/{BOK_API_KEY}/json/kr/1/30/731Y001/D/{s_date}/{e_date}/{item_code}"
+    url = f"https://ecos.bok.or.kr/api/StatisticSearch/{bok_key}/json/kr/1/30/731Y001/D/{s_date}/{e_date}/{item_code}"
     try:
         resp = requests.get(url, timeout=10).json()
         rows = resp.get("StatisticSearch", {}).get("row", [])
@@ -359,12 +405,13 @@ def get_bok_exchange_rate(start_date: str, end_date: str, currency: str = "USD")
 
 
 def get_bok_base_rate(start_date: str, end_date: str) -> str:
-    if not BOK_API_KEY:
+    bok_key = _live_bok_key()
+    if not bok_key:
         return "❌ BOK_API_KEY가 설정되지 않았습니다."
 
     s_date = start_date.replace("-", "").strip()
     e_date = end_date.replace("-", "").strip()
-    url = f"https://ecos.bok.or.kr/api/StatisticSearch/{BOK_API_KEY}/json/kr/1/30/722Y001/D/{s_date}/{e_date}/0101000"
+    url = f"https://ecos.bok.or.kr/api/StatisticSearch/{bok_key}/json/kr/1/30/722Y001/D/{s_date}/{e_date}/0101000"
     try:
         resp = requests.get(url, timeout=10).json()
         rows = resp.get("StatisticSearch", {}).get("row", [])
@@ -380,25 +427,27 @@ def get_bok_base_rate(start_date: str, end_date: str) -> str:
 
 
 # ---------------------------------------------------------
-# 3. 국세청 기준경비율 6자리 업종코드 마스터 엑셀/CSV 검색
+# 3. 국세청 기준경비율 6자리 업종코드 마스터 엑셀/CSV 검색 (멀티스레드 Lock 적용)
 # ---------------------------------------------------------
 _INDUSTRY_DF_CACHE = None
+_INDUSTRY_LOCK = threading.Lock()
 
 def search_industry_code(keyword: str) -> str:
     global _INDUSTRY_DF_CACHE
     try:
-        if _INDUSTRY_DF_CACHE is None:
-            if os.path.exists("industry_codes.xlsx"):
-                _INDUSTRY_DF_CACHE = pd.read_excel("industry_codes.xlsx", dtype=str).fillna("")
-            elif os.path.exists("industry_codes.csv"):
-                for enc in ["utf-8-sig", "cp949", "euc-kr", "utf-8"]:
-                    try:
-                        _INDUSTRY_DF_CACHE = pd.read_csv("industry_codes.csv", encoding=enc, dtype=str).fillna("")
-                        break
-                    except Exception:
-                        continue
-            else:
-                return "⚠️ 프로젝트 폴더에 'industry_codes.xlsx' 파일이 없습니다. 임의로 6자리 코드를 생성하지 마세요."
+        with _INDUSTRY_LOCK:
+            if _INDUSTRY_DF_CACHE is None:
+                if os.path.exists("industry_codes.xlsx"):
+                    _INDUSTRY_DF_CACHE = pd.read_excel("industry_codes.xlsx", dtype=str).fillna("")
+                elif os.path.exists("industry_codes.csv"):
+                    for enc in ["utf-8-sig", "cp949", "euc-kr", "utf-8"]:
+                        try:
+                            _INDUSTRY_DF_CACHE = pd.read_csv("industry_codes.csv", encoding=enc, dtype=str).fillna("")
+                            break
+                        except Exception:
+                            continue
+                else:
+                    return "⚠️ 프로젝트 폴더에 'industry_codes.xlsx' 파일이 없습니다. 임의로 6자리 코드를 생성하지 마세요."
 
         df = _INDUSTRY_DF_CACHE
         kw = keyword.strip()
@@ -418,54 +467,59 @@ def search_industry_code(keyword: str) -> str:
 
 
 # ---------------------------------------------------------
-# 4. 금융감독원 전자공시시스템 (Open DART) 6대 핵심 정보 통합 조회
+# 4. 금융감독원 전자공시시스템 (Open DART) 6대 핵심 정보 통합 조회 (멀티스레드 Lock 적용)
 # ---------------------------------------------------------
 _DART_CORP_CACHE = None
+_DART_LOCK = threading.Lock()
 
 def _load_dart_corp_codes() -> list[dict]:
     global _DART_CORP_CACHE
-    if _DART_CORP_CACHE is not None:
-        return _DART_CORP_CACHE
-    if not DART_API_KEY:
+    dart_key = _live_dart_key()
+    if not dart_key:
         return []
 
-    cache_file = ".workspace_storage/dart_corp_codes.xml"
-    os.makedirs(".workspace_storage", exist_ok=True)
+    with _DART_LOCK:
+        if _DART_CORP_CACHE is not None:
+            return _DART_CORP_CACHE
 
-    try:
-        if not os.path.exists(cache_file):
-            url = f"https://opendart.fss.or.kr/api/corpCode.xml?crtfc_key={DART_API_KEY}"
-            resp = requests.get(url, timeout=25)
-            with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
-                xml_name = z.namelist()[0]
-                xml_bytes = z.read(xml_name)
-                with open(cache_file, "wb") as f:
-                    f.write(xml_bytes)
+        cache_file = ".workspace_storage/dart_corp_codes.xml"
+        os.makedirs(".workspace_storage", exist_ok=True)
 
-        tree = ET.parse(cache_file)
-        root = tree.getroot()
-        corp_list = []
-        for item in root.findall(".//list"):
-            c_name = (item.findtext("corp_name") or "").strip()
-            c_code = (item.findtext("corp_code") or "").strip()
-            s_code = (item.findtext("stock_code") or "").strip()
-            m_date = (item.findtext("modify_date") or "").strip()
-            if c_name and c_code:
-                corp_list.append({
-                    "corp_name": c_name,
-                    "corp_code": c_code,
-                    "stock_code": s_code,
-                    "modify_date": m_date
-                })
-        _DART_CORP_CACHE = corp_list
-        return _DART_CORP_CACHE
-    except Exception as e:
-        print(f"⚠️ DART 고유번호 마스터 로드 오류: {e}")
-        return []
+        try:
+            if not os.path.exists(cache_file):
+                url = f"https://opendart.fss.or.kr/api/corpCode.xml?crtfc_key={dart_key}"
+                resp = requests.get(url, timeout=25)
+                with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
+                    xml_name = z.namelist()[0]
+                    xml_bytes = z.read(xml_name)
+                    with open(cache_file, "wb") as f:
+                        f.write(xml_bytes)
+
+            tree = ET.parse(cache_file)
+            root = tree.getroot()
+            corp_list = []
+            for item in root.findall(".//list"):
+                c_name = (item.findtext("corp_name") or "").strip()
+                c_code = (item.findtext("corp_code") or "").strip()
+                s_code = (item.findtext("stock_code") or "").strip()
+                m_date = (item.findtext("modify_date") or "").strip()
+                if c_name and c_code:
+                    corp_list.append({
+                        "corp_name": c_name,
+                        "corp_code": c_code,
+                        "stock_code": s_code,
+                        "modify_date": m_date
+                    })
+            _DART_CORP_CACHE = corp_list
+            return _DART_CORP_CACHE
+        except Exception as e:
+            print(f"⚠️ DART 고유번호 마스터 로드 오류: {e}")
+            return []
 
 
 def get_dart_corp_info(corp_name: str, bsns_year: str = "2025") -> str:
-    if not DART_API_KEY:
+    dart_key = _live_dart_key()
+    if not dart_key:
         return "❌ DART_API_KEY가 설정되지 않았습니다."
 
     corps = _load_dart_corp_codes()
@@ -491,7 +545,7 @@ def get_dart_corp_info(corp_name: str, bsns_year: str = "2025") -> str:
 
     try:
         info_url = "https://opendart.fss.or.kr/api/company.json"
-        info_res = requests.get(info_url, params={"crtfc_key": DART_API_KEY, "corp_code": corp_code}, timeout=10).json()
+        info_res = requests.get(info_url, params={"crtfc_key": dart_key, "corp_code": corp_code}, timeout=10).json()
         if info_res.get("status") == "000":
             output.append(
                 f"\n■ 1. 기업개황:\n"
@@ -506,7 +560,7 @@ def get_dart_corp_info(corp_name: str, bsns_year: str = "2025") -> str:
     try:
         list_url = "https://opendart.fss.or.kr/api/list.json"
         list_res = requests.get(list_url, params={
-            "crtfc_key": DART_API_KEY,
+            "crtfc_key": dart_key,
             "corp_code": corp_code,
             "page_count": 8
         }, timeout=10).json()
@@ -528,7 +582,7 @@ def get_dart_corp_info(corp_name: str, bsns_year: str = "2025") -> str:
         try:
             fin_url = "https://opendart.fss.or.kr/api/fnlttSinglAcnt.json"
             fin_res = requests.get(fin_url, params={
-                "crtfc_key": DART_API_KEY,
+                "crtfc_key": dart_key,
                 "corp_code": corp_code,
                 "bsns_year": yr,
                 "reprt_code": "11011"
@@ -555,7 +609,7 @@ def get_dart_corp_info(corp_name: str, bsns_year: str = "2025") -> str:
     try:
         sh_url = "https://opendart.fss.or.kr/api/hyslrSttus.json"
         sh_res = requests.get(sh_url, params={
-            "crtfc_key": DART_API_KEY,
+            "crtfc_key": dart_key,
             "corp_code": corp_code,
             "bsns_year": active_year,
             "reprt_code": "11011"
@@ -575,7 +629,7 @@ def get_dart_corp_info(corp_name: str, bsns_year: str = "2025") -> str:
     try:
         div_url = "https://opendart.fss.or.kr/api/alotMatter.json"
         div_res = requests.get(div_url, params={
-            "crtfc_key": DART_API_KEY,
+            "crtfc_key": dart_key,
             "corp_code": corp_code,
             "bsns_year": active_year,
             "reprt_code": "11011"
@@ -596,7 +650,7 @@ def get_dart_corp_info(corp_name: str, bsns_year: str = "2025") -> str:
     try:
         inv_url = "https://opendart.fss.or.kr/api/otrCprInvstmntSttus.json"
         inv_res = requests.get(inv_url, params={
-            "crtfc_key": DART_API_KEY,
+            "crtfc_key": dart_key,
             "corp_code": corp_code,
             "bsns_year": active_year,
             "reprt_code": "11011"
@@ -620,7 +674,8 @@ def get_dart_corp_info(corp_name: str, bsns_year: str = "2025") -> str:
 # 5. 국세청 사업자등록 상태조회 및 대표자·개업일 진위확인
 # ---------------------------------------------------------
 def get_nts_biz_status(biz_numbers_text: str) -> str:
-    if not NTS_API_KEY:
+    nts_key = _live_nts_key()
+    if not nts_key:
         return "❌ NTS_API_KEY가 설정되지 않았습니다."
 
     cleaned_input = re.sub(r"(\d{3})-(\d{2})-(\d{5})", r"\1\2\3", biz_numbers_text)
@@ -634,7 +689,7 @@ def get_nts_biz_status(biz_numbers_text: str) -> str:
         return f"❌ 입력된 값('{biz_numbers_text}')에서 유효한 10자리 사업자등록번호를 찾을 수 없습니다."
 
     b_nos = list(dict.fromkeys(b_nos))[:100]
-    encoded_key = NTS_API_KEY if "%" in NTS_API_KEY else urllib.parse.quote(NTS_API_KEY, safe="")
+    encoded_key = nts_key if "%" in nts_key else urllib.parse.quote(nts_key, safe="")
     url = f"https://api.odcloud.kr/api/nts-businessman/v1/status?serviceKey={encoded_key}"
 
     try:
@@ -681,7 +736,8 @@ def get_nts_biz_status(biz_numbers_text: str) -> str:
 
 
 def verify_nts_biz_info(b_no: str, start_dt: str, p_nm: str, b_nm: str = "") -> str:
-    if not NTS_API_KEY:
+    nts_key = _live_nts_key()
+    if not nts_key:
         return "❌ NTS_API_KEY가 설정되지 않았습니다."
 
     clean_bno = re.sub(r"\D", "", b_no)
@@ -689,7 +745,7 @@ def verify_nts_biz_info(b_no: str, start_dt: str, p_nm: str, b_nm: str = "") -> 
     if len(clean_bno) != 10 or len(clean_dt) != 8 or not p_nm.strip():
         return "❌ 진위확인을 위해서는 10자리 사업자번호, 8자리 개업일자(YYYYMMDD), 대표자 성명이 모두 필요합니다."
 
-    encoded_key = NTS_API_KEY if "%" in NTS_API_KEY else urllib.parse.quote(NTS_API_KEY, safe="")
+    encoded_key = nts_key if "%" in nts_key else urllib.parse.quote(nts_key, safe="")
     url = f"https://api.odcloud.kr/api/nts-businessman/v1/validate?serviceKey={encoded_key}"
 
     payload = {
@@ -767,7 +823,8 @@ def _resolve_lawd_cd(region_str: str) -> str:
     return ""
 
 def get_molit_real_estate_trade(property_type: str, region: str, deal_ymd: str, filter_keyword: str = "") -> str:
-    if not NTS_API_KEY:
+    nts_key = _live_nts_key()
+    if not nts_key:
         return "❌ NTS_API_KEY(공공데이터포털 인증키)가 설정되지 않았습니다."
 
     lawd_cd = _resolve_lawd_cd(region)
@@ -800,7 +857,7 @@ def get_molit_real_estate_trade(property_type: str, region: str, deal_ymd: str, 
         fallback_ep = "https://apis.data.go.kr/1613000/RTMSDataSvcAptTrade/getRTMSDataSvcAptTrade"
         type_label = "아파트(공동주택) 매매"
 
-    encoded_key = NTS_API_KEY if "%" in NTS_API_KEY else urllib.parse.quote(NTS_API_KEY, safe="")
+    encoded_key = nts_key if "%" in nts_key else urllib.parse.quote(nts_key, safe="")
 
     def _fetch_xml(ep_url: str):
         full_url = f"{ep_url}?serviceKey={encoded_key}&LAWD_CD={lawd_cd}&DEAL_YMD={ymd}&numOfRows=200&pageNo=1"
@@ -896,15 +953,7 @@ _MAJOR_BJDONG_MAP = {
 }
 
 def _get_vworld_key() -> str:
-    try:
-        import streamlit as st
-        if hasattr(st, "secrets") and "VWORLD_API_KEY" in st.secrets:
-            val = str(st.secrets["VWORLD_API_KEY"]).strip().strip('"').strip("'")
-            if val:
-                return val
-    except Exception:
-        pass
-    return os.getenv("VWORLD_API_KEY", "").strip().strip('"').strip("'")
+    return _get_api_key("VWORLD_API_KEY")
 
 
 def _build_19digit_pnu(bjdong_10: str, jibun_text: str) -> str:
