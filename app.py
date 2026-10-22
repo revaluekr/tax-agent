@@ -203,7 +203,7 @@ div[data-testid="stChatMessageContent"] h4 {
     font-weight: 700 !important;
 }
 
-/* 본문 근거 태그 직링크 스타일 (깔끔한 뱃지 형태 하이퍼링크) */
+/* 본문 근거 태그 및 3. 관련법령 조문 직링크 스타일 */
 div[data-testid="stChatMessageContent"] a {
     color: #1d4ed8 !important;
     font-weight: 600 !important;
@@ -891,10 +891,10 @@ def _sanitize_math_text(text: str) -> str:
     if not text:
         return ""
     s = text
-    # 본문 직링크 [[조문:...]](https://...) -> [조문:...] 로 깔끔하게 복원 (인쇄물·복사본 가독성 유지)
+    # 1) 본문 직링크 [[조문:...]](https://...) -> [조문:...] 로 깔끔하게 복원
     s = re.sub(r"\[(\[(?:판례|심판례|해석례|예규|조문)\s*:\s*[^\]]+\])\]\((https?://[^\s)]+)\)", r"\1", s)
-    # 3. 관련법령 직링크 [🔗원문 바로가기(클릭)](https://...) -> https://www.law.go.kr 로 깔끔하게 정리
-    s = re.sub(r"\[🔗[^\]]*\]\((https?://[^\s)]+)\)", "https://www.law.go.kr", s)
+    # 2) 3. 관련법령 하위 조문·기본통칙 링크 [「조세특례제한법」 제144조...](https://...) -> 「조세특례제한법」 제144조... 로 복원
+    s = re.sub(r"\[([^\[\]\n]+)\]\((https?://www\.law\.go\.kr/[^\s)]+)\)", r"\1", s)
 
     s = re.sub(r"\$\$(.*?)\$\$", r"\1", s, flags=re.DOTALL)
     s = re.sub(r"\$([^$\n]+)\$", r"\1", s)
@@ -1793,7 +1793,7 @@ with st.sidebar:
             st.link_button("🔑 API키", "https://aistudio.google.com/apikey", use_container_width=True)
 
 # ---------------------------------------------------------
-# 3. 메인 화면 및 현재 선택된 대화방 렌더링
+# 3. 메인 화면 및 현재 선택된 대화방 렌더링 (기존 저장된 답변에도 직링크 실시간 적용)
 # ---------------------------------------------------------
 current_messages = st.session_state.chat_rooms[selected_room]
 current_room_title = st.session_state.room_titles[selected_room]
@@ -1876,7 +1876,15 @@ if st.session_state.get("show_inline_reason_viewer"):
 
 for idx, message in enumerate(current_messages):
     with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+        display_content = message["content"]
+        # 이미 저장된 과거 대화 기록에도 3. 관련법령 조문 및 본문 태그 직링크를 실시간 적용하여 표시
+        if message["role"] == "assistant" and hasattr(agent, "_inject_direct_law_links"):
+            try:
+                display_content = agent._inject_direct_law_links(display_content)
+            except Exception:
+                pass
+        st.markdown(display_content)
+
         if message["role"] == "assistant":
             # 📥 1줄: 문서 다운로드 버튼 4종 (PDF / 워드 / 표 엑셀(.xlsx) / 마크다운)
             excel_bytes = create_excel_from_markdown_tables(message["content"])
