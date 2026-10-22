@@ -1560,7 +1560,7 @@ def _inject_direct_law_links(text: str, trace: dict = None) -> str:
             if m_bullet and "](" not in line and "http://" not in line and "https://" not in line:
                 prefix_bullet, item_body = m_bullet.group(1), m_bullet.group(2).strip()
                 # 관련법령 줄 끝에 중복 부착된 [조문:...] 태그가 있으면 깔끔히 정리 후 줄 전체에 직링크 부여
-                clean_item_body = re.sub(r"\s*\[(?:판례|심판례|해석례|예규|조문)\s*:\s*[^\]]+\]\s*$", "", item_body).strip() or item_body
+                clean_item_body = re.sub(r"\s*\[((?:판례|심판례|해석례|예규|조문)\s*:\s*[^\]]+)\]\s*", lambda m: m.group(1).split(":", 1)[-1].strip() + " ", item_body).strip() or item_body
                 direct_url = ""
                 compact_body = _norm(item_body)
 
