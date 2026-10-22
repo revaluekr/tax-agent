@@ -893,8 +893,8 @@ def _sanitize_math_text(text: str) -> str:
     s = text
     # 1) 본문 직링크 [[조문:...]](https://...) -> [조문:...] 로 깔끔하게 복원
     s = re.sub(r"\[(\[(?:판례|심판례|해석례|예규|조문)\s*:\s*[^\]]+\])\]\((https?://[^\s)]+)\)", r"\1", s)
-    # 2) 3. 관련법령 하위 조문·기본통칙 링크 [「조세특례제한법」 제144조...](https://...) -> 「조세특례제한법」 제144조... 로 복원
-    s = re.sub(r"\[([^\[\]\n]+)\]\((https?://www\.law\.go\.kr/[^\s)]+)\)", r"\1", s)
+    # 2) 3. 관련법령 하위 조문·기본통칙 링크(내부 대괄호 포함 가능) [ ... ](https://www.law.go.kr/...) -> 텍스트만 깔끔하게 복원
+    s = re.sub(r"\[([^\n]+?)\]\((https?://(?:www\.)?law\.go\.kr/[^\s)]+)\)", r"\1", s)
 
     s = re.sub(r"\$\$(.*?)\$\$", r"\1", s, flags=re.DOTALL)
     s = re.sub(r"\$([^$\n]+)\$", r"\1", s)
@@ -1093,10 +1093,10 @@ def _draw_page_footer(canvas, doc):
     canvas.setLineWidth(0.6)
     canvas.line(40, 36, A4[0] - 40, 36)
 
-    canvas.setFont(reg_font, 6.8)
+    canvas.setFont(reg_font, 6.2)
     canvas.setFillColor(colors.HexColor("#64748b"))
     disclaimer_str = (
-        "※ 본 의견서는 질의하신 사실관계와 조회 시점 현행 법령을 기준으로 작성된 참고자료이며, "
+        "※ 본 보고서는 질의하신 사실관계와 현행 법령 기준의 참고자료이며, "
         "사실관계 변동이나 과세관청·법원의 해석에 따라 판단이 달라질 수 있습니다."
     )
     canvas.drawString(40, 24, disclaimer_str)
