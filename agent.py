@@ -292,6 +292,7 @@ def _new_trace(unleash: bool = False) -> dict:
         "article_texts": {},
         "counts": {},
         "id_map": {},
+        "meta_map": {},
         "unleash": unleash
     }
 
@@ -548,7 +549,7 @@ def _show_diag() -> bool:
 
 def _redact_lines(answer: str, violations: list[tuple]) -> str:
     """
-    - 지어낸 사건번호('조회 기록 없음')는 어느 모드에서나 즉시 삭제합니다. (사건 소제목 형태의 줄을 지울 때만 하위 들여쓰기 줄을 함께 지우고, 일반 문장이면 하위 요건 목록을 건드리지 않습니다.)
+    - 지어낸 사건번호('조회 기록 없음')는 어느 모드에서나 즉시 삭제합니다.
     - VERIFY_MODE == 'strict' (기본): 재작성 후에도 남은 모든 미검증 근거 줄을 조용히 삭제합니다.
     - VERIFY_MODE == 'balanced': 지어낸 사건번호 외의 미확인 근거에는 '⚠️(원문 확인 필요)'를 붙입니다.
     - VERIFY_MODE == 'loose': 지어낸 사건번호만 지우고 나머지는 그대로 둡니다.
@@ -959,12 +960,12 @@ def select_optimal_model(user_query: str, has_file: bool = False, full_input_len
     return "FLASH", "⚡ **[Flash 빠른 검토 모드]** 실무 표준 검토", ""
 
 # ---------------------------------------------------------
-# 2. Gemini 도구 정의 (12개 도구 전체 docstring 완벽 복원 및 안전 예외 처리)
+# 2. Gemini 도구 정의 (12개 도구 전체 docstring 복원 및 일련번호 메타데이터 수집)
 # ---------------------------------------------------------
 def search_law_for_gemini(keyword: str, target: str = "law") -> str:
     """
     국가법령정보센터에서 법령, 판례, 행정규칙, 법령해석례, 조세심판원 결정례, 지방세 자치법규(조례) 목록과 일련번호(ID)를 검색합니다.
-    - target: 'law'(법령), 'prec'(판례), 'decc'(조세심판원 결정례), 'admrul'(훈령·예규·고시), 'expc'(법령해석례), 'ordin'(지자체 조례)
+    - target: 'law'(법령), 'prec'(판례), 'decc'(조세심판원 결정례), 'admrul'(훈령·예규·고시·기본통칙), 'expc'(법령해석례), 'ordin'(지자체 조례)
     - target='law'일 때 keyword에는 '법령명만' 넣을 것 (예: '소득세법', '소득세법 시행령'). 주제어는 넣지 말 것.
     - target='prec'/'decc'/'expc'는 핵심 주제어(예: '업무무관 가지급금')나 사건번호(예: '2005두9415')로 검색할 것.
     """
@@ -1039,13 +1040,30 @@ def search_law_for_gemini(keyword: str, target: str = "law") -> str:
             summary += f"{i+1}. [지자체 조례/자치법규] {item.get('자치법규명', item.get('법령명한글'))} | 지자체: {item.get('지자체기관명')} | 시행일: {item.get('시행일자')} | ID: {item.get('자치법규일련번호', item.get('법령일련번호'))}\n"
         else:
             summary += f"{i+1}. {item.get('법령명한글', item.get('행정규칙명', '제목 없음'))}\n"
+
     trace = _TOOL_TRACE.get()
-    if trace is not None and target in ("prec", "decc"):
-        for item in results[:10]:
-            rid = item.get("판례일련번호") or item.get("특별행정심판재결례일련번호") or item.get("행정심판재결례일련번호")
-            rno = item.get("사건번호") or item.get("청구번호")
-            if rid and rno:
-                trace["id_map"][str(rid).strip()] = rno.strip()
+    if trace is not None:
+        meta = trace.setdefault("meta_map", {})
+        for item in results[:15]:
+            if target in ("prec", "decc"):
+                rid = item.get("판례일련번호") or item.get("특별행정심판재결례일련번호") or item.get("행정심판재결례일련번호")
+                rno = item.get("사건번호") or item.get("청구번호")
+                if rid and rno:
+                    trace["id_map"][str(rid).strip()] = rno.strip()
+                    meta[(target, _norm(rno))] = str(rid).strip()
+            elif target == "expc":
+                rid = item.get("법령해석례일련번호")
+                rno = item.get("안건번호")
+                if rid and rno:
+                    meta[("expc", _norm(rno))] = str(rid).strip()
+            elif target == "admrul":
+                rid = item.get("행정규칙일련번호")
+                rnm = item.get("행정규칙명")
+                rno = item.get("발령번호")
+                if rid and rnm:
+                    meta[("admrul", _norm(rnm))] = str(rid).strip()
+                if rid and rno:
+                    meta[("admrul", _norm(rno))] = str(rid).strip()
     return _record("list", summary)
 
 def get_law_details_for_gemini(doc_id: str, target: str = "law", query_filter: str = "") -> str:
@@ -1405,9 +1423,8 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
 ---
 
 ### 3. 관련법령
-- 근거 자료 및 검색 방법을 `[법령/기준명 - 대표 링크주소 - 상세 검색방법(조문 위치·검색 키워드)]` 형식으로 기재
-  * 국가법령정보센터(법령·판례·심판례·조례): https://www.law.go.kr
-  * 국세법령정보시스템: https://taxlaw.nts.go.kr
+- 이번 검토에서 실제 원문을 조회한 법령·조문·판례·예규만 나열하되, 하위 항목에「법령명」 제N조(조문제목) 또는 사건번호를 명확히 기재할 것
+  * 국가법령정보센터(법령·판례·심판례·조례·기본통칙): https://www.law.go.kr
   * 금융감독원 전자공시시스템(DART): https://dart.fss.or.kr
   * 국토교통부 실거래가 공개시스템 / 브이월드(공시가격): https://rt.molit.go.kr / https://www.vworld.kr
   * 한국은행 경제통계시스템(ECOS): https://ecos.bok.or.kr
@@ -1441,6 +1458,158 @@ def _is_valid_report_body(text: str) -> bool:
     if not text or len(text.strip()) < 250:
         return False
     return bool(re.search(r"###\s*1\.\s*결론|###\s*2\.\s*내용", text))
+
+# ---------------------------------------------------------
+# 🔗 검증 완료된 법령·판례·심판례·해석례·예규·기본통칙 100% 원클릭 직링크 자동 결합 엔진
+# ---------------------------------------------------------
+def _build_direct_law_url(kind: str, val: str, trace: dict, rev_id_map: dict, meta_map: dict) -> str:
+    """검증된 태그 종류와 값으로부터 국가법령정보센터 공식 원문 직링크 URL을 생성합니다."""
+    if kind == "조문":
+        refs = _find_article_refs(val, trace)
+        if refs:
+            law_name, jo, gaji = refs[0]
+            art_str = f"제{jo}조" + (f"의{gaji}" if gaji else "")
+            return f"https://www.law.go.kr/법령/{urllib.parse.quote(law_name)}/{urllib.parse.quote(art_str)}"
+    elif kind == "판례":
+        nos = _find_case_numbers(val)
+        if nos:
+            c_no = nos[0]
+            seq_id = meta_map.get(("prec", _norm(c_no))) or rev_id_map.get(_norm(c_no))
+            if seq_id:
+                return f"https://www.law.go.kr/LSW/precInfoP.do?precSeq={seq_id}"
+            return f"https://www.law.go.kr/판례/({urllib.parse.quote(c_no)})"
+    elif kind == "심판례":
+        nos = _find_case_numbers(val)
+        if nos:
+            c_no = nos[0]
+            seq_id = meta_map.get(("decc", _norm(c_no))) or rev_id_map.get(_norm(c_no))
+            if seq_id:
+                return f"https://www.law.go.kr/LSW/deccInfoP.do?deccSeq={seq_id}"
+            return f"https://www.law.go.kr/LSW/lsSc.do?query={urllib.parse.quote(c_no)}"
+    elif kind == "해석례":
+        clean_no = val.split()[0].strip()
+        seq_id = meta_map.get(("expc", _norm(clean_no))) or meta_map.get(("expc", _norm(val)))
+        if seq_id:
+            return f"https://www.law.go.kr/LSW/expcInfoP.do?expcSeq={seq_id}"
+        return f"https://www.law.go.kr/법령해석례/({urllib.parse.quote(clean_no)})"
+    elif kind == "예규":
+        clean_name = re.sub(r"\s+", "", val)
+        seq_id = meta_map.get(("admrul", _norm(val)))
+        if seq_id:
+            return f"https://www.law.go.kr/LSW/admRulInfoP.do?admRulSeq={seq_id}"
+        return f"https://www.law.go.kr/행정규칙/{urllib.parse.quote(clean_name)}"
+    return ""
+
+def _inject_direct_law_links(text: str, trace: dict = None) -> str:
+    """
+    1) 본문의 [조문:...], [판례:...], [심판례:...], [해석례:...], [예규:...] 태그에 100% 검증된 법제처 원문 직링크를 결합합니다.
+    2) '### 3. 관련법령' 섹션의 모든 하위 조문 줄(예: '◦ 「조세특례제한법」 제144조(세액공제액의 이월공제) 제1항·제2항') 및
+       기본통칙 줄을 클릭하면 즉시 해당 법제처 조문·기본통칙 원문 페이지로 이동하도록 글자 자체에 직링크를 걸어줍니다.
+    """
+    if not text:
+        return ""
+
+    rev_id_map = {}
+    meta_map = {}
+    if trace:
+        for doc_id, case_no in (trace.get("id_map") or {}).items():
+            rev_id_map[_norm(case_no)] = str(doc_id).strip()
+        meta_map = trace.get("meta_map") or {}
+
+    def _replace_tag_with_link(match: re.Match) -> str:
+        full_tag = match.group(0)
+        kind = match.group(1).strip()
+        val = match.group(2).strip()
+        url = _build_direct_law_url(kind, val, trace, rev_id_map, meta_map)
+        if url:
+            return f"[{full_tag}]({url})"
+        return full_tag
+
+    # 1단계: 본문 대괄호 출처 태그를 클릭 가능한 마크다운 링크로 변환
+    linked_text = re.sub(
+        r"(?<!\[)\[(판례|심판례|해석례|예규|조문)\s*:\s*([^\]]+)\](?!\()",
+        _replace_tag_with_link,
+        text
+    )
+
+    # 2단계: '### 3. 관련법령' 섹션의 각 조문·판례·기본통칙 줄 자체를 클릭 가능한 링크로 변환
+    lines = linked_text.split("\n")
+    in_refs = False
+    known_titles = _known_law_titles(trace)
+    base_tax_laws = sorted(_COMMON_LAWS, key=len, reverse=True)
+    out_lines = []
+
+    for line in lines:
+        s = line.strip()
+        if s.startswith("#"):
+            in_refs = ("관련법령" in s) or ("관련 법령" in s) or ("근거 자료" in s) or ("근거자료" in s)
+            out_lines.append(line)
+            continue
+
+        if in_refs and s:
+            # 이미 마크다운 링크 ](http 가 걸려 있는 줄이나 상위 사이트 도메인 안내 줄은 그대로 유지하되,
+            # 하위 조문/기본통칙/판례 항목 줄은 글자 전체를 클릭 가능한 직링크로 변환
+            m_bullet = re.match(r"^(\s*(?:[-*•◦‣]|\d+\.)\s+)(.+)$", line)
+            if m_bullet and "](" not in line and "http://" not in line and "https://" not in line:
+                prefix_bullet, item_body = m_bullet.group(1), m_bullet.group(2).strip()
+                direct_url = ""
+                compact_body = _norm(item_body)
+
+                # (A) '기본통칙'이 포함된 줄 -> 법제처 행정규칙 '{세법명}기본통칙' 원문 직링크
+                if "기본통칙" in compact_body:
+                    matched_base_law = ""
+                    for blaw in base_tax_laws:
+                        if blaw in compact_body:
+                            matched_base_law = blaw
+                            break
+                    if not matched_base_law:
+                        for alias, full in _LAW_ALIASES.items():
+                            if alias in compact_body:
+                                matched_base_law = full
+                                break
+                    if matched_base_law:
+                        rule_title = f"{matched_base_law}기본통칙"
+                        direct_url = f"https://www.law.go.kr/행정규칙/{urllib.parse.quote(rule_title)}"
+
+                # (B) 법령 + 조문번호가 있는 줄 (예: 「조세특례제한법」 제144조(세액공제액의 이월공제) 제1항·제2항)
+                if not direct_url:
+                    art_refs = _find_article_refs(item_body, trace)
+                    if art_refs:
+                        law_name, jo, gaji = art_refs[0]
+                        art_str = f"제{jo}조" + (f"의{gaji}" if gaji else "")
+                        direct_url = f"https://www.law.go.kr/법령/{urllib.parse.quote(law_name)}/{urllib.parse.quote(art_str)}"
+
+                # (C) 판례·심판례 사건번호가 있는 줄
+                if not direct_url:
+                    case_nos = _find_case_numbers(item_body)
+                    if case_nos:
+                        c_no = case_nos[0]
+                        if ("조심" in item_body) or ("국심" in item_body) or ("심판" in item_body):
+                            seq_id = meta_map.get(("decc", _norm(c_no))) or rev_id_map.get(_norm(c_no))
+                            if seq_id:
+                                direct_url = f"https://www.law.go.kr/LSW/deccInfoP.do?deccSeq={seq_id}"
+                            else:
+                                direct_url = f"https://www.law.go.kr/LSW/lsSc.do?query={urllib.parse.quote(c_no)}"
+                        else:
+                            seq_id = meta_map.get(("prec", _norm(c_no))) or rev_id_map.get(_norm(c_no))
+                            if seq_id:
+                                direct_url = f"https://www.law.go.kr/LSW/precInfoP.do?precSeq={seq_id}"
+                            else:
+                                direct_url = f"https://www.law.go.kr/판례/({urllib.parse.quote(c_no)})"
+
+                # (D) 조문번호 없이 정식 법령명만 단독 기재된 줄
+                if not direct_url:
+                    for t in known_titles:
+                        if t in compact_body:
+                            direct_url = f"https://www.law.go.kr/법령/{urllib.parse.quote(t)}"
+                            break
+
+                if direct_url:
+                    line = f"{prefix_bullet}[{item_body}]({direct_url})"
+
+        out_lines.append(line)
+
+    return "\n".join(out_lines)
 
 def _clean_latex_for_export(text: str) -> str:
     if not text:
@@ -1637,6 +1806,10 @@ def _execute_with_key_and_model(
                 except Exception as e:
                     print(f"[시스템]    ↳ 의미 검증 실패: {e}")
                     citation_note += "\n> 🧪 의미 검증을 수행하지 못했습니다(검증 모델 오류). 근거 표시 문장은 직접 확인하세요."
+
+        # 모든 검증 통과 후 본문 태그 및 '3. 관련법령'의 하위 조문·기본통칙 줄에 원클릭 직링크 결합
+        final_text = _inject_direct_law_links(final_text, trace)
+
     elif trace is not None:
         final_text = _strip_fake_cases_in_track2(final_text, trace)
 
