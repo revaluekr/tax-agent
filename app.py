@@ -52,13 +52,13 @@ import law_api
 from agent import run_agent
 
 # ---------------------------------------------------------
-# 💎 1) 가독성 최적 배율(14.2px) + 2) 좌측 사이드바 폰트·간격 확대 + 3) 1~10번 대화방 큼직한 좌측정렬 & 우측 LED CSS
+# 💎 1) 좌측 사이드바 현재 비율 완벽 유지(14.2px 기준) + 2) 우측 보고서 본문 폰트(15.5px)·줄간격(1.68) 가독성 확대 + 3) 옵션 C 제미나이 오로라 로딩 LED CSS
 # ---------------------------------------------------------
 st.markdown("""
 <style>
 @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
 
-/* 1. 한눈에 들어오면서도 글씨가 선명하게 잘 읽히는 표준 루트 폰트 크기(14.2px) */
+/* 1. 좌측 사이드바 비율을 지금처럼 완벽하게 유지하는 표준 루트 폰트 크기(14.2px) */
 html {
     font-size: 14.2px !important;
 }
@@ -73,7 +73,7 @@ div.block-container {
     max-width: 100% !important;
 }
 
-/* 🎨 좌측 사이드바 너비 확대 (298~310px) -> 'Pro 심층 모드 (3배 리미트 해제)'가 두 줄로 꺾이지 않고 한 줄에 표시됨 */
+/* 🎨 좌측 사이드바 너비 및 여백 (현재 크기 100% 그대로 유지) */
 section[data-testid="stSidebar"] {
     background-color: #f1f5f9 !important;
     border-right: 1px solid #cbd5e1 !important;
@@ -97,7 +97,7 @@ section[data-testid="stSidebar"] div[data-testid="stVerticalBlockBorderWrapper"]
     box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04) !important;
 }
 
-/* 사이드바 내부 위젯 수직 간격 및 입력창·토글 폰트 가독성 상향 */
+/* 사이드바 내부 위젯 수직 간격 및 입력창·토글 폰트 가독성 유지 */
 section[data-testid="stSidebar"] div[data-testid="stVerticalBlock"] {
     gap: 0.48rem !important;
 }
@@ -118,7 +118,7 @@ section[data-testid="stSidebar"] div[data-testid="stTextInput"] input {
     min-height: 2.15rem !important;
 }
 
-/* 사이드바 일반 버튼 기본 스타일 (결제 / API키 등 잘 읽히는 크기로 상향) */
+/* 사이드바 일반 버튼 기본 스타일 */
 section[data-testid="stSidebar"] button {
     min-height: 2.15rem !important;
     padding: 0.25rem 0.65rem !important;
@@ -205,7 +205,7 @@ div.stButton > button[data-testid="stBaseButton-primary"] p,
     color: #15803d !important;
 }
 
-/* 사이드바 카드 소제목(라벨) 스타일 — 가독성 좋은 0.92rem 크기로 확대 */
+/* 사이드바 카드 소제목(라벨) 스타일 */
 .sb-card-title {
     font-size: 0.92rem !important;
     font-weight: 800;
@@ -283,11 +283,23 @@ div.stButton > button[data-testid="stBaseButton-primary"] p,
     border-bottom-width: 1px !important;
 }
 
-/* 🚦 좌측 1~10번 대화방 세로 클릭 버튼 (여유 공간에 맞춰 높이와 폰트를 시원하게 키우고 왼쪽 정렬 + 우측 LED 고정) */
-@keyframes trafficPulse {
-    0%   { background-color: #ef4444; box-shadow: 0 0 6px #ef4444; }
-    50%  { background-color: #f97316; box-shadow: 0 0 7px #f97316; }
-    100% { background-color: #eab308; box-shadow: 0 0 6px #eab308; }
+/* 🟣 [옵션 C] 제미나이 오로라 블루 ➔ 인디고 ➔ 바이올렛 부드러운 펄스 애니메이션 (작성 중 LED 전용) */
+@keyframes geminiAuroraPulse {
+    0% {
+        background-color: #0ea5e9;
+        box-shadow: 0 0 8px rgba(14, 165, 233, 0.9), 0 0 3px #38bdf8;
+        transform: translateY(-50%) scale(1.0);
+    }
+    50% {
+        background-color: #6366f1;
+        box-shadow: 0 0 10px rgba(99, 102, 241, 0.95), 0 0 4px #818cf8;
+        transform: translateY(-50%) scale(1.16);
+    }
+    100% {
+        background-color: #a855f7;
+        box-shadow: 0 0 9px rgba(168, 85, 247, 0.95), 0 0 3px #c084fc;
+        transform: translateY(-50%) scale(1.04);
+    }
 }
 
 div[class*="st-key-room_btn_"] {
@@ -327,11 +339,11 @@ div[class*="st-key-room_btn_"] button p {
     text-align: left !important;
     letter-spacing: -0.2px !important;
 }
-/* 우측 끝 동그라미(LED) 공통 — 폰트 확대에 맞춰 9px로 선명하게 오른쪽 끝 고정 */
+/* 우측 끝 동그라미(LED) 공통 — 9.5px로 선명하게 오른쪽 끝 고정 */
 div[class*="st-key-room_btn_"] button::after {
     content: "" !important;
-    width: 9px !important;
-    height: 9px !important;
+    width: 9.5px !important;
+    height: 9.5px !important;
     border-radius: 50% !important;
     position: absolute !important;
     right: 10px !important;
@@ -353,7 +365,7 @@ div[class*="st-key-room_btn_"][class*="_empty"] button::after {
     background-color: transparent !important;
     border: 1.5px solid #cbd5e1 !important;
 }
-/* 상태 2: 작성된 글이 있을 때 (1건 이상, 비선택) -> 칸 화이트 + 우측 동그라미 초록불 점등 */
+/* 상태 2: 작성된 글이 있을 때 (1건 이상, 비선택, 비작성중) -> 칸 화이트 + 우측 동그라미 초록불 점등 */
 div[class*="st-key-room_btn_"][class*="_hasmsg"] button {
     background-color: #ffffff !important;
     border: 1px solid #cbd5e1 !important;
@@ -363,12 +375,12 @@ div[class*="st-key-room_btn_"][class*="_hasmsg"] button p {
     color: #0f172a !important;
     font-weight: 600 !important;
 }
-div[class*="st-key-room_btn_"][class*="_hasmsg"] button::after {
+div[class*="st-key-room_btn_"][class*="_hasmsg"]:not([class*="_running"]) button::after {
     background-color: #22c55e !important;
     border: 1px solid #16a34a !important;
     box-shadow: 0 0 4px rgba(34, 197, 94, 0.45) !important;
 }
-/* 상태 3: 현재 선택된 대화방 -> 지금처럼 칸 전체가 연녹색으로 불이 들어옴 + 우측 초록불 */
+/* 상태 3: 현재 선택된 대화방 -> 칸 전체가 연녹색으로 불이 들어옴 (단, 작성 중이 아닐 때만 초록 LED) */
 div[class*="st-key-room_btn_"][class*="_active"] button {
     background-color: #dcfce7 !important;
     border: 1.5px solid #22c55e !important;
@@ -378,15 +390,17 @@ div[class*="st-key-room_btn_"][class*="_active"] button p {
     color: #15803d !important;
     font-weight: 800 !important;
 }
-div[class*="st-key-room_btn_"][class*="_active"] button::after {
+div[class*="st-key-room_btn_"][class*="_active"]:not([class*="_running"]) button::after {
     background-color: #16a34a !important;
     border: 1px solid #15803d !important;
     box-shadow: 0 0 5px rgba(22, 163, 74, 0.65) !important;
 }
-/* 상태 4: 백그라운드 작성(분석) 중일 때 -> 우측 동그라미가 빨간색↔주황색↔노란색으로 실시간 변색! */
-div[class*="st-key-room_btn_"][class*="_running"] button::after {
-    border: none !important;
-    animation: trafficPulse 1.1s infinite alternate ease-in-out !important;
+/* 상태 4: 작성(분석) 중일 때 (_running) -> 선택된 방(_active)이든 다른 방이든 최우선으로 제미나이 오로라(블루↔인디고↔퍼플) 로딩 LED 작동! */
+div[class*="st-key-room_btn_"][class*="_running"] button::after,
+div[class*="st-key-room_btn_"][class*="_active"][class*="_running"] button::after,
+div[class*="st-key-room_btn_"][class*="_hasmsg"][class*="_running"] button::after {
+    border: 1px solid rgba(255, 255, 255, 0.7) !important;
+    animation: geminiAuroraPulse 1.35s infinite alternate ease-in-out !important;
 }
 
 div[class*="st-key-room_btn_"] button:hover {
@@ -394,7 +408,7 @@ div[class*="st-key-room_btn_"] button:hover {
     background-color: #f0fdf4 !important;
 }
 
-/* 우측 상단 미니 상태바 (큰 제목 h1 대체, 상단 잘림 완벽 해결) */
+/* 우측 상단 미니 상태바 */
 .top-mini-status-bar {
     display: flex;
     align-items: center;
@@ -403,15 +417,15 @@ div[class*="st-key-room_btn_"] button:hover {
     border: 1px solid #cbd5e1;
     border-left: 4px solid #16a34a;
     border-radius: 8px;
-    padding: 8px 15px;
+    padding: 9px 16px;
     margin-top: 2px;
-    margin-bottom: 12px;
-    font-size: 0.92rem;
+    margin-bottom: 14px;
+    font-size: 0.96rem;
     color: #1e293b;
     box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
 }
 
-/* 💬 하단 Gemini 스타일 통합 채팅 입력창 (드래그 앤 드롭 시 입력칸 자체가 넓어지며 파일 표시) */
+/* 💬 하단 Gemini 스타일 통합 채팅 입력창 */
 div[data-testid="stChatInput"] {
     border-radius: 16px !important;
 }
@@ -428,8 +442,8 @@ div[data-testid="stChatInput"] > div:focus-within {
     box-shadow: 0 4px 14px rgba(22, 163, 74, 0.15) !important;
 }
 div[data-testid="stChatInput"] textarea {
-    font-size: 0.94rem !important;
-    line-height: 1.45 !important;
+    font-size: 1.02rem !important;
+    line-height: 1.5 !important;
 }
 
 /* 🤖 기본 답변 로봇 아이콘 디자인 100% 유지 + 초록색 배경(#22c55e) & 흰색 아이콘(#ffffff) */
@@ -444,26 +458,46 @@ div[data-testid="stChatMessageAvatarAssistant"] svg {
     color: #ffffff !important;
 }
 
-/* 보고서 대제목 (### 1. 결론, ### 2. 내용, ### 3. 관련법령) */
+/* 📖 [핵심 개선] 우측 메인 화면 검토보고서 본문 폰트 크기(15.5px = 1.09rem) 및 줄간격(1.68) 확대 */
+div[data-testid="stChatMessageContent"],
+div[data-testid="stChatMessageContent"] p,
+div[data-testid="stChatMessageContent"] li {
+    font-size: 1.09rem !important;
+    line-height: 1.68 !important;
+    color: #0f172a !important;
+    letter-spacing: -0.15px !important;
+}
+div[data-testid="stChatMessageContent"] ul,
+div[data-testid="stChatMessageContent"] ol {
+    margin-top: 6px !important;
+    margin-bottom: 10px !important;
+}
+div[data-testid="stChatMessageContent"] li {
+    margin-bottom: 5px !important;
+}
+
+/* 보고서 대제목 (### 1. 결론, ### 2. 내용, ### 3. 관련법령) -> 18px(1.26rem)로 시각적 위계 강화 */
 div[data-testid="stChatMessageContent"] h3 {
     color: #1e3a8a !important;
     background: linear-gradient(90deg, #f1f5f9 0%, #ffffff 100%);
     border-left: 5px solid #1e3a8a;
-    padding: 8px 14px !important;
+    padding: 9px 15px !important;
     border-radius: 0 6px 6px 0;
-    margin-top: 20px !important;
-    margin-bottom: 10px !important;
-    font-size: 1.15rem !important;
-    font-weight: 700 !important;
+    margin-top: 22px !important;
+    margin-bottom: 12px !important;
+    font-size: 1.26rem !important;
+    font-weight: 800 !important;
+    line-height: 1.4 !important;
 }
 
-/* 보고서 소제목 (#### (1) 상세 법리 등) */
+/* 보고서 소제목 (#### (1) 상세 법리 등) -> 16.2px(1.14rem)로 확대 */
 div[data-testid="stChatMessageContent"] h4 {
     color: #1e40af !important;
-    margin-top: 14px !important;
-    margin-bottom: 6px !important;
-    font-size: 1.02rem !important;
+    margin-top: 16px !important;
+    margin-bottom: 8px !important;
+    font-size: 1.14rem !important;
     font-weight: 700 !important;
+    line-height: 1.45 !important;
 }
 
 /* 본문 근거 태그 및 3. 관련법령 조문 직링크 스타일 */
@@ -477,14 +511,15 @@ div[data-testid="stChatMessageContent"] a:hover {
     color: #15803d !important;
 }
 
-/* 마크다운 표(Table) 엔터프라이즈 네이비 스타일링 (본문 및 상단 신·구법 비교 배너 공통) */
+/* 마크다운 표(Table) 엔터프라이즈 네이비 스타일링 -> 14.5px(1.02rem)로 확대하여 숫자 가독성 향상 */
 div[data-testid="stChatMessageContent"] table,
 div[data-testid="stExpander"] table,
 .law-diff-banner-box table {
     width: 100%;
     border-collapse: collapse;
-    margin: 10px 0 14px 0;
-    font-size: 0.92rem;
+    margin: 12px 0 16px 0;
+    font-size: 1.02rem !important;
+    line-height: 1.55 !important;
     border-radius: 6px;
     overflow: hidden;
     box-shadow: 0 1px 3px rgba(0,0,0,0.05);
@@ -494,18 +529,20 @@ div[data-testid="stExpander"] th,
 .law-diff-banner-box th {
     background-color: #1e293b !important;
     color: #ffffff !important;
-    font-weight: 600 !important;
-    padding: 8px 11px !important;
+    font-weight: 700 !important;
+    padding: 9px 13px !important;
     border: 1px solid #334155 !important;
     text-align: left !important;
+    font-size: 1.02rem !important;
 }
 div[data-testid="stChatMessageContent"] td,
 div[data-testid="stExpander"] td,
 .law-diff-banner-box td {
-    padding: 8px 11px !important;
+    padding: 9px 13px !important;
     border: 1px solid #cbd5e1 !important;
     color: #1e293b;
     background-color: #ffffff;
+    font-size: 1.02rem !important;
 }
 div[data-testid="stChatMessageContent"] tr:nth-child(even) td,
 div[data-testid="stExpander"] tr:nth-child(even) td,
@@ -517,11 +554,15 @@ div[data-testid="stExpander"] tr:nth-child(even) td,
 div[data-testid="stChatMessageContent"] blockquote {
     background-color: #f8fafc;
     border-left: 4px solid #22c55e;
-    padding: 7px 12px;
+    padding: 8px 14px;
     border-radius: 6px;
     color: #334155;
-    font-size: 0.88rem;
-    margin-bottom: 10px;
+    font-size: 0.95rem !important;
+    margin-bottom: 12px;
+}
+div[data-testid="stChatMessageContent"] blockquote p {
+    font-size: 0.95rem !important;
+    line-height: 1.5 !important;
 }
 
 /* 본문 다운로드 버튼 디자인 */
@@ -760,7 +801,7 @@ def fetch_official_revision_reason_zero_token(law_id: str, law_name: str, mst_id
 
     return (
         f"ℹ️ 「{law_name}」의 해당 공포본 XML에 별도 제·개정이유 텍스트가 수록되어 있지 않습니다. "
-        "우측의 '⚡ 신·구법 비교' 배너 버튼을 누르시면 인용된 조문 기준 [조문명 / 구법내용 / 개정법내용 / 개정효과] 비교표를 즉시 확인하실 수 있습니다."
+        "우측의 '⚡ 신·구법 비교' 버튼을 누르시면 인용된 조문 기준 [조문명 / 구법내용 / 개정법내용 / 개정효과] 비교표를 즉시 확인하실 수 있습니다."
     )
 
 def load_room_law_ack() -> dict:
@@ -1766,7 +1807,7 @@ def _render_official_reason_viewer_body(
         )
 
     st.text_area(
-        "📜 법제처 공식 『제·개정이유 및 주요내용』 원문 (0토큰 무료 조회)",
+        "📜 법제처 공식 『제·개정이유 및 주요내용』 원문",
         value=official_reason_text,
         height=320
     )
@@ -1778,7 +1819,7 @@ def _render_official_reason_viewer_body(
             fetch_official_revision_reason_zero_token.clear()
             st.rerun()
     with c_v2:
-        if st.button(f"⚡ 상단 배너에 「{chosen_item['law_name']}」 신·구 비교표 열기", use_container_width=True):
+        if st.button(f"⚡ 상단 배너에 「{chosen_item['law_name']}」 신·구법 비교 열기", use_container_width=True):
             curr_msgs = st.session_state.chat_rooms.get(selected_room, [])
             diff_md = generate_banner_law_diff_table(
                 curr_msgs, [chosen_item], room_key=f"{effective_ws_id}::{selected_room}"
@@ -2104,7 +2145,7 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
                 st.rerun()
 
 if _dialog_decorator:
-    @_dialog_decorator("📜 법제처 공식 『제·개정이유 및 주요내용』 원문 뷰어 (0토큰)", width="large")
+    @_dialog_decorator("📜 법제처 공식 『제·개정이유 및 주요내용』 원문 뷰어", width="large")
     def open_official_reason_modal(
         law_prom_map: dict[str, dict],
         effective_ws_id: str,
@@ -2122,7 +2163,7 @@ if _dialog_decorator:
         _render_api_key_manager_body(expiry_all_status, law_prom_map)
 
 # ---------------------------------------------------------
-# 2. 왼쪽 사이드바 제어판 (폰트 가독성 확대 + 입체 비우기 버튼 + 1~10번 큼직한 좌측 정렬 리스트 & 우측 LED)
+# 2. 왼쪽 사이드바 제어판 (현재 크기·비율 유지 + 옵션 C 오로라 로딩 LED)
 # ---------------------------------------------------------
 task_mgr = get_background_task_manager()
 expiry_alerts, expiry_all_status = check_api_expiry_alerts()
@@ -2228,7 +2269,7 @@ with st.sidebar:
                 st.session_state.ws_widget_ver = ws_widget_ver + 1
                 st.rerun()
 
-    # 📦 [카드 3] 멀티 대화방 (입체 비우기 버튼 + 아래 간격 확보 + 1~10번 시원한 크기 & 좌측 정렬 + 우측 LED)
+    # 📦 [카드 3] 멀티 대화방 (입체 비우기 버튼 + 1~10번 좌측 정렬 리스트 + 옵션 C 제미나이 오로라 로딩 LED)
     with st.container(border=True):
         if "current_room" not in st.session_state or st.session_state.current_room not in ROOM_IDS:
             st.session_state.current_room = ROOM_IDS[0]
@@ -2297,7 +2338,7 @@ with st.sidebar:
             save_workspace_to_disk(effective_ws_id)
             st.rerun()
 
-        # 📋 [1번~10번 세로 1열 클릭 리스트 — 넓어진 사이드바에 맞춰 제목 최대 14자 표시 + 왼쪽 정렬 + 우측 끝 동그라미 LED]
+        # 📋 [1번~10번 세로 1열 클릭 리스트 — 왼쪽 정렬 + 우측 끝 동그라미 LED (작성 중일 때는 옵션 C 오로라 펄스 작동)]
         for idx_r, r_id in enumerate(ROOM_IDS, start=1):
             r_title = (st.session_state.room_titles.get(r_id, "빈 대화방") or "빈 대화방").strip()
             short_title = r_title[:14] + ("…" if len(r_title) > 14 else "")
@@ -2333,7 +2374,7 @@ with st.sidebar:
                     st.session_state.show_inline_api_manager = not st.session_state.get("show_inline_api_manager", False)
 
 # ---------------------------------------------------------
-# 3. 메인 화면 상단 (상단 잘림 없는 슬림 상태바 + 본문과 분리된 접이식 신·구 비교표 배너)
+# 3. 메인 화면 상단 (슬림 상태바 + 문구가 깔끔해진 법령 개정 배너 버튼: '📜 개정이유서' / '⚡ 신·구법 비교')
 # ---------------------------------------------------------
 current_messages = st.session_state.chat_rooms[selected_room]
 current_room_title = st.session_state.room_titles[selected_room]
@@ -2360,7 +2401,7 @@ if st.session_state.app_top_mode == "CREDIT_CALC":
     )
     st.stop()
 
-# 상단 미니 상태바 (여백 3.2rem 확보로 잘림 현상 완벽 해결)
+# 상단 미니 상태바
 q_count_now = (len(current_messages) + 1) // 2
 mode_badge_html = (
     "🧠 <b>Pro 심층 모드 (3배 리미트 개방 ON)</b>"
@@ -2387,7 +2428,7 @@ if expiry_alerts:
         with c_al2:
             st.link_button("🔗 연장·재발급", alert_item["url"], use_container_width=True)
 
-# 🔄 2) [개정세법 안내 배너 + 본문 대화와 무관하게 배너로 열었다 닫았다 하는 신·구법 비교표]
+# 🔄 2) [개정세법 안내 배너 — 버튼 문구 깔끔하게 정리: '📜 개정이유서' / '⚡ 신·구법 비교']
 current_room_rev_alerts, is_post_revision = get_room_revision_alerts(
     effective_ws_id, selected_room, current_messages, law_prom_map
 )
@@ -2410,20 +2451,20 @@ if current_room_rev_alerts:
                 f"📜 **[최근 공포·시행예정 법령 인용 안내]** 이 방에서 인용된 **{rev_names_str}**의 공식 입법이유서 및 신·구 비교표를 바로 열람할 수 있습니다."
             )
     with c_rv2:
-        if st.button("📜 개정이유서(0원)", key=f"rsn_{selected_room}", use_container_width=True):
+        if st.button("📜 개정이유서", key=f"rsn_{selected_room}", use_container_width=True):
             if _dialog_decorator:
                 open_official_reason_modal(law_prom_map, effective_ws_id, selected_room, pro_toggle_on, False, first_clean)
             else:
                 st.session_state.show_inline_reason_viewer = not st.session_state.get("show_inline_reason_viewer", False)
                 st.rerun()
     with c_rv3:
-        diff_btn_lbl = "🔼 신·구법 비교 닫기" if (saved_diff_md and is_diff_open) else "⚡ 신·구법 비교 (배너)"
+        diff_btn_lbl = "🔼 신·구법 비교 닫기" if (saved_diff_md and is_diff_open) else "⚡ 신·구법 비교"
         if st.button(diff_btn_lbl, key=f"rerev_{selected_room}", use_container_width=True):
             if saved_diff_md:
                 st.session_state[f"diff_banner_open_{selected_room}"] = not is_diff_open
                 st.rerun()
             else:
-                with st.spinner("⚡ 본문 대화와 분리된 상단 [조문명 / 구법내용 / 개정법내용 / 개정효과] 비교표 배너를 생성 중입니다..."):
+                with st.spinner("⚡ 본문 대화와 분리된 상단 [조문명 / 구법내용 / 개정법내용 / 개정효과] 비교표를 생성 중입니다..."):
                     diff_md = generate_banner_law_diff_table(
                         current_messages, current_room_rev_alerts, room_key=current_task_key
                     )
@@ -2438,7 +2479,7 @@ if current_room_rev_alerts:
 
 # 📊 본문 대화와 무관하게 언제든 열었다 닫았다 할 수 있는 상단 [조문명/구법내용/개정법내용/개정효과] 배너
 if saved_diff_md:
-    with st.expander("📊 [신·구법 비교 배너] 조문명 / 구법내용 / 개정법내용 / 개정효과 (클릭하여 열기·닫기)", expanded=is_diff_open):
+    with st.expander("📊 [신·구법 비교] 조문명 / 구법내용 / 개정법내용 / 개정효과 (클릭하여 열기·닫기)", expanded=is_diff_open):
         st.markdown(f"<div class='law-diff-banner-box'>\n\n{saved_diff_md}\n\n</div>", unsafe_allow_html=True)
         b_col1, b_col2 = st.columns([1, 5])
         with b_col1:
@@ -2456,7 +2497,7 @@ if saved_diff_md:
 # 구버전 Streamlit 폴백용 인라인 뷰어들
 if st.session_state.get("show_inline_reason_viewer"):
     with st.container(border=True):
-        st.subheader("📜 법제처 공식 『제·개정이유 및 주요내용』 원문 뷰어 (0토큰)")
+        st.subheader("📜 법제처 공식 『제·개정이유 및 주요내용』 원문 뷰어")
         _render_official_reason_viewer_body(law_prom_map, effective_ws_id, selected_room, pro_toggle_on, False)
         if st.button("✖️ 뷰어 닫기"):
             st.session_state.show_inline_reason_viewer = False
@@ -2471,7 +2512,7 @@ if st.session_state.get("show_inline_api_manager"):
             st.rerun()
 
 # ---------------------------------------------------------
-# 4. 대화방 메시지 목록 렌더링
+# 4. 대화방 메시지 목록 렌더링 (본문 폰트 15.5px 및 표 14.5px 확대 적용)
 # ---------------------------------------------------------
 for idx, message in enumerate(current_messages):
     with st.chat_message(message["role"]):
@@ -2605,7 +2646,7 @@ if saved_items:
                 f"📄 **{it['name']}** *({len(it['text']):,}자)*" for it in saved_items
             )
             st.markdown(
-                f"<div style='font-size:0.84rem; color:#15803d;'>📎 <b>현재 [{selected_room}] 첨부 유지 중 ({len(saved_items)}건):</b> {chips_str}</div>",
+                f"<div style='font-size:0.88rem; color:#15803d;'>📎 <b>현재 [{selected_room}] 첨부 유지 중 ({len(saved_items)}건):</b> {chips_str}</div>",
                 unsafe_allow_html=True
             )
         with c_head2:
