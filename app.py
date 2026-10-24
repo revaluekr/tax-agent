@@ -266,6 +266,20 @@ div.stDownloadButton > button:hover {
     background-color: #f0fdf4 !important;
 }
 
+/* 📌 스크롤을 얼마나 내리든 항상 우측 상단에 고정되는 모드 전환 바 (Sticky + Fixed 이중 안전장치) */
+div[data-testid="stVerticalBlock"] > div:has(.st-key-btn_top_mode_agent),
+div[data-testid="stHorizontalBlock"]:has(.st-key-btn_top_mode_agent) {
+    position: sticky !important;
+    top: 2.85rem !important;
+    z-index: 999990 !important;
+    background: rgba(255, 255, 255, 0.92) !important;
+    backdrop-filter: blur(8px) !important;
+    -webkit-backdrop-filter: blur(8px) !important;
+    padding-top: 6px !important;
+    padding-bottom: 8px !important;
+    border-bottom: 1px solid rgba(226, 232, 240, 0.7) !important;
+}
+
 /* 🟢 우측 상단 1/3 모드 전환 버튼 (모서리 둥근 사각형 박스 + 활성화 시 녹색) */
 .st-key-btn_top_mode_agent button,
 .st-key-btn_top_mode_credit button {
