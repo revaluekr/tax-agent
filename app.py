@@ -7,6 +7,7 @@ import hashlib
 import inspect
 import threading
 import urllib.request
+import urllib.parse
 import xml.etree.ElementTree as ET
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
@@ -51,67 +52,77 @@ import law_api
 from agent import run_agent
 
 # ---------------------------------------------------------
-# 💎 프리미엄 화이트 카드 사이드바(글자 잘림 방지 + 원스크린 배치) CSS
+# 💎 1) 기본 화면 배율 고정(14px 컴팩트) + 2) 1~10번 세로 대화방 우측 신호등 LED + 3) Gemini형 하단 통합 채팅창 CSS
 # ---------------------------------------------------------
 st.markdown("""
 <style>
 @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
 
+/* 1. 브라우저 배율을 줄이지 않아도 캡처 화면처럼 아담하고 한눈에 들어오도록 루트 폰트 크기 고정 */
+html {
+    font-size: 13.8px !important;
+}
 html, body, [class*="css"] {
     font-family: 'Pretendard', 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif;
 }
 
-/* 📐 우측 본문 상단 여백 축소 -> 대제목 제거 후 상단부터 시원하게 시작 */
+/* 📐 상단 상태바가 Streamlit 헤더(Share 바)에 절대 가려지지 않도록 상단 안전 여백(3.2rem) 확보 */
 div.block-container {
-    padding-top: 1.3rem !important;
-    padding-bottom: 2.0rem !important;
+    padding-top: 3.2rem !important;
+    padding-bottom: 2.5rem !important;
+    max-width: 100% !important;
 }
 
-/* 🎨 사이드바 전체 배경 및 상하 여백 */
+/* 🎨 좌측 사이드바 너비 및 컴팩트 여백 고정 */
 section[data-testid="stSidebar"] {
     background-color: #f1f5f9 !important;
     border-right: 1px solid #cbd5e1 !important;
+    min-width: 270px !important;
+    max-width: 285px !important;
 }
 section[data-testid="stSidebar"] div[data-testid="stSidebarUserContent"] {
-    padding-top: 0.85rem !important;
-    padding-bottom: 0.7rem !important;
+    padding-top: 0.65rem !important;
+    padding-bottom: 0.5rem !important;
+    padding-left: 0.75rem !important;
+    padding-right: 0.75rem !important;
 }
 
-/* 📦 사이드바 내부 화이트 카드 패딩 및 간격 */
+/* 📦 사이드바 내부 화이트 카드 패딩 및 간격 컴팩트화 */
 section[data-testid="stSidebar"] div[data-testid="stVerticalBlockBorderWrapper"] {
     background-color: #ffffff !important;
     border: 1px solid #e2e8f0 !important;
     border-radius: 10px !important;
-    padding: 9px 11px !important;
-    margin-bottom: 6px !important;
-    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.03) !important;
+    padding: 7px 10px !important;
+    margin-bottom: 4px !important;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03) !important;
 }
 
 /* 사이드바 내부 위젯 간격 */
 section[data-testid="stSidebar"] div[data-testid="stVerticalBlock"] {
-    gap: 0.48rem !important;
+    gap: 0.32rem !important;
 }
 section[data-testid="stSidebar"] div[data-testid="stMarkdownContainer"] {
     overflow: visible !important;
 }
-section[data-testid="stSidebar"] div[data-testid="stTextInput"],
-section[data-testid="stSidebar"] div[data-testid="stSelectbox"],
-section[data-testid="stSidebar"] div[data-testid="stFileUploader"] {
-    margin-top: 2px !important;
+section[data-testid="stSidebar"] div[data-testid="stTextInput"] input {
+    padding-top: 0.28rem !important;
+    padding-bottom: 0.28rem !important;
+    font-size: 0.82rem !important;
+    min-height: 1.9rem !important;
 }
 
 /* 사이드바 일반 버튼 높이 컴팩트화 */
 section[data-testid="stSidebar"] button {
-    min-height: 2.05rem !important;
-    padding: 0.2rem 0.55rem !important;
-    font-size: 0.81rem !important;
+    min-height: 1.85rem !important;
+    padding: 0.15rem 0.5rem !important;
+    font-size: 0.8rem !important;
     border-radius: 7px !important;
     font-weight: 600 !important;
 }
 section[data-testid="stSidebar"] a[data-testid="stBaseLinkButton-secondary"] {
-    min-height: 2.05rem !important;
-    padding: 0.2rem 0.5rem !important;
-    font-size: 0.81rem !important;
+    min-height: 1.85rem !important;
+    padding: 0.15rem 0.5rem !important;
+    font-size: 0.8rem !important;
     border-radius: 7px !important;
     font-weight: 600 !important;
 }
@@ -119,14 +130,14 @@ section[data-testid="stSidebar"] a[data-testid="stBaseLinkButton-secondary"] {
 /* 🟢 좌측 사이드바 최상단 모드 전환 2버튼 (모서리 둥근 사각형 박스 + 활성화 시 선명한 녹색) */
 .st-key-btn_top_mode_agent button,
 .st-key-btn_top_mode_credit button {
-    border-radius: 10px !important;
-    min-height: 40px !important;
-    height: 40px !important;
-    padding: 6px 8px !important;
+    border-radius: 9px !important;
+    min-height: 36px !important;
+    height: 36px !important;
+    padding: 4px 6px !important;
     font-size: 0.82rem !important;
     font-weight: 800 !important;
     letter-spacing: -0.4px !important;
-    box-shadow: 0 2px 5px rgba(15, 23, 42, 0.06) !important;
+    box-shadow: 0 2px 4px rgba(15, 23, 42, 0.06) !important;
     transition: all 0.15s ease-in-out !important;
 }
 
@@ -137,9 +148,9 @@ div.stButton > button[data-testid="baseButton-primary"],
 .st-key-btn_top_mode_agent button[kind="primary"],
 .st-key-btn_top_mode_credit button[kind="primary"] {
     background-color: #16a34a !important;
-    border: 2px solid #15803d !important;
+    border: 1.5px solid #15803d !important;
     color: #ffffff !important;
-    border-radius: 10px !important;
+    border-radius: 9px !important;
     font-weight: 800 !important;
 }
 div.stButton > button[kind="primary"]:hover,
@@ -152,7 +163,7 @@ div.stButton > button[kind="primary"]:focus:not(:active) {
     background-color: #15803d !important;
     border-color: #166534 !important;
     color: #ffffff !important;
-    box-shadow: 0 3px 8px rgba(22, 163, 74, 0.28) !important;
+    box-shadow: 0 2px 6px rgba(22, 163, 74, 0.25) !important;
 }
 div.stButton > button[kind="primary"] p,
 div.stButton > button[data-testid="stBaseButton-primary"] p,
@@ -170,7 +181,7 @@ div.stButton > button[data-testid="stBaseButton-primary"] p,
     background-color: #ffffff !important;
     border: 1.5px solid #cbd5e1 !important;
     color: #334155 !important;
-    border-radius: 10px !important;
+    border-radius: 9px !important;
 }
 .st-key-btn_top_mode_agent button[kind="secondary"]:hover,
 .st-key-btn_top_mode_credit button[kind="secondary"]:hover,
@@ -183,13 +194,13 @@ div.stButton > button[data-testid="stBaseButton-primary"] p,
 
 /* 사이드바 카드 소제목(라벨) 스타일 */
 .sb-card-title {
-    font-size: 0.84rem;
+    font-size: 0.82rem;
     font-weight: 800;
     color: #0f172a;
-    line-height: 1.4 !important;
-    padding-top: 1px !important;
-    padding-bottom: 3px !important;
-    margin-bottom: 3px !important;
+    line-height: 1.3 !important;
+    padding-top: 0px !important;
+    padding-bottom: 2px !important;
+    margin-bottom: 2px !important;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -198,72 +209,162 @@ div.stButton > button[data-testid="stBaseButton-primary"] p,
 .sb-badge-green {
     background-color: #dcfce7;
     color: #15803d;
-    font-size: 0.69rem;
+    font-size: 0.68rem;
     font-weight: 700;
-    padding: 2px 7px;
+    padding: 1px 6px;
     border-radius: 999px;
     line-height: 1.2 !important;
 }
 .sb-badge-amber {
     background-color: #fef3c7;
     color: #b45309;
-    font-size: 0.69rem;
+    font-size: 0.68rem;
     font-weight: 700;
-    padding: 2px 7px;
+    padding: 1px 6px;
     border-radius: 999px;
     line-height: 1.2 !important;
 }
 .sb-badge-pro {
     background-color: #dbeafe;
     color: #1d4ed8;
-    font-size: 0.69rem;
+    font-size: 0.68rem;
     font-weight: 700;
-    padding: 2px 7px;
+    padding: 1px 6px;
     border-radius: 999px;
     line-height: 1.2 !important;
 }
 
-/* 🗂️ 좌측 사이드바 1~10번 대화방 2열 미니 현황판 스타일 */
-.sb-room-board {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 3px 6px;
-    margin-top: 4px;
-    padding-top: 6px;
-    border-top: 1px dashed #e2e8f0;
-}
-.sb-room-chip {
-    font-size: 0.72rem;
-    line-height: 1.35;
-    padding: 2px 5px;
-    border-radius: 5px;
-    color: #475569;
-    background-color: #f8fafc;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    letter-spacing: -0.3px;
-}
-.sb-room-chip.active {
-    background-color: #dcfce7;
-    color: #15803d;
-    font-weight: 800;
-    border: 1px solid #86efac;
+/* 🚦 좌측 1~10번 대화방 세로 클릭 버튼 + 우측 동그라미 신호등 LED 스타일 */
+@keyframes trafficPulse {
+    0%   { background-color: #ef4444; box-shadow: 0 0 6px #ef4444; }
+    50%  { background-color: #f97316; box-shadow: 0 0 7px #f97316; }
+    100% { background-color: #eab308; box-shadow: 0 0 6px #eab308; }
 }
 
-/* 우측 상단 미니 상태바 (큰 제목 h1 대체) */
+div[class*="st-key-room_btn_"] button {
+    position: relative !important;
+    min-height: 1.62rem !important;
+    height: 1.62rem !important;
+    padding: 0.1rem 1.6rem 0.1rem 0.5rem !important;
+    display: flex !important;
+    justify-content: flex-start !important;
+    align-items: center !important;
+    border-radius: 6px !important;
+    margin-bottom: 0px !important;
+    transition: all 0.12s ease !important;
+    box-shadow: none !important;
+}
+div[class*="st-key-room_btn_"] button p {
+    font-size: 0.74rem !important;
+    margin: 0 !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    text-align: left !important;
+    letter-spacing: -0.3px !important;
+}
+/* 우측 끝 동그라미(LED) 공통 */
+div[class*="st-key-room_btn_"] button::after {
+    content: "" !important;
+    width: 8px !important;
+    height: 8px !important;
+    border-radius: 50% !important;
+    position: absolute !important;
+    right: 8px !important;
+    top: 50% !important;
+    transform: translateY(-50%) !important;
+}
+/* 상태 1: 작성된 글이 없을 때 (0건, 비선택) -> 칸 기본 배경 + 우측 동그라미 불 꺼짐 */
+div[class*="st-key-room_btn_"][class*="_empty"] button {
+    background-color: #f8fafc !important;
+    border: 1px solid #e2e8f0 !important;
+    color: #64748b !important;
+}
+div[class*="st-key-room_btn_"][class*="_empty"] button p {
+    color: #64748b !important;
+    font-weight: 500 !important;
+}
+div[class*="st-key-room_btn_"][class*="_empty"] button::after {
+    background-color: transparent !important;
+    border: 1.5px solid #cbd5e1 !important;
+}
+/* 상태 2: 작성된 글이 있을 때 (1건 이상, 비선택) -> 칸 화이트 + 우측 동그라미 초록불 점등 */
+div[class*="st-key-room_btn_"][class*="_hasmsg"] button {
+    background-color: #ffffff !important;
+    border: 1px solid #cbd5e1 !important;
+    color: #1e293b !important;
+}
+div[class*="st-key-room_btn_"][class*="_hasmsg"] button p {
+    color: #1e293b !important;
+    font-weight: 600 !important;
+}
+div[class*="st-key-room_btn_"][class*="_hasmsg"] button::after {
+    background-color: #22c55e !important;
+    border: 1px solid #16a34a !important;
+    box-shadow: 0 0 4px rgba(34, 197, 94, 0.45) !important;
+}
+/* 상태 3: 현재 선택된 대화방 -> 지금처럼 칸 전체가 연녹색으로 불이 들어옴 + 우측 초록불 */
+div[class*="st-key-room_btn_"][class*="_active"] button {
+    background-color: #dcfce7 !important;
+    border: 1.5px solid #22c55e !important;
+    color: #15803d !important;
+}
+div[class*="st-key-room_btn_"][class*="_active"] button p {
+    color: #15803d !important;
+    font-weight: 800 !important;
+}
+div[class*="st-key-room_btn_"][class*="_active"] button::after {
+    background-color: #16a34a !important;
+    border: 1px solid #15803d !important;
+    box-shadow: 0 0 5px rgba(22, 163, 74, 0.65) !important;
+}
+/* 상태 4: 백그라운드 작성(분석) 중일 때 -> 우측 동그라미가 빨간색↔주황색↔노란색으로 실시간 변색! */
+div[class*="st-key-room_btn_"][class*="_running"] button::after {
+    border: none !important;
+    animation: trafficPulse 1.1s infinite alternate ease-in-out !important;
+}
+
+div[class*="st-key-room_btn_"] button:hover {
+    border-color: #16a34a !important;
+    background-color: #f0fdf4 !important;
+}
+
+/* 우측 상단 미니 상태바 (큰 제목 h1 대체, 상단 잘림 완벽 해결) */
 .top-mini-status-bar {
     display: flex;
     align-items: center;
     justify-content: space-between;
     background-color: #f8fafc;
-    border: 1px solid #e2e8f0;
+    border: 1px solid #cbd5e1;
     border-left: 4px solid #16a34a;
     border-radius: 8px;
-    padding: 6px 14px;
+    padding: 7px 14px;
+    margin-top: 2px;
     margin-bottom: 12px;
-    font-size: 0.86rem;
-    color: #334155;
+    font-size: 0.88rem;
+    color: #1e293b;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+}
+
+/* 💬 하단 Gemini 스타일 통합 채팅 입력창 (드래그 앤 드롭 시 입력칸 자체가 넓어지며 파일 표시) */
+div[data-testid="stChatInput"] {
+    border-radius: 16px !important;
+}
+div[data-testid="stChatInput"] > div {
+    border-radius: 16px !important;
+    border: 1.5px solid #cbd5e1 !important;
+    background-color: #ffffff !important;
+    box-shadow: 0 4px 12px rgba(15, 23, 42, 0.06) !important;
+    padding: 4px 8px !important;
+    transition: all 0.15s ease-in-out !important;
+}
+div[data-testid="stChatInput"] > div:focus-within {
+    border-color: #16a34a !important;
+    box-shadow: 0 4px 14px rgba(22, 163, 74, 0.15) !important;
+}
+div[data-testid="stChatInput"] textarea {
+    font-size: 0.92rem !important;
+    line-height: 1.45 !important;
 }
 
 /* 🤖 기본 답변 로봇 아이콘 디자인 100% 유지 + 초록색 배경(#22c55e) & 흰색 아이콘(#ffffff) */
@@ -285,18 +386,18 @@ div[data-testid="stChatMessageContent"] h3 {
     border-left: 5px solid #1e3a8a;
     padding: 8px 14px !important;
     border-radius: 0 6px 6px 0;
-    margin-top: 22px !important;
-    margin-bottom: 12px !important;
-    font-size: 1.2rem !important;
+    margin-top: 20px !important;
+    margin-bottom: 10px !important;
+    font-size: 1.15rem !important;
     font-weight: 700 !important;
 }
 
 /* 보고서 소제목 (#### (1) 상세 법리 등) */
 div[data-testid="stChatMessageContent"] h4 {
     color: #1e40af !important;
-    margin-top: 16px !important;
-    margin-bottom: 8px !important;
-    font-size: 1.05rem !important;
+    margin-top: 14px !important;
+    margin-bottom: 6px !important;
+    font-size: 1.02rem !important;
     font-weight: 700 !important;
 }
 
@@ -311,31 +412,39 @@ div[data-testid="stChatMessageContent"] a:hover {
     color: #15803d !important;
 }
 
-/* 마크다운 표(Table) 엔터프라이즈 네이비 스타일링 */
-div[data-testid="stChatMessageContent"] table {
+/* 마크다운 표(Table) 엔터프라이즈 네이비 스타일링 (본문 및 상단 신·구법 비교 배너 공통) */
+div[data-testid="stChatMessageContent"] table,
+div[data-testid="stExpander"] table,
+.law-diff-banner-box table {
     width: 100%;
     border-collapse: collapse;
-    margin: 14px 0 18px 0;
-    font-size: 0.94rem;
+    margin: 10px 0 14px 0;
+    font-size: 0.9rem;
     border-radius: 6px;
     overflow: hidden;
     box-shadow: 0 1px 3px rgba(0,0,0,0.05);
 }
-div[data-testid="stChatMessageContent"] th {
+div[data-testid="stChatMessageContent"] th,
+div[data-testid="stExpander"] th,
+.law-diff-banner-box th {
     background-color: #1e293b !important;
     color: #ffffff !important;
     font-weight: 600 !important;
-    padding: 10px 12px !important;
+    padding: 8px 11px !important;
     border: 1px solid #334155 !important;
     text-align: left !important;
 }
-div[data-testid="stChatMessageContent"] td {
-    padding: 9px 12px !important;
+div[data-testid="stChatMessageContent"] td,
+div[data-testid="stExpander"] td,
+.law-diff-banner-box td {
+    padding: 8px 11px !important;
     border: 1px solid #cbd5e1 !important;
     color: #1e293b;
     background-color: #ffffff;
 }
-div[data-testid="stChatMessageContent"] tr:nth-child(even) td {
+div[data-testid="stChatMessageContent"] tr:nth-child(even) td,
+div[data-testid="stExpander"] tr:nth-child(even) td,
+.law-diff-banner-box tr:nth-child(even) td {
     background-color: #f8fafc;
 }
 
@@ -343,11 +452,11 @@ div[data-testid="stChatMessageContent"] tr:nth-child(even) td {
 div[data-testid="stChatMessageContent"] blockquote {
     background-color: #f8fafc;
     border-left: 4px solid #22c55e;
-    padding: 8px 14px;
+    padding: 7px 12px;
     border-radius: 6px;
     color: #334155;
-    font-size: 0.9rem;
-    margin-bottom: 12px;
+    font-size: 0.88rem;
+    margin-bottom: 10px;
 }
 
 /* 본문 다운로드 버튼 디자인 */
@@ -368,7 +477,7 @@ footer {visibility: hidden;}
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# 0. 작업공간 · API 만료일 · 🎯 맥락 연동형 법령 레이더
+# 0. 작업공간 · API 만료일 · 🎯 맥락 연동형 법령 레이더 (개정이유서 심층 추출 및 접이식 신·구 비교표 배너 포함)
 # ---------------------------------------------------------
 ROOM_IDS = [f"대화방 {i}" for i in range(1, 11)]
 STORAGE_DIR = ".workspace_storage"
@@ -446,8 +555,8 @@ def fetch_latest_tax_law_promulgations() -> dict[str, dict]:
                 enf_raw = str(top.get("시행일자", "")).strip()
                 prom_no = str(top.get("공포번호", "")).strip()
                 rev_type = str(top.get("제개정구분명", "개정")).strip()
-                law_id = str(top.get("법령일련번호", "")).strip()
-                mst_id = str(top.get("법령일련번호") or top.get("MST") or "").strip()
+                law_id = str(top.get("법령일련번호") or top.get("ID") or "").strip()
+                mst_id = str(top.get("법령일련번호") or top.get("MST") or law_id).strip()
 
                 days_since_prom = 9999
                 if len(prom_raw) == 8 and prom_raw.isdigit():
@@ -481,47 +590,115 @@ def fetch_latest_tax_law_promulgations() -> dict[str, dict]:
     return results_map
 
 @st.cache_data(ttl=43200, show_spinner=False)
-def fetch_official_revision_reason_zero_token(law_id: str, law_name: str) -> str:
+def fetch_official_revision_reason_zero_token(law_id: str, law_name: str, mst_id: str = "", enf_raw: str = "") -> str:
+    """
+    [해결 완료] 법제처 XML에서 제·개정이유서(입법이유)가 비어 나오던 문제를 해결하기 위해:
+    1) MST / ID 기반 lsRsn, eflaw, law 타겟 다중 조회
+    2) 최신 공포본이 단순 '타법개정'이어서 개정이유서가 비어 있는 경우, 연혁 검색(eflaw)을 통해
+       가장 최근 '일부개정' 공포본의 입법이유서 및 부칙까지 자동으로 추적하여 추출합니다.
+    """
     oc = _get_law_oc()
     if not oc:
         return "❌ 법제처 API 인증키(OC)를 확인할 수 없습니다."
-    if not law_id:
-        return "❌ 법령 일련번호(ID)를 확인할 수 없습니다."
 
-    urls_to_try = [
-        f"http://www.law.go.kr/DRF/lawService.do?OC={oc}&target=law&ID={law_id}&type=XML",
-        f"http://www.law.go.kr/DRF/lawService.do?OC={oc}&target=lsRsn&ID={law_id}&type=XML",
-    ]
-    reason_texts = []
-    amend_texts = []
+    def _extract_from_xml_urls(url_list: list[str]) -> tuple[list[str], list[str], list[str]]:
+        r_list, a_list, s_list = [], [], []
+        for u in url_list:
+            try:
+                req = urllib.request.Request(u, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=12) as resp:
+                    xml_bytes = resp.read()
+                root = ET.fromstring(xml_bytes)
+                for elem in root.iter():
+                    t_name = elem.tag.strip()
+                    txt = (elem.text or "").strip()
+                    if not txt:
+                        continue
+                    if t_name in ("제개정이유내용", "제개정이유", "개정이유", "주요내용"):
+                        if txt not in r_list:
+                            r_list.append(txt)
+                    elif t_name in ("개정문내용", "개정문"):
+                        if txt not in a_list:
+                            a_list.append(txt)
+                    elif t_name in ("부칙내용",) and len(s_list) < 3:
+                        if txt not in s_list:
+                            s_list.append(txt)
+                if r_list:
+                    break
+            except Exception:
+                continue
+        return r_list, a_list, s_list
 
-    for url in urls_to_try:
+    use_mst = mst_id or law_id
+    primary_urls = []
+    if use_mst:
+        primary_urls.extend([
+            f"http://www.law.go.kr/DRF/lawService.do?OC={oc}&target=law&MST={use_mst}&type=XML",
+            f"http://www.law.go.kr/DRF/lawService.do?OC={oc}&target=lsRsn&MST={use_mst}&type=XML",
+            f"http://www.law.go.kr/DRF/lawService.do?OC={oc}&target=law&ID={use_mst}&type=XML",
+            f"http://www.law.go.kr/DRF/lawService.do?OC={oc}&target=lsRsn&ID={use_mst}&type=XML",
+        ])
+        if enf_raw and len(str(enf_raw)) == 8:
+            primary_urls.insert(1, f"http://www.law.go.kr/DRF/lawService.do?OC={oc}&target=eflaw&MST={use_mst}&efYd={enf_raw}&type=XML")
+
+    reason_texts, amend_texts, supp_texts = _extract_from_xml_urls(primary_urls)
+
+    # 만약 최신 공포본이 '타법개정' 등이라 개정이유서가 비어 있다면, 연혁 검색에서 가장 최근 '일부개정' MST를 찾아 입법이유서를 가져옴
+    fallback_rev_note = ""
+    if not reason_texts and law_name:
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                xml_bytes = resp.read()
-            root = ET.fromstring(xml_bytes)
-            for elem in root.iter():
-                tag_name = elem.tag.strip()
-                if tag_name in ("제개정이유내용", "제개정이유") and elem.text and elem.text.strip():
-                    reason_texts.append(elem.text.strip())
-                elif tag_name in ("개정문내용", "개정문") and elem.text and elem.text.strip():
-                    amend_texts.append(elem.text.strip())
-            if reason_texts:
-                break
+            enc_q = urllib.parse.quote(law_name.strip())
+            target_clean = law_name.replace(" ", "").strip()
+            search_u = f"http://www.law.go.kr/DRF/lawSearch.do?OC={oc}&target=eflaw&type=XML&query={enc_q}&display=20"
+            req_s = urllib.request.Request(search_u, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req_s, timeout=10) as resp_s:
+                s_root = ET.fromstring(resp_s.read())
+            hist_cands = []
+            for l_node in s_root.findall(".//law"):
+                lname = (l_node.findtext("법령명한글") or "").strip()
+                if lname.replace(" ", "") != target_clean:
+                    continue
+                rev_gbn = (l_node.findtext("제개정구분명") or "").strip()
+                h_mst = (l_node.findtext("법령일련번호") or l_node.findtext("MST") or "").strip()
+                h_ef = (l_node.findtext("시행일자") or "").strip()
+                h_anc = (l_node.findtext("공포일자") or "").strip()
+                h_no = (l_node.findtext("공포번호") or "").strip()
+                if h_mst and h_mst != use_mst:
+                    priority = 1 if "일부개정" in rev_gbn or "전부개정" in rev_gbn else 0
+                    hist_cands.append((priority, h_anc, h_ef, h_mst, rev_gbn, h_no))
+            hist_cands.sort(reverse=True)
+            for _, h_anc, h_ef, h_mst, rev_gbn, h_no in hist_cands[:3]:
+                fb_urls = [
+                    f"http://www.law.go.kr/DRF/lawService.do?OC={oc}&target=law&MST={h_mst}&type=XML",
+                    f"http://www.law.go.kr/DRF/lawService.do?OC={oc}&target=eflaw&MST={h_mst}&efYd={h_ef}&type=XML",
+                ]
+                r2, a2, s2 = _extract_from_xml_urls(fb_urls)
+                if r2 or a2:
+                    reason_texts = r2 or reason_texts
+                    amend_texts = a2 or amend_texts
+                    supp_texts = s2 or supp_texts
+                    fallback_rev_note = f"※ 최신 공포본이 단순 타법개정이어서 직전 본개정(공포일: {_fmt_ymd_str(h_anc)}, 제{h_no}호 {rev_gbn})의 공식 입법이유서를 함께 표시합니다.\n\n"
+                    break
         except Exception:
-            continue
+            pass
 
+    out_parts = []
+    if fallback_rev_note:
+        out_parts.append(fallback_rev_note.strip())
     if reason_texts:
-        body = "\n\n".join(dict.fromkeys(reason_texts))
-        if amend_texts:
-            body = f"📌 [공식 개정이유 및 주요내용]\n{body}\n\n---\n📌 [공포 개정문 발췌]\n{amend_texts[0][:1500]}"
-        return body
-
+        out_parts.append("📌 [공식 제·개정이유 및 주요내용 (입법이유)]\n" + "\n\n".join(dict.fromkeys(reason_texts)))
     if amend_texts:
-        return f"📌 [공포 개정문 원문]\n{amend_texts[0][:3000]}"
+        out_parts.append("📌 [공포 개정문 원문 발췌]\n" + amend_texts[0][:2500])
+    if supp_texts and not reason_texts:
+        out_parts.append("📌 [최신 개정 부칙 (시행일 및 적용례)]\n" + "\n\n".join(supp_texts)[:2000])
 
-    return f"ℹ️ 「{law_name}」(ID: {law_id})의 해당 공포본에는 별도 제·개정이유서 텍스트가 등록되어 있지 않습니다. 우측의 '⚡ AI 신·구법 비교표 생성' 버튼을 이용해 조문별 변경 내역을 확인하세요."
+    if out_parts:
+        return "\n\n" + ("\n\n" + "-" * 50 + "\n\n").join(out_parts)
+
+    return (
+        f"ℹ️ 「{law_name}」의 해당 공포본 XML에 별도 제·개정이유 텍스트가 수록되어 있지 않습니다. "
+        "우측의 '⚡ 신·구법 비교' 배너 버튼을 누르시면 인용된 조문 기준 [조문명 / 구법내용 / 개정법내용 / 개정효과] 비교표를 즉시 확인하실 수 있습니다."
+    )
 
 def load_room_law_ack() -> dict:
     if os.path.exists(ROOM_LAW_ACK_PATH):
@@ -558,6 +735,97 @@ def extract_cited_laws_in_room(messages: list[dict], law_prom_map: dict[str, dic
                 found_clean_names.add(base_c)
 
     return [law_prom_map[cname] for cname in sorted(found_clean_names)]
+
+def extract_cited_law_articles_in_room(messages: list[dict]) -> list[str]:
+    """대화방 답변에서 실제 인용된 [조문:법령명 제N조...] 목록을 중복 없이 추출합니다."""
+    if not messages:
+        return []
+    blob = "\n".join(m.get("content", "") for m in messages if m.get("role") == "assistant")
+    cited_articles = []
+    for m in re.finditer(r"\[조문\s*:\s*([^\]]+)\]", blob):
+        art_str = m.group(1).strip()
+        if art_str and art_str not in cited_articles:
+            cited_articles.append(art_str)
+    return cited_articles
+
+def generate_banner_law_diff_table(
+    messages: list[dict],
+    rev_alerts: list[dict],
+    room_key: str = ""
+) -> str:
+    """
+    [해결 완료] 채팅창의 대화를 늘리지 않고, 상단 배너 안에서 열고 닫을 수 있는
+    단순 명쾌한 4열 마크다운 표(| 조문명 | 구법내용 | 개정법내용 | 개정효과 |)를 생성합니다.
+    """
+    pool = agent.get_live_gemini_key_pool() if hasattr(agent, "get_live_gemini_key_pool") else []
+    api_key = pool[0][1] if pool else (os.getenv("GEMINI_PAID_KEY") or os.getenv("GEMINI_API_KEY") or "")
+    if not api_key:
+        return "❌ Gemini API 키가 설정되어 있지 않아 비교표를 생성할 수 없습니다."
+
+    cited_articles = extract_cited_law_articles_in_room(messages)
+    laws_desc = ", ".join(
+        f"「{it['law_name']}」(공포일:{it['prom_date']}, 시행일:{it['enf_date']}, 제{it['prom_no']}호 {it['rev_type']})"
+        for it in rev_alerts
+    )
+
+    # 인용된 조문 원문 및 개정이유서를 법제처에서 직접 조회하여 프롬프트에 주입 (할루시네이션 차단)
+    fetched_snippets = []
+    for it in rev_alerts[:3]:
+        rsn_txt = fetch_official_revision_reason_zero_token(
+            it["law_id"], it["law_name"], it.get("mst_id", ""), it.get("enf_raw", "")
+        )
+        if rsn_txt and not rsn_txt.startswith("❌"):
+            fetched_snippets.append(f"[{it['law_name']} 공식 개정이유/개정문]\n{rsn_txt[:2500]}")
+
+        for art_ref in cited_articles[:5]:
+            if it["clean_name"] in art_ref.replace(" ", ""):
+                m_jo = re.search(r"제\s*\d+\s*조(?:\s*의\s*\d+)?", art_ref)
+                jo_filter = m_jo.group(0).replace(" ", "") if m_jo else ""
+                if jo_filter:
+                    try:
+                        art_content = law_api.get_law_content(it["law_id"], "law", jo_filter)
+                        if art_content and not str(art_content).startswith("❌"):
+                            fetched_snippets.append(f"[{art_ref} 현행 원문]\n{art_content[:1800]}")
+                    except Exception:
+                        pass
+
+    last_user_q = ""
+    for m in reversed(messages):
+        if m.get("role") == "user":
+            last_user_q = m.get("content", "")[:600]
+            break
+
+    ref_context = "\n\n".join(fetched_snippets) if fetched_snippets else "인용 조문 기준 조회"
+    cited_str = ", ".join(cited_articles) if cited_articles else laws_desc
+
+    prompt = (
+        "당신은 대한민국 세법 개정 비교 전문가입니다.\n"
+        f"현재 대화방에서 검토한 질문 요지: {last_user_q}\n"
+        f"이 방에서 인용된 조문: {cited_str}\n"
+        f"관련 개정 법령 정보: {laws_desc}\n\n"
+        f"[법제처 조회 원문 및 개정이유서]\n{ref_context}\n\n"
+        "위 자료를 바탕으로, 본문 대화와 별도로 상단 배너에서 한눈에 확인하고 열고 닫을 수 있도록 "
+        "인사말이나 부연 설명 없이 **오직 아래 4개 열로 구성된 마크다운 표(Table)만** 출력하세요.\n\n"
+        "| 조문명 | 구법내용 | 개정법내용 | 개정효과 |\n"
+        "| :--- | :--- | :--- | :--- |\n\n"
+        "- 조문명: 인용된 조문(예: 「국세기본법」 제47조의3 등) 및 관련 주요 개정 조문\n"
+        "- 구법내용: 종전 규정 핵심 요약\n"
+        "- 개정법내용: 개정(또는 시행예정) 규정 핵심 요약 (타법개정·조문변동 없음인 경우 '종전과 동일(타법개정 등)'으로 명시)\n"
+        "- 개정효과: 시행일(적용시기) 및 이 대화방의 질문 사안에 미치는 실무상 영향 요약"
+    )
+
+    m_id = getattr(agent, "FLASH_MODEL_ID", "gemini-3.8-flash")
+    try:
+        client = genai.Client(api_key=api_key, http_options={"timeout": 60000})
+        resp = client.models.generate_content(model=m_id, contents=prompt)
+        out_txt = agent.extract_safe_text(resp) if hasattr(agent, "extract_safe_text") else (resp.text or "")
+        um = getattr(resp, "usage_metadata", None)
+        in_tok = int(getattr(um, "prompt_token_count", 0) or 1000)
+        out_tok = int(getattr(um, "candidates_token_count", 0) or 400)
+        _log_custom_tokens(m_id, in_tok, out_tok, count_call=True, room_key=room_key)
+        return out_txt.strip() or "비교표를 생성하지 못했습니다."
+    except Exception as e:
+        return f"❌ 신·구법 비교표 배너 생성 중 오류 발생: {e}"
 
 def get_room_revision_alerts(ws_id: str, room_id: str, messages: list[dict], law_prom_map: dict[str, dict]) -> tuple[list[dict], bool]:
     cited_list = extract_cited_laws_in_room(messages, law_prom_map)
@@ -734,7 +1002,8 @@ def get_default_workspace_data() -> dict:
     return {
         "chat_rooms": {r_id: [] for r_id in ROOM_IDS},
         "room_titles": default_titles,
-        "room_files": {r_id: {"name": None, "text": "", "items": []} for r_id in ROOM_IDS}
+        "room_files": {r_id: {"name": None, "text": "", "items": []} for r_id in ROOM_IDS},
+        "room_diff_banners": {r_id: "" for r_id in ROOM_IDS}
     }
 
 def load_workspace_from_disk(workspace_id: str) -> dict:
@@ -744,7 +1013,7 @@ def load_workspace_from_disk(workspace_id: str) -> dict:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             default_data = get_default_workspace_data()
-            for key in ["chat_rooms", "room_titles", "room_files"]:
+            for key in ["chat_rooms", "room_titles", "room_files", "room_diff_banners"]:
                 if key not in data:
                     data[key] = default_data[key]
                 else:
@@ -765,7 +1034,8 @@ def save_workspace_to_disk(workspace_id: str):
     data = {
         "chat_rooms": st.session_state.chat_rooms,
         "room_titles": st.session_state.room_titles,
-        "room_files": st.session_state.room_files
+        "room_files": st.session_state.room_files,
+        "room_diff_banners": st.session_state.get("room_diff_banners", {r_id: "" for r_id in ROOM_IDS})
     }
     try:
         with get_background_task_manager()["lock"]:
@@ -1395,7 +1665,7 @@ def _render_official_reason_viewer_body(
 ):
     st.caption(
         "💡 **AI 토큰을 전혀 소모하지 않고(0원)** 국가법령정보센터(법제처 DRF) XML에서 "
-        "정부가 직접 작성한 **공식 『제·개정이유 및 주요내용 요약문』** 원문을 즉시 불러옵니다."
+        "정부가 직접 작성한 **공식 『제·개정이유 및 주요내용(입법이유)』** 원문을 즉시 불러옵니다."
     )
     items = list(law_prom_map.values())
     if not items:
@@ -1425,8 +1695,13 @@ def _render_official_reason_viewer_body(
         f"**구분:** `{chosen_item['rev_type']}`"
     )
 
-    with st.spinner("법제처 공식 『제·개정이유서』 원문 수신 중 (0토큰)..."):
-        official_reason_text = fetch_official_revision_reason_zero_token(chosen_item["law_id"], chosen_item["law_name"])
+    with st.spinner("법제처 공식 『제·개정이유서(입법이유)』 원문 수신 중 (0토큰)..."):
+        official_reason_text = fetch_official_revision_reason_zero_token(
+            chosen_item["law_id"],
+            chosen_item["law_name"],
+            chosen_item.get("mst_id", ""),
+            chosen_item.get("enf_raw", "")
+        )
 
     st.text_area(
         "📜 법제처 공식 『제·개정이유 및 주요내용』 원문 (0토큰 무료 조회)",
@@ -1441,12 +1716,15 @@ def _render_official_reason_viewer_body(
             fetch_official_revision_reason_zero_token.clear()
             st.rerun()
     with c_v2:
-        if st.button(f"⚡ 「{chosen_item['law_name']}」 AI 신·구법 비교표 생성", use_container_width=True):
-            q_str = (
-                f"「{chosen_item['law_name']}」(공포일: {chosen_item['prom_date']}, 제{chosen_item['prom_no']}호, 시행일: {chosen_item['enf_date']})의 "
-                "핵심 개정 조문을 조회하여 [종전 규정 vs 현행(개정) 규정 vs 적용시기 및 실무 영향] 신·구 비교표 형태로 상세히 정리해 줘."
+        if st.button(f"⚡ 상단 배너에 「{chosen_item['law_name']}」 신·구 비교표 열기", use_container_width=True):
+            curr_msgs = st.session_state.chat_rooms.get(selected_room, [])
+            diff_md = generate_banner_law_diff_table(
+                curr_msgs, [chosen_item], room_key=f"{effective_ws_id}::{selected_room}"
             )
-            _trigger_agent_task(effective_ws_id, selected_room, q_str, pro_toggle_on, budget_exceeded=False, force_flash=False)
+            st.session_state.setdefault("room_diff_banners", {})[selected_room] = diff_md
+            st.session_state[f"diff_banner_open_{selected_room}"] = True
+            save_workspace_to_disk(effective_ws_id)
+            st.rerun()
 
 # ---------------------------------------------------------
 # 🔐 [🔑 API키] 관리자(Manager) 전용 Google 계정 로그인 보안 모듈
@@ -1468,10 +1746,6 @@ def _mask_google_email(email_str: str) -> str:
     return f"{masked_local}@{domain_part}"
 
 def _load_manager_google_config() -> dict:
-    """
-    1순위: Streamlit Secrets / 환경변수 (MANAGER_GOOGLE_EMAIL, ADMIN_GOOGLE_EMAIL, OWNER_EMAIL)
-    2순위: 로컬 보안 설정 파일 (_manager_google_auth.json)
-    """
     cfg = {"email": "", "pin_hash": "", "source": "none"}
     env_email = ""
     env_pin = ""
@@ -1527,7 +1801,6 @@ def _save_manager_google_config(email_str: str, pin_plain: str) -> None:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
 def _get_streamlit_logged_google_email() -> str:
-    """Streamlit 네이티브 Google OAuth (st.user / st.experimental_user) 로그인 이메일 감지"""
     try:
         u_obj = getattr(st, "user", None) or getattr(st, "experimental_user", None)
         if u_obj is not None:
@@ -1550,13 +1823,11 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
     oauth_google_email = _get_streamlit_logged_google_email()
     session_authed_email = str(st.session_state.get("manager_google_authed_email", "")).strip().lower()
 
-    # [보안 관문 1] 아직 관리자 Google 계정이 최초 등록되지 않은 경우 -> 최초 1회 등록 창
     if not registered_email:
         st.warning("🔒 **[보안 설정 필요] 관리자(Manager) Google 계정을 최초 1회 등록해 주세요.**")
         st.caption(
             "아무나 `[🔑 API키]` 버튼을 눌러 API 키 목록이나 관리 링크를 열람·복사하지 못하도록, "
-            "본인(Manager)의 Google 계정 이메일과 관리자 보안 비밀번호를 등록합니다. "
-            "한 번 등록하면 관리자 구글 계정으로 로그인해야만 이 창을 열 수 있습니다."
+            "본인(Manager)의 Google 계정 이메일과 관리자 보안 비밀번호를 등록합니다."
         )
         with st.container(border=True):
             st.markdown("##### 🛡️ 관리자(Manager) Google 계정 최초 등록")
@@ -1594,7 +1865,6 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
                     st.rerun()
         return
 
-    # [보안 관문 2] 관리자 본인 Google 로그인 여부 검증
     is_oauth_manager = bool(oauth_google_email and oauth_google_email == registered_email)
     is_session_manager = bool(session_authed_email and session_authed_email == registered_email)
     is_manager_verified = is_oauth_manager or is_session_manager
@@ -1613,7 +1883,6 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
 
         with st.container(border=True):
             st.markdown("##### 🌐 방법 1. Google 계정으로 바로 로그인 (Streamlit OAuth)")
-            st.caption("Streamlit Cloud Google OAuth가 설정된 경우 아래 버튼을 누르면 구글 로그인 창으로 연결됩니다.")
             c_gl1, c_gl2 = st.columns(2)
             with c_gl1:
                 if st.button("🔐 Google 로그인 (Manager 인증)", type="primary", use_container_width=True, key="btn_st_google_oauth"):
@@ -1658,7 +1927,6 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
                     st.rerun()
         return
 
-    # [보안 관문 통과 후] 관리자 인증 상태바 + 로그아웃(잠금) 버튼
     with st.container(border=True):
         c_top1, c_top2 = st.columns([3.6, 1.4])
         with c_top1:
@@ -1674,7 +1942,6 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
                         pass
                 st.rerun()
 
-    # 1순위 최상단: Google AI Studio (Gemini 유료 API)
     gemini_ok = _check_api_configured(["GEMINI_PAID_KEY", "GEMINI_API_KEY"])
     g_led = "🟢 연동됨" if gemini_ok else "🟡 미설정"
     with st.container(border=True):
@@ -1685,7 +1952,6 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
         with c_g2:
             st.link_button("🔗 링크 열기", "https://aistudio.google.com/apikey", use_container_width=True)
 
-    # 2순위: 무기한 연동 공공 API (법제처, DART)
     law_ok = bool(_get_law_oc()) or _check_api_configured(["LAW_OPEN_API_KEY", "LAW_API_OC", "OC"]) or bool(law_prom_map)
     dart_ok = _check_api_configured(["DART_API_KEY", "OPENDART_API_KEY"])
     ind_ok = os.path.exists("industry_codes.xlsx")
@@ -1713,7 +1979,6 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
             with c_p2:
                 st.link_button("🔗 링크 열기", link_url, use_container_width=True)
 
-    # 3순위: 유효기간(만료일)이 있는 3대 공공 API (브이월드, 공공데이터포털 국세청·국토부, 한국은행 ECOS)
     st.markdown("##### ⏰ 주기적 갱신이 필요한 API (만료 예정일 확인 및 바로 갱신)")
     current_expiry_map = load_api_expiry_dates()
     updated_expiry_map = {}
@@ -1795,7 +2060,7 @@ if _dialog_decorator:
         _render_api_key_manager_body(expiry_all_status, law_prom_map)
 
 # ---------------------------------------------------------
-# 2. 왼쪽 사이드바 제어판 (최상단 모드 스위치 + 1~10번 방 미니 현황판 + [💳 결제] [🔑 API키])
+# 2. 왼쪽 사이드바 제어판 (드롭다운 제거 + 1~10번 세로 클릭 리스트 + 우측 신호등 LED)
 # ---------------------------------------------------------
 task_mgr = get_background_task_manager()
 expiry_alerts, expiry_all_status = check_api_expiry_alerts()
@@ -1828,7 +2093,7 @@ with st.sidebar:
             st.rerun()
 
     st.markdown(
-        "<div style='font-size:1.05rem; font-weight:800; color:#0f172a; line-height:1.35; margin-top:2px; margin-bottom:4px; letter-spacing:-0.4px;'>"
+        "<div style='font-size:0.96rem; font-weight:800; color:#0f172a; line-height:1.3; margin-top:2px; margin-bottom:2px; letter-spacing:-0.4px;'>"
         "⚙️ 에이전트 제어판</div>",
         unsafe_allow_html=True
     )
@@ -1875,6 +2140,7 @@ with st.sidebar:
             st.session_state.chat_rooms = ws_data["chat_rooms"]
             st.session_state.room_titles = ws_data["room_titles"]
             st.session_state.room_files = ws_data["room_files"]
+            st.session_state.room_diff_banners = ws_data.get("room_diff_banners", {r_id: "" for r_id in ROOM_IDS})
             st.session_state.loaded_workspace_id = effective_ws_id
             st.session_state.active_workspace_id = workspace_input.strip()
             if "current_room" not in st.session_state:
@@ -1900,14 +2166,19 @@ with st.sidebar:
                 st.session_state.ws_widget_ver = ws_widget_ver + 1
                 st.rerun()
 
-    # 📦 [카드 3] 멀티 대화방 선택 + 현재 방 비우기 + 📋 1~10번 대화방 작은 글씨 2열 미니 현황판
+    # 📦 [카드 3] 멀티 대화방 (드롭다운 완전 제거 + 1~10번 세로 1열 클릭 리스트 + 우측 신호등 LED)
     with st.container(border=True):
+        if "current_room" not in st.session_state or st.session_state.current_room not in ROOM_IDS:
+            st.session_state.current_room = ROOM_IDS[0]
+        selected_room = st.session_state.current_room
+        active_room_key = f"{effective_ws_id}::{selected_room}"
+
         rooms_with_rev_cnt = sum(
             1 for r_id in ROOM_IDS
             if get_room_revision_alerts(effective_ws_id, r_id, st.session_state.chat_rooms.get(r_id, []), law_prom_map)[0]
         )
         rev_header_pill = (
-            f"<span class='sb-badge-amber'>🔄 {rooms_with_rev_cnt}개방 개정관련</span>"
+            f"<span class='sb-badge-amber'>🔄 {rooms_with_rev_cnt}개방 개정</span>"
             if rooms_with_rev_cnt > 0 else ""
         )
         st.markdown(f"<div class='sb-card-title'><span>🗂️ 멀티 대화방 (1~10번)</span>{rev_header_pill}</div>", unsafe_allow_html=True)
@@ -1938,36 +2209,10 @@ with st.sidebar:
             else:
                 st.caption(f"'{room_search_kw}' 검색 결과가 없습니다.")
 
-        def format_room_label(r_id: str) -> str:
-            title = st.session_state.room_titles.get(r_id, "")
-            r_msgs = st.session_state.chat_rooms.get(r_id, [])
-            q_cnt = (len(r_msgs) + 1) // 2
-            f_items = st.session_state.room_files[r_id].get("items", [])
-            file_mark = f"📎({len(f_items)})" if f_items else ""
-            t_info = task_mgr["tasks"].get(f"{effective_ws_id}::{r_id}")
-            running_mark = " ⏳분석중" if (t_info and t_info.get("status") == "running") else ""
-            rev_alerts, is_post = get_room_revision_alerts(effective_ws_id, r_id, r_msgs, law_prom_map)
-            rev_mark = (" 🔄사후개정" if is_post else " 📜개정법포함") if rev_alerts else ""
-            return f"💬 {r_id} [{title}] ({q_cnt}건) {file_mark}{rev_mark}{running_mark}"
-
-        selected_room = st.selectbox(
-            "대화방 선택",
-            options=ROOM_IDS,
-            index=ROOM_IDS.index(st.session_state.current_room),
-            format_func=format_room_label,
-            label_visibility="collapsed",
-            help="과거 검토에 인용된 법령이 개정되면 방 이름 옆에 자동으로 표시됩니다."
-        )
-        if selected_room != st.session_state.current_room:
-            st.session_state.current_room = selected_room
-            st.rerun()
-
-        active_room_key = f"{effective_ws_id}::{selected_room}"
-
         new_title = st.text_input(
             "방 주제 메모",
             value=st.session_state.room_titles[selected_room],
-            placeholder="✏️ 방 주제 메모 (예: A사 세무조사)",
+            placeholder="✏️ 현재 방 주제 메모 (예: A사 세무조사)",
             label_visibility="collapsed",
             key=f"title_input_{effective_ws_id}_{selected_room}"
         )
@@ -1981,17 +2226,22 @@ with st.sidebar:
             st.session_state.chat_rooms[selected_room] = []
             st.session_state.room_files[selected_room] = {"name": None, "text": "", "items": []}
             st.session_state.room_titles[selected_room] = "빈 대화방"
+            st.session_state.setdefault("room_diff_banners", {})[selected_room] = ""
+            st.session_state[f"diff_banner_open_{selected_room}"] = False
             if hasattr(agent, "reset_room_usage"):
                 agent.reset_room_usage(active_room_key)
             st.session_state[f"reset_cnt_{selected_room}"] = st.session_state.get(f"reset_cnt_{selected_room}", 0) + 1
             save_workspace_to_disk(effective_ws_id)
             st.rerun()
 
-        # 📋 [현재 방 비우기 밑: 대화방 1번~10번 대화방명 및 건수 작은 글씨 2열 현황판]
-        board_chips_html = ["<div class='sb-room-board'>"]
+        # 📋 [1번~10번 세로 1열 클릭 리스트 + 우측 동그라미 신호등 LED 표시]
+        # - 글 없음(0건, 비선택): _empty (칸 기본 배경 + 우측 동그라미 불 꺼짐)
+        # - 글 있음(1건 이상, 비선택): _hasmsg (칸 화이트 + 우측 동그라미 초록불)
+        # - 현재 선택된 방: _active (칸 전체 연녹색 점등 + 우측 초록불)
+        # - 작성(분석) 중일 때: _running 추가 (우측 동그라미 빨강↔주황↔노랑 실시간 변색 애니메이션)
         for idx_r, r_id in enumerate(ROOM_IDS, start=1):
             r_title = (st.session_state.room_titles.get(r_id, "빈 대화방") or "빈 대화방").strip()
-            short_title = r_title[:7] + ("…" if len(r_title) > 7 else "")
+            short_title = r_title[:10] + ("…" if len(r_title) > 10 else "")
             r_msgs = st.session_state.chat_rooms.get(r_id, [])
             q_cnt = (len(r_msgs) + 1) // 2
             f_cnt = len(st.session_state.room_files[r_id].get("items", []))
@@ -1999,15 +2249,17 @@ with st.sidebar:
             is_run = bool(t_info and t_info.get("status") == "running")
             rev_alerts, _ = get_room_revision_alerts(effective_ws_id, r_id, r_msgs, law_prom_map)
 
-            dot_icon = "🟢" if r_id == selected_room else ("⏳" if is_run else "⚪")
-            extra_icons = ("📎" if f_cnt else "") + ("🔄" if rev_alerts else "")
-            active_cls = " active" if r_id == selected_room else ""
-            board_chips_html.append(
-                f"<div class='sb-room-chip{active_cls}' title='{r_id}: {r_title} ({q_cnt}건)'>"
-                f"{dot_icon} {idx_r}. {short_title} ({q_cnt}건){extra_icons}</div>"
-            )
-        board_chips_html.append("</div>")
-        st.markdown("".join(board_chips_html), unsafe_allow_html=True)
+            base_state = "active" if r_id == selected_room else ("hasmsg" if q_cnt > 0 else "empty")
+            run_suffix = "_running" if is_run else ""
+            btn_key = f"room_btn_{idx_r}_{base_state}{run_suffix}"
+
+            extra_badges = (" 📎" if f_cnt else "") + (" 🔄" if rev_alerts else "") + (" (작성중)" if is_run else "")
+            btn_label = f"{idx_r}. {short_title} ({q_cnt}건){extra_badges}"
+
+            if st.button(btn_label, key=btn_key, use_container_width=True):
+                if r_id != selected_room:
+                    st.session_state.current_room = r_id
+                    st.rerun()
 
     # 📦 [카드 4 — 최하단 고정: [💳 결제] 및 [🔑 API키] 버튼]
     with st.container(border=True):
@@ -2022,7 +2274,7 @@ with st.sidebar:
                     st.session_state.show_inline_api_manager = not st.session_state.get("show_inline_api_manager", False)
 
 # ---------------------------------------------------------
-# 3. 메인 화면 상단 (큰 제목 h1 제거 + 슬림 미니 상태바 + 모드 격리)
+# 3. 메인 화면 상단 (상단 잘림 없는 슬림 상태바 + 본문과 분리된 접이식 신·구 비교표 배너)
 # ---------------------------------------------------------
 current_messages = st.session_state.chat_rooms[selected_room]
 current_room_title = st.session_state.room_titles[selected_room]
@@ -2049,7 +2301,7 @@ if st.session_state.app_top_mode == "CREDIT_CALC":
     )
     st.stop()
 
-# 큰 제목(st.title) 제거 -> 슬림하고 깔끔한 1줄 미니 상태바로 대체하여 본문 상단 공간 확보
+# 상단 미니 상태바 (여백 3.2rem 확보로 잘림 현상 완벽 해결)
 q_count_now = (len(current_messages) + 1) // 2
 mode_badge_html = (
     "🧠 <b>Pro 심층 모드 (3배 리미트 개방 ON)</b>"
@@ -2076,16 +2328,19 @@ if expiry_alerts:
         with c_al2:
             st.link_button("🔗 연장·재발급", alert_item["url"], use_container_width=True)
 
-# 🔄 2) [사후 개정 감지 vs 최근 공포·시행예정 법령 개정이유서 안내 구분 표시]
+# 🔄 2) [개정세법 안내 배너 + 본문 대화와 무관하게 배너로 열었다 닫았다 하는 신·구법 비교표]
 current_room_rev_alerts, is_post_revision = get_room_revision_alerts(
     effective_ws_id, selected_room, current_messages, law_prom_map
 )
+saved_diff_md = st.session_state.get("room_diff_banners", {}).get(selected_room, "")
+is_diff_open = st.session_state.get(f"diff_banner_open_{selected_room}", False)
+
 if current_room_rev_alerts:
     rev_names_str = ", ".join(
         f"「{it['law_name']}」(공포:{it['prom_date']}/시행:{it['enf_date']})" for it in current_room_rev_alerts
     )
     first_clean = current_room_rev_alerts[0]["clean_name"]
-    c_rv1, c_rv2, c_rv3, c_rv4 = st.columns([3.5, 1.1, 1.1, 0.8])
+    c_rv1, c_rv2, c_rv3, c_rv4 = st.columns([3.4, 1.1, 1.2, 0.7])
     with c_rv1:
         if is_post_revision:
             st.warning(
@@ -2093,27 +2348,51 @@ if current_room_rev_alerts:
             )
         else:
             st.info(
-                f"📜 **[최근 공포·시행예정 법령 인용 안내]** 이 방에서 인용된 **{rev_names_str}**의 공식 개정이유서를 0원으로 열람할 수 있습니다."
+                f"📜 **[최근 공포·시행예정 법령 인용 안내]** 이 방에서 인용된 **{rev_names_str}**의 공식 입법이유서 및 신·구 비교표를 바로 열람할 수 있습니다."
             )
     with c_rv2:
         if st.button("📜 개정이유서(0원)", key=f"rsn_{selected_room}", use_container_width=True):
             if _dialog_decorator:
                 open_official_reason_modal(law_prom_map, effective_ws_id, selected_room, pro_toggle_on, False, first_clean)
             else:
-                st.session_state.show_inline_reason_viewer = True
+                st.session_state.show_inline_reason_viewer = not st.session_state.get("show_inline_reason_viewer", False)
+                st.rerun()
     with c_rv3:
-        if st.button("⚡ 신·구법 비교", key=f"rerev_{selected_room}", disabled=is_current_room_running, use_container_width=True):
-            acknowledge_room_laws(effective_ws_id, selected_room, current_room_rev_alerts)
-            laws_only = ", ".join(f"「{it['law_name']}」" for it in current_room_rev_alerts)
-            re_q = (
-                f"이 대화방의 직전 검토 사안과 관련하여, 최근 개정 공포된 {laws_only}의 최신 조문을 조회해 "
-                "[종전 규정 vs 현행(개정) 규정 vs 적용시기 및 실무 영향] 신·구 비교표와 함께 정리해 줘."
-            )
-            _trigger_agent_task(effective_ws_id, selected_room, re_q, pro_toggle_on, False, force_flash=False)
+        diff_btn_lbl = "🔼 신·구법 비교 닫기" if (saved_diff_md and is_diff_open) else "⚡ 신·구법 비교 (배너)"
+        if st.button(diff_btn_lbl, key=f"rerev_{selected_room}", use_container_width=True):
+            if saved_diff_md:
+                st.session_state[f"diff_banner_open_{selected_room}"] = not is_diff_open
+                st.rerun()
+            else:
+                with st.spinner("⚡ 본문 대화와 분리된 상단 [조문명 / 구법내용 / 개정법내용 / 개정효과] 비교표 배너를 생성 중입니다..."):
+                    diff_md = generate_banner_law_diff_table(
+                        current_messages, current_room_rev_alerts, room_key=current_task_key
+                    )
+                    st.session_state.setdefault("room_diff_banners", {})[selected_room] = diff_md
+                    st.session_state[f"diff_banner_open_{selected_room}"] = True
+                    save_workspace_to_disk(effective_ws_id)
+                st.rerun()
     with c_rv4:
         if st.button("✅ 확인", key=f"ack_{selected_room}", use_container_width=True, help="이 대화방의 법령 알림을 확인 처리하여 숨깁니다."):
             acknowledge_room_laws(effective_ws_id, selected_room, current_room_rev_alerts)
             st.rerun()
+
+# 📊 본문 대화와 무관하게 언제든 열었다 닫았다 할 수 있는 상단 [조문명/구법내용/개정법내용/개정효과] 배너
+if saved_diff_md:
+    with st.expander("📊 [신·구법 비교 배너] 조문명 / 구법내용 / 개정법내용 / 개정효과 (클릭하여 열기·닫기)", expanded=is_diff_open):
+        st.markdown(f"<div class='law-diff-banner-box'>\n\n{saved_diff_md}\n\n</div>", unsafe_allow_html=True)
+        b_col1, b_col2 = st.columns([1, 5])
+        with b_col1:
+            if st.button("🔄 비교표 다시 생성", key=f"regen_diff_{selected_room}"):
+                with st.spinner("⚡ 신·구법 비교표를 새로 작성 중입니다..."):
+                    alerts_for_regen = current_room_rev_alerts or extract_cited_laws_in_room(current_messages, law_prom_map)
+                    diff_md = generate_banner_law_diff_table(
+                        current_messages, alerts_for_regen, room_key=current_task_key
+                    )
+                    st.session_state.setdefault("room_diff_banners", {})[selected_room] = diff_md
+                    st.session_state[f"diff_banner_open_{selected_room}"] = True
+                    save_workspace_to_disk(effective_ws_id)
+                st.rerun()
 
 # 구버전 Streamlit 폴백용 인라인 뷰어들
 if st.session_state.get("show_inline_reason_viewer"):
@@ -2132,6 +2411,9 @@ if st.session_state.get("show_inline_api_manager"):
             st.session_state.show_inline_api_manager = False
             st.rerun()
 
+# ---------------------------------------------------------
+# 4. 대화방 메시지 목록 렌더링
+# ---------------------------------------------------------
 for idx, message in enumerate(current_messages):
     with st.chat_message(message["role"]):
         display_content = message["content"]
@@ -2229,90 +2511,80 @@ for idx, message in enumerate(current_messages):
                 st.code(_extract_clean_copy_text(message["content"]), language="markdown")
 
 # ---------------------------------------------------------
-# 4. 메인 화면 하단: [질문 입력창(위)] + [파일 드래그 앤 드롭 업로드(질문칸 밑)]
+# 5. 현재 방에서 백그라운드 작업이 진행 중일 때 실시간 상태창 표시 (유령 잔상 방지)
+# ---------------------------------------------------------
+status_placeholder = st.empty()
+if active_task and active_task.get("status") == "running":
+    is_pro_running = active_task.get("is_pro", False)
+    status_title = (
+        f"🧠 [{selected_room}] Pro 심층 모드 백그라운드 가동 중 (데이터·도구 한도 3배 개방)..."
+        if is_pro_running else
+        f"⚡ [{selected_room}] 실시간 법령·공시 DB 조회 및 백그라운드 정밀 검토 중..."
+    )
+    with status_placeholder.container():
+        with st.chat_message("assistant"):
+            with st.status(status_title, expanded=True):
+                st.write("🔎 **1단계:** 질의 쟁점 분석 및 7대 국가·공공기관(법제처 현행·구법·국세청·DART·국토부·한은) DB 탐색 중...")
+                st.write("🧮 **2단계:** 관련 법령·판례 원문 파싱 및 파이썬 1원 단위 정밀 수리 계산기 구동 중...")
+                st.write("🛡️ **3단계:** 미조회 근거 강제 차단(`_scan_violations`) 및 듀얼 AI 의미 감수(`_semantic_verify`) 수행 중...")
+                st.caption("💡 **백그라운드 멀티태스킹 작동 중:** 지금 좌측 대화방 리스트를 눌러 다른 대화방으로 이동하셔도 이 방의 AI 검토는 멈추지 않고 끝까지 완료됩니다.")
+
+# ---------------------------------------------------------
+# 6. 메인 화면 최하단 고정: Gemini 스타일 올인원 통합 채팅 입력창 (드래그 앤 드롭 파일 첨부 통합)
 # ---------------------------------------------------------
 room_file_entry = _normalize_room_file_entry(st.session_state.room_files[selected_room])
 st.session_state.room_files[selected_room] = room_file_entry
 saved_items = room_file_entry["items"]
 reset_cnt = st.session_state.get(f"reset_cnt_{selected_room}", 0)
 
+# 이미 대화방에 첨부되어 유지 중인 파일이 있으면 하단 입력창 바로 위에 슬림한 칩 형태로 표시
+if saved_items:
+    with st.container(border=True):
+        c_head1, c_head2 = st.columns([8.5, 1.5])
+        with c_head1:
+            chips_str = " &nbsp;|&nbsp; ".join(
+                f"📄 **{it['name']}** *({len(it['text']):,}자)*" for it in saved_items
+            )
+            st.markdown(
+                f"<div style='font-size:0.8rem; color:#15803d;'>📎 <b>현재 [{selected_room}] 첨부 유지 중 ({len(saved_items)}건):</b> {chips_str}</div>",
+                unsafe_allow_html=True
+            )
+        with c_head2:
+            if st.button("🗑️ 첨부 비우기", key=f"clear_all_f_{selected_room}", use_container_width=True):
+                st.session_state.room_files[selected_room] = {"name": None, "text": "", "items": []}
+                st.session_state[f"reset_cnt_{selected_room}"] = reset_cnt + 1
+                save_workspace_to_disk(effective_ws_id)
+                st.rerun()
+
 chat_input_placeholder = (
-    f"⏳ [{selected_room}] 현재 백그라운드 정밀 검토 진행 중입니다... (다른 대화방으로 이동하여 추가 질문을 하실 수 있습니다)"
+    f"⏳ [{selected_room}] 현재 백그라운드 정밀 검토 진행 중입니다... (좌측 다른 대화방을 클릭해 추가 질문을 하실 수 있습니다)"
     if is_current_room_running else
-    f"[{selected_room}] 검토할 이슈를 입력하세요 (질문칸 아래 박스에 파일 드래그 첨부 가능 / 좌측 Pro 토글 ON 시 3배 개방)"
+    f"[{selected_room}] 검토할 이슈를 입력하거나 이 칸에 파일(엑셀·PDF·워드·사진)을 바로 끌어다 놓으세요 (+ 버튼 첨부 가능)"
 )
 
-with st.container():
-    _chat_sig = inspect.signature(st.chat_input).parameters
-    try:
-        if "accept_file" in _chat_sig:
-            chat_val = st.chat_input(
-                placeholder=chat_input_placeholder,
-                disabled=is_current_room_running,
-                accept_file="multiple",
-                file_type=["xlsx", "xls", "csv", "pdf", "docx", "png", "jpg", "jpeg"],
-                key=f"chat_input_{effective_ws_id}_{selected_room}"
-            )
-        else:
-            chat_val = st.chat_input(
-                placeholder=chat_input_placeholder,
-                disabled=is_current_room_running,
-                key=f"chat_input_{effective_ws_id}_{selected_room}"
-            )
-    except Exception:
+# ⚠️ 중요: st.chat_input을 st.container() 밖(최상위 루트)에 단독 호출해야 화면 맨 아래(Bottom)에 고정됩니다!
+_chat_sig = inspect.signature(st.chat_input).parameters
+try:
+    if "accept_file" in _chat_sig:
+        chat_val = st.chat_input(
+            placeholder=chat_input_placeholder,
+            disabled=is_current_room_running,
+            accept_file="multiple",
+            file_type=["xlsx", "xls", "csv", "pdf", "docx", "png", "jpg", "jpeg"],
+            key=f"chat_input_{effective_ws_id}_{selected_room}"
+        )
+    else:
         chat_val = st.chat_input(
             placeholder=chat_input_placeholder,
             disabled=is_current_room_running,
             key=f"chat_input_{effective_ws_id}_{selected_room}"
         )
-
-    # 질문 입력칸 바로 밑: 파일 드래그 앤 드롭 업로더
-    uploaded_bottom_files = st.file_uploader(
-        "📎 여기에 검토할 파일(엑셀·PDF·워드·사진)을 마우스로 끌어다 놓으세요 (다중 첨부 가능)",
-        type=["xlsx", "xls", "csv", "pdf", "docx", "png", "jpg", "jpeg"],
-        accept_multiple_files=True,
-        key=f"bottom_uploader_{effective_ws_id}_{selected_room}_{reset_cnt}"
+except Exception:
+    chat_val = st.chat_input(
+        placeholder=chat_input_placeholder,
+        disabled=is_current_room_running,
+        key=f"chat_input_{effective_ws_id}_{selected_room}"
     )
-    if uploaded_bottom_files:
-        existing_names = {it["name"] for it in saved_items}
-        new_added = False
-        for uf in uploaded_bottom_files:
-            if uf.name not in existing_names:
-                with st.spinner(f"📄 '{uf.name}' 내용 추출 및 저장 중..."):
-                    extracted_text = extract_file_content(uf, room_key=active_room_key)
-                    saved_items.append({"name": uf.name, "text": extracted_text})
-                    existing_names.add(uf.name)
-                    new_added = True
-        if new_added:
-            st.session_state.room_files[selected_room] = _normalize_room_file_entry({"items": saved_items})
-            save_workspace_to_disk(effective_ws_id)
-            st.rerun()
-
-    # 첨부된 파일 목록 표시 및 개별/전체 삭제 (파일 업로더 아래)
-    if saved_items:
-        with st.container(border=True):
-            st.markdown(
-                f"<div style='font-size:0.83rem; font-weight:700; color:#15803d; margin-bottom:4px;'>"
-                f"📎 현재 [{selected_room}]에 첨부된 자료 ({len(saved_items)}개) — 질문 시 자동 반영됩니다</div>",
-                unsafe_allow_html=True
-            )
-            for f_idx, f_item in enumerate(saved_items):
-                c_f1, c_f2 = st.columns([9, 1])
-                with c_f1:
-                    st.caption(f"📄 **{f_item['name']}** ({len(f_item['text']):,}자 추출됨)")
-                with c_f2:
-                    if st.button("✕", key=f"del_f_{selected_room}_{f_idx}", help=f"{f_item['name']} 삭제"):
-                        saved_items.pop(f_idx)
-                        st.session_state.room_files[selected_room] = _normalize_room_file_entry({"items": saved_items})
-                        st.session_state[f"reset_cnt_{selected_room}"] = reset_cnt + 1
-                        save_workspace_to_disk(effective_ws_id)
-                        st.rerun()
-            if len(saved_items) > 1:
-                if st.button("❌ 첨부파일 전체 비우기", key=f"clear_all_f_{selected_room}"):
-                    st.session_state.room_files[selected_room] = {"name": None, "text": "", "items": []}
-                    st.session_state[f"reset_cnt_{selected_room}"] = reset_cnt + 1
-                    save_workspace_to_disk(effective_ws_id)
-                    st.rerun()
 
 if chat_val:
     if isinstance(chat_val, str):
@@ -2345,25 +2617,11 @@ if chat_val:
     elif inline_files:
         st.rerun()
 
-# 5. 현재 방에서 백그라운드 작업이 진행 중일 때 실시간 상태창 표시
-active_task = task_mgr["tasks"].get(current_task_key)
+# 백그라운드 작업 폴링 (하단 입력창까지 모두 렌더링한 뒤 깔끔하게 대기 후 완료 시 즉시 갱신)
 if active_task and active_task.get("status") == "running":
-    is_pro_running = active_task.get("is_pro", False)
-    status_title = (
-        f"🧠 [{selected_room}] Pro 심층 모드 백그라운드 가동 중 (데이터·도구 한도 3배 개방)..."
-        if is_pro_running else
-        f"⚡ [{selected_room}] 실시간 법령·공시 DB 조회 및 백그라운드 정밀 검토 중..."
-    )
-    with st.chat_message("assistant"):
-        with st.status(status_title, expanded=True) as status_box:
-            st.write("🔎 **1단계:** 질의 쟁점 분석 및 7대 국가·공공기관(법제처 현행·구법·국세청·DART·국토부·한은) DB 탐색 중...")
-            st.write("🧮 **2단계:** 관련 법령·판례 원문 파싱 및 파이썬 1원 단위 정밀 수리 계산기 구동 중...")
-            st.write("🛡️ **3단계:** 미조회 근거 강제 차단(`_scan_violations`) 및 듀얼 AI 의미 감수(`_semantic_verify`) 수행 중...")
-            st.caption("💡 **백그라운드 멀티태스킹 작동 중:** 지금 좌측 버튼을 누르거나 다른 대화방으로 이동하셔도 이 방의 AI 검토는 멈추지 않고 끝까지 완료됩니다.")
-            while active_task.get("status") == "running":
-                time.sleep(0.4)
-            status_box.update(label="✅ 정밀 검토 및 무결성 감수 완료", state="complete", expanded=False)
-
+    while active_task.get("status") == "running":
+        time.sleep(0.4)
+    status_placeholder.empty()
     ans = active_task.get("response", "")
     if ans and (not current_messages or current_messages[-1].get("role") != "assistant" or current_messages[-1].get("content") != ans):
         current_messages.append({"role": "assistant", "content": ans})
