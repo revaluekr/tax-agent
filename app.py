@@ -265,6 +265,71 @@ div.stDownloadButton > button:hover {
     background-color: #f0fdf4 !important;
 }
 
+/* 🟢 우측 상단 1/3 모드 전환 버튼 (모서리 둥근 사각형 박스 + 활성화 시 녹색) */
+.st-key-btn_top_mode_agent button,
+.st-key-btn_top_mode_credit button {
+    border-radius: 12px !important;
+    min-height: 48px !important;
+    height: 48px !important;
+    padding: 8px 14px !important;
+    font-size: 0.92rem !important;
+    font-weight: 700 !important;
+    letter-spacing: -0.3px !important;
+    box-shadow: 0 2px 6px rgba(15, 23, 42, 0.07) !important;
+    transition: all 0.15s ease-in-out !important;
+}
+
+/* 활성화된 버튼(Primary) -> 선명한 녹색(#16a34a) + 흰색 글씨 */
+div.stButton > button[kind="primary"],
+div.stButton > button[data-testid="stBaseButton-primary"],
+div.stButton > button[data-testid="baseButton-primary"],
+.st-key-btn_top_mode_agent button[kind="primary"],
+.st-key-btn_top_mode_credit button[kind="primary"] {
+    background-color: #16a34a !important;
+    border: 2px solid #15803d !important;
+    color: #ffffff !important;
+    border-radius: 12px !important;
+    font-weight: 800 !important;
+}
+div.stButton > button[kind="primary"]:hover,
+div.stButton > button[data-testid="stBaseButton-primary"]:hover,
+div.stButton > button[data-testid="baseButton-primary"]:hover,
+.st-key-btn_top_mode_agent button[kind="primary"]:hover,
+.st-key-btn_top_mode_credit button[kind="primary"]:hover,
+div.stButton > button[kind="primary"]:active,
+div.stButton > button[kind="primary"]:focus:not(:active) {
+    background-color: #15803d !important;
+    border-color: #166534 !important;
+    color: #ffffff !important;
+    box-shadow: 0 3px 8px rgba(22, 163, 74, 0.28) !important;
+}
+div.stButton > button[kind="primary"] p,
+div.stButton > button[data-testid="stBaseButton-primary"] p,
+.st-key-btn_top_mode_agent button[kind="primary"] p,
+.st-key-btn_top_mode_credit button[kind="primary"] p {
+    color: #ffffff !important;
+    font-weight: 800 !important;
+}
+
+/* 비활성화된 상단 모드 버튼(Secondary) -> 깔끔한 화이트 사각형 박스 */
+.st-key-btn_top_mode_agent button[kind="secondary"],
+.st-key-btn_top_mode_credit button[kind="secondary"],
+.st-key-btn_top_mode_agent button[data-testid="stBaseButton-secondary"],
+.st-key-btn_top_mode_credit button[data-testid="stBaseButton-secondary"] {
+    background-color: #ffffff !important;
+    border: 1.5px solid #cbd5e1 !important;
+    color: #334155 !important;
+    border-radius: 12px !important;
+}
+.st-key-btn_top_mode_agent button[kind="secondary"]:hover,
+.st-key-btn_top_mode_credit button[kind="secondary"]:hover,
+.st-key-btn_top_mode_agent button[data-testid="stBaseButton-secondary"]:hover,
+.st-key-btn_top_mode_credit button[data-testid="stBaseButton-secondary"]:hover {
+    background-color: #f0fdf4 !important;
+    border-color: #16a34a !important;
+    color: #15803d !important;
+}
+
 /* 불필요한 Streamlit 기본 푸터 숨김 */
 footer {visibility: hidden;}
 </style>
@@ -1809,16 +1874,26 @@ elif pro_toggle_on:
 else:
     mode_status_str = "⚡ **Flash 표준 모드 (고속 검토)**"
 
-# 🔀 [상단 2열 모드 전환 스위치 — "자율 에이전트AI" / "통합고용세액공제" 2버튼 분리 및 즉시 st.stop() 격리]
+# 🔀 [우측 상단 1/3 영역 모드 전환 스위치 — "자율 에이전트AI" / "통합고용세액공제" 2버튼 분리 및 즉시 st.stop() 격리]
 if "app_top_mode" not in st.session_state:
     st.session_state.app_top_mode = "AGENT"
-_m_col1, _m_col2 = st.columns(2)
+_sp_col, _m_col1, _m_col2 = st.columns([4, 1, 1], gap="small")
 with _m_col1:
-    if st.button("자율 에이전트AI", type=("primary" if st.session_state.app_top_mode == "AGENT" else "secondary"), use_container_width=True):
+    if st.button(
+        "자율 에이전트AI",
+        key="btn_top_mode_agent",
+        type=("primary" if st.session_state.app_top_mode == "AGENT" else "secondary"),
+        use_container_width=True,
+    ):
         st.session_state.app_top_mode = "AGENT"
         st.rerun()
 with _m_col2:
-    if st.button("통합고용세액공제", type=("primary" if st.session_state.app_top_mode == "CREDIT_CALC" else "secondary"), use_container_width=True):
+    if st.button(
+        "통합고용세액공제",
+        key="btn_top_mode_credit",
+        type=("primary" if st.session_state.app_top_mode == "CREDIT_CALC" else "secondary"),
+        use_container_width=True,
+    ):
         st.session_state.app_top_mode = "CREDIT_CALC"
         st.rerun()
 if st.session_state.app_top_mode == "CREDIT_CALC":
