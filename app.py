@@ -355,6 +355,7 @@ footer {visibility: hidden;}
 # ---------------------------------------------------------
 ROOM_IDS = [f"대화방 {i}" for i in range(1, 11)]
 STORAGE_DIR = ".workspace_storage"
+WORKSPACE_STORAGE_DIR = STORAGE_DIR
 os.makedirs(STORAGE_DIR, exist_ok=True)
 EXPIRY_FILE_PATH = os.path.join(STORAGE_DIR, "api_expiry_dates.json")
 ROOM_LAW_ACK_PATH = os.path.join(STORAGE_DIR, "room_law_ack.json")
@@ -1430,8 +1431,240 @@ def _render_official_reason_viewer_body(
             )
             _trigger_agent_task(effective_ws_id, selected_room, q_str, pro_toggle_on, budget_exceeded=False, force_flash=False)
 
+# ---------------------------------------------------------
+# 🔐 [🔑 API키] 관리자(Manager) 전용 Google 계정 로그인 보안 모듈
+# ---------------------------------------------------------
+MANAGER_AUTH_FILE = os.path.join(STORAGE_DIR, "_manager_google_auth.json")
+
+def _hash_manager_secret(val: str) -> str:
+    return hashlib.sha256(val.strip().encode("utf-8")).hexdigest()
+
+def _mask_google_email(email_str: str) -> str:
+    email_str = (email_str or "").strip()
+    if "@" not in email_str:
+        return email_str
+    local_part, domain_part = email_str.split("@", 1)
+    if len(local_part) <= 2:
+        masked_local = local_part[0] + "***" if local_part else "***"
+    else:
+        masked_local = local_part[:2] + "*" * max(3, len(local_part) - 2)
+    return f"{masked_local}@{domain_part}"
+
+def _load_manager_google_config() -> dict:
+    """
+    1순위: Streamlit Secrets / 환경변수 (MANAGER_GOOGLE_EMAIL, ADMIN_GOOGLE_EMAIL, OWNER_EMAIL)
+    2순위: 로컬 보안 설정 파일 (_manager_google_auth.json)
+    """
+    cfg = {"email": "", "pin_hash": "", "source": "none"}
+    env_email = ""
+    env_pin = ""
+    for k in ["MANAGER_GOOGLE_EMAIL", "ADMIN_GOOGLE_EMAIL", "OWNER_GOOGLE_EMAIL", "MANAGER_EMAIL", "ADMIN_EMAIL"]:
+        val = os.environ.get(k, "").strip()
+        if not val and hasattr(st, "secrets"):
+            try:
+                val = str(st.secrets.get(k, "")).strip()
+            except Exception:
+                val = ""
+        if val and "@" in val:
+            env_email = val.lower()
+            break
+
+    for pk in ["MANAGER_SECURITY_PIN", "MANAGER_PASSWORD", "ADMIN_PASSWORD", "MANAGER_PIN"]:
+        pval = os.environ.get(pk, "").strip()
+        if not pval and hasattr(st, "secrets"):
+            try:
+                pval = str(st.secrets.get(pk, "")).strip()
+            except Exception:
+                pval = ""
+        if pval:
+            env_pin = pval
+            break
+
+    if os.path.exists(MANAGER_AUTH_FILE):
+        try:
+            with open(MANAGER_AUTH_FILE, "r", encoding="utf-8") as f:
+                disk_cfg = json.load(f)
+            if isinstance(disk_cfg, dict):
+                cfg["email"] = str(disk_cfg.get("email", "")).strip().lower()
+                cfg["pin_hash"] = str(disk_cfg.get("pin_hash", "")).strip()
+                cfg["source"] = "disk"
+        except Exception:
+            pass
+
+    if env_email:
+        cfg["email"] = env_email
+        if env_pin:
+            cfg["pin_hash"] = _hash_manager_secret(env_pin)
+        cfg["source"] = "secrets"
+
+    return cfg
+
+def _save_manager_google_config(email_str: str, pin_plain: str) -> None:
+    os.makedirs(STORAGE_DIR, exist_ok=True)
+    payload = {
+        "email": email_str.strip().lower(),
+        "pin_hash": _hash_manager_secret(pin_plain),
+        "updated_at": datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")
+    }
+    with open(MANAGER_AUTH_FILE, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+def _get_streamlit_logged_google_email() -> str:
+    """Streamlit 네이티브 Google OAuth (st.user / st.experimental_user) 로그인 이메일 감지"""
+    try:
+        u_obj = getattr(st, "user", None) or getattr(st, "experimental_user", None)
+        if u_obj is not None:
+            is_logged = getattr(u_obj, "is_logged_in", True)
+            raw_email = getattr(u_obj, "email", None)
+            if not raw_email and isinstance(u_obj, dict):
+                raw_email = u_obj.get("email")
+            if is_logged and raw_email:
+                clean_em = str(raw_email).strip().lower()
+                # Streamlit 기본 더미 이메일(test@example.com)은 비로그인으로 처리
+                if clean_em and clean_em != "test@example.com" and "@" in clean_em:
+                    return clean_em
+    except Exception:
+        pass
+    return ""
+
 def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: dict):
-    st.caption("현재 에이전트AI에 연동된 전체 API 상태와 만료 예정 키 갱신 바로가기입니다.")
+    mgr_cfg = _load_manager_google_config()
+    registered_email = mgr_cfg.get("email", "").strip().lower()
+    registered_pin_hash = mgr_cfg.get("pin_hash", "").strip()
+    oauth_google_email = _get_streamlit_logged_google_email()
+    session_authed_email = str(st.session_state.get("manager_google_authed_email", "")).strip().lower()
+
+    # ---------------------------------------------------------
+    # [보안 관문 1] 아직 관리자 Google 계정이 최초 등록되지 않은 경우 -> 최초 1회 등록 창
+    # ---------------------------------------------------------
+    if not registered_email:
+        st.warning("🔒 **[보안 설정 필요] 관리자(Manager) Google 계정을 최초 1회 등록해 주세요.**")
+        st.caption(
+            "아무나 `[🔑 API키]` 버튼을 눌러 API 키 목록이나 관리 링크를 열람·복사하지 못하도록, "
+            "본인(Manager)의 Google 계정 이메일과 관리자 보안 비밀번호를 등록합니다. "
+            "한 번 등록하면 관리자 구글 계정으로 로그인해야만 이 창을 열 수 있습니다."
+        )
+        with st.container(border=True):
+            st.markdown("##### 🛡️ 관리자(Manager) Google 계정 최초 등록")
+            default_em = oauth_google_email if oauth_google_email else ""
+            reg_email = st.text_input(
+                "관리자 Google 이메일 주소",
+                value=default_em,
+                placeholder="예: myaccount@gmail.com",
+                key="mgr_reg_google_email"
+            )
+            reg_pin1 = st.text_input(
+                "관리자 전용 보안 비밀번호 설정 (API키 잠금 해제용)",
+                type="password",
+                placeholder="본인만 아는 보안 비밀번호 입력",
+                key="mgr_reg_pin1"
+            )
+            reg_pin2 = st.text_input(
+                "관리자 전용 보안 비밀번호 확인",
+                type="password",
+                placeholder="보안 비밀번호 다시 입력",
+                key="mgr_reg_pin2"
+            )
+            if st.button("✅ 내 Google 계정을 유일한 관리자로 등록 및 잠금 활성화", type="primary", use_container_width=True):
+                clean_reg_em = reg_email.strip().lower()
+                if not clean_reg_em or "@" not in clean_reg_em:
+                    st.error("유효한 Google 이메일 주소(예: example@gmail.com)를 입력해 주세요.")
+                elif len(reg_pin1.strip()) < 4:
+                    st.error("보안 비밀번호는 최소 4자리 이상 입력해 주세요.")
+                elif reg_pin1.strip() != reg_pin2.strip():
+                    st.error("입력하신 두 보안 비밀번호가 일치하지 않습니다.")
+                else:
+                    _save_manager_google_config(clean_reg_em, reg_pin1.strip())
+                    st.session_state.manager_google_authed_email = clean_reg_em
+                    st.success(f"✅ 관리자 Google 계정({clean_reg_em}) 등록 및 보안 잠금이 완료되었습니다!")
+                    st.rerun()
+        return
+
+    # ---------------------------------------------------------
+    # [보안 관문 2] 관리자 본인 Google 로그인 여부 검증
+    # - Streamlit Google OAuth(st.user.email)가 등록된 관리자 이메일과 일치하거나,
+    # - 현재 세션에서 관리자 Google 계정 + 보안 비밀번호 검증을 통과한 경우에만 허용
+    # ---------------------------------------------------------
+    is_oauth_manager = bool(oauth_google_email and oauth_google_email == registered_email)
+    is_session_manager = bool(session_authed_email and session_authed_email == registered_email)
+    is_manager_verified = is_oauth_manager or is_session_manager
+
+    if not is_manager_verified:
+        masked_mgr = _mask_google_email(registered_email)
+        st.error(
+            f"🔒 **관리자(Manager) 전용 보안 구역입니다.** "
+            f"API 키 보호를 위해 등록된 관리자 Google 계정(**`{masked_mgr}`**)으로 로그인해야 열람할 수 있습니다."
+        )
+        if oauth_google_email and oauth_google_email != registered_email:
+            st.warning(
+                f"🚫 현재 브라우저에 로그인된 Google 계정(`{oauth_google_email}`)은 관리자 계정이 아닙니다. "
+                f"관리자 계정(`{masked_mgr}`)으로 로그인해 주세요."
+            )
+
+        with st.container(border=True):
+            st.markdown("##### 🌐 방법 1. Google 계정으로 바로 로그인 (Streamlit OAuth)")
+            st.caption("Streamlit Cloud Google OAuth가 설정된 경우 아래 버튼을 누르면 구글 로그인 창으로 연결됩니다.")
+            c_gl1, c_gl2 = st.columns(2)
+            with c_gl1:
+                if st.button("🔐 Google 로그인 (Manager 인증)", type="primary", use_container_width=True, key="btn_st_google_oauth"):
+                    if hasattr(st, "login"):
+                        try:
+                            st.login()
+                        except Exception:
+                            st.session_state.show_google_oauth_guide = True
+                    else:
+                        st.session_state.show_google_oauth_guide = True
+            with c_gl2:
+                st.link_button("🌐 Google 계정 로그인 페이지 열기", "https://accounts.google.com/", use_container_width=True)
+
+            if st.session_state.get("show_google_oauth_guide"):
+                st.info(
+                    "💡 현재 앱에 Streamlit OIDC(`secrets.toml`의 `[auth]`) 설정이 없어 아래 **방법 2(관리자 Google 이메일 + 보안 비밀번호 인증)**로 즉시 로그인하실 수 있습니다."
+                )
+
+        with st.container(border=True):
+            st.markdown("##### 🔑 방법 2. 등록된 Manager Google 계정 & 보안 암호로 열기")
+            input_g_email = st.text_input(
+                "Google 계정 이메일",
+                placeholder=f"등록된 관리자 구글 이메일 입력 ({masked_mgr})",
+                key="login_mgr_google_email"
+            )
+            input_g_pin = st.text_input(
+                "관리자 보안 비밀번호",
+                type="password",
+                placeholder="관리자 보안 비밀번호 입력",
+                key="login_mgr_google_pin"
+            )
+            if st.button("🔓 관리자 Google 계정 인증 및 API키 열기", type="primary", use_container_width=True, key="btn_verify_mgr_pin"):
+                cand_email = input_g_email.strip().lower()
+                cand_pin_hash = _hash_manager_secret(input_g_pin.strip())
+                if cand_email != registered_email:
+                    st.error("🚫 입력하신 이메일이 등록된 관리자(Manager) Google 계정과 일치하지 않습니다.")
+                elif registered_pin_hash and cand_pin_hash != registered_pin_hash:
+                    st.error("🚫 관리자 보안 비밀번호가 일치하지 않습니다.")
+                else:
+                    st.session_state.manager_google_authed_email = registered_email
+                    st.success("✅ 관리자(Manager) Google 계정 인증이 완료되었습니다.")
+                    st.rerun()
+        return
+
+    # ---------------------------------------------------------
+    # [보안 관문 통과 후] 관리자 인증 상태바 + 로그아웃(잠금) 버튼
+    # ---------------------------------------------------------
+    with st.container(border=True):
+        c_top1, c_top2 = st.columns([3.6, 1.4])
+        with c_top1:
+            st.markdown(f"🛡️ **관리자(Manager) Google 인증 완료:** `{registered_email}`")
+            st.caption("현재 에이전트AI에 연동된 전체 API 상태와 만료 예정 키 갱신 바로가기입니다.")
+        with c_top2:
+            if st.button("🔒 잠금 (로그아웃)", use_container_width=True, key="btn_lock_api_modal"):
+                st.session_state.manager_google_authed_email = ""
+                if is_oauth_manager and hasattr(st, "logout"):
+                    try:
+                        st.logout()
+                    except Exception:
+                        pass
+                st.rerun()
 
     # 1순위 최상단: Google AI Studio (Gemini 유료 API)
     gemini_ok = _check_api_configured(["GEMINI_PAID_KEY", "GEMINI_API_KEY"])
@@ -1520,6 +1753,20 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
         save_api_expiry_dates(updated_expiry_map)
         st.success("API 만료일이 저장되었습니다!")
         st.rerun()
+
+    with st.expander("⚙️ 관리자(Manager) Google 계정 또는 보안 비밀번호 변경"):
+        new_mgr_em = st.text_input("변경할 관리자 Google 이메일", value=registered_email, key="chg_mgr_email")
+        new_mgr_pw = st.text_input("새 관리자 보안 비밀번호 (4자리 이상)", type="password", key="chg_mgr_pw")
+        if st.button("🔄 관리자 보안 정보 업데이트", key="btn_chg_mgr_save"):
+            if "@" not in new_mgr_em.strip():
+                st.error("유효한 Google 이메일을 입력해 주세요.")
+            elif len(new_mgr_pw.strip()) < 4:
+                st.error("새 보안 비밀번호를 4자리 이상 입력해 주세요.")
+            else:
+                _save_manager_google_config(new_mgr_em.strip().lower(), new_mgr_pw.strip())
+                st.session_state.manager_google_authed_email = new_mgr_em.strip().lower()
+                st.success("✅ 관리자 Google 계정 및 보안 비밀번호가 변경되었습니다.")
+                st.rerun()
 
 if _dialog_decorator:
     @_dialog_decorator("📜 법제처 공식 『제·개정이유 및 주요내용』 원문 뷰어 (0토큰)", width="large")
@@ -1945,80 +2192,92 @@ for idx, message in enumerate(current_messages):
                 st.code(_extract_clean_copy_text(message["content"]), language="markdown")
 
 # ---------------------------------------------------------
-# 4. 메인 화면 하단 파일 드래그 앤 드롭 첨부 + 채팅 질문 입력창
+# 4. 메인 화면 하단: [질문 입력창(위)] + [파일 드래그 앤 드롭 업로드(질문칸 밑)]
 # ---------------------------------------------------------
 room_file_entry = _normalize_room_file_entry(st.session_state.room_files[selected_room])
 st.session_state.room_files[selected_room] = room_file_entry
 saved_items = room_file_entry["items"]
 reset_cnt = st.session_state.get(f"reset_cnt_{selected_room}", 0)
 
-if saved_items:
-    with st.container(border=True):
-        st.markdown(
-            f"<div style='font-size:0.83rem; font-weight:700; color:#15803d; margin-bottom:4px;'>"
-            f"📎 현재 [{selected_room}]에 첨부된 자료 ({len(saved_items)}개) — 질문 시 자동 반영됩니다</div>",
-            unsafe_allow_html=True
-        )
-        for f_idx, f_item in enumerate(saved_items):
-            c_f1, c_f2 = st.columns([9, 1])
-            with c_f1:
-                st.caption(f"📄 **{f_item['name']}** ({len(f_item['text']):,}자 추출됨)")
-            with c_f2:
-                if st.button("✕", key=f"del_f_{selected_room}_{f_idx}", help=f"{f_item['name']} 삭제"):
-                    saved_items.pop(f_idx)
-                    st.session_state.room_files[selected_room] = _normalize_room_file_entry({"items": saved_items})
-                    st.session_state[f"reset_cnt_{selected_room}"] = reset_cnt + 1
-                    save_workspace_to_disk(effective_ws_id)
-                    st.rerun()
-        if len(saved_items) > 1:
-            if st.button("❌ 첨부파일 전체 비우기", key=f"clear_all_f_{selected_room}"):
-                st.session_state.room_files[selected_room] = {"name": None, "text": "", "items": []}
-                st.session_state[f"reset_cnt_{selected_room}"] = reset_cnt + 1
-                save_workspace_to_disk(effective_ws_id)
-                st.rerun()
-
-uploaded_bottom_files = st.file_uploader(
-    "📎 여기에 검토할 파일(엑셀·PDF·워드·사진)을 마우스로 끌어다 놓으세요 (다중 첨부 가능)",
-    type=["xlsx", "xls", "csv", "pdf", "docx", "png", "jpg", "jpeg"],
-    accept_multiple_files=True,
-    key=f"bottom_uploader_{effective_ws_id}_{selected_room}_{reset_cnt}"
-)
-if uploaded_bottom_files:
-    existing_names = {it["name"] for it in saved_items}
-    new_added = False
-    for uf in uploaded_bottom_files:
-        if uf.name not in existing_names:
-            with st.spinner(f"📄 '{uf.name}' 내용 추출 및 저장 중..."):
-                extracted_text = extract_file_content(uf, room_key=active_room_key)
-                saved_items.append({"name": uf.name, "text": extracted_text})
-                existing_names.add(uf.name)
-                new_added = True
-    if new_added:
-        st.session_state.room_files[selected_room] = _normalize_room_file_entry({"items": saved_items})
-        save_workspace_to_disk(effective_ws_id)
-        st.rerun()
-
 chat_input_placeholder = (
     f"⏳ [{selected_room}] 현재 백그라운드 정밀 검토 진행 중입니다... (다른 대화방으로 이동하여 추가 질문을 하실 수 있습니다)"
     if is_current_room_running else
-    f"[{selected_room}] 검토할 이슈를 입력하세요 (위 박스에 파일 드래그 첨부 가능 / 좌측 Pro 토글 ON 시 3배 개방)"
+    f"[{selected_room}] 검토할 이슈를 입력하세요 (질문칸 아래 박스에 파일 드래그 첨부 가능 / 좌측 Pro 토글 ON 시 3배 개방)"
 )
 
-_chat_sig = inspect.signature(st.chat_input).parameters
-if "accept_file" in _chat_sig:
-    chat_val = st.chat_input(
-        placeholder=chat_input_placeholder,
-        disabled=is_current_room_running,
-        accept_file="multiple",
-        file_type=["xlsx", "xls", "csv", "pdf", "docx", "png", "jpg", "jpeg"],
-        key=f"chat_input_{effective_ws_id}_{selected_room}"
+# st.container() 내부에서 st.chat_input을 먼저 렌더링하고, 바로 그 밑에 st.file_uploader를 배치하여
+# 파일 업로드 영역이 항상 질문 적는 칸(chat_input) 아래에 위치하도록 고정합니다.
+with st.container():
+    _chat_sig = inspect.signature(st.chat_input).parameters
+    try:
+        if "accept_file" in _chat_sig:
+            chat_val = st.chat_input(
+                placeholder=chat_input_placeholder,
+                disabled=is_current_room_running,
+                accept_file="multiple",
+                file_type=["xlsx", "xls", "csv", "pdf", "docx", "png", "jpg", "jpeg"],
+                key=f"chat_input_{effective_ws_id}_{selected_room}"
+            )
+        else:
+            chat_val = st.chat_input(
+                placeholder=chat_input_placeholder,
+                disabled=is_current_room_running,
+                key=f"chat_input_{effective_ws_id}_{selected_room}"
+            )
+    except Exception:
+        chat_val = st.chat_input(
+            placeholder=chat_input_placeholder,
+            disabled=is_current_room_running,
+            key=f"chat_input_{effective_ws_id}_{selected_room}"
+        )
+
+    # 질문 입력칸 바로 밑: 파일 드래그 앤 드롭 업로더
+    uploaded_bottom_files = st.file_uploader(
+        "📎 여기에 검토할 파일(엑셀·PDF·워드·사진)을 마우스로 끌어다 놓으세요 (다중 첨부 가능)",
+        type=["xlsx", "xls", "csv", "pdf", "docx", "png", "jpg", "jpeg"],
+        accept_multiple_files=True,
+        key=f"bottom_uploader_{effective_ws_id}_{selected_room}_{reset_cnt}"
     )
-else:
-    chat_val = st.chat_input(
-        placeholder=chat_input_placeholder,
-        disabled=is_current_room_running,
-        key=f"chat_input_{effective_ws_id}_{selected_room}"
-    )
+    if uploaded_bottom_files:
+        existing_names = {it["name"] for it in saved_items}
+        new_added = False
+        for uf in uploaded_bottom_files:
+            if uf.name not in existing_names:
+                with st.spinner(f"📄 '{uf.name}' 내용 추출 및 저장 중..."):
+                    extracted_text = extract_file_content(uf, room_key=active_room_key)
+                    saved_items.append({"name": uf.name, "text": extracted_text})
+                    existing_names.add(uf.name)
+                    new_added = True
+        if new_added:
+            st.session_state.room_files[selected_room] = _normalize_room_file_entry({"items": saved_items})
+            save_workspace_to_disk(effective_ws_id)
+            st.rerun()
+
+    # 첨부된 파일 목록 표시 및 개별/전체 삭제 (파일 업로더 아래)
+    if saved_items:
+        with st.container(border=True):
+            st.markdown(
+                f"<div style='font-size:0.83rem; font-weight:700; color:#15803d; margin-bottom:4px;'>"
+                f"📎 현재 [{selected_room}]에 첨부된 자료 ({len(saved_items)}개) — 질문 시 자동 반영됩니다</div>",
+                unsafe_allow_html=True
+            )
+            for f_idx, f_item in enumerate(saved_items):
+                c_f1, c_f2 = st.columns([9, 1])
+                with c_f1:
+                    st.caption(f"📄 **{f_item['name']}** ({len(f_item['text']):,}자 추출됨)")
+                with c_f2:
+                    if st.button("✕", key=f"del_f_{selected_room}_{f_idx}", help=f"{f_item['name']} 삭제"):
+                        saved_items.pop(f_idx)
+                        st.session_state.room_files[selected_room] = _normalize_room_file_entry({"items": saved_items})
+                        st.session_state[f"reset_cnt_{selected_room}"] = reset_cnt + 1
+                        save_workspace_to_disk(effective_ws_id)
+                        st.rerun()
+            if len(saved_items) > 1:
+                if st.button("❌ 첨부파일 전체 비우기", key=f"clear_all_f_{selected_room}"):
+                    st.session_state.room_files[selected_room] = {"name": None, "text": "", "items": []}
+                    st.session_state[f"reset_cnt_{selected_room}"] = reset_cnt + 1
+                    save_workspace_to_disk(effective_ws_id)
+                    st.rerun()
 
 if chat_val:
     if isinstance(chat_val, str):
