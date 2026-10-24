@@ -64,7 +64,7 @@ ROOM_LAW_ACK_PATH = os.path.join(STORAGE_DIR, "room_law_ack.json")
 MANAGER_AUTH_FILE = os.path.join(STORAGE_DIR, "_manager_google_auth.json")
 
 # ---------------------------------------------------------
-# 💎 프리미엄 UI/UX CSS (좌측 사이드바 정렬 + 옵션 C 오로라 로딩 LED + 우측 본문 15.5px 가독성 최적화)
+# 💎 프리미엄 UI/UX CSS (좌측 사이드바 겹침 원천 해결 + 옵션 C 오로라 로딩 LED + 우측 본문 15.5px 가독성 최적화)
 # ---------------------------------------------------------
 st.markdown("""
 <style>
@@ -191,8 +191,8 @@ div.stButton > button[data-testid="stBaseButton-primary"] p {
 /* 🗑️ 입체감이 살아있는 [현재 방 비우기] 전용 3D 버튼 및 하단 간격 분리 */
 .st-key-btn_clear_current_room {
     margin-top: 2px !important;
-    margin-bottom: 8px !important;
-    padding-bottom: 8px !important;
+    margin-bottom: 10px !important;
+    padding-bottom: 10px !important;
     border-bottom: 1px dashed #cbd5e1 !important;
 }
 .st-key-btn_clear_current_room button {
@@ -2139,7 +2139,7 @@ if _dialog_decorator:
         _render_api_key_manager_body(expiry_all_status, law_prom_map)
 
 # ---------------------------------------------------------
-# 2. 왼쪽 사이드바 제어판 (현재 크기·비율 유지 + 옵션 C 오로라 로딩 LED)
+# 2. 왼쪽 사이드바 제어판 (현재 크기·비율 유지 + 겹침 방지 여백 최적화 + 옵션 C 오로라 로딩 LED)
 # ---------------------------------------------------------
 task_mgr = get_background_task_manager()
 expiry_alerts, expiry_all_status = check_api_expiry_alerts()
@@ -2172,7 +2172,7 @@ with st.sidebar:
             st.rerun()
 
     st.markdown(
-        "<div style='font-size:1.02rem; font-weight:800; color:#0f172a; line-height:1.4; margin-top:4px; margin-bottom:2px; letter-spacing:-0.3px;'>"
+        "<div style='font-size:1.00rem; font-weight:800; color:#0f172a; line-height:1.4; margin-top:10px; margin-bottom:6px; padding-left:2px; letter-spacing:-0.3px;'>"
         "⚙️ 에이전트 제어판</div>",
         unsafe_allow_html=True
     )
