@@ -612,7 +612,7 @@ def _strip_fake_cases_in_track2(answer: str, trace: dict) -> str:
     return "\n".join(out_lines)
 
 # ---------------------------------------------------------
-# 🧪 의미 검증 (검증 모델 — 긴 원문 생략 표시 및 strict 모드 연동)
+# 🧪 의미 검증 (검증 모델 — 감수기 원문 글자 수 12,000자 확대 및 strict 모드 연동)
 # ---------------------------------------------------------
 def _strip_md(text: str) -> str:
     return re.sub(r"[*_`>#]", "", text or "").strip(" -")
@@ -620,8 +620,8 @@ def _strip_md(text: str) -> str:
 def _extract_claims(answer: str, trace: dict, max_claims: int = 20) -> tuple[list, dict]:
     mult = 3 if trace.get("unleash") else 1
     effective_max_claims = max_claims * mult
-    src_char_cap = 6000 * mult
-    total_char_cap = 40000 * mult
+    src_char_cap = 12000 * mult
+    total_char_cap = 60000 * mult
 
     details = trace["detail"]
     art_texts = trace.get("article_texts", {})
@@ -778,12 +778,12 @@ def _apply_semantic_results(answer: str, claims: list, verdicts: dict, sources: 
 
 
 # ---------------------------------------------------------
-# ✨ 스마트 법령 텍스트 압축기 & law_api.py 15,000자 절단 우회 직접 파서
+# ✨ 스마트 법령 텍스트 압축기 (조문당 20,000자 확대) & law_api.py 절단 우회 직접 파서
 # ---------------------------------------------------------
 def _fetch_full_law_xml_direct(doc_id: str, query_filter: str = "") -> str:
     """
-    law_api.py가 조문을 15,000자에서 자르는 한계를 우회하기 위해,
-    원문이 잘렸거나 Pro 모드일 때 법제처 DRF XML에서 직접 조문 전체를 무손실로 읽어옵니다.
+    law_api.py가 조문을 12,000~15,000자에서 자르는 한계를 우회하기 위해,
+    원문이 길거나 Pro 모드일 때 법제처 DRF XML에서 직접 조문 전체를 무손실로 읽어옵니다.
     """
     oc = get_law_oc_auto()
     if not oc or not str(doc_id).strip().isdigit():
@@ -878,7 +878,7 @@ def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
     cleaned = re.sub(r"[ \t]+", " ", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
 
-    base_limit = 12000 if art_matches else 3500
+    base_limit = 20000 if art_matches else 5000
     limit = base_limit * mult
     if len(cleaned) > limit:
         return (cleaned[:limit]
@@ -1097,7 +1097,8 @@ def get_law_details_for_gemini(doc_id: str, target: str = "law", query_filter: s
         except Exception as e:
             raw_text = f"❌ 원문 조회 오류: {e}"
 
-        if target == "law" and (_is_unleashed() or len(raw_text or "") >= 14500):
+        # law_api.py의 12,000~15,000자 절단 한계에 걸린 대형 조문은 법제처 XML 직접 파서로 무손실 전문을 가져와 20,000자까지 보존
+        if target == "law" and (_is_unleashed() or len(raw_text or "") >= 11800):
             full_direct = _fetch_full_law_xml_direct(doc_id, query_filter)
             if full_direct and len(full_direct) > len(raw_text or ""):
                 raw_text = full_direct
@@ -1560,7 +1561,7 @@ def _inject_direct_law_links(text: str, trace: dict = None) -> str:
             if m_bullet and "](" not in line and "http://" not in line and "https://" not in line:
                 prefix_bullet, item_body = m_bullet.group(1), m_bullet.group(2).strip()
                 # 관련법령 줄 끝에 중복 부착된 [조문:...] 태그가 있으면 깔끔히 정리 후 줄 전체에 직링크 부여
-                clean_item_body = re.sub(r"\s*\[((?:판례|심판례|해석례|예규|조문)\s*:\s*[^\]]+)\]\s*", lambda m: m.group(1).split(":", 1)[-1].strip() + " ", item_body).strip() or item_body
+                clean_item_body = re.sub(r"\s*\[(?:판례|심판례|해석례|예규|조문)\s*:\s*[^\]]+\]\s*$", "", item_body).strip() or item_body
                 direct_url = ""
                 compact_body = _norm(item_body)
 
@@ -1671,7 +1672,7 @@ def _execute_with_key_and_model(
     unleash: bool = False
 ) -> tuple[str, int]:
     timeout_ms = 120000 if unleash else 60000
-    max_remote_calls = 30 if unleash else 16
+    max_remote_calls = 30 if unleash else 20
 
     try:
         temp_client = genai.Client(api_key=api_key, http_options={"timeout": timeout_ms})
@@ -1887,7 +1888,7 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False, room
         today_str = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y년 %m월 %d일")
         unleash_guide = (
             "\n[🚀 PRO 3배 리미트 해제 모드 가동 중: 법령 검색 최대 21회, 원문 조회 최대 36회, 판례·심판례·예규 조회 최대 6~9회, "
-            "원문 길이 최대 36,000자까지 한도가 3배 확장되었습니다. 관련 법령 조문과 판례·예규의 구체적 사실관계(이유)까지 빠짐없이 깊이 있게 대조하여 작성하세요.]\n"
+            "원문 길이 최대 60,000자까지 한도가 3배 확장되었습니다. 관련 법령 조문과 판례·예규의 구체적 사실관계(이유)까지 빠짐없이 깊이 있게 대조하여 작성하세요.]\n"
             if unleash_mode else ""
         )
         dynamic_prompt = (
