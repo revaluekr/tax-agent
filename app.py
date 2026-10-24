@@ -9,6 +9,7 @@ import threading
 import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
+from collections import Counter
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
 import streamlit as st
@@ -484,6 +485,11 @@ WATCHED_TAX_LAWS = [
     "근로기준법"
 ]
 
+# [보강 ③] 콜론(:)이 빠진 [조문 조세특례제한법 제29조의8] 또는 [조문조세특례제한법...] 형태까지 모두 인식하는 정규식
+_CITED_ARTICLE_TAG_RE = re.compile(
+    r"\[조문(?:\s*[:：]\s*|\s*)(?=[가-힣A-Za-z0-9「])([^\]]+)\]"
+)
+
 def _get_law_oc() -> str:
     """agent.py, law_api.py, config.py, st.secrets, 환경변수에서 법제처 OC 키(LAW_OPEN_API_KEY 최우선)를 자동 추출합니다."""
     if hasattr(agent, "get_law_oc_auto"):
@@ -664,12 +670,12 @@ def fetch_official_revision_reason_zero_token(
     return f"ℹ️ 「{law_name}」의 해당 공포본에서 별도 제·개정이유서 텍스트를 찾지 못했습니다. 우측의 '⚡ 신·구법 비교' 버튼을 눌러 조문별 비교표를 확인하세요."
 
 def extract_cited_articles_map_in_room(messages: list[dict]) -> dict[str, list[str]]:
-    """이 대화방의 본문 답변에서 실제 [조문:...] 태그로 인용된 (정규화 법령명 -> 조문번호 리스트)만 정확히 추출합니다."""
+    """이 대화방의 본문 답변에서 실제 [조문:...] (콜론 누락 포함) 태그로 인용된 (정규화 법령명 -> 조문번호 리스트)만 정확히 추출합니다."""
     cited_map: dict[str, list[str]] = {}
     if not messages:
         return cited_map
     blob = "\n".join(m.get("content", "") for m in messages if m.get("role") == "assistant")
-    for m in re.finditer(r"\[조문\s*:\s*([^\]]+)\]", blob):
+    for m in _CITED_ARTICLE_TAG_RE.finditer(blob):
         raw_ref = m.group(1).strip()
         m_art = re.search(r"(제\s*\d+\s*조(?:\s*의\s*\d+)?(?:\s*제\s*\d+\s*항)?)", raw_ref)
         law_part = re.sub(r"제\s*\d+\s*조.*", "", raw_ref).replace(" ", "").replace("「", "").replace("」", "").strip()
@@ -780,24 +786,44 @@ def save_room_law_ack(ack_data: dict) -> None:
         pass
 
 def extract_cited_laws_in_room(messages: list[dict], law_prom_map: dict[str, dict]) -> list[dict]:
+    """
+    [보강 ② & ③]
+    - 콜론(:)이 빠진 [조문 ...] 태그까지 모두 추출합니다.
+    - 단순 가나다순(sorted)이 아니라 **본문에서 실제로 가장 많이 인용된 빈도순(동률 시 첫 등장 순서)**으로 정렬하여,
+      부수적 인용 법령(예: 법인세법 시행령 1회) 대신 본문의 핵심 법령(예: 조세특례제한법 다수 인용)이
+      항상 대표(1순위)로 선정되도록 보장합니다.
+    """
     if not messages or not law_prom_map:
         return []
     blob = "\n".join(m.get("content", "") for m in messages if m.get("role") == "assistant")
     if not blob:
         return []
 
-    found_clean_names = set()
-    for m in re.finditer(r"\[조문\s*:\s*([^\]]+)\]", blob):
+    cite_counts: Counter = Counter()
+    first_seen_order: dict[str, int] = {}
+
+    for idx, m in enumerate(_CITED_ARTICLE_TAG_RE.finditer(blob)):
         val = m.group(1)
         val_clean = re.sub(r"제\s*\d+\s*조.*", "", val).replace(" ", "").replace("「", "").replace("」", "").strip()
+        matched_cname = ""
         if val_clean in law_prom_map:
-            found_clean_names.add(val_clean)
+            matched_cname = val_clean
         elif val_clean.endswith("시행규칙"):
             base_c = val_clean.replace("시행규칙", "")
             if base_c in law_prom_map:
-                found_clean_names.add(base_c)
+                matched_cname = base_c
 
-    return [law_prom_map[cname] for cname in sorted(found_clean_names)]
+        if matched_cname:
+            cite_counts[matched_cname] += 1
+            if matched_cname not in first_seen_order:
+                first_seen_order[matched_cname] = idx
+
+    # 인용 횟수가 많은 순서(내림차순) -> 먼저 등장한 순서(오름차순)로 정렬
+    ordered_cnames = sorted(
+        cite_counts.keys(),
+        key=lambda c: (-cite_counts[c], first_seen_order[c])
+    )
+    return [law_prom_map[cname] for cname in ordered_cnames]
 
 def get_room_revision_alerts(ws_id: str, room_id: str, messages: list[dict], law_prom_map: dict[str, dict]) -> tuple[list[dict], bool]:
     cited_list = extract_cited_laws_in_room(messages, law_prom_map)
@@ -825,6 +851,17 @@ def get_room_revision_alerts(ws_id: str, room_id: str, messages: list[dict], law
 
     if post_rev_alerts:
         return post_rev_alerts, True
+
+    # [보강 ②] 부수적으로 1회 인용된 시행령만 60일 이내 공포 조건에 걸려 배너가 뜰 때,
+    # 이 대화방에서 가장 많이 인용된 1순위 핵심 주력 법령(cited_list[0])이 확인(ack) 전이라면
+    # 맨 앞(대표 법령)에 함께 포함시켜 개정이유서 모달 및 신·구법 비교의 중심을 잡아줍니다.
+    if recent_info_alerts and cited_list:
+        primary_law = cited_list[0]
+        p_cname = primary_law["clean_name"]
+        if room_ack.get(p_cname) != primary_law["version_key"]:
+            if all(x["clean_name"] != p_cname for x in recent_info_alerts):
+                recent_info_alerts.insert(0, primary_law)
+
     return recent_info_alerts, False
 
 def acknowledge_room_laws(ws_id: str, room_id: str, law_items: list[dict]) -> None:
@@ -1172,12 +1209,27 @@ def extract_file_content(uploaded_file, room_key: str = "") -> str:
         return f"❌ 파일 읽기 오류: {e}"
 
 # ---------------------------------------------------------
-# 공통 정제 도우미 & [미세 디테일 1 & 2 + 물결표(~) 취소선 오작동 방지] 화면 렌더링 전용 마크다운 보정기
+# 공통 정제 도우미 & [미세 디테일 1 & 2 + URL 내부 물결표 보호 취소선 방지] 화면 렌더링 전용 마크다운 보정기
 # ---------------------------------------------------------
+_URL_OR_MD_LINK_RE = re.compile(r"(\]\(https?://[^\s)]+\)|https?://[^\s)<>\"]+)")
+
+def _escape_tilde_outside_urls(text: str) -> str:
+    """
+    [보강 ④] 일반 텍스트의 물결표(~)는 마크다운 취소선(<del>) 오작동 방지를 위해 &#126;으로 안전 변환하되,
+    마크다운 링크 ](https://...) 및 순수 URL 내부에 포함된 물결표(~)는 주소가 깨지지 않도록 원형 그대로 보존합니다.
+    """
+    if not text or "~" not in text:
+        return text or ""
+    parts = _URL_OR_MD_LINK_RE.split(text)
+    for idx in range(0, len(parts), 2):
+        parts[idx] = parts[idx].replace("~", "&#126;")
+    return "".join(parts)
+
 def _format_markdown_for_screen(md_text: str) -> str:
     """
-    0) [물결표 취소선 방지]: 한 문장에 숫자 범위 물결표(~)가 2개 이상 들어갈 때(예: '중견기업 8~9%, 대기업 10~17%')
-       마크다운 파서가 두 물결표 사이를 취소선(<del>)으로 오인해 가운데 줄을 긋고 물결표를 삼키는 현상을 원천 차단합니다.
+    0) [물결표 취소선 방지 + URL 보호]: 한 문장에 숫자 범위 물결표(~)가 2개 이상 들어갈 때(예: '중견기업 8~9%, 대기업 10~17%')
+       마크다운 파서가 두 물결표 사이를 취소선(<del>)으로 오인해 가운데 줄을 긋고 물결표를 삼키는 현상을 차단하되,
+       URL 주소 내부의 물결표(~)는 원형 보존합니다.
     1) [미세 디테일 1]: 한국어 마크다운 파서에서 닫는 괄호/따옴표/퍼센트 등이 포함된 **굵은글씨** 바로 뒤에
        한글 조사(이, 가, 은, 는, 을, 를, 에 등)가 붙어 별표(**) 기호가 화면에 그대로 노출되는 현상을
        <strong>...</strong> 태그로 자동 변환하여 100% 깔끔한 굵은 글씨로 표시합니다.
@@ -1187,8 +1239,8 @@ def _format_markdown_for_screen(md_text: str) -> str:
     if not md_text:
         return ""
 
-    # 0. 물결표(~)가 마크다운 취소선(~...~ 또는 ~~...~~)으로 오작동하지 않도록 HTML 엔티티(&#126;)로 안전 변환
-    s = md_text.replace("~", "&#126;")
+    # 0. URL 내부의 물결표(~)는 보존하면서 일반 본문 물결표(~)만 &#126;으로 안전 변환
+    s = _escape_tilde_outside_urls(md_text)
 
     # 1. **텍스트** 패턴을 <strong>텍스트</strong>으로 안전하게 변환 (줄바꿈 없는 인라인 볼드 대상)
     s = re.sub(r"\*\*([^\*\n]+?)\*\*", r"<strong>\1</strong>", s)
@@ -1219,6 +1271,17 @@ def _sanitize_math_text(text: str) -> str:
     if not text:
         return ""
     s = text
+    # [보강 ③] 콜론(:)이 빠진 [조문 조세특례제한법...] 형태도 먼저 표준 [조문: ...] 형태로 정규화한 뒤 링크 언래핑 수행
+    s = re.sub(
+        r"\[(판례|심판례|해석례|예규|조문)(?:\s*[:：]\s*|\s+)(?=[가-힣A-Za-z0-9「])([^\]]+)\]",
+        r"[\1: \2]",
+        s
+    )
+    s = re.sub(
+        r"\[(판례|심판례|해석례|예규|조문)(?=[가-힣A-Za-z0-9「])([^\]:：\n]+)\]",
+        r"[\1: \2]",
+        s
+    )
     s = re.sub(r"\[(\[(?:판례|심판례|해석례|예규|조문)\s*:\s*[^\]]+\])\]\((https?://[^\s)]+)\)", r"\1", s)
     s = re.sub(r"\[([^\n]+?)\]\((https?://(?:www\.)?law\.go\.kr/[^\s)]+)\)", r"\1", s)
 
@@ -2336,7 +2399,7 @@ if expiry_alerts:
         with c_al2:
             st.link_button("🔗 연장·재발급", alert_item["url"], use_container_width=True)
 
-# 🔄 2) [개정세법 안내 배너 — 버튼 문구 깔끔하게 정리: '📜 개정이유서' / '⚡ 신·구법 비교']
+# 🔄 2) [개정세법 안내 배너 — 보강 ①: 닫는 괄호 뒤 한글 조사로 인한 ** 노출 방지]
 current_room_rev_alerts, is_post_revision = get_room_revision_alerts(
     effective_ws_id, selected_room, current_messages, law_prom_map
 )
@@ -2344,19 +2407,21 @@ saved_diff_md = st.session_state.get("room_diff_banners", {}).get(selected_room,
 is_diff_open = st.session_state.get(f"diff_banner_open_{selected_room}", False)
 
 if current_room_rev_alerts:
+    # 닫는 소괄호 ')' 바깥에 '**'와 한글 조사('이', '의')가 맞닿으면 CommonMark 파서가 볼드를 닫지 못하고 '**'를 노출하므로,
+    # 법령명(「...」)만 굵게 감싸고 공포·시행일 괄호는 볼드 바깥에 배치하여 어느 조사와 결합해도 '**' 기호가 절대 노출되지 않도록 처리합니다.
     rev_names_str = ", ".join(
-        f"「{it['law_name']}」(공포:{it['prom_date']}/시행:{it['enf_date']})" for it in current_room_rev_alerts
+        f"**「{it['law_name']}」**(공포:{it['prom_date']}/시행:{it['enf_date']})" for it in current_room_rev_alerts
     )
     first_clean = current_room_rev_alerts[0]["clean_name"]
     c_rv1, c_rv2, c_rv3, c_rv4 = st.columns([3.4, 1.1, 1.2, 0.7])
     with c_rv1:
         if is_post_revision:
             st.warning(
-                f"🔄 **[사후 법령 개정 감지]** 이 방의 과거 검토 이후에 **{rev_names_str}**이 새로 개정 공포되었습니다."
+                f"🔄 **[사후 법령 개정 감지]** 이 방의 과거 검토 이후에 {rev_names_str} 규정이 새로 개정 공포되었습니다."
             )
         else:
             st.info(
-                f"📜 **[최근 공포·시행예정 법령 인용 안내]** 이 방에서 인용된 **{rev_names_str}**의 공식 입법이유서 및 신·구 비교표를 바로 열람할 수 있습니다."
+                f"📜 **[최근 공포·시행예정 법령 인용 안내]** 이 방에서 인용된 {rev_names_str}의 공식 입법이유서 및 신·구 비교표를 바로 열람할 수 있습니다."
             )
     with c_rv2:
         if st.button("📜 개정이유서", key=f"rsn_{selected_room}", use_container_width=True):
@@ -2535,7 +2600,7 @@ if active_task and active_task.get("status") == "running":
             with st.status(status_title, expanded=True):
                 st.write("🔎 **1단계:** 질의 쟁점 분석 및 7대 국가·공공기관(법제처 현행·구법·국세청·DART·국토부·한은) DB 탐색 중...")
                 st.write("🧮 **2단계:** 관련 법령·판례 원문 파싱 및 파이썬 1원 단위 정밀 수리 계산기 구동 중...")
-                st.write("🛡️ **3단계:** 미조회 근거 강제 차단(`_scan_violations`) 및 듀얼 AI 의미 감수(`_semantic_verify`) 수행 중...")
+                st.write("🛡️ **3단계:** 미조회 근거 강제 차단(`_scan_violations`) 및 듀얼 AI 감수(`_semantic_verify`) 수행 중...")
                 st.caption("💡 **백그라운드 멀티태스킹 작동 중:** 지금 좌측 대화방 리스트를 눌러 다른 대화방으로 이동하셔도 이 방의 AI 검토는 멈추지 않고 끝까지 완료됩니다.")
 
 # ---------------------------------------------------------
