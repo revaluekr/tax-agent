@@ -397,7 +397,31 @@ def _resolve_law_name(prefix: str, titles: list[str]):
     return partial
 
 _EXEC_STD = re.compile(r"(?<![\d의])(\d{1,3}(?:의\d{1,2})?-\d{1,3}(?:의\d{1,2})?-\d{1,3})(?![\d])")
-_TAG = re.compile(r"\[(판례|심판례|해석례|예규|조문)\s*:\s*([^\]]+)\]")
+
+# [보강 ③] 마크다운 표 등에서 콜론(:)이 빠진 [조문 조세특례제한법 제29조의8] 또는 [조문조세특례제한법...] 형태까지 모두 인식
+_TAG = re.compile(
+    r"\[(판례|심판례|해석례|예규|조문)(?:\s*[:：]\s*|\s*)(?=[가-힣A-Za-z0-9「])([^\]]+)\]"
+)
+
+def _normalize_citation_tags(text: str) -> str:
+    """
+    [보강 ③] AI가 콜론(:)을 누락하여 작성한 `[조문 조세특례제한법 제29조의8]` 또는
+    `[조문조세특례제한법 제29조의8 제1항제1호가목]` 형태를 표준 `[조문: ...]` 형식으로 자동 정규화합니다.
+    """
+    if not text:
+        return ""
+    s = re.sub(
+        r"\[(판례|심판례|해석례|예규|조문)(?:\s*[:：]\s*|\s+)(?=[가-힣A-Za-z0-9「])([^\]]+)\]",
+        r"[\1: \2]",
+        text
+    )
+    s = re.sub(
+        r"\[(판례|심판례|해석례|예규|조문)(?=[가-힣A-Za-z0-9「])([^\]:：\n]+)\]",
+        r"[\1: \2]",
+        s
+    )
+    return s
+
 _AUTHORITY = re.compile(r"대법원|판시|판례|심판원|조세심판|심판례|결정례|헌법재판소|헌재|예규|집행기준|유권해석|해석례|질의회신")
 _NEGATION = re.compile(r"없음|없습니다|없으며|없고|없어|확인되지|확인하지 못|찾지 못|미조회|조회되지|조회하지 못")
 _TEMPLATE_LABELS = ("상세 법리 및 기준 검토", "상세법리 및 기준검토", "실무 적용 및 리스크 주의사항", "실무적용 및 리스크 주의사항", "근거자료 및 검색방법", "근거 자료 및 검색 방법", "관련법령")
@@ -1374,9 +1398,9 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
 - **[🕰️ 과거 귀속연도(경정청구·세무조사·구법) 조회 원칙]**: 질문에 특정 과거 연도나 과거 시점(예: '2021년 귀속', '2022년 양도분', '종전 규정')이 명시된 경우, 반드시 **`search_historical_law_for_gemini(law_name, target_date, query_filter)`** 도구를 호출하여 해당 과거 과세기간 당시에 시행되던 구법(연혁법령) 원문을 직접 대조할 것.
 - 법령 검색(search_law_for_gemini, target='law')의 keyword에는 **법령명만** 넣을 것 (예: '소득세법', '근로기준법', '소득세법 시행령'). 주제어는 넣지 말 것.
 - 조회한 원문에서 직접 확인하지 못한 금액·비율·연도는 단정하지 말고 **"(원문 미확인)"**이라고 표시할 것.
-- **[근거 표시 의무 (트랙 1 전용)]** 전문 검토 보고서(1. 결론 ~ 3. 관련법령)를 작성할 때 판례·심판례·해석례·예규·법령 조문을 근거로 쓰는 문장 끝에는 반드시 아래 형식의 근거 표시를 붙일 것(닫는 대괄호 ']'가 누락되지 않도록 주의).
+- **[근거 표시 의무 (트랙 1 전용)]** 전문 검토 보고서(1. 결론 ~ 3. 관련법령)를 작성할 때 판례·심판례·해석례·예규·법령 조문을 근거로 쓰는 문장 끝에는 반드시 아래 형식의 근거 표시를 붙일 것(콜론 ':'과 닫는 대괄호 ']'가 누락되지 않도록 주의).
   * 판례: [판례:2005두9415] / 조세심판: [심판례:조심2020서1234] / 법령해석례: [해석례:안건번호] / 예규·고시: [예규:문서명 또는 번호]
-  * 법령 조문: [조문:법인세법 시행령 제89조] (반드시 정식 법령명 포함. '동법', '같은 법' 사용 금지)
+  * 법령 조문: [조문:법인세법 시행령 제89조] (반드시 정식 법령명과 콜론 ':' 포함. '동법', '같은 법' 사용 금지)
 - **판례·심판례·해석례 인용 규칙**: 판결요지·결정요지를 서술하는 사건은 반드시 get_law_details_for_gemini(target='prec' 등)로 **원문을 조회한 사건만** 쓸 것. 목록 검색에서만 본 사건은 사건번호·선고일만 적고 "(요지 미조회)"로 표시할 것. **도구로 조회하지 않은 사건번호를 기억으로 적지 말 것.**
 - **법령 조문 인용 규칙**: 전문 검토 보고서에 법령명과 함께 적는 조문(예: 「법인세법」 제52조)은 반드시 get_law_details_for_gemini 또는 search_historical_law_for_gemini로 **그 조문을 조회한 것만** 쓸 것. 조회하지 않은 조문이 필요하면 먼저 조회할 것.
 - **답변에 시스템·도구·검증 절차·삭제 여부에 대한 언급을 절대 쓰지 말 것**. 근거가 부족하면 "관련 원문을 확인하지 못했다"고만 쓸 것.
@@ -1508,13 +1532,16 @@ def _build_direct_law_url(kind: str, val: str, trace: dict, rev_id_map: dict, me
 
 def _inject_direct_law_links(text: str, trace: dict = None) -> str:
     """
-    1) 본문의 [조문:...], [판례:...], [심판례:...], [해석례:...], [예규:...] 태그에 100% 검증된 법제처 원문 직링크를 결합합니다.
+    1) 본문의 [조문:...], [판례:...], [심판례:...], [해석례:...], [예규:...] 태그(콜론 누락 포함)에 100% 검증된 법제처 원문 직링크를 결합합니다.
     2) '### 3. 관련법령' 섹션의 모든 하위 조문 줄(예: '◦ 「조세특례제한법」 제144조(세액공제액의 이월공제) 제1항·제2항') 및
        기본통칙 줄을 클릭하면 즉시 해당 법제처 조문·기본통칙 원문 페이지로 이동하도록 글자 자체에 직링크를 걸어줍니다.
        (3. 관련법령 줄에 [조문:...] 태그가 함께 있어도 줄 전체가 깔끔하게 링크되도록 처리)
     """
     if not text:
         return ""
+
+    # [보강 ③] 콜론(:)이 빠진 [조문 조세특례제한법...] 태그도 표준 [조문: ...] 형식으로 먼저 정규화
+    text = _normalize_citation_tags(text)
 
     rev_id_map = {}
     meta_map = {}
@@ -1524,13 +1551,13 @@ def _inject_direct_law_links(text: str, trace: dict = None) -> str:
         meta_map = trace.get("meta_map") or {}
 
     def _replace_tag_with_link(match: re.Match) -> str:
-        full_tag = match.group(0)
         kind = match.group(1).strip()
         val = match.group(2).strip()
+        canonical_tag = f"[{kind}: {val}]"
         url = _build_direct_law_url(kind, val, trace, rev_id_map, meta_map)
         if url:
-            return f"[{full_tag}]({url})"
-        return full_tag
+            return f"[{canonical_tag}]({url})"
+        return canonical_tag
 
     lines = text.split("\n")
     in_refs = False
@@ -1546,9 +1573,9 @@ def _inject_direct_law_links(text: str, trace: dict = None) -> str:
             continue
 
         if not in_refs:
-            # 본문(1. 결론, 2. 내용)에서는 대괄호 출처 태그를 클릭 가능한 마크다운 링크로 변환
+            # 본문(1. 결론, 2. 내용)에서는 대괄호 출처 태그(콜론 누락 포함)를 클릭 가능한 마크다운 링크로 변환
             linked_line = re.sub(
-                r"(?<!\[)\[(판례|심판례|해석례|예규|조문)\s*:\s*([^\]]+)\](?!\()",
+                r"(?<!\[)\[(판례|심판례|해석례|예규|조문)(?:\s*[:：]\s*|\s*)(?=[가-힣A-Za-z0-9「])([^\]]+)\](?!\()",
                 _replace_tag_with_link,
                 line
             )
@@ -1561,7 +1588,11 @@ def _inject_direct_law_links(text: str, trace: dict = None) -> str:
             if m_bullet and "](" not in line and "http://" not in line and "https://" not in line:
                 prefix_bullet, item_body = m_bullet.group(1), m_bullet.group(2).strip()
                 # 관련법령 줄 끝에 중복 부착된 [조문:...] 태그가 있으면 깔끔히 정리 후 줄 전체에 직링크 부여
-                clean_item_body = re.sub(r"\s*\[(?:판례|심판례|해석례|예규|조문)\s*:\s*[^\]]+\]\s*$", "", item_body).strip() or item_body
+                clean_item_body = re.sub(
+                    r"\s*\[(?:판례|심판례|해석례|예규|조문)(?:\s*[:：]\s*|\s*)(?=[가-힣A-Za-z0-9「])[^\]]+\]\s*$",
+                    "",
+                    item_body
+                ).strip() or item_body
                 direct_url = ""
                 compact_body = _norm(item_body)
 
@@ -1618,7 +1649,7 @@ def _inject_direct_law_links(text: str, trace: dict = None) -> str:
                     line = f"{prefix_bullet}[{clean_item_body}]({direct_url})"
                 else:
                     line = re.sub(
-                        r"(?<!\[)\[(판례|심판례|해석례|예규|조문)\s*:\s*([^\]]+)\](?!\()",
+                        r"(?<!\[)\[(판례|심판례|해석례|예규|조문)(?:\s*[:：]\s*|\s*)(?=[가-힣A-Za-z0-9「])([^\]]+)\](?!\()",
                         _replace_tag_with_link,
                         line
                     )
@@ -1638,7 +1669,13 @@ def _clean_latex_for_export(text: str) -> str:
     s = s.replace(r"\times", " × ").replace(r"\div", " ÷ ").replace(r"\cdot", "·")
     s = s.replace(r"\%", "%").replace(r"\_", "_").replace(r"\,", ",")
     s = re.sub(r"\\(left|right|quad|qquad|mathrm|mathbf)\b", "", s)
-    s = re.sub(r"(\[(?:조문|판례|심판례|해석례|예규)\s*:\s*[^\]\n(]+?)\s+(\()(?![^\n\[]*\])", r"\1] \2", s)
+    # 닫는 대괄호 누락 보정 및 콜론(:) 누락 태그 자동 표준화
+    s = re.sub(
+        r"(\[(?:조문|판례|심판례|해석례|예규)(?:\s*[:：]\s*|\s+)(?=[가-힣A-Za-z0-9「])[^\]\n(]+?)\s+(\()(?![^\n\[]*\])",
+        r"\1] \2",
+        s
+    )
+    s = _normalize_citation_tags(s)
     return s
 
 def extract_safe_text(response) -> str:
