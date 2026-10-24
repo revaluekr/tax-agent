@@ -893,8 +893,8 @@ def _sanitize_math_text(text: str) -> str:
     s = text
     # 1) 본문 직링크 [[조문:...]](https://...) -> [조문:...] 로 깔끔하게 복원
     s = re.sub(r"\[(\[(?:판례|심판례|해석례|예규|조문)\s*:\s*[^\]]+\])\]\((https?://[^\s)]+)\)", r"\1", s)
-    # 2) 3. 관련법령 하위 조문·기본통칙 링크(내부 대괄호 포함 가능) [ ... ](https://www.law.go.kr/...) -> 텍스트만 깔끔하게 복원
-    s = re.sub(r"\[([^\n]+?)\]\((https?://(?:www\.)?law\.go\.kr/[^\s)]+)\)", r"\1", s)
+    # 2) 3. 관련법령 하위 조문·기본통칙 링크 [「조세특례제한법」 제144조...](https://...) -> 「조세특례제한법」 제144조... 로 복원
+    s = re.sub(r"\[([^\[\]\n]+)\]\((https?://www\.law\.go\.kr/[^\s)]+)\)", r"\1", s)
 
     s = re.sub(r"\$\$(.*?)\$\$", r"\1", s, flags=re.DOTALL)
     s = re.sub(r"\$([^$\n]+)\$", r"\1", s)
@@ -1093,10 +1093,10 @@ def _draw_page_footer(canvas, doc):
     canvas.setLineWidth(0.6)
     canvas.line(40, 36, A4[0] - 40, 36)
 
-    canvas.setFont(reg_font, 6.2)
+    canvas.setFont(reg_font, 6.8)
     canvas.setFillColor(colors.HexColor("#64748b"))
     disclaimer_str = (
-        "※ 본 보고서는 질의하신 사실관계와 현행 법령 기준의 참고자료이며, "
+        "※ 본 의견서는 질의하신 사실관계와 조회 시점 현행 법령을 기준으로 작성된 참고자료이며, "
         "사실관계 변동이나 과세관청·법원의 해석에 따라 판단이 달라질 수 있습니다."
     )
     canvas.drawString(40, 24, disclaimer_str)
@@ -1808,6 +1808,27 @@ elif pro_toggle_on:
     mode_status_str = "🧠 **Pro 심층 모드 (3배 리미트 개방 ON)**"
 else:
     mode_status_str = "⚡ **Flash 표준 모드 (고속 검토)**"
+
+# 🔀 [상단 2열 모드 전환 스위치 — "자율 에이전트AI" / "통합고용세액공제" 2버튼 분리 및 즉시 st.stop() 격리]
+if "app_top_mode" not in st.session_state:
+    st.session_state.app_top_mode = "AGENT"
+_m_col1, _m_col2 = st.columns(2)
+with _m_col1:
+    if st.button("자율 에이전트AI", type=("primary" if st.session_state.app_top_mode == "AGENT" else "secondary"), use_container_width=True):
+        st.session_state.app_top_mode = "AGENT"
+        st.rerun()
+with _m_col2:
+    if st.button("통합고용세액공제", type=("primary" if st.session_state.app_top_mode == "CREDIT_CALC" else "secondary"), use_container_width=True):
+        st.session_state.app_top_mode = "CREDIT_CALC"
+        st.rerun()
+if st.session_state.app_top_mode == "CREDIT_CALC":
+    import tax_credit_engine
+    tax_credit_engine.render_tax_credit_calculator_ui(
+        extract_file_fn=extract_file_content, create_pdf_fn=create_pdf_report,
+        create_docx_fn=create_word_docx, log_tokens_fn=_log_custom_tokens,
+        active_room_key=current_task_key, cur_krw=cur_krw, limit_krw=limit_krw
+    )
+    st.stop()
 
 st.title(f"⚖️ 세무·법령·회계 자율 에이전트 — [{selected_room}: {current_room_title}]")
 st.markdown(
