@@ -95,30 +95,35 @@ section[data-testid="stSidebar"] div[data-testid="stSidebarUserContent"] {
     padding-bottom: 0.6rem !important;
 }
 
-/* 📦 사이드바 내부 화이트 카드 패딩 및 간격 */
+/* 📦 사이드바 내부 화이트 카드 패딩 및 간격 (겹침 방지 여백 최적화) */
 section[data-testid="stSidebar"] div[data-testid="stVerticalBlockBorderWrapper"] {
     background-color: #ffffff !important;
     border: 1px solid #e2e8f0 !important;
     border-radius: 10px !important;
-    padding: 9px 11px !important;
-    margin-bottom: 6px !important;
+    padding: 11px 12px !important;
+    margin-bottom: 8px !important;
     box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03) !important;
 }
 
 section[data-testid="stSidebar"] div[data-testid="stVerticalBlock"] {
-    gap: 0.42rem !important;
+    gap: 0.48rem !important;
 }
+/* Streamlit 기본 마크다운 음수 마진으로 인해 소제목과 아래 토글/입력창이 겹치는 현상 원천 차단 */
+section[data-testid="stSidebar"] div[data-testid="stMarkdown"],
 section[data-testid="stSidebar"] div[data-testid="stMarkdownContainer"] {
     overflow: visible !important;
+    margin-bottom: 0px !important;
 }
 
-/* 사이드바 카드 소제목 스타일 */
+/* 사이드바 카드 소제목 스타일 (아래 위젯과 8px 안전 간격 확보) */
 .sb-card-title {
     font-size: 0.88rem;
     font-weight: 800;
     color: #0f172a;
-    line-height: 1.4 !important;
-    margin-bottom: 4px !important;
+    line-height: 1.45 !important;
+    margin-top: 1px !important;
+    margin-bottom: 8px !important;
+    padding-bottom: 2px !important;
     display: flex;
     align-items: center;
     justify-content: space-between;
