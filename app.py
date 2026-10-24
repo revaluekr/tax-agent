@@ -52,7 +52,7 @@ import law_api
 from agent import run_agent
 
 # ---------------------------------------------------------
-# 💎 1) 좌측 사이드바 현재 비율 완벽 유지(14.2px 기준) + 2) 우측 보고서 본문 폰트(15.5px)·줄간격(1.68) 가독성 확대 + 3) 옵션 C 제미나이 오로라 로딩 LED CSS
+# 💎 1) 좌측 사이드바 현재 비율 완벽 유지(14.2px 기준) + 2) 우측 보고서 본문 폰트(15.5px)·줄간격(1.68) 가독성 확대 + 3) 옵션 C 제미나이 오로라 로딩 LED + 4) 3. 관련법령 줄간격 조밀화 CSS
 # ---------------------------------------------------------
 st.markdown("""
 <style>
@@ -458,7 +458,7 @@ div[data-testid="stChatMessageAvatarAssistant"] svg {
     color: #ffffff !important;
 }
 
-/* 📖 [핵심 개선] 우측 메인 화면 검토보고서 본문 폰트 크기(15.5px = 1.09rem) 및 줄간격(1.68) 확대 */
+/* 📖 우측 메인 화면 검토보고서 본문 폰트 크기(15.5px = 1.09rem) 및 줄간격(1.68) 확대 */
 div[data-testid="stChatMessageContent"],
 div[data-testid="stChatMessageContent"] p,
 div[data-testid="stChatMessageContent"] li {
@@ -467,6 +467,11 @@ div[data-testid="stChatMessageContent"] li {
     color: #0f172a !important;
     letter-spacing: -0.15px !important;
 }
+div[data-testid="stChatMessageContent"] strong,
+div[data-testid="stChatMessageContent"] b {
+    font-weight: 800 !important;
+    color: #0f172a !important;
+}
 div[data-testid="stChatMessageContent"] ul,
 div[data-testid="stChatMessageContent"] ol {
     margin-top: 6px !important;
@@ -474,6 +479,24 @@ div[data-testid="stChatMessageContent"] ol {
 }
 div[data-testid="stChatMessageContent"] li {
     margin-bottom: 5px !important;
+}
+
+/* 📘 [미세 디테일 2 반영] 3. 관련법령 섹션 전용 — 리스트 줄간격 및 상하 여백을 30% 조밀하게 최적화 */
+div[data-testid="stChatMessageContent"] .related-laws-compact-box ul,
+div[data-testid="stChatMessageContent"] .related-laws-compact-box ol {
+    margin-top: 2px !important;
+    margin-bottom: 4px !important;
+}
+div[data-testid="stChatMessageContent"] .related-laws-compact-box li {
+    margin-bottom: 2px !important;
+    line-height: 1.38 !important;
+    font-size: 1.02rem !important;
+}
+div[data-testid="stChatMessageContent"] .related-laws-compact-box li p {
+    margin-top: 0px !important;
+    margin-bottom: 2px !important;
+    line-height: 1.38 !important;
+    font-size: 1.02rem !important;
 }
 
 /* 보고서 대제목 (### 1. 결론, ### 2. 내용, ### 3. 관련법령) -> 18px(1.26rem)로 시각적 위계 강화 */
@@ -1303,8 +1326,44 @@ def extract_file_content(uploaded_file, room_key: str = "") -> str:
         return f"❌ 파일 읽기 오류: {e}"
 
 # ---------------------------------------------------------
-# 공통 정제 도우미 (PDF/워드/엑셀/복사 시 직링크 URL 인코딩 문자열 깔끔 정리)
+# 공통 정제 도우미 & [미세 디테일 1 & 2] 화면 렌더링 전용 마크다운 보정기
 # ---------------------------------------------------------
+def _format_markdown_for_screen(md_text: str) -> str:
+    """
+    1) [미세 디테일 1]: 한국어 마크다운 파서에서 닫는 괄호/따옴표/퍼센트 등이 포함된 **굵은글씨** 바로 뒤에
+       한글 조사(이, 가, 은, 는, 을, 를, 에 등)가 붙어 별표(**) 기호가 화면에 그대로 노출되는 현상을
+       <strong>...</strong> 태그로 자동 변환하여 100% 깔끔한 굵은 글씨로 표시합니다.
+    2) [미세 디테일 2]: '### 3. 관련법령' 섹션의 리스트를 전용 컴팩트 컨테이너(<div class='related-laws-compact-box'>)로
+       감싸서 관련법령 항목들의 줄간격만 조밀하고 정갈하게 렌더링합니다.
+    """
+    if not md_text:
+        return ""
+
+    # 1. **텍스트** 패턴을 <strong>텍스트</strong>으로 안전하게 변환 (줄바꿈 없는 인라인 볼드 대상)
+    s = re.sub(r"\*\*([^\*\n]+?)\*\*", r"<strong>\1</strong>", md_text)
+
+    # 2. '### 3. 관련법령' 섹션 리스트를 .related-laws-compact-box로 감싸기
+    pattern_rel = re.compile(r"(###\s*3\.\s*관련\s*법령[^\n]*\n)(.*)", flags=re.DOTALL)
+    m = pattern_rel.search(s)
+    if m:
+        heading_part = m.group(1)
+        rest_body = m.group(2)
+        if "\n---\n" in rest_body:
+            laws_part, tail_part = rest_body.split("\n---\n", 1)
+            s = (
+                s[:m.start()]
+                + heading_part
+                + f"<div class='related-laws-compact-box'>\n\n{laws_part.strip()}\n\n</div>\n\n---\n"
+                + tail_part
+            )
+        else:
+            s = (
+                s[:m.start()]
+                + heading_part
+                + f"<div class='related-laws-compact-box'>\n\n{rest_body.strip()}\n\n</div>"
+            )
+    return s
+
 def _sanitize_math_text(text: str) -> str:
     if not text:
         return ""
@@ -2512,7 +2571,7 @@ if st.session_state.get("show_inline_api_manager"):
             st.rerun()
 
 # ---------------------------------------------------------
-# 4. 대화방 메시지 목록 렌더링 (본문 폰트 15.5px 및 표 14.5px 확대 적용)
+# 4. 대화방 메시지 목록 렌더링 (미세 디테일 1·2 자동 보정 적용)
 # ---------------------------------------------------------
 for idx, message in enumerate(current_messages):
     with st.chat_message(message["role"]):
@@ -2522,7 +2581,8 @@ for idx, message in enumerate(current_messages):
                 display_content = agent._inject_direct_law_links(display_content)
             except Exception:
                 pass
-        st.markdown(display_content)
+        display_content = _format_markdown_for_screen(display_content)
+        st.markdown(display_content, unsafe_allow_html=True)
 
         if message["role"] == "assistant":
             # 📥 1줄: 문서 다운로드 버튼 4종 (PDF / 워드 / 표 엑셀(.xlsx) / 마크다운)
