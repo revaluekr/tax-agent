@@ -61,9 +61,9 @@ html, body, [class*="css"] {
     font-family: 'Pretendard', 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif;
 }
 
-/* 📐 우측 본문 상단 여백 축소 -> 좌측 사이드바 타이틀과 수평 라인 정렬 */
+/* 📐 우측 본문 상단 여백 축소 -> 대제목 제거 후 상단부터 시원하게 시작 */
 div.block-container {
-    padding-top: 2.0rem !important;
+    padding-top: 1.3rem !important;
     padding-bottom: 2.0rem !important;
 }
 
@@ -73,8 +73,8 @@ section[data-testid="stSidebar"] {
     border-right: 1px solid #cbd5e1 !important;
 }
 section[data-testid="stSidebar"] div[data-testid="stSidebarUserContent"] {
-    padding-top: 1.0rem !important;
-    padding-bottom: 0.8rem !important;
+    padding-top: 0.85rem !important;
+    padding-bottom: 0.7rem !important;
 }
 
 /* 📦 사이드바 내부 화이트 카드 패딩 및 간격 */
@@ -82,14 +82,14 @@ section[data-testid="stSidebar"] div[data-testid="stVerticalBlockBorderWrapper"]
     background-color: #ffffff !important;
     border: 1px solid #e2e8f0 !important;
     border-radius: 10px !important;
-    padding: 10px 12px !important;
-    margin-bottom: 7px !important;
+    padding: 9px 11px !important;
+    margin-bottom: 6px !important;
     box-shadow: 0 1px 3px rgba(15, 23, 42, 0.03) !important;
 }
 
-/* 사이드바 내부 위젯 간격 (입력창이 위 제목을 덮지 않도록 안전 간격 확보) */
+/* 사이드바 내부 위젯 간격 */
 section[data-testid="stSidebar"] div[data-testid="stVerticalBlock"] {
-    gap: 0.55rem !important;
+    gap: 0.48rem !important;
 }
 section[data-testid="stSidebar"] div[data-testid="stMarkdownContainer"] {
     overflow: visible !important;
@@ -100,31 +100,96 @@ section[data-testid="stSidebar"] div[data-testid="stFileUploader"] {
     margin-top: 2px !important;
 }
 
-/* 사이드바 버튼 높이 컴팩트화 */
+/* 사이드바 일반 버튼 높이 컴팩트화 */
 section[data-testid="stSidebar"] button {
-    min-height: 2.1rem !important;
-    padding: 0.22rem 0.6rem !important;
-    font-size: 0.82rem !important;
+    min-height: 2.05rem !important;
+    padding: 0.2rem 0.55rem !important;
+    font-size: 0.81rem !important;
     border-radius: 7px !important;
     font-weight: 600 !important;
 }
 section[data-testid="stSidebar"] a[data-testid="stBaseLinkButton-secondary"] {
-    min-height: 2.1rem !important;
-    padding: 0.22rem 0.5rem !important;
-    font-size: 0.82rem !important;
+    min-height: 2.05rem !important;
+    padding: 0.2rem 0.5rem !important;
+    font-size: 0.81rem !important;
     border-radius: 7px !important;
     font-weight: 600 !important;
 }
 
-/* 사이드바 카드 소제목(라벨) 스타일 — 줄높이와 하단 여백을 넉넉히 주어 글자 잘림 완벽 방지 */
+/* 🟢 좌측 사이드바 최상단 모드 전환 2버튼 (모서리 둥근 사각형 박스 + 활성화 시 선명한 녹색) */
+.st-key-btn_top_mode_agent button,
+.st-key-btn_top_mode_credit button {
+    border-radius: 10px !important;
+    min-height: 40px !important;
+    height: 40px !important;
+    padding: 6px 8px !important;
+    font-size: 0.82rem !important;
+    font-weight: 800 !important;
+    letter-spacing: -0.4px !important;
+    box-shadow: 0 2px 5px rgba(15, 23, 42, 0.06) !important;
+    transition: all 0.15s ease-in-out !important;
+}
+
+/* 활성화된 버튼(Primary) -> 선명한 녹색(#16a34a) + 흰색 글씨 */
+div.stButton > button[kind="primary"],
+div.stButton > button[data-testid="stBaseButton-primary"],
+div.stButton > button[data-testid="baseButton-primary"],
+.st-key-btn_top_mode_agent button[kind="primary"],
+.st-key-btn_top_mode_credit button[kind="primary"] {
+    background-color: #16a34a !important;
+    border: 2px solid #15803d !important;
+    color: #ffffff !important;
+    border-radius: 10px !important;
+    font-weight: 800 !important;
+}
+div.stButton > button[kind="primary"]:hover,
+div.stButton > button[data-testid="stBaseButton-primary"]:hover,
+div.stButton > button[data-testid="baseButton-primary"]:hover,
+.st-key-btn_top_mode_agent button[kind="primary"]:hover,
+.st-key-btn_top_mode_credit button[kind="primary"]:hover,
+div.stButton > button[kind="primary"]:active,
+div.stButton > button[kind="primary"]:focus:not(:active) {
+    background-color: #15803d !important;
+    border-color: #166534 !important;
+    color: #ffffff !important;
+    box-shadow: 0 3px 8px rgba(22, 163, 74, 0.28) !important;
+}
+div.stButton > button[kind="primary"] p,
+div.stButton > button[data-testid="stBaseButton-primary"] p,
+.st-key-btn_top_mode_agent button[kind="primary"] p,
+.st-key-btn_top_mode_credit button[kind="primary"] p {
+    color: #ffffff !important;
+    font-weight: 800 !important;
+}
+
+/* 비활성화된 상단 모드 버튼(Secondary) -> 깔끔한 화이트 사각형 박스 */
+.st-key-btn_top_mode_agent button[kind="secondary"],
+.st-key-btn_top_mode_credit button[kind="secondary"],
+.st-key-btn_top_mode_agent button[data-testid="stBaseButton-secondary"],
+.st-key-btn_top_mode_credit button[data-testid="stBaseButton-secondary"] {
+    background-color: #ffffff !important;
+    border: 1.5px solid #cbd5e1 !important;
+    color: #334155 !important;
+    border-radius: 10px !important;
+}
+.st-key-btn_top_mode_agent button[kind="secondary"]:hover,
+.st-key-btn_top_mode_credit button[kind="secondary"]:hover,
+.st-key-btn_top_mode_agent button[data-testid="stBaseButton-secondary"]:hover,
+.st-key-btn_top_mode_credit button[data-testid="stBaseButton-secondary"]:hover {
+    background-color: #f0fdf4 !important;
+    border-color: #16a34a !important;
+    color: #15803d !important;
+}
+
+/* 사이드바 카드 소제목(라벨) 스타일 */
 .sb-card-title {
-    font-size: 0.85rem;
+    font-size: 0.84rem;
     font-weight: 800;
     color: #0f172a;
-    line-height: 1.45 !important;
+    line-height: 1.4 !important;
     padding-top: 1px !important;
-    padding-bottom: 4px !important;
-    margin-bottom: 4px !important;
+    padding-bottom: 3px !important;
+    margin-bottom: 3px !important;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -133,7 +198,7 @@ section[data-testid="stSidebar"] a[data-testid="stBaseLinkButton-secondary"] {
 .sb-badge-green {
     background-color: #dcfce7;
     color: #15803d;
-    font-size: 0.70rem;
+    font-size: 0.69rem;
     font-weight: 700;
     padding: 2px 7px;
     border-radius: 999px;
@@ -142,7 +207,7 @@ section[data-testid="stSidebar"] a[data-testid="stBaseLinkButton-secondary"] {
 .sb-badge-amber {
     background-color: #fef3c7;
     color: #b45309;
-    font-size: 0.70rem;
+    font-size: 0.69rem;
     font-weight: 700;
     padding: 2px 7px;
     border-radius: 999px;
@@ -151,23 +216,54 @@ section[data-testid="stSidebar"] a[data-testid="stBaseLinkButton-secondary"] {
 .sb-badge-pro {
     background-color: #dbeafe;
     color: #1d4ed8;
-    font-size: 0.70rem;
+    font-size: 0.69rem;
     font-weight: 700;
     padding: 2px 7px;
     border-radius: 999px;
     line-height: 1.2 !important;
 }
 
-/* 메인 타이틀 스타일 */
-h1 {
-    color: #0f172a !important;
-    font-weight: 800 !important;
-    font-size: 1.85rem !important;
-    letter-spacing: -0.5px;
-    border-bottom: 2px solid #e2e8f0;
-    padding-bottom: 10px !important;
-    margin-top: 0px !important;
-    margin-bottom: 12px !important;
+/* 🗂️ 좌측 사이드바 1~10번 대화방 2열 미니 현황판 스타일 */
+.sb-room-board {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 3px 6px;
+    margin-top: 4px;
+    padding-top: 6px;
+    border-top: 1px dashed #e2e8f0;
+}
+.sb-room-chip {
+    font-size: 0.72rem;
+    line-height: 1.35;
+    padding: 2px 5px;
+    border-radius: 5px;
+    color: #475569;
+    background-color: #f8fafc;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    letter-spacing: -0.3px;
+}
+.sb-room-chip.active {
+    background-color: #dcfce7;
+    color: #15803d;
+    font-weight: 800;
+    border: 1px solid #86efac;
+}
+
+/* 우측 상단 미니 상태바 (큰 제목 h1 대체) */
+.top-mini-status-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background-color: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-left: 4px solid #16a34a;
+    border-radius: 8px;
+    padding: 6px 14px;
+    margin-bottom: 12px;
+    font-size: 0.86rem;
+    color: #334155;
 }
 
 /* 🤖 기본 답변 로봇 아이콘 디자인 100% 유지 + 초록색 배경(#22c55e) & 흰색 아이콘(#ffffff) */
@@ -264,85 +360,6 @@ div.stDownloadButton > button:hover {
     border-color: #16a34a !important;
     color: #15803d !important;
     background-color: #f0fdf4 !important;
-}
-
-/* 📌 스크롤을 얼마나 내리든 항상 우측 상단에 고정되는 모드 전환 바 (Sticky + Fixed 이중 안전장치) */
-div[data-testid="stVerticalBlock"] > div:has(.st-key-btn_top_mode_agent),
-div[data-testid="stHorizontalBlock"]:has(.st-key-btn_top_mode_agent) {
-    position: sticky !important;
-    top: 2.85rem !important;
-    z-index: 999990 !important;
-    background: rgba(255, 255, 255, 0.92) !important;
-    backdrop-filter: blur(8px) !important;
-    -webkit-backdrop-filter: blur(8px) !important;
-    padding-top: 6px !important;
-    padding-bottom: 8px !important;
-    border-bottom: 1px solid rgba(226, 232, 240, 0.7) !important;
-}
-
-/* 🟢 우측 상단 1/3 모드 전환 버튼 (모서리 둥근 사각형 박스 + 활성화 시 녹색) */
-.st-key-btn_top_mode_agent button,
-.st-key-btn_top_mode_credit button {
-    border-radius: 12px !important;
-    min-height: 48px !important;
-    height: 48px !important;
-    padding: 8px 14px !important;
-    font-size: 0.92rem !important;
-    font-weight: 700 !important;
-    letter-spacing: -0.3px !important;
-    box-shadow: 0 2px 6px rgba(15, 23, 42, 0.07) !important;
-    transition: all 0.15s ease-in-out !important;
-}
-
-/* 활성화된 버튼(Primary) -> 선명한 녹색(#16a34a) + 흰색 글씨 */
-div.stButton > button[kind="primary"],
-div.stButton > button[data-testid="stBaseButton-primary"],
-div.stButton > button[data-testid="baseButton-primary"],
-.st-key-btn_top_mode_agent button[kind="primary"],
-.st-key-btn_top_mode_credit button[kind="primary"] {
-    background-color: #16a34a !important;
-    border: 2px solid #15803d !important;
-    color: #ffffff !important;
-    border-radius: 12px !important;
-    font-weight: 800 !important;
-}
-div.stButton > button[kind="primary"]:hover,
-div.stButton > button[data-testid="stBaseButton-primary"]:hover,
-div.stButton > button[data-testid="baseButton-primary"]:hover,
-.st-key-btn_top_mode_agent button[kind="primary"]:hover,
-.st-key-btn_top_mode_credit button[kind="primary"]:hover,
-div.stButton > button[kind="primary"]:active,
-div.stButton > button[kind="primary"]:focus:not(:active) {
-    background-color: #15803d !important;
-    border-color: #166534 !important;
-    color: #ffffff !important;
-    box-shadow: 0 3px 8px rgba(22, 163, 74, 0.28) !important;
-}
-div.stButton > button[kind="primary"] p,
-div.stButton > button[data-testid="stBaseButton-primary"] p,
-.st-key-btn_top_mode_agent button[kind="primary"] p,
-.st-key-btn_top_mode_credit button[kind="primary"] p {
-    color: #ffffff !important;
-    font-weight: 800 !important;
-}
-
-/* 비활성화된 상단 모드 버튼(Secondary) -> 깔끔한 화이트 사각형 박스 */
-.st-key-btn_top_mode_agent button[kind="secondary"],
-.st-key-btn_top_mode_credit button[kind="secondary"],
-.st-key-btn_top_mode_agent button[data-testid="stBaseButton-secondary"],
-.st-key-btn_top_mode_credit button[data-testid="stBaseButton-secondary"] {
-    background-color: #ffffff !important;
-    border: 1.5px solid #cbd5e1 !important;
-    color: #334155 !important;
-    border-radius: 12px !important;
-}
-.st-key-btn_top_mode_agent button[kind="secondary"]:hover,
-.st-key-btn_top_mode_credit button[kind="secondary"]:hover,
-.st-key-btn_top_mode_agent button[data-testid="stBaseButton-secondary"]:hover,
-.st-key-btn_top_mode_credit button[data-testid="stBaseButton-secondary"]:hover {
-    background-color: #f0fdf4 !important;
-    border-color: #16a34a !important;
-    color: #15803d !important;
 }
 
 /* 불필요한 Streamlit 기본 푸터 숨김 */
@@ -1520,7 +1537,6 @@ def _get_streamlit_logged_google_email() -> str:
                 raw_email = u_obj.get("email")
             if is_logged and raw_email:
                 clean_em = str(raw_email).strip().lower()
-                # Streamlit 기본 더미 이메일(test@example.com)은 비로그인으로 처리
                 if clean_em and clean_em != "test@example.com" and "@" in clean_em:
                     return clean_em
     except Exception:
@@ -1534,9 +1550,7 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
     oauth_google_email = _get_streamlit_logged_google_email()
     session_authed_email = str(st.session_state.get("manager_google_authed_email", "")).strip().lower()
 
-    # ---------------------------------------------------------
     # [보안 관문 1] 아직 관리자 Google 계정이 최초 등록되지 않은 경우 -> 최초 1회 등록 창
-    # ---------------------------------------------------------
     if not registered_email:
         st.warning("🔒 **[보안 설정 필요] 관리자(Manager) Google 계정을 최초 1회 등록해 주세요.**")
         st.caption(
@@ -1580,11 +1594,7 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
                     st.rerun()
         return
 
-    # ---------------------------------------------------------
     # [보안 관문 2] 관리자 본인 Google 로그인 여부 검증
-    # - Streamlit Google OAuth(st.user.email)가 등록된 관리자 이메일과 일치하거나,
-    # - 현재 세션에서 관리자 Google 계정 + 보안 비밀번호 검증을 통과한 경우에만 허용
-    # ---------------------------------------------------------
     is_oauth_manager = bool(oauth_google_email and oauth_google_email == registered_email)
     is_session_manager = bool(session_authed_email and session_authed_email == registered_email)
     is_manager_verified = is_oauth_manager or is_session_manager
@@ -1648,9 +1658,7 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
                     st.rerun()
         return
 
-    # ---------------------------------------------------------
     # [보안 관문 통과 후] 관리자 인증 상태바 + 로그아웃(잠금) 버튼
-    # ---------------------------------------------------------
     with st.container(border=True):
         c_top1, c_top2 = st.columns([3.6, 1.4])
         with c_top1:
@@ -1787,16 +1795,40 @@ if _dialog_decorator:
         _render_api_key_manager_body(expiry_all_status, law_prom_map)
 
 # ---------------------------------------------------------
-# 2. 왼쪽 사이드바 제어판 (요금 계량기·다중 파일첨부·7대 기관 백업 제거 -> [💳 결제] [🔑 API키] 배치)
+# 2. 왼쪽 사이드바 제어판 (최상단 모드 스위치 + 1~10번 방 미니 현황판 + [💳 결제] [🔑 API키])
 # ---------------------------------------------------------
 task_mgr = get_background_task_manager()
 expiry_alerts, expiry_all_status = check_api_expiry_alerts()
 law_prom_map = fetch_latest_tax_law_promulgations()
 budget_exceeded = False
 
+if "app_top_mode" not in st.session_state:
+    st.session_state.app_top_mode = "AGENT"
+
 with st.sidebar:
+    # 🔀 [최상단 고정: "자율 에이전트AI" / "통합고용세액공제" 2열 전환 버튼]
+    sb_m1, sb_m2 = st.columns(2, gap="small")
+    with sb_m1:
+        if st.button(
+            "자율 에이전트AI",
+            key="btn_top_mode_agent",
+            type=("primary" if st.session_state.app_top_mode == "AGENT" else "secondary"),
+            use_container_width=True,
+        ):
+            st.session_state.app_top_mode = "AGENT"
+            st.rerun()
+    with sb_m2:
+        if st.button(
+            "통합고용세액공제",
+            key="btn_top_mode_credit",
+            type=("primary" if st.session_state.app_top_mode == "CREDIT_CALC" else "secondary"),
+            use_container_width=True,
+        ):
+            st.session_state.app_top_mode = "CREDIT_CALC"
+            st.rerun()
+
     st.markdown(
-        "<div style='font-size:1.12rem; font-weight:800; color:#0f172a; line-height:1.4; margin-bottom:8px; letter-spacing:-0.4px;'>"
+        "<div style='font-size:1.05rem; font-weight:800; color:#0f172a; line-height:1.35; margin-top:2px; margin-bottom:4px; letter-spacing:-0.4px;'>"
         "⚙️ 에이전트 제어판</div>",
         unsafe_allow_html=True
     )
@@ -1868,7 +1900,7 @@ with st.sidebar:
                 st.session_state.ws_widget_ver = ws_widget_ver + 1
                 st.rerun()
 
-    # 📦 [카드 3] 멀티 대화방 선택 (`🔄개정감지` 역추적 태깅 연동) 및 🔍 10개 방 통합 키워드 검색
+    # 📦 [카드 3] 멀티 대화방 선택 + 현재 방 비우기 + 📋 1~10번 대화방 작은 글씨 2열 미니 현황판
     with st.container(border=True):
         rooms_with_rev_cnt = sum(
             1 for r_id in ROOM_IDS
@@ -1955,6 +1987,28 @@ with st.sidebar:
             save_workspace_to_disk(effective_ws_id)
             st.rerun()
 
+        # 📋 [현재 방 비우기 밑: 대화방 1번~10번 대화방명 및 건수 작은 글씨 2열 현황판]
+        board_chips_html = ["<div class='sb-room-board'>"]
+        for idx_r, r_id in enumerate(ROOM_IDS, start=1):
+            r_title = (st.session_state.room_titles.get(r_id, "빈 대화방") or "빈 대화방").strip()
+            short_title = r_title[:7] + ("…" if len(r_title) > 7 else "")
+            r_msgs = st.session_state.chat_rooms.get(r_id, [])
+            q_cnt = (len(r_msgs) + 1) // 2
+            f_cnt = len(st.session_state.room_files[r_id].get("items", []))
+            t_info = task_mgr["tasks"].get(f"{effective_ws_id}::{r_id}")
+            is_run = bool(t_info and t_info.get("status") == "running")
+            rev_alerts, _ = get_room_revision_alerts(effective_ws_id, r_id, r_msgs, law_prom_map)
+
+            dot_icon = "🟢" if r_id == selected_room else ("⏳" if is_run else "⚪")
+            extra_icons = ("📎" if f_cnt else "") + ("🔄" if rev_alerts else "")
+            active_cls = " active" if r_id == selected_room else ""
+            board_chips_html.append(
+                f"<div class='sb-room-chip{active_cls}' title='{r_id}: {r_title} ({q_cnt}건)'>"
+                f"{dot_icon} {idx_r}. {short_title} ({q_cnt}건){extra_icons}</div>"
+            )
+        board_chips_html.append("</div>")
+        st.markdown("".join(board_chips_html), unsafe_allow_html=True)
+
     # 📦 [카드 4 — 최하단 고정: [💳 결제] 및 [🔑 API키] 버튼]
     with st.container(border=True):
         col_b1, col_b2 = st.columns(2)
@@ -1968,7 +2022,7 @@ with st.sidebar:
                     st.session_state.show_inline_api_manager = not st.session_state.get("show_inline_api_manager", False)
 
 # ---------------------------------------------------------
-# 3. 메인 화면 상단 (우측 상단 1/3 모드 스위치 + 현재 대화방 렌더링)
+# 3. 메인 화면 상단 (큰 제목 h1 제거 + 슬림 미니 상태바 + 모드 격리)
 # ---------------------------------------------------------
 current_messages = st.session_state.chat_rooms[selected_room]
 current_room_title = st.session_state.room_titles[selected_room]
@@ -1977,36 +2031,7 @@ current_task_key = f"{effective_ws_id}::{selected_room}"
 active_task = task_mgr["tasks"].get(current_task_key)
 is_current_room_running = bool(active_task and active_task.get("status") == "running")
 
-if pro_toggle_on:
-    mode_status_str = "🧠 **Pro 심층 모드 (3배 리미트 개방 ON)**"
-else:
-    mode_status_str = "⚡ **Flash 표준 모드 (고속 검토)**"
-
-# 🔀 [우측 상단 1/3 영역 모드 전환 스위치 — "자율 에이전트AI" / "통합고용세액공제" 2버튼 분리 및 즉시 st.stop() 격리]
-if "app_top_mode" not in st.session_state:
-    st.session_state.app_top_mode = "AGENT"
-_sp_col, _m_col1, _m_col2 = st.columns([4, 1, 1], gap="small")
-with _m_col1:
-    if st.button(
-        "자율 에이전트AI",
-        key="btn_top_mode_agent",
-        type=("primary" if st.session_state.app_top_mode == "AGENT" else "secondary"),
-        use_container_width=True,
-    ):
-        st.session_state.app_top_mode = "AGENT"
-        st.rerun()
-with _m_col2:
-    if st.button(
-        "통합고용세액공제",
-        key="btn_top_mode_credit",
-        type=("primary" if st.session_state.app_top_mode == "CREDIT_CALC" else "secondary"),
-        use_container_width=True,
-    ):
-        st.session_state.app_top_mode = "CREDIT_CALC"
-        st.rerun()
-
 if st.session_state.app_top_mode == "CREDIT_CALC":
-    # 구버전 Streamlit 폴백용 인라인 API 관리창이 켜져 있으면 상단에 표시
     if st.session_state.get("show_inline_api_manager"):
         with st.container(border=True):
             st.subheader("🔑 연동 API 리스트 및 키 갱신·만료일 관리")
@@ -2024,8 +2049,20 @@ if st.session_state.app_top_mode == "CREDIT_CALC":
     )
     st.stop()
 
-st.title(f"⚖️ 세무·법령·회계 자율 에이전트 — [{selected_room}: {current_room_title}]")
-st.markdown(f"💡 **현재 엔진 상태:** {mode_status_str}")
+# 큰 제목(st.title) 제거 -> 슬림하고 깔끔한 1줄 미니 상태바로 대체하여 본문 상단 공간 확보
+q_count_now = (len(current_messages) + 1) // 2
+mode_badge_html = (
+    "🧠 <b>Pro 심층 모드 (3배 리미트 개방 ON)</b>"
+    if pro_toggle_on else
+    "⚡ <b>Flash 표준 모드 (고속 검토)</b>"
+)
+st.markdown(
+    f"<div class='top-mini-status-bar'>"
+    f"<span>💬 <b>{selected_room} [{current_room_title}]</b> ({q_count_now}건 대화 중)</span>"
+    f"<span>💡 현재 엔진: {mode_badge_html}</span>"
+    f"</div>",
+    unsafe_allow_html=True
+)
 
 # 🚨 1) [API 유효기간 1개월(30일) 전 자동 경고 배너]
 if expiry_alerts:
@@ -2205,8 +2242,6 @@ chat_input_placeholder = (
     f"[{selected_room}] 검토할 이슈를 입력하세요 (질문칸 아래 박스에 파일 드래그 첨부 가능 / 좌측 Pro 토글 ON 시 3배 개방)"
 )
 
-# st.container() 내부에서 st.chat_input을 먼저 렌더링하고, 바로 그 밑에 st.file_uploader를 배치하여
-# 파일 업로드 영역이 항상 질문 적는 칸(chat_input) 아래에 위치하도록 고정합니다.
 with st.container():
     _chat_sig = inspect.signature(st.chat_input).parameters
     try:
