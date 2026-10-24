@@ -52,15 +52,15 @@ import law_api
 from agent import run_agent
 
 # ---------------------------------------------------------
-# 💎 1) 기본 화면 배율 고정(13.8px 컴팩트) + 2) 좌측 카드 정돈 & 입체 비우기 버튼 + 3) 1~10번 좌측정렬 & 우측 신호등 LED CSS
+# 💎 1) 가독성 최적 배율(14.2px) + 2) 좌측 사이드바 폰트·간격 확대 + 3) 1~10번 대화방 큼직한 좌측정렬 & 우측 LED CSS
 # ---------------------------------------------------------
 st.markdown("""
 <style>
 @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
 
-/* 1. 브라우저 배율을 줄이지 않아도 캡처 화면처럼 아담하고 한눈에 들어오도록 루트 폰트 크기 고정 */
+/* 1. 한눈에 들어오면서도 글씨가 선명하게 잘 읽히는 표준 루트 폰트 크기(14.2px) */
 html {
-    font-size: 13.8px !important;
+    font-size: 14.2px !important;
 }
 html, body, [class*="css"] {
     font-family: 'Pretendard', 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif;
@@ -73,58 +73,64 @@ div.block-container {
     max-width: 100% !important;
 }
 
-/* 🎨 좌측 사이드바 너비 및 컴팩트 여백 고정 */
+/* 🎨 좌측 사이드바 너비 확대 (298~310px) -> 'Pro 심층 모드 (3배 리미트 해제)'가 두 줄로 꺾이지 않고 한 줄에 표시됨 */
 section[data-testid="stSidebar"] {
     background-color: #f1f5f9 !important;
     border-right: 1px solid #cbd5e1 !important;
-    min-width: 274px !important;
-    max-width: 288px !important;
+    min-width: 298px !important;
+    max-width: 312px !important;
 }
 section[data-testid="stSidebar"] div[data-testid="stSidebarUserContent"] {
-    padding-top: 0.75rem !important;
-    padding-bottom: 0.6rem !important;
-    padding-left: 0.75rem !important;
-    padding-right: 0.75rem !important;
+    padding-top: 0.85rem !important;
+    padding-bottom: 0.75rem !important;
+    padding-left: 0.85rem !important;
+    padding-right: 0.85rem !important;
 }
 
-/* 📦 사이드바 내부 화이트 카드 패딩 및 간격 (소제목이 아래 위젯과 절대 겹치지 않도록 상하 여백 정돈) */
+/* 📦 사이드바 내부 화이트 카드 패딩 및 간격 */
 section[data-testid="stSidebar"] div[data-testid="stVerticalBlockBorderWrapper"] {
     background-color: #ffffff !important;
     border: 1px solid #cbd5e1 !important;
     border-radius: 10px !important;
-    padding: 10px 11px !important;
-    margin-bottom: 6px !important;
+    padding: 11px 12px !important;
+    margin-bottom: 7px !important;
     box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04) !important;
 }
 
-/* 사이드바 내부 위젯 수직 간격 (너무 좁아 글씨가 겹치던 현상 해결) */
+/* 사이드바 내부 위젯 수직 간격 및 입력창·토글 폰트 가독성 상향 */
 section[data-testid="stSidebar"] div[data-testid="stVerticalBlock"] {
-    gap: 0.42rem !important;
+    gap: 0.48rem !important;
 }
 section[data-testid="stSidebar"] div[data-testid="stMarkdownContainer"] {
     overflow: visible !important;
     margin-bottom: 0px !important;
 }
+section[data-testid="stSidebar"] label p {
+    font-size: 0.88rem !important;
+    font-weight: 600 !important;
+    color: #1e293b !important;
+    white-space: nowrap !important;
+}
 section[data-testid="stSidebar"] div[data-testid="stTextInput"] input {
-    padding-top: 0.32rem !important;
-    padding-bottom: 0.32rem !important;
-    font-size: 0.82rem !important;
-    min-height: 2.0rem !important;
+    padding-top: 0.38rem !important;
+    padding-bottom: 0.38rem !important;
+    font-size: 0.88rem !important;
+    min-height: 2.15rem !important;
 }
 
-/* 사이드바 일반 버튼 기본 스타일 */
+/* 사이드바 일반 버튼 기본 스타일 (결제 / API키 등 잘 읽히는 크기로 상향) */
 section[data-testid="stSidebar"] button {
-    min-height: 1.95rem !important;
-    padding: 0.2rem 0.6rem !important;
-    font-size: 0.8rem !important;
-    border-radius: 7px !important;
+    min-height: 2.15rem !important;
+    padding: 0.25rem 0.65rem !important;
+    font-size: 0.88rem !important;
+    border-radius: 8px !important;
     font-weight: 600 !important;
 }
 section[data-testid="stSidebar"] a[data-testid="stBaseLinkButton-secondary"] {
-    min-height: 1.95rem !important;
-    padding: 0.2rem 0.6rem !important;
-    font-size: 0.8rem !important;
-    border-radius: 7px !important;
+    min-height: 2.15rem !important;
+    padding: 0.25rem 0.65rem !important;
+    font-size: 0.88rem !important;
+    border-radius: 8px !important;
     font-weight: 600 !important;
 }
 
@@ -132,12 +138,12 @@ section[data-testid="stSidebar"] a[data-testid="stBaseLinkButton-secondary"] {
 .st-key-btn_top_mode_agent button,
 .st-key-btn_top_mode_credit button {
     border-radius: 9px !important;
-    min-height: 37px !important;
-    height: 37px !important;
-    padding: 4px 6px !important;
-    font-size: 0.82rem !important;
+    min-height: 40px !important;
+    height: 40px !important;
+    padding: 5px 8px !important;
+    font-size: 0.90rem !important;
     font-weight: 800 !important;
-    letter-spacing: -0.4px !important;
+    letter-spacing: -0.3px !important;
     box-shadow: 0 2px 4px rgba(15, 23, 42, 0.06) !important;
     transition: all 0.15s ease-in-out !important;
 }
@@ -172,6 +178,7 @@ div.stButton > button[data-testid="stBaseButton-primary"] p,
 .st-key-btn_top_mode_credit button[kind="primary"] p {
     color: #ffffff !important;
     font-weight: 800 !important;
+    font-size: 0.90rem !important;
 }
 
 /* 비활성화된 상단 모드 버튼(Secondary) -> 깔끔한 화이트 사각형 박스 */
@@ -184,6 +191,11 @@ div.stButton > button[data-testid="stBaseButton-primary"] p,
     color: #334155 !important;
     border-radius: 9px !important;
 }
+.st-key-btn_top_mode_agent button[kind="secondary"] p,
+.st-key-btn_top_mode_credit button[kind="secondary"] p {
+    font-size: 0.90rem !important;
+    font-weight: 700 !important;
+}
 .st-key-btn_top_mode_agent button[kind="secondary"]:hover,
 .st-key-btn_top_mode_credit button[kind="secondary"]:hover,
 .st-key-btn_top_mode_agent button[data-testid="stBaseButton-secondary"]:hover,
@@ -193,15 +205,15 @@ div.stButton > button[data-testid="stBaseButton-primary"] p,
     color: #15803d !important;
 }
 
-/* 사이드바 카드 소제목(라벨) 스타일 — 위젯과 절대 겹치지 않도록 줄높이와 하단 여백 확보 */
+/* 사이드바 카드 소제목(라벨) 스타일 — 가독성 좋은 0.92rem 크기로 확대 */
 .sb-card-title {
-    font-size: 0.83rem;
+    font-size: 0.92rem !important;
     font-weight: 800;
     color: #0f172a;
     line-height: 1.45 !important;
     padding-top: 1px !important;
-    padding-bottom: 4px !important;
-    margin-bottom: 4px !important;
+    padding-bottom: 5px !important;
+    margin-bottom: 5px !important;
     border-bottom: 1px solid #f1f5f9;
     display: flex;
     align-items: center;
@@ -211,36 +223,36 @@ div.stButton > button[data-testid="stBaseButton-primary"] p,
 .sb-badge-green {
     background-color: #dcfce7;
     color: #15803d;
-    font-size: 0.68rem;
+    font-size: 0.74rem;
     font-weight: 700;
-    padding: 2px 7px;
+    padding: 2px 8px;
     border-radius: 999px;
-    line-height: 1.2 !important;
+    line-height: 1.25 !important;
 }
 .sb-badge-amber {
     background-color: #fef3c7;
     color: #b45309;
-    font-size: 0.68rem;
+    font-size: 0.74rem;
     font-weight: 700;
-    padding: 2px 7px;
+    padding: 2px 8px;
     border-radius: 999px;
-    line-height: 1.2 !important;
+    line-height: 1.25 !important;
 }
 .sb-badge-pro {
     background-color: #dbeafe;
     color: #1d4ed8;
-    font-size: 0.68rem;
+    font-size: 0.74rem;
     font-weight: 700;
-    padding: 2px 7px;
+    padding: 2px 8px;
     border-radius: 999px;
-    line-height: 1.2 !important;
+    line-height: 1.25 !important;
 }
 
 /* 🗑️ [현재 방 비우기] 버튼 — 입체감(3D 베벨 + 그라데이션 + 그림자) 적용 및 아래 1번 방과의 간격 확보 */
 .st-key-btn_clear_current_room {
     margin-top: 2px !important;
-    margin-bottom: 8px !important;
-    padding-bottom: 8px !important;
+    margin-bottom: 9px !important;
+    padding-bottom: 9px !important;
     border-bottom: 1px dashed #cbd5e1 !important;
 }
 .st-key-btn_clear_current_room button {
@@ -249,11 +261,15 @@ div.stButton > button[data-testid="stBaseButton-primary"] p,
     border-bottom: 2.5px solid #64748b !important;
     color: #0f172a !important;
     font-weight: 700 !important;
-    min-height: 2.15rem !important;
-    height: 2.15rem !important;
+    min-height: 2.25rem !important;
+    height: 2.25rem !important;
     border-radius: 8px !important;
     box-shadow: 0 2px 4px rgba(15, 23, 42, 0.08), inset 0 1px 0 #ffffff !important;
     transition: all 0.12s ease !important;
+}
+.st-key-btn_clear_current_room button p {
+    font-size: 0.88rem !important;
+    font-weight: 700 !important;
 }
 .st-key-btn_clear_current_room button:hover {
     background: linear-gradient(180deg, #fff1f2 0%, #ffe4e6 100%) !important;
@@ -267,7 +283,7 @@ div.stButton > button[data-testid="stBaseButton-primary"] p,
     border-bottom-width: 1px !important;
 }
 
-/* 🚦 좌측 1~10번 대화방 세로 클릭 버튼 (텍스트는 무조건 왼쪽 정렬 + 동그라미 LED는 오른쪽 끝 고정) */
+/* 🚦 좌측 1~10번 대화방 세로 클릭 버튼 (여유 공간에 맞춰 높이와 폰트를 시원하게 키우고 왼쪽 정렬 + 우측 LED 고정) */
 @keyframes trafficPulse {
     0%   { background-color: #ef4444; box-shadow: 0 0 6px #ef4444; }
     50%  { background-color: #f97316; box-shadow: 0 0 7px #f97316; }
@@ -275,19 +291,19 @@ div.stButton > button[data-testid="stBaseButton-primary"] p,
 }
 
 div[class*="st-key-room_btn_"] {
-    margin-bottom: -2px !important;
+    margin-bottom: -1px !important;
 }
 div[class*="st-key-room_btn_"] button {
     position: relative !important;
     width: 100% !important;
-    min-height: 1.72rem !important;
-    height: 1.72rem !important;
-    padding: 0.12rem 1.8rem 0.12rem 0.6rem !important;
+    min-height: 2.08rem !important;
+    height: 2.08rem !important;
+    padding: 0.2rem 2.0rem 0.2rem 0.7rem !important;
     display: flex !important;
     justify-content: flex-start !important;
     align-items: center !important;
     text-align: left !important;
-    border-radius: 6px !important;
+    border-radius: 7px !important;
     transition: all 0.12s ease !important;
     box-shadow: none !important;
 }
@@ -302,23 +318,23 @@ div[class*="st-key-room_btn_"] button span {
     margin: 0 !important;
 }
 div[class*="st-key-room_btn_"] button p {
-    font-size: 0.76rem !important;
+    font-size: 0.88rem !important;
     margin: 0 !important;
     width: 100% !important;
     white-space: nowrap !important;
     overflow: hidden !important;
     text-overflow: ellipsis !important;
     text-align: left !important;
-    letter-spacing: -0.3px !important;
+    letter-spacing: -0.2px !important;
 }
-/* 우측 끝 동그라미(LED) 공통 — 오른쪽 끝에 일렬 정렬 */
+/* 우측 끝 동그라미(LED) 공통 — 폰트 확대에 맞춰 9px로 선명하게 오른쪽 끝 고정 */
 div[class*="st-key-room_btn_"] button::after {
     content: "" !important;
-    width: 8px !important;
-    height: 8px !important;
+    width: 9px !important;
+    height: 9px !important;
     border-radius: 50% !important;
     position: absolute !important;
-    right: 9px !important;
+    right: 10px !important;
     top: 50% !important;
     transform: translateY(-50%) !important;
     flex-shrink: 0 !important;
@@ -327,10 +343,10 @@ div[class*="st-key-room_btn_"] button::after {
 div[class*="st-key-room_btn_"][class*="_empty"] button {
     background-color: #f8fafc !important;
     border: 1px solid #e2e8f0 !important;
-    color: #64748b !important;
+    color: #475569 !important;
 }
 div[class*="st-key-room_btn_"][class*="_empty"] button p {
-    color: #64748b !important;
+    color: #475569 !important;
     font-weight: 500 !important;
 }
 div[class*="st-key-room_btn_"][class*="_empty"] button::after {
@@ -341,10 +357,10 @@ div[class*="st-key-room_btn_"][class*="_empty"] button::after {
 div[class*="st-key-room_btn_"][class*="_hasmsg"] button {
     background-color: #ffffff !important;
     border: 1px solid #cbd5e1 !important;
-    color: #1e293b !important;
+    color: #0f172a !important;
 }
 div[class*="st-key-room_btn_"][class*="_hasmsg"] button p {
-    color: #1e293b !important;
+    color: #0f172a !important;
     font-weight: 600 !important;
 }
 div[class*="st-key-room_btn_"][class*="_hasmsg"] button::after {
@@ -387,10 +403,10 @@ div[class*="st-key-room_btn_"] button:hover {
     border: 1px solid #cbd5e1;
     border-left: 4px solid #16a34a;
     border-radius: 8px;
-    padding: 7px 14px;
+    padding: 8px 15px;
     margin-top: 2px;
     margin-bottom: 12px;
-    font-size: 0.88rem;
+    font-size: 0.92rem;
     color: #1e293b;
     box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
 }
@@ -412,7 +428,7 @@ div[data-testid="stChatInput"] > div:focus-within {
     box-shadow: 0 4px 14px rgba(22, 163, 74, 0.15) !important;
 }
 div[data-testid="stChatInput"] textarea {
-    font-size: 0.92rem !important;
+    font-size: 0.94rem !important;
     line-height: 1.45 !important;
 }
 
@@ -468,7 +484,7 @@ div[data-testid="stExpander"] table,
     width: 100%;
     border-collapse: collapse;
     margin: 10px 0 14px 0;
-    font-size: 0.9rem;
+    font-size: 0.92rem;
     border-radius: 6px;
     overflow: hidden;
     box-shadow: 0 1px 3px rgba(0,0,0,0.05);
@@ -1634,7 +1650,7 @@ def _trigger_agent_task(
     display_prompt = f"📎 **[첨부파일: {current_file_info['name']}]**\n\n{effective_prompt}" if has_attached_file else effective_prompt
 
     if st.session_state.room_titles[selected_room] in ["빈 대화방", "메인 대화"] and not current_messages:
-        auto_title = raw_prompt.strip().replace("[프로]", "").strip().replace("\n", " ")[:12]
+        auto_title = raw_prompt.strip().replace("[프로]", "").strip().replace("\n", " ")[:14]
         st.session_state.room_titles[selected_room] = auto_title
 
     is_pro_request = (
@@ -2106,7 +2122,7 @@ if _dialog_decorator:
         _render_api_key_manager_body(expiry_all_status, law_prom_map)
 
 # ---------------------------------------------------------
-# 2. 왼쪽 사이드바 제어판 (카드 정돈 + 입체 비우기 버튼 + 1~10번 좌측 정렬 리스트 & 우측 끝 동그라미 LED)
+# 2. 왼쪽 사이드바 제어판 (폰트 가독성 확대 + 입체 비우기 버튼 + 1~10번 큼직한 좌측 정렬 리스트 & 우측 LED)
 # ---------------------------------------------------------
 task_mgr = get_background_task_manager()
 expiry_alerts, expiry_all_status = check_api_expiry_alerts()
@@ -2139,7 +2155,7 @@ with st.sidebar:
             st.rerun()
 
     st.markdown(
-        "<div style='font-size:0.95rem; font-weight:800; color:#0f172a; line-height:1.4; margin-top:4px; margin-bottom:2px; letter-spacing:-0.4px;'>"
+        "<div style='font-size:1.02rem; font-weight:800; color:#0f172a; line-height:1.4; margin-top:4px; margin-bottom:2px; letter-spacing:-0.3px;'>"
         "⚙️ 에이전트 제어판</div>",
         unsafe_allow_html=True
     )
@@ -2212,7 +2228,7 @@ with st.sidebar:
                 st.session_state.ws_widget_ver = ws_widget_ver + 1
                 st.rerun()
 
-    # 📦 [카드 3] 멀티 대화방 (입체 비우기 버튼 + 아래 간격 확보 + 1~10번 좌측 정렬 & 우측 끝 동그라미 LED)
+    # 📦 [카드 3] 멀티 대화방 (입체 비우기 버튼 + 아래 간격 확보 + 1~10번 시원한 크기 & 좌측 정렬 + 우측 LED)
     with st.container(border=True):
         if "current_room" not in st.session_state or st.session_state.current_room not in ROOM_IDS:
             st.session_state.current_room = ROOM_IDS[0]
@@ -2267,7 +2283,7 @@ with st.sidebar:
             save_workspace_to_disk(effective_ws_id)
             st.rerun()
 
-        # 🗑️ 입체감이 살아있는 [현재 방 비우기] 버튼 (key="btn_clear_current_room"으로 전용 입체 CSS 및 하단 여백 적용)
+        # 🗑️ 입체감이 살아있는 [현재 방 비우기] 버튼
         if st.button(f"🗑️ [{selected_room}] 현재 방 비우기", key="btn_clear_current_room", use_container_width=True):
             task_mgr["tasks"].pop(active_room_key, None)
             st.session_state.chat_rooms[selected_room] = []
@@ -2281,10 +2297,10 @@ with st.sidebar:
             save_workspace_to_disk(effective_ws_id)
             st.rerun()
 
-        # 📋 [1번~10번 세로 1열 클릭 리스트 — 왼쪽 정렬 + 오른쪽 끝 동그라미 신호등 LED]
+        # 📋 [1번~10번 세로 1열 클릭 리스트 — 넓어진 사이드바에 맞춰 제목 최대 14자 표시 + 왼쪽 정렬 + 우측 끝 동그라미 LED]
         for idx_r, r_id in enumerate(ROOM_IDS, start=1):
             r_title = (st.session_state.room_titles.get(r_id, "빈 대화방") or "빈 대화방").strip()
-            short_title = r_title[:11] + ("…" if len(r_title) > 11 else "")
+            short_title = r_title[:14] + ("…" if len(r_title) > 14 else "")
             r_msgs = st.session_state.chat_rooms.get(r_id, [])
             q_cnt = (len(r_msgs) + 1) // 2
             f_cnt = len(st.session_state.room_files[r_id].get("items", []))
@@ -2589,7 +2605,7 @@ if saved_items:
                 f"📄 **{it['name']}** *({len(it['text']):,}자)*" for it in saved_items
             )
             st.markdown(
-                f"<div style='font-size:0.8rem; color:#15803d;'>📎 <b>현재 [{selected_room}] 첨부 유지 중 ({len(saved_items)}건):</b> {chips_str}</div>",
+                f"<div style='font-size:0.84rem; color:#15803d;'>📎 <b>현재 [{selected_room}] 첨부 유지 중 ({len(saved_items)}건):</b> {chips_str}</div>",
                 unsafe_allow_html=True
             )
         with c_head2:
