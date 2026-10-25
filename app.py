@@ -1527,12 +1527,17 @@ def _sanitize_math_text(text: str) -> str:
 
 def _extract_clean_copy_text(report_text: str) -> str:
     cleaned = _sanitize_math_text(report_text)
-    out_lines = []
+    lines = []
     for line in cleaned.split("\n"):
         if line.strip().startswith(">"):
             continue
-        out_lines.append(line)
-    return "\n".join(out_lines).strip()
+        lines.append(line)
+    body = "\n".join(lines).strip()
+    # 카톡·메신저 붙여넣기 시 별표(**)나 샵(###)이 노출되지 않도록 깔끔한 순수 텍스트로 정제
+    body = re.sub(r"\*\*(.*?)\*\*", r"\1", body)
+    body = re.sub(r"__(.*?)__", r"\1", body)
+    body = re.sub(r"(?m)^#{1,6}\s*(.+)$", r"[\1]", body)
+    return body.strip()
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def create_excel_from_markdown_tables(report_text: str) -> bytes | None:
@@ -2895,7 +2900,13 @@ with room_view_Slot.container(key=f"room_main_view_{effective_ws_id}_{selected_r
                     ):
                         _trigger_agent_task(
                             effective_ws_id, selected_room,
-                            "방금 작성한 검토 결과를 바탕으로, 거래처 대표님이나 고객에게 카카오톡으로 바로 복사해서 보낼 수 있도록 핵심 결론과 주의사항만 친절하고 정중한 실무 대화체로 요약해 줘.",
+                            (
+                                "방금 작성한 검토 결과를 바탕으로, 거래처 대표님께 카카오톡으로 바로 복사해서 보낼 수 있는 안내문을 작성해 줘. "
+                                "[필수 규칙] "
+                                "1) 별표(**굵게**), 샵(###), 마크다운 표(| --- |) 등 마크다운 기호는 단 한 개도 쓰지 말고 100% 순수 텍스트와 하이픈(- )만 사용할 것. "
+                                "2) 법령명이나 조문번호(제몇조 등), 판례번호는 아예 넣지 말 것. "
+                                "3) 어려운 세무 용어를 쓰지 말고 대표님이 스마트폰으로 5초 만에 이해할 수 있게 아주 쉽고 단순한 일상 표현으로 [한줄 결론] -> [핵심 금액/내용] -> [꼭 챙기실 점] 3단 구성(전체 10줄 내외)으로 짧고 친절하게 작성할 것."
+                            ),
                             pro_toggle_on, False, force_flash=True
                         )
                 with act2:
