@@ -1,6 +1,7 @@
 import os
 import io
 import re
+import uuid
 import time
 import json
 import hmac
@@ -64,6 +65,7 @@ os.makedirs(STORAGE_DIR, exist_ok=True)
 EXPIRY_FILE_PATH = os.path.join(STORAGE_DIR, "api_expiry_dates.json")
 ROOM_LAW_ACK_PATH = os.path.join(STORAGE_DIR, "room_law_ack.json")
 MANAGER_AUTH_FILE = os.path.join(STORAGE_DIR, "_manager_google_auth.json")
+ANON_WS_PREFIX = "__anon_session__:"
 
 # ---------------------------------------------------------
 # 💎 프리미엄 UI/UX CSS (좌측 사이드바 겹침 원천 해결 + 옵션 C 오로라 로딩 LED + 우측 본문 15.5px 가독성 최적화)
@@ -437,17 +439,19 @@ div[data-testid="stChatMessageContent"] a:hover {
 
 /* 마크다운 표(Table) 엔터프라이즈 네이비 스타일링 */
 div[data-testid="stChatMessageContent"] table,
-.law-diff-banner-box table {
+.law-diff-banner-box table,
+.api-key-status-table-box table {
     width: 100%;
     border-collapse: collapse;
-    margin: 12px 0 16px 0;
-    font-size: 1.02rem !important;
-    border-radius: 6px;
+    margin: 10px 0 14px 0;
+    font-size: 0.98rem !important;
+    border-radius: 8px;
     overflow: hidden;
     box-shadow: 0 1px 3px rgba(0,0,0,0.05);
 }
 div[data-testid="stChatMessageContent"] th,
-.law-diff-banner-box th {
+.law-diff-banner-box th,
+.api-key-status-table-box th {
     background-color: #1e293b !important;
     color: #ffffff !important;
     font-weight: 700 !important;
@@ -456,16 +460,34 @@ div[data-testid="stChatMessageContent"] th,
     text-align: left !important;
 }
 div[data-testid="stChatMessageContent"] td,
-.law-diff-banner-box td {
+.law-diff-banner-box td,
+.api-key-status-table-box td {
     padding: 8px 12px !important;
     border: 1px solid #cbd5e1 !important;
     color: #1e293b;
     background-color: #ffffff;
-    line-height: 1.55 !important;
+    line-height: 1.5 !important;
+    vertical-align: middle !important;
 }
 div[data-testid="stChatMessageContent"] tr:nth-child(even) td,
-.law-diff-banner-box tr:nth-child(even) td {
+.law-diff-banner-box tr:nth-child(even) td,
+.api-key-status-table-box tr:nth-child(even) td {
     background-color: #f8fafc;
+}
+.api-key-status-table-box a {
+    display: inline-block;
+    background-color: #eff6ff;
+    color: #1d4ed8 !important;
+    border: 1px solid #bfdbfe;
+    padding: 3px 10px;
+    border-radius: 6px;
+    font-weight: 700 !important;
+    font-size: 0.85rem !important;
+    text-decoration: none !important;
+}
+.api-key-status-table-box a:hover {
+    background-color: #dbeafe;
+    color: #1e40af !important;
 }
 
 /* 상단 모드 안내 인용구 박스 (> ⚡ / > 🧠) */
@@ -502,20 +524,30 @@ _CITED_ARTICLE_TAG_RE = re.compile(
     r"\[조문(?:\s*[:：]\s*|\s*)(?=[가-힣A-Za-z0-9「])([^\]]+)\]"
 )
 
+def _get_first_env_or_secret(key_names: list[str]) -> str:
+    """지정된 키 후보들 중 st.secrets 또는 환경변수에 설정된 첫 번째 실제 값을 반환합니다."""
+    for k in key_names:
+        try:
+            if hasattr(st, "secrets") and k in st.secrets:
+                val = str(st.secrets[k]).strip().strip('"').strip("'")
+                if val:
+                    return val
+        except Exception:
+            pass
+        val = os.getenv(k, "").strip().strip('"').strip("'")
+        if val:
+            return val
+    return ""
+
 def _get_law_oc() -> str:
     """agent.py, law_api.py, config.py, st.secrets, 환경변수에서 법제처 OC 키(LAW_OPEN_API_KEY 최우선)를 자동 추출합니다."""
     if hasattr(agent, "get_law_oc_auto"):
         val = agent.get_law_oc_auto()
         if val:
             return val
-    for k in ["LAW_OPEN_API_KEY", "LAW_API_OC", "OC", "LAW_OC", "LAW_API_KEY", "MOLEG_OC", "DRF_OC"]:
-        try:
-            if hasattr(st, "secrets") and k in st.secrets and str(st.secrets[k]).strip():
-                return str(st.secrets[k]).strip()
-        except Exception:
-            pass
-        if os.getenv(k, "").strip():
-            return os.getenv(k, "").strip()
+    val = _get_first_env_or_secret(["LAW_OPEN_API_KEY", "LAW_API_OC", "OC", "LAW_OC", "LAW_API_KEY", "MOLEG_OC", "DRF_OC"])
+    if val:
+        return val
     for attr in ["LAW_OPEN_API_KEY", "OC", "LAW_API_OC", "LAW_OC", "LAW_API_KEY", "API_KEY", "USER_OC", "oc"]:
         val = getattr(law_api, attr, None)
         if isinstance(val, str) and val.strip():
@@ -529,7 +561,7 @@ def _fmt_ymd_str(raw_ymd: str) -> str:
     return str(raw_ymd or "-")
 
 @st.cache_data(ttl=43200, show_spinner=False)
-def fetch_latest_tax_law_promulgations() -> dict[str, dict]:
+def _fetch_latest_tax_law_promulgations_cached() -> dict[str, dict]:
     """
     [속도 개선 ①] 9개 주요 세법 및 각 시행령(총 18건)의 최신 공포·시행 정보를
     ThreadPoolExecutor(6워커)로 병렬 조회하여 초기 구동 시간을 8~12초 -> 1~1.5초로 단축합니다.
@@ -609,6 +641,15 @@ def fetch_latest_tax_law_promulgations() -> dict[str, dict]:
             results_map[tc] = fetched_dict[tc]
     return results_map
 
+def fetch_latest_tax_law_promulgations() -> dict[str, dict]:
+    """일시적 네트워크 오류로 빈 결과가 반환될 경우 12시간 동안 빈 딕셔너리가 캐싱되지 않도록 즉시 캐시를 비웁니다."""
+    res = _fetch_latest_tax_law_promulgations_cached()
+    if not res:
+        _fetch_latest_tax_law_promulgations_cached.clear()
+    return res
+
+fetch_latest_tax_law_promulgations.clear = _fetch_latest_tax_law_promulgations_cached.clear
+
 @st.cache_data(ttl=43200, show_spinner=False)
 def fetch_official_revision_reason_zero_token(
     law_id: str,
@@ -666,7 +707,7 @@ def fetch_official_revision_reason_zero_token(
             s_url = f"http://www.law.go.kr/DRF/lawSearch.do?OC={oc}&target=eflaw&type=XML&query={enc_q}&display=20"
             req_s = urllib.request.Request(s_url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req_s, timeout=12) as resp_s:
-                s_root = ET.fromstring(resp_s.read())
+                s_root = ET.fromstring(req_s_bytes := resp_s.read())
             target_clean = law_name.replace(" ", "")
             for node in s_root.findall(".//law"):
                 nm = (node.findtext("법령명한글") or "").replace(" ", "")
@@ -692,7 +733,7 @@ def fetch_official_revision_reason_zero_token(
         return f"📌 [공포 개정문 원문]\n{amend_texts[0][:3500]}"
 
     if addenda_texts:
-        return f"📌 [최근 개정 부칙 원문]\n" + "\n\n".join(addenda_texts[:3])[:3500]
+        return "📌 [최근 개정 부칙 원문]\n" + "\n\n".join(addenda_texts[:3])[:3500]
 
     return f"ℹ️ 「{law_name}」의 해당 공포본에서 별도 제·개정이유서 텍스트를 찾지 못했습니다. 우측의 '⚡ 신·구법 비교' 버튼을 눌러 조문별 비교표를 확인하세요."
 
@@ -722,6 +763,7 @@ def generate_banner_law_diff_table(
     """
     본문 대화를 늘리지 않고 상단 배너 안에서만 열고 닫을 수 있는
     [조문명 / 구법내용 / 개정법내용 / 개정효과] 4열 마크다운 비교표를 생성합니다.
+    (사용된 토큰을 대화방 요금 계량기에 정확히 반영합니다.)
     """
     pool = agent.get_live_gemini_key_pool() if hasattr(agent, "get_live_gemini_key_pool") else []
     api_key = pool[0][1] if pool else (os.getenv("GEMINI_PAID_KEY") or os.getenv("GEMINI_API_KEY") or "")
@@ -790,6 +832,13 @@ def generate_banner_law_diff_table(
             client = genai.Client(api_key=api_key, http_options={"timeout": 60000})
             resp = client.models.generate_content(model=m_id, contents=prompt)
             out_txt = agent.extract_safe_text(resp) if hasattr(agent, "extract_safe_text") else (resp.text or "")
+            um = getattr(resp, "usage_metadata", None)
+            in_tok = int(getattr(um, "prompt_token_count", 0) or int(len(prompt) * 0.7))
+            out_tok = (
+                int(getattr(um, "candidates_token_count", 0) or int(len(out_txt) * 0.7))
+                + int(getattr(um, "thoughts_token_count", 0) or 0)
+            )
+            _log_custom_tokens(m_id, in_tok, out_tok, count_call=True, room_key=room_key)
             if out_txt.strip():
                 return out_txt.strip()
         except Exception:
@@ -897,6 +946,9 @@ def acknowledge_room_laws(ws_id: str, room_id: str, law_items: list[dict]) -> No
 DEFAULT_API_EXPIRY_CONFIG = {
     "VWORLD": {
         "name": "브이월드(공시지가) API",
+        "org_name": "국토교통부 브이월드 (V-World)",
+        "api_info": "부동산 개별공시지가 · 공동주택 공시가격 조회",
+        "key_names": ["VWORLD_API_KEY"],
         "secret_key": "VWORLD_EXPIRY_DATE",
         "default_date": "2027-04-20",
         "cycle": "6개월",
@@ -904,6 +956,9 @@ DEFAULT_API_EXPIRY_CONFIG = {
     },
     "DATA_GO_KR": {
         "name": "공공데이터포털(국세청·실거래가) API",
+        "org_name": "공공데이터포털 (국세청 · 국토교통부)",
+        "api_info": "사업자등록 상태·진위확인 및 부동산 실거래가 조회",
+        "key_names": ["NTS_API_KEY", "DATA_GO_KR_KEY", "PUBLIC_DATA_KEY", "MOLIT_API_KEY"],
         "secret_key": "DATA_GO_KR_EXPIRY_DATE",
         "default_date": "2028-10-20",
         "cycle": "2년",
@@ -911,6 +966,9 @@ DEFAULT_API_EXPIRY_CONFIG = {
     },
     "BOK_ECOS": {
         "name": "한국은행(ECOS 환율·금리) API",
+        "org_name": "한국은행 경제통계시스템 (ECOS)",
+        "api_info": "공식 기준환율 · 재정환율 및 한국은행 기준금리 조회",
+        "key_names": ["BOK_API_KEY", "ECOS_API_KEY"],
         "secret_key": "BOK_EXPIRY_DATE",
         "default_date": "2028-10-20",
         "cycle": "2년",
@@ -957,6 +1015,9 @@ def check_api_expiry_alerts() -> tuple[list[dict], list[dict]]:
         item_data = {
             "code": code,
             "name": info["name"],
+            "org_name": info["org_name"],
+            "api_info": info["api_info"],
+            "key_names": info["key_names"],
             "date_str": exp_d.strftime("%Y-%m-%d"),
             "fmt_kor": fmt_kor,
             "days_left": days_left,
@@ -995,19 +1056,45 @@ def _log_custom_tokens(model_id: str, in_tok: int, out_tok: int, count_call: boo
             pass
 
 def _check_api_configured(key_names: list[str]) -> bool:
-    for k in key_names:
-        try:
-            if hasattr(st, "secrets") and k in st.secrets and str(st.secrets[k]).strip():
-                return True
-        except Exception:
-            pass
-        if os.getenv(k, "").strip():
-            return True
-    return False
+    return bool(_get_first_env_or_secret(key_names))
+
+def is_anonymous_workspace(workspace_id: str) -> bool:
+    return str(workspace_id or "").startswith(ANON_WS_PREFIX)
 
 def get_storage_path(workspace_id: str) -> str:
-    safe_hash = hashlib.sha256(workspace_id.strip().encode("utf-8")).hexdigest()[:16]
+    """
+    - 비밀번호를 입력한 작업공간: `ws_<hash>.json` (영구 보존, 다른 PC에서도 동일 암호 입력 시 이어서 사용 가능)
+    - 비밀번호 없이 접속한 각 PC/브라우저 세션: `ws_anon_<hash>.json` (접속한 각 PC/브라우저마다 100% 독립된 1~10번 대화방 부여)
+    """
+    ws_clean = str(workspace_id or "").strip()
+    safe_hash = hashlib.sha256(ws_clean.encode("utf-8")).hexdigest()[:16]
+    if is_anonymous_workspace(ws_clean):
+        return os.path.join(STORAGE_DIR, f"ws_anon_{safe_hash}.json")
     return os.path.join(STORAGE_DIR, f"ws_{safe_hash}.json")
+
+def _cleanup_stale_anon_workspaces(max_age_sec: int = 86400) -> None:
+    """
+    비밀번호 없이 생성된 임시 개별 세션 파일(`ws_anon_*.json`) 중 24시간 이상 경과한 파일과
+    과거 공용 임시 파일(`default_public`)을 정리하여 디스크 용량을 쾌적하게 유지합니다.
+    (비밀번호를 설정한 `ws_*.json` 파일은 절대 건드리지 않습니다.)
+    """
+    now_ts = time.time()
+    try:
+        legacy_pub_hash = hashlib.sha256(b"default_public").hexdigest()[:16]
+        legacy_pub_path = os.path.join(STORAGE_DIR, f"ws_{legacy_pub_hash}.json")
+        if os.path.exists(legacy_pub_path):
+            os.remove(legacy_pub_path)
+    except Exception:
+        pass
+
+    try:
+        for fname in os.listdir(STORAGE_DIR):
+            if fname.startswith("ws_anon_") and fname.endswith(".json"):
+                fpath = os.path.join(STORAGE_DIR, fname)
+                if (now_ts - os.path.getmtime(fpath)) > max_age_sec:
+                    os.remove(fpath)
+    except Exception:
+        pass
 
 def _normalize_room_file_entry(entry: dict) -> dict:
     if not isinstance(entry, dict):
@@ -1057,25 +1144,135 @@ def load_workspace_from_disk(workspace_id: str) -> dict:
             pass
     return get_default_workspace_data()
 
-def save_workspace_to_disk(workspace_id: str):
+def save_workspace_to_disk(workspace_id: str, force_overwrite_room: str = ""):
+    """
+    [멀티룸 무손실 병합 저장]
+    대화방 1~10번을 수시로 이동하며 동시 검색할 때, 특정 방(예: 대화방 1)에서 저장을 호출하더라도
+    그사이 백그라운드 스레드가 디스크(`ws_xxxx.json`)에 먼저 기록해 둔 다른 방(예: 대화방 2~10)의 완료 답변이
+    구버전 메모리(`st.session_state.chat_rooms`)에 의해 덮어써져 증발하지 않도록
+    락(lock) 내부에서 디스크 데이터와 메모리 데이터를 방별로 비교·병합(Merge)하여 저장합니다.
+    """
     if not workspace_id:
         return
     path = get_storage_path(workspace_id)
-    data = {
-        "chat_rooms": st.session_state.chat_rooms,
-        "room_titles": st.session_state.room_titles,
-        "room_files": st.session_state.room_files,
-        "room_diff_banners": st.session_state.get("room_diff_banners", {r_id: "" for r_id in ROOM_IDS})
-    }
+    mgr = get_background_task_manager()
     try:
-        with get_background_task_manager()["lock"]:
+        with mgr["lock"]:
+            disk_data = load_workspace_from_disk(workspace_id)
+            merged_rooms = {}
+            for r_id in ROOM_IDS:
+                mem_msgs = list(st.session_state.chat_rooms.get(r_id, []))
+                dsk_msgs = list(disk_data["chat_rooms"].get(r_id, []))
+
+                if r_id == force_overwrite_room:
+                    merged_rooms[r_id] = mem_msgs
+                elif len(dsk_msgs) > len(mem_msgs):
+                    merged_rooms[r_id] = dsk_msgs
+                    st.session_state.chat_rooms[r_id] = list(dsk_msgs)
+                elif len(mem_msgs) == len(dsk_msgs) and dsk_msgs and mem_msgs:
+                    if dsk_msgs[-1].get("role") == "assistant" and mem_msgs[-1].get("role") != "assistant":
+                        merged_rooms[r_id] = dsk_msgs
+                        st.session_state.chat_rooms[r_id] = list(dsk_msgs)
+                    else:
+                        merged_rooms[r_id] = mem_msgs
+                else:
+                    merged_rooms[r_id] = mem_msgs
+
+                # 완료("done") 상태인 백그라운드 태스크가 남아 있으면 누락 없이 병합
+                t_key = f"{workspace_id}::{r_id}"
+                t_info = mgr["tasks"].get(t_key)
+                if t_info and t_info.get("status") == "done" and r_id != force_overwrite_room:
+                    ans = t_info.get("response", "")
+                    q_msg = t_info.get("question_msg", "")
+                    if q_msg and not merged_rooms[r_id]:
+                        merged_rooms[r_id].append({"role": "user", "content": q_msg})
+                    if ans and (not merged_rooms[r_id] or merged_rooms[r_id][-1].get("role") != "assistant" or merged_rooms[r_id][-1].get("content") != ans):
+                        merged_rooms[r_id].append({"role": "assistant", "content": ans})
+                    st.session_state.chat_rooms[r_id] = list(merged_rooms[r_id])
+
+            data = {
+                "chat_rooms": merged_rooms,
+                "room_titles": st.session_state.room_titles,
+                "room_files": st.session_state.room_files,
+                "room_diff_banners": st.session_state.get("room_diff_banners", {r_id: "" for r_id in ROOM_IDS})
+            }
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"⚠️ 자동 저장 오류: {e}")
 
+def sync_all_rooms_state(workspace_id: str) -> bool:
+    """
+    [1~10번 대화방 전수 무손실 동기화 엔진]
+    매 렌더링 시점 및 폴링 시점마다 1~10번 모든 방의 (1) 디스크 저장본, (2) 백그라운드 완료 태스크, (3) 세션 메모리를
+    하나로 동기화하여, 사용자가 검색 도중 어느 방으로 어떻게 이동하든 질문과 답변이 100% 보존되도록 보장합니다.
+    """
+    if not workspace_id:
+        return False
+    mgr = get_background_task_manager()
+    any_updated = False
+    try:
+        with mgr["lock"]:
+            disk_data = load_workspace_from_disk(workspace_id)
+            if "chat_rooms" not in st.session_state:
+                st.session_state.chat_rooms = disk_data["chat_rooms"]
+            if "room_titles" not in st.session_state:
+                st.session_state.room_titles = disk_data["room_titles"]
+            if "room_files" not in st.session_state:
+                st.session_state.room_files = disk_data["room_files"]
+            if "room_diff_banners" not in st.session_state:
+                st.session_state.room_diff_banners = disk_data.get("room_diff_banners", {r_id: "" for r_id in ROOM_IDS})
+
+            disk_changed = False
+            for r_id in ROOM_IDS:
+                st.session_state.room_files[r_id] = _normalize_room_file_entry(st.session_state.room_files.get(r_id, {}))
+                mem_msgs = list(st.session_state.chat_rooms.get(r_id, []))
+                dsk_msgs = list(disk_data["chat_rooms"].get(r_id, []))
+
+                if len(dsk_msgs) > len(mem_msgs):
+                    mem_msgs = list(dsk_msgs)
+                    st.session_state.chat_rooms[r_id] = mem_msgs
+                    any_updated = True
+                elif len(mem_msgs) > len(dsk_msgs):
+                    dsk_msgs = list(mem_msgs)
+                    disk_data["chat_rooms"][r_id] = dsk_msgs
+                    disk_changed = True
+                elif mem_msgs and dsk_msgs and mem_msgs[-1] != dsk_msgs[-1]:
+                    if dsk_msgs[-1].get("role") == "assistant" and mem_msgs[-1].get("role") != "assistant":
+                        mem_msgs = list(dsk_msgs)
+                        st.session_state.chat_rooms[r_id] = mem_msgs
+                        any_updated = True
+
+                t_key = f"{workspace_id}::{r_id}"
+                t_info = mgr["tasks"].get(t_key)
+                if t_info and t_info.get("status") == "done":
+                    ans = t_info.get("response", "")
+                    q_msg = t_info.get("question_msg", "")
+                    if q_msg and not mem_msgs:
+                        mem_msgs.append({"role": "user", "content": q_msg})
+                    if ans and (not mem_msgs or mem_msgs[-1].get("role") != "assistant" or mem_msgs[-1].get("content") != ans):
+                        mem_msgs.append({"role": "assistant", "content": ans})
+                        any_updated = True
+                    st.session_state.chat_rooms[r_id] = list(mem_msgs)
+                    if disk_data["chat_rooms"].get(r_id) != mem_msgs:
+                        disk_data["chat_rooms"][r_id] = list(mem_msgs)
+                        disk_changed = True
+                    del mgr["tasks"][t_key]
+                    any_updated = True
+
+            if disk_changed:
+                disk_data["room_titles"] = st.session_state.room_titles
+                disk_data["room_files"] = st.session_state.room_files
+                disk_data["room_diff_banners"] = st.session_state.get("room_diff_banners", {r_id: "" for r_id in ROOM_IDS})
+                path = get_storage_path(workspace_id)
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(disk_data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"⚠️ 멀티룸 상태 동기화 오류: {e}")
+    return any_updated
+
 def delete_workspace_from_disk(workspace_id: str):
-    if not workspace_id or workspace_id == "default_public":
+    if not workspace_id or is_anonymous_workspace(workspace_id):
         return
     path = get_storage_path(workspace_id)
     if os.path.exists(path):
@@ -1121,18 +1318,24 @@ def _background_agent_worker(
         mgr = get_background_task_manager()
         with mgr["lock"]:
             disk_data = load_workspace_from_disk(ws_id)
-            room_msgs = disk_data["chat_rooms"].get(room_id, [])
+            room_msgs = list(disk_data["chat_rooms"].get(room_id, []))
+            q_msg = task_info.get("question_msg", "")
+            if q_msg and (not room_msgs or room_msgs[-1].get("role") != "user"):
+                if not any(m.get("role") == "user" and m.get("content") == q_msg for m in room_msgs[-2:]):
+                    room_msgs.append({"role": "user", "content": q_msg})
             if not room_msgs or room_msgs[-1].get("role") != "assistant" or room_msgs[-1].get("content") != response_text:
                 room_msgs.append({"role": "assistant", "content": response_text})
                 disk_data["chat_rooms"][room_id] = room_msgs
                 path = get_storage_path(ws_id)
                 with open(path, "w", encoding="utf-8") as f:
                     json.dump(disk_data, f, ensure_ascii=False, indent=2)
+            # 락(lock) 내부에서 response와 status="done"을 원자적(Atomic)으로 설정
+            task_info["response"] = response_text
+            task_info["status"] = "done"
     except Exception as e:
         print(f"⚠️ 백그라운드 디스크 저장 오류: {e}")
-
-    task_info["response"] = response_text
-    task_info["status"] = "done"
+        task_info["response"] = response_text
+        task_info["status"] = "done"
 
 # ---------------------------------------------------------
 # 헬퍼 함수 1: 파일 추출 + 📸 사진/스캔본 PDF 1회 자동 OCR (Gemini Flash 비전)
@@ -1178,7 +1381,8 @@ def _ocr_with_gemini_flash(file_bytes: bytes, mime_type: str, filename: str, roo
             _log_custom_tokens(m_id, in_tok, out_tok, count_call=True, room_key=room_key)
             if extracted.strip():
                 return f"[📸 AI 비전 OCR 자동 판독 완료: {filename}]\n{extracted.strip()}"
-        except Exception:
+        except Exception as e:
+            last_err = str(e)
             continue
     return f"❌ 이미지/스캔본 OCR 판독 실패 ({filename}): {last_err}"
 
@@ -1244,8 +1448,10 @@ def extract_file_content(uploaded_file, room_key: str = "") -> str:
 
 # ---------------------------------------------------------
 # 공통 정제 도우미 & 화면 렌더링 전용 마크다운 보정기
+# (URL 내부에 괄호 `()`가 포함된 판례·해석례 직링크까지 온전히 인식하도록 정규식 보강)
 # ---------------------------------------------------------
-_URL_OR_MD_LINK_RE = re.compile(r"(\]\(https?://[^\s)]+\)|https?://[^\s)<>\"]+)")
+_URL_BODY_PAT = r"(?:[^\s()<>\"']|\([^\s()<>\"']*\))+"
+_URL_OR_MD_LINK_RE = re.compile(rf"(\]\(https?://{_URL_BODY_PAT}\)|https?://{_URL_BODY_PAT})")
 
 def _escape_tilde_outside_urls(text: str) -> str:
     """
@@ -1288,6 +1494,10 @@ def _format_markdown_for_screen(md_text: str) -> str:
     return s
 
 def _sanitize_math_text(text: str) -> str:
+    """
+    PDF/워드/복사용 텍스트 정제 시 판례 링크 주소(`https://www.law.go.kr/판례/(2005두9415)`)처럼
+    URL 안에 괄호 `()`가 들어 있는 경우에도 닫는 괄호 `)`가 남지 않도록 완벽히 제거합니다.
+    """
     if not text:
         return ""
     s = text
@@ -1301,8 +1511,8 @@ def _sanitize_math_text(text: str) -> str:
         r"[\1: \2]",
         s
     )
-    s = re.sub(r"\[(\[(?:판례|심판례|해석례|예규|조문)\s*:\s*[^\]]+\])\]\((https?://[^\s)]+)\)", r"\1", s)
-    s = re.sub(r"\[([^\n]+?)\]\((https?://(?:www\.)?law\.go\.kr/[^\s)]+)\)", r"\1", s)
+    s = re.sub(rf"\[(\[(?:판례|심판례|해석례|예규|조문)\s*:\s*[^\]]+\])\]\((https?://{_URL_BODY_PAT})\)", r"\1", s)
+    s = re.sub(rf"\[([^\n]+?)\]\((https?://(?:www\.)?law\.go\.kr/{_URL_BODY_PAT})\)", r"\1", s)
 
     s = re.sub(r"\$\$(.*?)\$\$", r"\1", s, flags=re.DOTALL)
     s = re.sub(r"\$([^$\n]+)\$", r"\1", s)
@@ -1324,6 +1534,7 @@ def _extract_clean_copy_text(report_text: str) -> str:
         out_lines.append(line)
     return "\n".join(out_lines).strip()
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def create_excel_from_markdown_tables(report_text: str) -> bytes | None:
     cleaned = _sanitize_math_text(report_text)
     lines = cleaned.split("\n")
@@ -1377,6 +1588,7 @@ def _set_malgun_font(run):
     run.font.name = "Malgun Gothic"
     run._element.rPr.rFonts.set(qn("w:eastAsia"), "Malgun Gothic")
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def create_word_docx(report_text: str) -> bytes:
     report_text = _sanitize_math_text(report_text)
     doc = Document()
@@ -1515,6 +1727,7 @@ def _draw_page_footer(canvas, doc):
     canvas.drawRightString(A4[0] - 40, 24, page_num_str)
     canvas.restoreState()
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def create_pdf_report(report_text: str) -> bytes:
     reg_font, bold_font = _ensure_korean_font()
     cleaned_text = _sanitize_math_text(report_text)
@@ -1668,6 +1881,7 @@ def _trigger_agent_task(
     force_flash: bool = False
 ) -> None:
     task_mgr = get_background_task_manager()
+    sync_all_rooms_state(effective_ws_id)
     current_messages = st.session_state.chat_rooms[selected_room]
     current_file_info = _normalize_room_file_entry(st.session_state.room_files[selected_room])
     st.session_state.room_files[selected_room] = current_file_info
@@ -1685,6 +1899,9 @@ def _trigger_agent_task(
     if st.session_state.room_titles[selected_room] in ["빈 대화방", "메인 대화"] and not current_messages:
         auto_title = raw_prompt.strip().replace("[프로]", "").strip().replace("\n", " ")[:14]
         st.session_state.room_titles[selected_room] = auto_title
+        # 이미 인스턴스화된 사이드바 text_input 위젯 값을 직접 수정하면 StreamlitAPIException이 발생하므로
+        # pop()으로 위젯 상태 키만 제거하여 다음 rerun 시 room_titles 값으로 안전하게 채워지도록 처리합니다.
+        st.session_state.pop(f"title_input_{effective_ws_id}_{selected_room}", None)
 
     is_pro_request = (
         not force_flash and not budget_exceeded and (
@@ -1705,7 +1922,6 @@ def _trigger_agent_task(
         history_context = "\n".join(history_lines) + "\n\n"
 
     current_messages.append({"role": "user", "content": display_prompt})
-    save_workspace_to_disk(effective_ws_id)
 
     if has_attached_file and not force_flash:
         doc_cap = MAX_DOC_CHARS_PRO if is_pro_request else MAX_DOC_CHARS_STANDARD
@@ -1724,6 +1940,7 @@ def _trigger_agent_task(
     new_task_info = {
         "status": "running",
         "response": None,
+        "question_msg": display_prompt,
         "is_pro": is_pro_request,
         "live_step": "",
         "started_at": time.time()
@@ -1742,7 +1959,9 @@ def _trigger_agent_task(
         daemon=True
     )
     new_task_info["thread"] = worker_thread
-    task_mgr["tasks"][f"{effective_ws_id}::{selected_room}"] = new_task_info
+    with task_mgr["lock"]:
+        task_mgr["tasks"][f"{effective_ws_id}::{selected_room}"] = new_task_info
+    save_workspace_to_disk(effective_ws_id)
     worker_thread.start()
     st.rerun()
 
@@ -1818,12 +2037,13 @@ def _render_official_reason_viewer_body(
                 curr_msgs, [chosen_item], room_key=f"{effective_ws_id}::{selected_room}"
             )
             st.session_state.setdefault("room_diff_banners", {})[selected_room] = diff_md
-            st.session_state[f"diff_banner_open_{selected_room}"] = True
+            st.session_state[f"diff_banner_open_{effective_ws_id}_{selected_room}"] = True
             save_workspace_to_disk(effective_ws_id)
             st.rerun()
 
 # ---------------------------------------------------------
-# 🔐 [🔑 API키] 관리자(Manager) 전용 Google 계정 로그인 보안 모듈
+# 🔐 [🔑 API키] 3단 자동 패스(1순위 Google ID 자동교차 · 2순위 내 작업공간 암호 연동 · 3순위 PIN 단독해제)
+#    + [사이트 명 또는 단체 명 / 불러오는 API정보 명 / API코드 / 🟢🟡🔴 동그라미 불 / 사이트 링크] 통합 뷰어
 # ---------------------------------------------------------
 def _hash_manager_secret(val: str) -> str:
     return hashlib.sha256(val.strip().encode("utf-8")).hexdigest()
@@ -1838,6 +2058,15 @@ def _mask_google_email(email_str: str) -> str:
     else:
         masked_local = local_part[:2] + "*" * max(3, len(local_part) - 2)
     return f"{masked_local}@{domain_part}"
+
+def _format_api_code_display(raw_code: str, show_full: bool = False) -> str:
+    """API 키 코드 표시 도우미: 기본은 앞 4자리·뒤 4자리 마스킹 표시, 전체 보기 토글 시 원문 표시."""
+    s = (raw_code or "").strip()
+    if not s:
+        return "미설정"
+    if show_full or len(s) <= 8:
+        return s
+    return f"{s[:4]}••••{s[-4:]}"
 
 def _load_manager_google_config() -> dict:
     cfg = {"email": "", "pin_hash": "", "source": "none"}
@@ -1878,8 +2107,9 @@ def _load_manager_google_config() -> dict:
 
     if env_email:
         cfg["email"] = env_email
-        if env_pin:
-            cfg["pin_hash"] = _hash_manager_secret(env_pin)
+        cfg["source"] = "secrets"
+    if env_pin:
+        cfg["pin_hash"] = _hash_manager_secret(env_pin)
         cfg["source"] = "secrets"
 
     return cfg
@@ -1910,39 +2140,74 @@ def _get_streamlit_logged_google_email() -> str:
         pass
     return ""
 
+def _check_three_tier_manager_pass(registered_email: str, registered_pin_hash: str) -> tuple[bool, str, str]:
+    """
+    [3단 자동 패스 검증기]
+    - 1단 (Google 계정 자동 교차검증): Streamlit/OAuth에 로그인된 구글 이메일이 `MANAGER_GOOGLE_EMAIL`과 일치하면 즉시 통과
+    - 2단 (내 작업공간 암호 자동 교차검증): 좌측 사이드바 `🔐 내 작업공간 코드`에 입력한 암호가 `MANAGER_SECURITY_PIN`(또는 이메일+PIN 조합)과 일치하면 즉시 통과
+    - 3단 (PIN 단독 인증 세션): 모달에서 `MANAGER_SECURITY_PIN` 1개만 입력해 통과한 경우 세션 유지
+    """
+    oauth_google_email = _get_streamlit_logged_google_email()
+    session_authed_email = str(st.session_state.get("manager_google_authed_email", "")).strip().lower()
+    active_ws_code = str(st.session_state.get("active_workspace_id", "")).strip()
+
+    # 1순위: 구글 계정 자동 교차검증
+    if registered_email and oauth_google_email and oauth_google_email == registered_email:
+        st.session_state.manager_google_authed_email = registered_email
+        return True, "1단 자동패스 (Google 계정 이메일 자동 교차검증 완료)", oauth_google_email
+
+    # 2순위: 좌측 사이드바 '내 작업공간 코드'와 MANAGER_SECURITY_PIN 교차검증
+    if active_ws_code and registered_pin_hash and not st.session_state.get("manager_manual_locked", False):
+        ws_hash = _hash_manager_secret(active_ws_code)
+        combo_ok = False
+        if hmac.compare_digest(ws_hash, registered_pin_hash):
+            combo_ok = True
+        elif registered_email and ":" in active_ws_code:
+            em_part, pin_part = active_ws_code.split(":", 1)
+            if em_part.strip().lower() == registered_email and hmac.compare_digest(_hash_manager_secret(pin_part), registered_pin_hash):
+                combo_ok = True
+        if combo_ok:
+            st.session_state.manager_google_authed_email = registered_email or "manager@verified"
+            return True, "2단 자동패스 (좌측 '내 작업공간 코드' 보안키 교차검증 완료)", oauth_google_email
+
+    # 3순위: 이미 현재 세션에서 PIN 단독 인증을 통과한 경우
+    if session_authed_email and (session_authed_email == registered_email or (not registered_email and session_authed_email == "manager@verified")):
+        return True, "3단 패스 (관리자 보안 PIN 교차검증 완료)", oauth_google_email
+
+    return False, "", oauth_google_email
+
 def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: dict):
     mgr_cfg = _load_manager_google_config()
     registered_email = mgr_cfg.get("email", "").strip().lower()
     registered_pin_hash = mgr_cfg.get("pin_hash", "").strip()
-    oauth_google_email = _get_streamlit_logged_google_email()
-    session_authed_email = str(st.session_state.get("manager_google_authed_email", "")).strip().lower()
 
-    if not registered_email:
-        st.warning("🔒 **[보안 설정 필요] 관리자(Manager) Google 계정을 최초 1회 등록해 주세요.**")
+    # 최초 미등록 상태 (Secrets에도 없고 디스크에도 없을 때)
+    if not registered_email and not registered_pin_hash:
+        oauth_em = _get_streamlit_logged_google_email()
+        st.warning("🔒 **[보안 설정 필요] 관리자(Manager) Google 계정과 보안 PIN을 최초 1회 등록해 주세요.**")
         st.caption(
-            "아무나 `[🔑 API키]` 버튼을 눌러 API 키 목록이나 관리 링크를 열람·복사하지 못하도록, "
-            "본인(Manager)의 Google 계정 이메일과 관리자 보안 비밀번호를 등록합니다."
+            "Streamlit Cloud의 Secrets에 `MANAGER_GOOGLE_EMAIL`과 `MANAGER_SECURITY_PIN`을 넣어두시거나, "
+            "아래에서 최초 1회 등록하시면 **3단 자동 패스(① 구글ID 자동대조 → ② 작업공간 암호 연동 → ③ PIN 단독 해제)**가 즉시 작동합니다."
         )
         with st.form("mgr_initial_register_form", clear_on_submit=False):
-            st.markdown("##### 🛡️ 관리자(Manager) Google 계정 최초 등록")
-            default_em = oauth_google_email if oauth_google_email else "re.value.kr@gmail.com"
+            st.markdown("##### 🛡️ 관리자(Manager) Google 계정 및 보안 PIN 최초 등록")
             reg_email = st.text_input(
-                "관리자 Google 이메일 주소",
-                value=default_em,
+                "관리자 Google 이메일 주소 (MANAGER_GOOGLE_EMAIL)",
+                value=oauth_em if oauth_em else "",
                 placeholder="예: myaccount@gmail.com"
             )
             reg_pin1 = st.text_input(
-                "관리자 전용 보안 비밀번호 설정 (API키 잠금 해제용)",
+                "관리자 전용 보안 PIN 설정 (MANAGER_SECURITY_PIN, 4자리 이상)",
                 type="password",
-                placeholder="본인만 아는 보안 비밀번호 입력 (4자리 이상)"
+                placeholder="본인만 아는 보안 PIN 입력 (좌측 작업공간 암호와 동일하게 설정하시면 자동 연동됩니다)"
             )
             reg_pin2 = st.text_input(
-                "관리자 전용 보안 비밀번호 확인",
+                "관리자 전용 보안 PIN 확인",
                 type="password",
-                placeholder="보안 비밀번호 다시 입력"
+                placeholder="보안 PIN 다시 입력"
             )
             submitted_reg = st.form_submit_button(
-                "✅ 내 Google 계정을 유일한 관리자로 등록 및 잠금 활성화",
+                "✅ 관리자 등록 및 3단 자동 패스 활성화",
                 type="primary",
                 use_container_width=True
             )
@@ -1953,198 +2218,201 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
                 if not clean_reg_em or "@" not in clean_reg_em:
                     st.error("유효한 Google 이메일 주소(예: example@gmail.com)를 입력해 주세요.")
                 elif len(p1) < 4:
-                    st.error("보안 비밀번호는 최소 4자리 이상 입력해 주세요. (브라우저 자동완성 대신 직접 타이핑 후 버튼을 눌러주세요.)")
+                    st.error("보안 PIN은 최소 4자리 이상 입력해 주세요.")
                 elif p1 != p2:
-                    st.error("입력하신 두 보안 비밀번호가 일치하지 않습니다.")
+                    st.error("입력하신 두 보안 PIN이 일치하지 않습니다.")
                 else:
                     _save_manager_google_config(clean_reg_em, p1)
                     st.session_state.manager_google_authed_email = clean_reg_em
+                    st.session_state.manager_manual_locked = False
                     registered_email = clean_reg_em
                     registered_pin_hash = _hash_manager_secret(p1)
-                    session_authed_email = clean_reg_em
-                    st.success(f"✅ 관리자 Google 계정({clean_reg_em}) 등록 및 인증이 완료되었습니다!")
+                    st.success(f"✅ 관리자({clean_reg_em}) 등록 및 인증이 완료되었습니다!")
         if not str(st.session_state.get("manager_google_authed_email", "")).strip():
             return
 
-    is_oauth_manager = bool(oauth_google_email and oauth_google_email == registered_email)
-    is_session_manager = bool(session_authed_email and session_authed_email == registered_email)
-    is_manager_verified = is_oauth_manager or is_session_manager
+    is_manager_verified, pass_stage_label, oauth_google_email = _check_three_tier_manager_pass(
+        registered_email, registered_pin_hash
+    )
 
     if not is_manager_verified:
-        masked_mgr = _mask_google_email(registered_email)
-        st.error(
-            f"🔒 **관리자(Manager) 전용 보안 구역입니다.** "
-            f"API 키 보호를 위해 등록된 관리자 Google 계정(**`{masked_mgr}`**)으로 로그인해야 열람할 수 있습니다."
+        masked_mgr = _mask_google_email(registered_email) if registered_email else "미지정(PIN 전용)"
+        st.info(
+            f"🛡️ **관리자 3단 자동 패스 보안 구역** — 등록된 관리자 계정(`{masked_mgr}`)\n\n"
+            "- **1단 (자동):** Google 로그인 세션이 감지되면 별도 입력 없이 즉시 열립니다.\n"
+            "- **2단 (자동):** 좌측 사이드바 **`🔐 내 작업공간 코드`**에 관리자 보안 PIN(`MANAGER_SECURITY_PIN`)을 입력해 두시면 별도 로그인 없이 즉시 열립니다.\n"
+            "- **3단 (수동):** 아래 칸에 **보안 PIN 번호 1개만** 입력하면 내부 `MANAGER_GOOGLE_EMAIL`과 자동 교차검증하여 즉시 열립니다."
         )
-        if oauth_google_email and oauth_google_email != registered_email:
+        if oauth_google_email and registered_email and oauth_google_email != registered_email:
             st.warning(
-                f"🚫 현재 브라우저에 로그인된 Google 계정(`{oauth_google_email}`)은 관리자 계정이 아닙니다. "
-                f"관리자 계정(`{masked_mgr}`)으로 로그인해 주세요."
+                f"🚫 현재 감지된 Google 계정(`{oauth_google_email}`)은 등록된 관리자(`{masked_mgr}`)와 다릅니다. 아래 보안 PIN으로 인증해 주세요."
             )
 
-        with st.container(border=True):
-            st.markdown("##### 🌐 방법 1. Google 계정으로 바로 로그인 (Streamlit OAuth)")
-            c_gl1, c_gl2 = st.columns(2)
-            with c_gl1:
-                if st.button("🔐 Google 로그인 (Manager 인증)", type="primary", use_container_width=True, key="btn_st_google_oauth"):
-                    if hasattr(st, "login"):
-                        try:
-                            st.login()
-                        except Exception:
-                            st.session_state.show_google_oauth_guide = True
-                    else:
-                        st.session_state.show_google_oauth_guide = True
-            with c_gl2:
-                st.link_button("🌐 Google 계정 로그인 페이지 열기", "https://accounts.google.com/", use_container_width=True)
-
-            if st.session_state.get("show_google_oauth_guide"):
-                st.info(
-                    "💡 현재 앱에 Streamlit OIDC(`secrets.toml`의 `[auth]`) 설정이 없어 아래 **방법 2(관리자 Google 이메일 + 보안 비밀번호 인증)**로 즉시 로그인하실 수 있습니다."
+        with st.form("mgr_pin_quick_unlock_form", clear_on_submit=False):
+            st.markdown("##### 🔑 3단 패스: 보안 PIN 단독 입력으로 즉시 열기 (이메일 입력 불필요)")
+            input_g_pin = st.text_input(
+                "관리자 보안 PIN (MANAGER_SECURITY_PIN)",
+                type="password",
+                placeholder=f"관리자({masked_mgr}) 보안 PIN 입력 후 Enter"
+            )
+            c_u1, c_u2 = st.columns([3, 1.4])
+            with c_u1:
+                submitted_pin = st.form_submit_button(
+                    "🔓 보안 PIN 교차검증 및 API키 즉시 확인",
+                    type="primary",
+                    use_container_width=True
+                )
+            with c_u2:
+                oauth_try = st.form_submit_button(
+                    "🌐 Google OAuth 재확인",
+                    use_container_width=True
                 )
 
-        with st.form("mgr_login_verify_form", clear_on_submit=False):
-            st.markdown("##### 🔑 방법 2. 등록된 Manager Google 계정 & 보안 암호로 열기")
-            input_g_email = st.text_input(
-                "Google 계정 이메일",
-                value=registered_email,
-                placeholder=f"등록된 관리자 구글 이메일 입력 ({masked_mgr})"
-            )
-            input_g_pin = st.text_input(
-                "관리자 보안 비밀번호",
-                type="password",
-                placeholder="관리자 보안 비밀번호 입력"
-            )
-            submitted_login = st.form_submit_button(
-                "🔓 관리자 Google 계정 인증 및 API키 열기",
-                type="primary",
-                use_container_width=True
-            )
-            if submitted_login:
-                cand_email = (input_g_email or "").strip().lower()
-                cand_pin_hash = _hash_manager_secret((input_g_pin or "").strip())
-                if cand_email != registered_email:
-                    st.error("🚫 입력하신 이메일이 등록된 관리자(Manager) Google 계정과 일치하지 않습니다.")
-                elif registered_pin_hash and not hmac.compare_digest(cand_pin_hash, registered_pin_hash):
-                    st.error("🚫 관리자 보안 비밀번호가 일치하지 않습니다.")
+            if submitted_pin:
+                cand_pin_plain = (input_g_pin or "").strip()
+                cand_pin_hash = _hash_manager_secret(cand_pin_plain)
+                if not registered_pin_hash:
+                    st.error("🚫 관리자 보안 PIN(MANAGER_SECURITY_PIN)이 설정되어 있지 않습니다. Secrets에 MANAGER_SECURITY_PIN을 추가해 주세요.")
+                elif not cand_pin_plain or not hmac.compare_digest(cand_pin_hash, registered_pin_hash):
+                    st.error("🚫 보안 PIN이 일치하지 않습니다.")
                 else:
-                    st.session_state.manager_google_authed_email = registered_email
-                    is_manager_verified = True
-                    st.success("✅ 관리자(Manager) Google 계정 인증이 완료되었습니다.")
-        if not is_manager_verified:
-            return
-
-    with st.container(border=True):
-        c_top1, c_top2 = st.columns([3.6, 1.4])
-        with c_top1:
-            st.markdown(f"🛡️ **관리자(Manager) Google 인증 완료:** `{registered_email}`")
-            st.caption("현재 에이전트AI에 연동된 전체 API 상태와 만료 예정 키 갱신 바로가기입니다.")
-        with c_top2:
-            if st.button("🔒 잠금 (로그아웃)", use_container_width=True, key="btn_lock_api_modal"):
-                st.session_state.manager_google_authed_email = ""
-                if is_oauth_manager and hasattr(st, "logout"):
+                    st.session_state.manager_google_authed_email = registered_email or "manager@verified"
+                    st.session_state.manager_manual_locked = False
+                    st.rerun()
+            elif oauth_try:
+                if hasattr(st, "login"):
                     try:
-                        st.logout()
+                        st.login()
                     except Exception:
-                        pass
+                        st.caption("💡 현재 Streamlit OIDC 설정이 없어 보안 PIN 또는 좌측 작업공간 코드로 즉시 인증하실 수 있습니다.")
+                else:
+                    st.caption("💡 현재 환경에서는 보안 PIN 또는 좌측 작업공간 코드로 즉시 인증하실 수 있습니다.")
+        return
+
+    # ---------------------------------------------------------
+    # ✅ 인증 통과 화면: 요청하신 5열 순서
+    #    [사이트 명 또는 단체 명 / 불러오는 API정보 명 / API코드 / 🟢(만료 1달 전 🟡) 동그라미 불 / 사이트 링크]
+    # ---------------------------------------------------------
+    with st.container(border=True):
+        c_top1, c_top2, c_top3 = st.columns([3.0, 1.2, 1.0])
+        with c_top1:
+            st.markdown(f"🛡️ **관리자 교차검증 완료:** `{registered_email or 'Manager'}` &nbsp;|&nbsp; <span class='sb-badge-green'>{pass_stage_label}</span>", unsafe_allow_html=True)
+        with c_top2:
+            show_full_code = st.toggle("👁️ API코드 전체 보기", value=False, key="toggle_show_full_api_code")
+        with c_top3:
+            if st.button("🔒 잠금", use_container_width=True, key="btn_lock_api_modal"):
+                st.session_state.manager_google_authed_email = ""
+                st.session_state.manager_manual_locked = True
                 st.rerun()
 
-    gemini_ok = _check_api_configured(["GEMINI_PAID_KEY", "GEMINI_API_KEY"])
-    g_led = "🟢 연동됨" if gemini_ok else "🟡 미설정"
-    with st.container(border=True):
-        c_g1, c_g2 = st.columns([3.6, 1.4])
-        with c_g1:
-            st.markdown(f"**1. Google AI Studio (Gemini 유료 API 키)** &nbsp;|&nbsp; `{g_led}`")
-            st.caption("구글 AI 스튜디오 API 키 발급 및 관리 (유료 Pay-as-you-go 연동)")
-        with c_g2:
-            st.link_button("🔗 링크 열기", "https://aistudio.google.com/apikey", use_container_width=True)
-
-    law_ok = bool(_get_law_oc()) or _check_api_configured(["LAW_OPEN_API_KEY", "LAW_API_OC", "OC"]) or bool(law_prom_map)
-    dart_ok = _check_api_configured(["DART_API_KEY", "OPENDART_API_KEY"])
+    # 1~3번 상시/무기한 API 데이터 구성
+    gemini_raw = _get_first_env_or_secret(["GEMINI_PAID_KEY", "GEMINI_API_KEY"])
+    law_raw = _get_law_oc()
+    dart_raw = _get_first_env_or_secret(["DART_API_KEY", "OPENDART_API_KEY"])
     ind_ok = os.path.exists("industry_codes.xlsx")
 
-    permanent_apis = [
-        (
-            "2. 국가법령정보센터 (법령·판례·심판례·예규 API)",
-            "🟢 연동됨 (무기한)" if law_ok else "🟡 미설정",
-            "법제처 OPEN API 신청 및 인증키(OC) 관리",
-            "https://open.law.go.kr/LSO/openApi/guideList.do"
-        ),
-        (
-            "3. 금융감독원 전자공시시스템 (Open DART API)",
-            "🟢 연동됨 (무기한)" if dart_ok else "🟡 미설정",
-            "기업개황·재무제표·지분·배당 조회용 오픈다트 인증키 관리",
-            "https://opendart.fss.or.kr/uss/umt/EgovMberManage.do"
-        ),
+    api_rows = [
+        {
+            "site_org": "1. Google AI Studio (Google Cloud)",
+            "api_info": "Gemini 유료 에이전트 엔진 (Argon / 3.8 Flash / 3.1 Pro)",
+            "api_code": f"`{_format_api_code_display(gemini_raw, show_full_code)}`" if gemini_raw else "`미설정 (GEMINI_PAID_KEY)`",
+            "led_status": "🟢 정상 연동 (상시)" if gemini_raw else "⚪ 미설정",
+            "link_md": "[🔗 사이트 이동](https://aistudio.google.com/apikey)"
+        },
+        {
+            "site_org": "2. 법제처 국가법령정보센터 (MOLEG)",
+            "api_info": "현행법령 · 연혁법령(구법) · 대법원판례 · 심판례 · 예규 · 개정이유서",
+            "api_code": f"`{_format_api_code_display(law_raw, show_full_code)}`" if law_raw else "`미설정 (LAW_OPEN_API_KEY)`",
+            "led_status": "🟢 정상 연동 (무기한)" if (law_raw or law_prom_map) else "⚪ 미설정",
+            "link_md": "[🔗 사이트 이동](https://open.law.go.kr/LSO/openApi/guideList.do)"
+        },
+        {
+            "site_org": "3. 금융감독원 전자공시시스템 (Open DART)",
+            "api_info": "기업개황 · 요약재무제표 · 최대주주 지분 · 배당 공시",
+            "api_code": f"`{_format_api_code_display(dart_raw, show_full_code)}`" if dart_raw else "`미설정 (DART_API_KEY)`",
+            "led_status": "🟢 정상 연동 (무기한)" if dart_raw else "⚪ 미설정",
+            "link_md": "[🔗 사이트 이동](https://opendart.fss.or.kr/uss/umt/EgovMberManage.do)"
+        },
     ]
-    for title_txt, status_txt, desc_txt, link_url in permanent_apis:
-        with st.container(border=True):
-            c_p1, c_p2 = st.columns([3.6, 1.4])
-            with c_p1:
-                st.markdown(f"**{title_txt}** &nbsp;|&nbsp; `{status_txt}`")
-                st.caption(desc_txt)
-            with c_p2:
-                st.link_button("🔗 링크 열기", link_url, use_container_width=True)
 
-    st.markdown("##### ⏰ 주기적 갱신이 필요한 API (만료 예정일 확인 및 바로 갱신)")
-    current_expiry_map = load_api_expiry_dates()
-    updated_expiry_map = {}
-
-    key_check_map = {
-        "VWORLD": ["VWORLD_API_KEY"],
-        "DATA_GO_KR": ["NTS_API_KEY", "DATA_GO_KR_KEY", "PUBLIC_DATA_KEY", "MOLIT_API_KEY"],
-        "BOK_ECOS": ["BOK_API_KEY", "ECOS_API_KEY"],
-    }
-
+    # 4~6번 주기적 갱신 API (만료 1달 전 🟡 노란불, 정상 🟢 초록불, 만료 시 🔴 빨간불)
     for idx, st_item in enumerate(expiry_all_status, start=4):
-        code = st_item["code"]
+        raw_k = _get_first_env_or_secret(st_item["key_names"])
         d_left = st_item["days_left"]
-        is_conn = _check_api_configured(key_check_map.get(code, []))
-        conn_tag = "🟢 연동됨" if is_conn else "🟡 미설정"
-        if d_left < 0:
-            d_tag = f"🚨 만료됨 (D+{-d_left})"
+        if not raw_k:
+            led_str = f"⚪ 미설정 (만료일: {st_item['date_str']})"
+        elif d_left < 0:
+            led_str = f"🔴 만료됨 (D+{-d_left} · {st_item['date_str']})"
         elif d_left <= 30:
-            d_tag = f"🔴 만료임박 (D-{d_left})"
+            led_str = f"🟡 만료 임박 (D-{d_left} · {st_item['date_str']})"
         else:
-            d_tag = f"🟢 정상 (D-{d_left})"
+            led_str = f"🟢 정상 연동 (D-{d_left} · {st_item['date_str']})"
 
-        with st.container(border=True):
-            c_e1, c_e2 = st.columns([3.6, 1.4])
-            with c_e1:
-                st.markdown(
-                    f"**{idx}. {st_item['name']}** &nbsp;|&nbsp; `{conn_tag}` &nbsp;|&nbsp; `{d_tag}` *(주기: {st_item['cycle']})*"
-                )
+        api_rows.append({
+            "site_org": f"{idx}. {st_item['org_name']}",
+            "api_info": f"{st_item['api_info']} *(갱신주기: {st_item['cycle']})*",
+            "api_code": f"`{_format_api_code_display(raw_k, show_full_code)}`" if raw_k else f"`미설정 ({st_item['key_names'][0]})`",
+            "led_status": led_str,
+            "link_md": f"[🔗 사이트 이동]({st_item['url']})"
+        })
+
+    # 7번 국세청 업종코드 마스터 DB
+    api_rows.append({
+        "site_org": "7. 국세청 홈택스 (내장 마스터 DB)",
+        "api_info": "국세청 6자리 업종코드 및 기준·단순경비율 (`industry_codes.xlsx`)",
+        "api_code": "`industry_codes.xlsx` (로컬 내장)" if ind_ok else "`파일 없음`",
+        "led_status": "🟢 정상 로드됨 (상시)" if ind_ok else "🟡 파일 없음",
+        "link_md": "[🔗 사이트 이동](https://www.hometax.go.kr)"
+    })
+
+    # 요청하신 정확한 컬럼 순서로 마크다운 테이블 렌더링
+    md_lines = [
+        "| 사이트 명 또는 단체 명 | 불러오는 API정보 명 | API코드 | 상태 (🟢정상 / 🟡만료 1달 전) | 사이트 링크 |",
+        "| :--- | :--- | :--- | :--- | :---: |"
+    ]
+    for r in api_rows:
+        md_lines.append(
+            f"| **{r['site_org']}** | {r['api_info']} | {r['api_code']} | **{r['led_status']}** | {r['link_md']} |"
+        )
+
+    st.markdown(
+        "<div class='api-key-status-table-box'>\n\n" + "\n".join(md_lines) + "\n\n</div>",
+        unsafe_allow_html=True
+    )
+
+    with st.expander("⏰ 주기적 갱신 API 만료 예정일 수정 및 저장 (브이월드 · 공공데이터포털 · 한국은행)"):
+        current_expiry_map = load_api_expiry_dates()
+        updated_expiry_map = {}
+        e_cols = st.columns(len(expiry_all_status))
+        for c_idx, st_item in enumerate(expiry_all_status):
+            code = st_item["code"]
+            with e_cols[c_idx]:
                 val_str = st.text_input(
                     f"{st_item['name']} 만료일 (YYYY-MM-DD)",
                     value=current_expiry_map.get(code, st_item["date_str"]),
                     placeholder="YYYY-MM-DD",
-                    label_visibility="collapsed",
                     key=f"modal_exp_input_{code}"
                 )
                 updated_expiry_map[code] = val_str.strip()
-            with c_e2:
-                st.link_button("🔗 링크 열기", st_item["url"], use_container_width=True)
+        if st.button("💾 수정한 API 만료일 저장", use_container_width=True):
+            save_api_expiry_dates(updated_expiry_map)
+            st.success("✅ API 만료일이 저장되었습니다!")
+            st.rerun()
 
-    with st.container(border=True):
-        ind_led = "🟢 정상 로드됨" if ind_ok else "🟡 파일 없음"
-        st.markdown(f"**7. 국세청 6자리 업종코드 마스터 DB (`industry_codes.xlsx`)** &nbsp;|&nbsp; `{ind_led}`")
-
-    if st.button("💾 수정한 API 만료일 저장", use_container_width=True):
-        save_api_expiry_dates(updated_expiry_map)
-        st.success("API 만료일이 저장되었습니다!")
-
-    with st.expander("⚙️ 관리자(Manager) Google 계정 또는 보안 비밀번호 변경"):
+    with st.expander("⚙️ 관리자(Manager) Google 계정 또는 보안 PIN 변경"):
         with st.form("mgr_change_cred_form", clear_on_submit=False):
             new_mgr_em = st.text_input("변경할 관리자 Google 이메일", value=registered_email)
-            new_mgr_pw = st.text_input("새 관리자 보안 비밀번호 (4자리 이상)", type="password")
+            new_mgr_pw = st.text_input("새 관리자 보안 PIN (4자리 이상)", type="password")
             if st.form_submit_button("🔄 관리자 보안 정보 업데이트"):
                 if "@" not in (new_mgr_em or "").strip():
                     st.error("유효한 Google 이메일을 입력해 주세요.")
                 elif len((new_mgr_pw or "").strip()) < 4:
-                    st.error("새 보안 비밀번호를 4자리 이상 입력해 주세요.")
+                    st.error("새 보안 PIN을 4자리 이상 입력해 주세요.")
                 else:
                     _save_manager_google_config(new_mgr_em.strip().lower(), new_mgr_pw.strip())
                     st.session_state.manager_google_authed_email = new_mgr_em.strip().lower()
-                    st.success("✅ 관리자 Google 계정 및 보안 비밀번호가 변경되었습니다.")
+                    st.session_state.manager_manual_locked = False
+                    st.success("✅ 관리자 Google 계정 및 보안 PIN이 변경되었습니다.")
 
 if _dialog_decorator:
     @_dialog_decorator("📜 법제처 공식 『제·개정이유 및 주요내용』 원문 뷰어", width="large")
@@ -2160,23 +2428,45 @@ if _dialog_decorator:
             law_prom_map, effective_ws_id, selected_room, pro_toggle_on, budget_exceeded, preselected_clean_name
         )
 
-    @_dialog_decorator("🔑 연동 API 리스트 및 키 갱신·만료일 관리", width="large")
+    @_dialog_decorator("🔑 연동 API 현황 및 보안키·만료일 통합 관리", width="large")
     def open_api_key_manager_modal(expiry_all_status: list[dict], law_prom_map: dict):
         _render_api_key_manager_body(expiry_all_status, law_prom_map)
 
 # ---------------------------------------------------------
-# 2. 왼쪽 사이드바 제어판 (18대 세법 ID 즉시 프리워밍 연동 + 겹침 방지 여백 최적화 + 옵션 C 오로라 로딩 LED)
+# 2. 왼쪽 사이드바 제어판 (접속 PC/브라우저별 100% 독립 세션 분리 + 1~10번 방 무손실 동기화 + 옵션 C 오로라 로딩 LED)
 # ---------------------------------------------------------
 task_mgr = get_background_task_manager()
 expiry_alerts, expiry_all_status = check_api_expiry_alerts()
 law_prom_map = fetch_latest_tax_law_promulgations()
-# [속도 개선 ①] 18대 주요 세법·시행령 최신 법령ID를 에이전트 메모리 캐시에 즉시 등록하여 1턴 직행 조회 활성화
 if hasattr(agent, "register_prewarmed_law_ids") and law_prom_map:
     agent.register_prewarmed_law_ids(law_prom_map)
 budget_exceeded = False
 
+# 🛡️ [접속 PC/브라우저별 고유 익명 작업공간 ID 발급]
+# 비밀번호를 입력하지 않고 접속하더라도 다른 PC나 다른 브라우저 접속자와 대화방(1~10번)이 절대 섞이지 않도록
+# 각 브라우저 세션마다 고유한 독립 작업공간 ID(`__anon_session__:<uuid>`)를 부여합니다.
+if "anon_workspace_id" not in st.session_state:
+    st.session_state.anon_workspace_id = f"{ANON_WS_PREFIX}{uuid.uuid4().hex[:16]}"
+    _cleanup_stale_anon_workspaces(max_age_sec=86400)
+
 if "app_top_mode" not in st.session_state:
     st.session_state.app_top_mode = "AGENT"
+
+def _detect_any_room_button_click() -> None:
+    """
+    [클릭 씹힘 원천 방지]
+    백그라운드 작업 완료로 인해 버튼 key의 접미사(_running -> _hasmsg 등)가 바뀌는 순간에
+    사용자가 대화방 버튼을 클릭하더라도, 브라우저가 보낸 이전 상태 key 클릭 신호를 100% 포착하여 즉시 방을 전환합니다.
+    """
+    for idx_r, r_id in enumerate(ROOM_IDS, start=1):
+        for sfx in ("empty", "hasmsg", "active", "empty_running", "hasmsg_running", "active_running"):
+            cand_k = f"room_btn_{idx_r}_{sfx}"
+            if st.session_state.get(cand_k):
+                st.session_state[cand_k] = False
+                if st.session_state.get("current_room") != r_id:
+                    st.session_state.current_room = r_id
+
+_detect_any_room_button_click()
 
 with st.sidebar:
     # 🔀 [최상단 고정: "자율 에이전트AI" / "통합고용세액공제" 2열 전환 버튼]
@@ -2222,14 +2512,14 @@ with st.sidebar:
         )
         st.session_state.pro_toggle_state = pro_toggle_on
 
-    # 📦 [카드 2] 내 작업공간 (자동 동기화)
+    # 📦 [카드 2] 내 작업공간 (비밀번호 미입력 시 접속 PC/세션별 1~10번 방 완벽 분리 + 암호 입력 시 영구 동기화 및 API키 2단 자동패스 연동)
     with st.container(border=True):
         ws_widget_ver = st.session_state.get("ws_widget_ver", 0)
         saved_ws_val = st.session_state.get("active_workspace_id", "")
         ws_pill = (
             "<span class='sb-badge-green'>🟢 보안 저장중</span>"
             if saved_ws_val.strip() else
-            "<span class='sb-badge-amber'>🔓 공용 임시</span>"
+            "<span class='sb-badge-amber'>🛡️ 개별 분리(임시)</span>"
         )
         st.markdown(f"<div class='sb-card-title'><span>🔐 내 작업공간 코드</span>{ws_pill}</div>", unsafe_allow_html=True)
         workspace_input = st.text_input(
@@ -2239,9 +2529,13 @@ with st.sidebar:
             placeholder="나만의 암호 입력 후 Enter",
             label_visibility="collapsed",
             key=f"ws_input_box_{ws_widget_ver}",
-            help="동일한 코드를 입력하면 다른 PC에서도 1~10번 방 대화와 파일이 그대로 유지됩니다."
+            help="암호를 입력하지 않아도 각 접속 PC/브라우저마다 1~10번 대화방이 타인과 완벽히 분리됩니다. 여기에 관리자 보안 PIN(MANAGER_SECURITY_PIN)을 입력해 두시면 하단 [🔑 API키]도 별도 로그인 없이 즉시 열립니다."
         )
-        effective_ws_id = workspace_input.strip() if workspace_input.strip() else "default_public"
+        effective_ws_id = (
+            workspace_input.strip()
+            if workspace_input.strip()
+            else st.session_state.anon_workspace_id
+        )
 
         if st.session_state.get("loaded_workspace_id") != effective_ws_id:
             ws_data = load_workspace_from_disk(effective_ws_id)
@@ -2251,25 +2545,20 @@ with st.sidebar:
             st.session_state.room_diff_banners = ws_data.get("room_diff_banners", {r_id: "" for r_id in ROOM_IDS})
             st.session_state.loaded_workspace_id = effective_ws_id
             st.session_state.active_workspace_id = workspace_input.strip()
+            st.session_state.manager_manual_locked = False
             if "current_room" not in st.session_state:
                 st.session_state.current_room = ROOM_IDS[0]
+            sync_all_rooms_state(effective_ws_id)
             st.rerun()
 
-        for r_id in ROOM_IDS:
-            st.session_state.room_files[r_id] = _normalize_room_file_entry(st.session_state.room_files.get(r_id, {}))
-            t_key = f"{effective_ws_id}::{r_id}"
-            t_info = task_mgr["tasks"].get(t_key)
-            if t_info and t_info.get("status") == "done":
-                ans = t_info.get("response", "")
-                room_msgs = st.session_state.chat_rooms[r_id]
-                if ans and (not room_msgs or room_msgs[-1].get("role") != "assistant" or room_msgs[-1].get("content") != ans):
-                    room_msgs.append({"role": "assistant", "content": ans})
-                del task_mgr["tasks"][t_key]
+        # 매 렌더링 시점마다 현재 세션(개별 분리 세션 또는 암호 작업공간)의 1~10번 방을 무손실 동기화
+        sync_all_rooms_state(effective_ws_id)
 
         if workspace_input.strip():
             if st.button("🔒 작업공간 잠금 (나가기)", use_container_width=True):
                 st.session_state.active_workspace_id = ""
                 st.session_state.loaded_workspace_id = None
+                st.session_state.manager_google_authed_email = ""
                 st.session_state.ws_widget_ver = ws_widget_ver + 1
                 st.rerun()
 
@@ -2316,12 +2605,22 @@ with st.sidebar:
             else:
                 st.caption(f"'{room_search_kw}' 검색 결과가 없습니다.")
 
+        title_widget_key = f"title_input_{effective_ws_id}_{selected_room}"
+        # 위젯(st.text_input)이 렌더링되기 전에만 상태 동기화를 수행합니다.
+        if (
+            title_widget_key in st.session_state
+            and st.session_state[title_widget_key] in ("빈 대화방", "메인 대화")
+            and st.session_state.room_titles[selected_room] not in ("빈 대화방", "메인 대화")
+            and st.session_state.chat_rooms.get(selected_room)
+        ):
+            st.session_state[title_widget_key] = st.session_state.room_titles[selected_room]
+
         new_title = st.text_input(
             "방 주제 메모",
             value=st.session_state.room_titles[selected_room],
             placeholder="✏️ 현재 방 주제 메모 (예: A사 세무조사)",
             label_visibility="collapsed",
-            key=f"title_input_{effective_ws_id}_{selected_room}"
+            key=title_widget_key
         )
         if new_title != st.session_state.room_titles[selected_room]:
             st.session_state.room_titles[selected_room] = new_title
@@ -2329,16 +2628,19 @@ with st.sidebar:
             st.rerun()
 
         if st.button(f"🗑️ [{selected_room}] 현재 방 비우기", key="btn_clear_current_room", use_container_width=True):
-            task_mgr["tasks"].pop(active_room_key, None)
+            with task_mgr["lock"]:
+                task_mgr["tasks"].pop(active_room_key, None)
             st.session_state.chat_rooms[selected_room] = []
             st.session_state.room_files[selected_room] = {"name": None, "text": "", "items": []}
             st.session_state.room_titles[selected_room] = "빈 대화방"
+            # 이미 인스턴스화된 위젯 키는 값을 대입하지 않고 pop()으로 제거하여 StreamlitAPIException 원천 방지
+            st.session_state.pop(title_widget_key, None)
             st.session_state.setdefault("room_diff_banners", {})[selected_room] = ""
-            st.session_state[f"diff_banner_open_{selected_room}"] = False
+            st.session_state[f"diff_banner_open_{effective_ws_id}_{selected_room}"] = False
             if hasattr(agent, "reset_room_usage"):
                 agent.reset_room_usage(active_room_key)
             st.session_state[f"reset_cnt_{selected_room}"] = st.session_state.get(f"reset_cnt_{selected_room}", 0) + 1
-            save_workspace_to_disk(effective_ws_id)
+            save_workspace_to_disk(effective_ws_id, force_overwrite_room=selected_room)
             st.rerun()
 
         for idx_r, r_id in enumerate(ROOM_IDS, start=1):
@@ -2378,6 +2680,9 @@ with st.sidebar:
 # ---------------------------------------------------------
 # 3. 메인 화면 상단 (슬림 상태바 + 법령 개정 배너 버튼: '📜 개정이유서' / '⚡ 신·구법 비교')
 # ---------------------------------------------------------
+# 사이드바 렌더링 도중 완료된 백그라운드 작업이 있을 경우에도 즉시 반영
+sync_all_rooms_state(effective_ws_id)
+
 current_messages = st.session_state.chat_rooms[selected_room]
 current_room_title = st.session_state.room_titles[selected_room]
 current_file_info = _normalize_room_file_entry(st.session_state.room_files[selected_room])
@@ -2388,7 +2693,7 @@ is_current_room_running = bool(active_task and active_task.get("status") == "run
 if st.session_state.app_top_mode == "CREDIT_CALC":
     if st.session_state.get("show_inline_api_manager"):
         with st.container(border=True):
-            st.subheader("🔑 연동 API 리스트 및 키 갱신·만료일 관리")
+            st.subheader("🔑 연동 API 현황 및 보안키·만료일 통합 관리")
             _render_api_key_manager_body(expiry_all_status, law_prom_map)
             if st.button("✖️ API 관리창 닫기"):
                 st.session_state.show_inline_api_manager = False
@@ -2435,7 +2740,7 @@ current_room_rev_alerts, is_post_revision = get_room_revision_alerts(
     effective_ws_id, selected_room, current_messages, law_prom_map
 )
 saved_diff_md = st.session_state.get("room_diff_banners", {}).get(selected_room, "")
-is_diff_open = st.session_state.get(f"diff_banner_open_{selected_room}", False)
+is_diff_open = st.session_state.get(f"diff_banner_open_{effective_ws_id}_{selected_room}", False)
 
 if current_room_rev_alerts:
     rev_names_str = ", ".join(
@@ -2463,7 +2768,7 @@ if current_room_rev_alerts:
         diff_btn_lbl = "🔼 신·구법 비교 닫기" if (saved_diff_md and is_diff_open) else "⚡ 신·구법 비교"
         if st.button(diff_btn_lbl, key=f"rerev_{selected_room}", use_container_width=True):
             if saved_diff_md:
-                st.session_state[f"diff_banner_open_{selected_room}"] = not is_diff_open
+                st.session_state[f"diff_banner_open_{effective_ws_id}_{selected_room}"] = not is_diff_open
                 st.rerun()
             else:
                 with st.spinner("⚡ 본문 대화와 분리된 상단 [조문명 / 구법내용 / 개정법내용 / 개정효과] 비교표를 생성 중입니다..."):
@@ -2471,7 +2776,7 @@ if current_room_rev_alerts:
                         current_messages, current_room_rev_alerts, room_key=current_task_key
                     )
                     st.session_state.setdefault("room_diff_banners", {})[selected_room] = diff_md
-                    st.session_state[f"diff_banner_open_{selected_room}"] = True
+                    st.session_state[f"diff_banner_open_{effective_ws_id}_{selected_room}"] = True
                     save_workspace_to_disk(effective_ws_id)
                 st.rerun()
     with c_rv4:
@@ -2491,7 +2796,7 @@ if saved_diff_md:
                         current_messages, alerts_for_regen, room_key=current_task_key
                     )
                     st.session_state.setdefault("room_diff_banners", {})[selected_room] = diff_md
-                    st.session_state[f"diff_banner_open_{selected_room}"] = True
+                    st.session_state[f"diff_banner_open_{effective_ws_id}_{selected_room}"] = True
                     save_workspace_to_disk(effective_ws_id)
                 st.rerun()
 
@@ -2505,7 +2810,7 @@ if st.session_state.get("show_inline_reason_viewer"):
 
 if st.session_state.get("show_inline_api_manager"):
     with st.container(border=True):
-        st.subheader("🔑 연동 API 리스트 및 키 갱신·만료일 관리")
+        st.subheader("🔑 연동 API 현황 및 보안키·만료일 통합 관리")
         _render_api_key_manager_body(expiry_all_status, law_prom_map)
         if st.button("✖️ API 관리창 닫기"):
             st.session_state.show_inline_api_manager = False
@@ -2718,23 +3023,59 @@ if chat_val:
     elif inline_files:
         st.rerun()
 
-# [속도 개선 ⑥] 백그라운드 작업 0.15초 초고속 폴링 및 실시간 단계(live_step) UI 업데이트
-if active_task and active_task.get("status") == "running":
-    last_shown_step = active_task.get("live_step", "")
-    while active_task.get("status") == "running":
-        time.sleep(0.15)
-        cur_step = active_task.get("live_step", "")
-        if live_step_placeholder is not None and cur_step and cur_step != last_shown_step:
-            last_shown_step = cur_step
-            try:
-                elapsed_sec = int(time.time() - active_task.get("started_at", time.time()))
-                live_step_placeholder.markdown(f"**실시간 진행 상태 ({elapsed_sec}초 경과):** {cur_step}")
-            except Exception:
-                pass
+# ---------------------------------------------------------
+# 7. [멀티룸 1~10번 통합 감시 폴링 엔진]
+#    - 현재 방이 작성 중일 때는 실시간 단계 표시 및 완료 즉시 갱신
+#    - 다른 방만 작성 중일 때는 현재 방의 버튼·다운로드 클릭 반응성이 느려지지 않도록
+#      짧은 주기(최대 1.2초)로만 비차단 감시하여 완료 시 즉시 사이드바 LED와 답변을 동기화합니다.
+# ---------------------------------------------------------
+def _get_ws_task_states(ws_id: str) -> tuple[bool, bool]:
+    prefix = f"{ws_id}::"
+    has_running = False
+    has_done = False
+    for k, v in list(task_mgr["tasks"].items()):
+        if k.startswith(prefix) and isinstance(v, dict):
+            st_val = v.get("status")
+            if st_val == "running":
+                has_running = True
+            elif st_val == "done":
+                has_done = True
+    return has_running, has_done
+
+ws_has_running, ws_has_done = _get_ws_task_states(effective_ws_id)
+
+if ws_has_done:
+    sync_all_rooms_state(effective_ws_id)
     status_placeholder.empty()
-    ans = active_task.get("response", "")
-    if ans and (not current_messages or current_messages[-1].get("role") != "assistant" or current_messages[-1].get("content") != ans):
-        current_messages.append({"role": "assistant", "content": ans})
-    task_mgr["tasks"].pop(current_task_key, None)
-    save_workspace_to_disk(effective_ws_id)
     st.rerun()
+elif is_current_room_running:
+    last_shown_step = active_task.get("live_step", "") if active_task else ""
+    while True:
+        time.sleep(0.15)
+        if active_task and active_task.get("status") == "running":
+            cur_step = active_task.get("live_step", "")
+            if live_step_placeholder is not None and cur_step and cur_step != last_shown_step:
+                last_shown_step = cur_step
+                try:
+                    elapsed_sec = int(time.time() - active_task.get("started_at", time.time()))
+                    live_step_placeholder.markdown(f"**실시간 진행 상태 ({elapsed_sec}초 경과):** {cur_step}")
+                except Exception:
+                    pass
+        still_running, newly_done = _get_ws_task_states(effective_ws_id)
+        if newly_done or not still_running or not (active_task and active_task.get("status") == "running"):
+            break
+    sync_all_rooms_state(effective_ws_id)
+    status_placeholder.empty()
+    st.rerun()
+elif ws_has_running:
+    # 현재 보고 있는 방은 대기 중이 아니고 다른 방만 백그라운드에서 실행 중일 때:
+    # 무한 루프로 UI 스레드를 점유하지 않고 최대 1.2초 동안만 완료 여부를 감시한 뒤 완료 시 즉시 갱신합니다.
+    for _ in range(8):
+        time.sleep(0.15)
+        still_running, newly_done = _get_ws_task_states(effective_ws_id)
+        if newly_done or not still_running:
+            sync_all_rooms_state(effective_ws_id)
+            st.rerun()
+            break
+    else:
+        st.rerun()
