@@ -981,8 +981,6 @@ def _fetch_full_law_xml_direct(doc_id: str, query_filter: str = "") -> str:
                         ho_txt = (ho.findtext("호내용") or "").strip()
                         if ho_txt:
                             lines.append("  " + ho_txt)
-                        for mok in unit.findall(".//목") if False else hang.findall(".//목"):
-                            pass
                         for mok in ho.findall(".//목"):
                             mok_txt = (mok.findtext("목내용") or "").strip()
                             if mok_txt:
