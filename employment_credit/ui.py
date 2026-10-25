@@ -356,6 +356,8 @@ def _build_year_rows(s: dict, year: int) -> tuple[list[dict], dict, dict]:
             lock.append("제외사유")
         if c["상시"] == "X":
             lock += ["청년등", "M"]
+        if c["상시"] == "X" or (yrec.get("고용유형") or R.EMP_REGULAR) in R.EMP_NOT_YOUTH_REGULAR:
+            lock.append("병역개월")
 
         ovr = {int(k) for k in (yrec.get("월_override") or {})}
         row = {
@@ -363,6 +365,7 @@ def _build_year_rows(s: dict, year: int) -> tuple[list[dict], dict, dict]:
             **{f: p.get(f, "") for f in INFO_COLS},
             "고용유형": yrec.get("고용유형") or R.EMP_REGULAR,
             "제외사유": c["제외사유"],
+            "병역개월": int(p.get("병역개월", 0) or 0),
             "청년등": c["청년등"],
             "상시": c["상시"],
             **{MONTH_COLS[i]: c["months"][i] for i in range(12)},
@@ -396,6 +399,8 @@ def _grid_options(df: pd.DataFrame, totals: dict) -> dict:
                         cellEditorParams={"values": R.EMP_TYPES})
     gb.configure_column("제외사유", headerName="상시근로자 제외사유", width=190, cellEditor="agSelectCellEditor",
                         cellEditorParams={"values": R.EXCL_REASONS})
+    gb.configure_column("병역개월", headerName="병역(개월)", width=88, cellEditor="agNumberCellEditor",
+                        cellEditorParams={"min": 0, "max": R.MILITARY_MAX_MONTHS, "precision": 0})
     gb.configure_column("청년등", headerName="청년등 상시근로자", width=150, cellEditor="agSelectCellEditor",
                         cellEditorParams=JS_YOUTH_PARAMS)
     gb.configure_column("상시", headerName="상시(O/X)", width=86, editable=True, cellStyle=JS_STYLE_REGULAR,
@@ -454,6 +459,15 @@ def _apply_changes(s: dict, year: int, sent: list[dict], back: pd.DataFrame) -> 
                 d = H.parse_date(nv) if f != "성명" else None
                 p[f] = nv if f == "성명" else (d.isoformat() if d else nv)
                 changed = True
+
+        nv = _norm(nr.get("병역개월"))
+        if nv != _norm(old.get("병역개월")) and not _same_num(nv or "0", _norm(old.get("병역개월")) or "0"):
+            try:
+                months = int(float(nv or 0))
+            except ValueError:
+                months = 0
+            p["병역개월"] = max(0, min(months, R.MILITARY_MAX_MONTHS))      # 최대 6년(72개월)
+            changed = True
 
         nv = _norm(nr.get("고용유형"))
         if nv and nv != _norm(old.get("고용유형")):
@@ -535,7 +549,8 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
         except Exception:
             back = None
     if isinstance(back, pd.DataFrame) and _apply_changes(s, year, rows, back):
-        s["grid_ver"][year] = ver + 1
+        for y in _years(s):                     # 이름·날짜·병역은 다른 연도 표에도 영향
+            s["grid_ver"][y] = s["grid_ver"].get(y, 0) + 1
         st.rerun()
 
     st.markdown(
@@ -557,7 +572,8 @@ def _page_employees(room_key: str):
         "<span style='background:#fef9c3'>급여 지급 없는 달</span>"
         "<span style='border:2px solid #f59e0b'>직접 고친 값</span>"
         "</div>", unsafe_allow_html=True)
-    st.caption("왼쪽부터 고용유형 → 제외사유 → 청년등 순서로 고르세요. 앞에서 제외되면 뒤 칸은 자동으로 잠깁니다. "
+    st.caption("왼쪽부터 고용유형 → 제외사유 → 병역(개월) → 청년등 순서로 고르세요. "
+               "병역기간은 현역·사회복무요원 등 복무 개월 수를 넣으면 최대 72개월까지 나이에서 빼고 청년을 판정합니다.  앞에서 제외되면 뒤 칸은 자동으로 잠깁니다. "
                "회색 칸을 고쳐야 하면 그 사람의 상시(O/X)를 바꾸면 잠금이 풀립니다. "
                "월별 칸은 자동 계산되며, 눌러서 다른 값이나 '자동'을 고를 수 있습니다.")
 
