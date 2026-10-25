@@ -721,23 +721,103 @@ def _redact_lines(answer: str, violations: list[tuple]) -> str:
         out.append(line)
     return "\n".join(out)
 
-def _strip_fake_cases_in_track2(answer: str, trace: dict) -> str:
-    """트랙 2(카톡·이메일 초안 등 자유 양식)에서도 조회 기록에 전혀 없는 사건번호가 날조되면 해당 줄을 제거합니다."""
-    if not answer or trace is None:
-        return answer
-    detail_blob = _norm(" ".join(trace["detail"]))
-    list_blob = _norm(" ".join(trace["list"]))
+def _is_kakao_request(user_query: str) -> bool:
+    q = (user_query or "").strip()
+    return any(k in q for k in ("카톡", "카카오톡", "문자 초안", "문자 안내", "문자로 보낼"))
+
+def _enforce_pure_kakao_text(text: str) -> str:
+    """
+    [카톡 안내문 전용 100% 순수 텍스트 & 조문번호 완전 제거 후처리기]
+    AI가 습관적으로 별표(**), 마크다운 표(| --- |), 샵(###), 조문번호(제29조의8 등)를 넣더라도
+    카톡 붙여넣기 시 기호나 법조문이 절대 노출되지 않도록 순수 텍스트로 자동 정제합니다.
+    """
+    if not text:
+        return ""
+    s = text
+    # 1) 대괄호 출처 태그 및 마크다운 링크 제거
+    s = re.sub(r"\[(?:\[)?(?:판례|심판례|해석례|예규|조문)[^\]]*\](?:\([^)]*\))?", "", s)
+    s = re.sub(r"\[([^\]]+)\]\(https?://[^)]+\)", r"\1", s)
+    # 2) 괄호로 묶인 법령·조문 표기 제거 (예: (조세특례제한법 제29조의8), (제29조의8 제1항))
+    s = re.sub(r"\([^)\n]*제\s*\d+\s*조[^)\n]*\)", "", s)
+    # 3) 문장 내 법령명+조문번호 또는 단독 조문번호(제N조의M 제N항 제N호) 깔끔하게 제거 (줄바꿈 보존)
+    s = re.sub(
+        r"[「『]?[가-힣ㆍ· ]{2,25}(?:법률?|시행령|시행규칙)[」』]?[ ]*제[ ]*\d+[ ]*조(?:[ ]*의[ ]*\d+)?(?:[ ]*제[ ]*\d+[ ]*[항호목])*(?:[ ]*(?:에[ ]*따르면|에[ ]*따른|에[ ]*따라|에[ ]*의하면|에[ ]*의한|규정에[ ]*따르면|규정에[ ]*따라|상))?[ ]*",
+        "",
+        s
+    )
+    s = re.sub(r"제[ ]*\d+[ ]*조(?:[ ]*의[ ]*\d+)?(?:[ ]*제[ ]*\d+[ ]*[항호목])*[ ]*", "", s)
+    # 4) 마크다운 굵게(**), 기울임(*), 취소선(~~), 인라인 코드(`) 기호 완전 제거
+    s = re.sub(r"\*\*(.*?)\*\*", r"\1", s)
+    s = re.sub(r"__(.*?)__", r"\1", s)
+    s = re.sub(r"~~(.*?)~~", r"\1", s)
+    s = s.replace("`", "").replace("「", "").replace("」", "").replace("『", "").replace("』", "")
+    # 5) 마크다운 표(| --- |)가 있다면 카톡용 단순 줄바꿈 텍스트로 자동 변환
+    lines = s.split("\n")
     out_lines = []
-    for line in answer.split("\n"):
-        fake_nos = [
-            no for no in _find_case_numbers(line)
-            if (no not in detail_blob and no not in list_blob)
-        ]
-        if fake_nos:
-            print(f"[시스템] 🚫 트랙 2 미조회 사건번호 제거: {fake_nos}")
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if line.startswith("|") and line.endswith("|"):
+            t_rows = []
+            while i < len(lines):
+                r_line = lines[i].strip()
+                if not (r_line.startswith("|") and r_line.endswith("|")):
+                    break
+                if not re.match(r"^\|[\s\-:|]+\|$", r_line):
+                    cells = [c.strip() for c in r_line.strip("|").split("|") if c.strip()]
+                    if cells:
+                        t_rows.append(cells)
+                i += 1
+            if len(t_rows) >= 2:
+                headers = t_rows[0]
+                for row in t_rows[1:]:
+                    if len(row) == 2:
+                        out_lines.append(f"- {row[0]} : {row[1]}")
+                    else:
+                        pairs = [f"{headers[idx]} {val}" if idx < len(headers) else val for idx, val in enumerate(row)]
+                        out_lines.append("- " + " / ".join(pairs))
             continue
-        out_lines.append(line)
-    return "\n".join(out_lines)
+        # 6) 마크다운 헤더(### 등) 제거 후 깔끔한 대괄호 소제목으로 변환
+        m_hdr = re.match(r"^#{1,6}\s*(.+)$", line)
+        if m_hdr:
+            hdr_txt = re.sub(r"^\d+\.\s*", "", m_hdr.group(1).strip())
+            if not (hdr_txt.startswith("[") and hdr_txt.endswith("]")):
+                hdr_txt = f"[{hdr_txt}]"
+            out_lines.append(hdr_txt)
+        elif re.match(r"^-{3,}$", line):
+            pass
+        else:
+            # 글머리 기호(* )를 깔끔한 하이픈(- )으로 통일
+            cleaned_line = re.sub(r"^(\s*)\*\s+", r"\1- ", lines[i])
+            cleaned_line = re.sub(r"  +", " ", cleaned_line).rstrip()
+            out_lines.append(cleaned_line)
+        i += 1
+    res = "\n".join(out_lines)
+    res = re.sub(r"\n{3,}", "\n\n", res).strip()
+    return res
+
+def _strip_fake_cases_in_track2(answer: str, trace: dict, user_query: str = "") -> str:
+    """트랙 2(카톡·이메일 초안 등 자유 양식)에서 미조회 사건번호를 제거하고, 카톡 요청 시 100% 순수 텍스트·조문번호 제거를 강제합니다."""
+    if not answer:
+        return answer
+    out_text = answer
+    if trace is not None:
+        detail_blob = _norm(" ".join(trace["detail"]))
+        list_blob = _norm(" ".join(trace["list"]))
+        out_lines = []
+        for line in out_text.split("\n"):
+            fake_nos = [
+                no for no in _find_case_numbers(line)
+                if (no not in detail_blob and no not in list_blob)
+            ]
+            if fake_nos:
+                print(f"[시스템] 🚫 트랙 2 미조회 사건번호 제거: {fake_nos}")
+                continue
+            out_lines.append(line)
+        out_text = "\n".join(out_lines)
+    if _is_kakao_request(user_query):
+        out_text = _enforce_pure_kakao_text(out_text)
+    return out_text
 
 # ---------------------------------------------------------
 # 🧪 의미 검증 (검증 모델 — 감수기 원문 글자 수 12,000자 무손실 유지 + 정밀 계산 결과 최우선 포함 + 경량 사고 버짓)
@@ -1784,6 +1864,10 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
 [투트랙(Two-Track) 운영 프로토콜 — 최우선 판단 기준]
 - **📋 트랙 1 [전문 검토 보고서 모드]**: 세무·법령·회계·노무·4대보험에 관한 법리 검토, 요건 판정, 수당·세액·공제 계산, 기업 공시·실거래가·공시지가·사업자 상태 조회 등 **법령 검색이나 데이터/수식 계산이 필요한 모든 전문 질문**일 때 작동합니다. 반드시 먼저 제공된 도구(API)들을 사용하여 실제 원문 데이터와 통계를 확인한 뒤, **3번의 `<precheck>` 정식 3단 크로스체크 검수표를 한 글자도 축약 없이 먼저 작성하고 이어서 [1. 결론 -> 2. 내용 -> 3. 관련법령] 보고서 양식**으로 출력하세요.
 - **💬 트랙 2 [자유 대화 및 실무 초안 모드]**: 사용자가 일상적인 대화·인사·브레인스토밍을 하거나, 직전 검토 결과를 바탕으로 **'거래처/고객 안내용 카톡·문자·이메일 초안 작성', '쉬운 요약 설명', '문장 다듬기', '일반 양식 작성'** 등을 요청한 경우에 작동합니다. 이때는 `<precheck>`나 보고서 양식, 대괄호 출처 태그([조문:...])를 모두 생략하고 자연스럽고 친절한 대화체나 사용자가 요청한 실무 양식(카톡/이메일 등)으로 자유롭게 답변하세요.
+  * **[📱 카카오톡·문자 안내문 작성 시 절대 고정 규칙]**:
+    1. **100% 순수 텍스트 전용**: 카카오톡에 복사·붙여넣기 했을 때 기호가 그대로 노출되지 않도록 별표(`**굵게**`), 샵(`### 제목`), 마크다운 표(`| --- |`), 꺾쇠(`>`) 등 마크다운 문법을 **절대 단 한 개도 쓰지 말고**, 오직 순수 텍스트와 대괄호 소제목(`[한줄 결론]` 등), 하이픈(`- `)만 사용할 것.
+    2. **법령명·조문번호·판례번호 완전 제외**: `조세특례제한법 제29조의8`, `제1항`, `대법원 2020두...` 같은 법령명이나 조문번호, 사건번호는 **단 한 글자도 적지 말 것.**
+    3. **초간단·쉬운 일상 용어 사용**: 세법을 전혀 모르는 거래처 대표님이 스마트폰으로 5초 만에 이해할 수 있도록 어려운 전문용어(상시근로자, 사후관리 추징, 손금불산입, 익금산입, 과세표준 등)를 모두 쉬운 일상 표현(전체 직원 수, 직원이 줄면 세금을 다시 내야 함, 비용 처리 불가 등)으로 바꿔서 짧고 단순하게(10~12줄 이내) 작성할 것.
 
 [트랙 1 (전문 검토 보고서 모드) 필수 도구 호출 원칙]
 - **[핵심 조문 조회 및 ⚡ 1턴 고속 직행 원칙]**: 세법·노동법·공단 규정 등 법령 질문은 **법률과 시행령(필요시 시행규칙)의 해당 조문을 모두** 원문으로 조회한 뒤 답변할 것. 특히 정식 법령명을 알고 있는 현행 법령(예: 조세특례제한법, 조세특례제한법 시행령, 법인세법, 소득세법, 부가가치세법, 상속세 및 증여세법, 국세기본법, 지방세법, 농어촌특별세법, 근로기준법 등)은 `search_law_for_gemini` 목록 검색을 거치지 말고 첫 턴에 바로 `get_law_details_for_gemini(doc_id='조세특례제한법', target='law', query_filter='제29조의8, 제127조, 제132조')`처럼 `doc_id`에 정식 법령명을 넣고 필요한 조문번호들을 `query_filter`에 쉼표로 묶어 한 번에 직행 조회할 것(법률과 시행령도 한 턴에 동시에 병렬 호출할 것). 도구 호출은 필요한 만큼 하되, **이미 결과를 받은 검색을 같은 검색어로 반복하지 말 것.**
@@ -2253,7 +2337,7 @@ def _execute_with_key_and_model(
         final_text = _inject_direct_law_links(final_text, trace)
 
     elif trace is not None:
-        final_text = _strip_fake_cases_in_track2(final_text, trace)
+        final_text = _strip_fake_cases_in_track2(final_text, trace, user_input)
 
     history = []
     try:
