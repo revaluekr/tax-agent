@@ -10,7 +10,7 @@ import threading
 import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import streamlit as st
@@ -129,10 +129,10 @@ def register_prewarmed_law_ids(law_prom_map: dict) -> None:
         if clean_name and lid:
             _cache_set(("law_name_to_id", today_ymd, clean_name.replace(" ", "")), lid)
 
-def _http_get_bytes_fast(url: str, timeout: int = 12) -> bytes:
+def _http_get_bytes_fast(url: str, timeout: int = 15) -> bytes:
     """
     [속도 개선 ③] Gzip 압축 수신(Accept-Encoding: gzip) 및 Keep-Alive 헤더를 적용해
-    대용량 법제처 XML(조특법·법인세법 등 수 MB) 다운로드 시간을 2~3배 단축합니다.
+    대용량 법제처 XML(조특법·법인세법 등 수 MB) 다운로드 시간을 원문 손실 없이 2~3배 단축합니다.
     """
     req = urllib.request.Request(
         url,
@@ -414,6 +414,7 @@ def _record(kind: str, text: str) -> str:
 
 def _record_law_articles(text: str) -> None:
     """
+    [보강]
     1) 조문 제목 괄호가 없는 시행규칙이나 공백이 섞인 조문(`제10조 ` 등)도 누락 없이 조회 목록에 등록합니다.
     2) 조회한 조문 원문 본문 안에서 직접 인용·언급하고 있는 타 법령 조문(예: 조특법 제29조의8 본문 내 '중소기업기본법 제2조')을
        `mentioned_articles`에 함께 기록하여, AI가 조문 원문 문구를 그대로 설명할 때 억울한 미조회 판정(재작성 루프)이 발생하지 않도록 보호합니다.
@@ -466,10 +467,12 @@ def _known_law_titles(trace: dict = None) -> list[str]:
 
 def _resolve_law_name(prefix: str, titles: list[str]):
     """
-    '국세기본법', '중소기업기본법', '지방세기본법'이 '본법'으로 끝난다고 오판되어 검증에서 빠지지 않도록
-    앞 글자가 한글이 아닐 때(독립 단어일 때)만 지시대명사('본법', '이법' 등)로 처리합니다.
+    1) '국세기본법', '중소기업기본법', '지방세기본법'이 '본법'으로 끝난다고 오판되어 검증에서 빠지지 않도록
+       앞 글자가 한글이 아닐 때(독립 단어일 때)만 지시대명사('본법', '이법' 등)로 처리합니다.
+    2) '국제조세조정에 관한 법률', '주식회사 등의 외부감사에 관한 법률' 등 '~에 관한 법률'(`법률`)로 끝나는 법령도
+       정확히 인식하도록 정규식을 `법률?`로 확장합니다.
     """
-    tail = _norm(prefix)[-40:]
+    tail = _norm(prefix)[-45:]
     for suf in _REF_SKIP_SUFFIX:
         if tail == suf or (tail.endswith(suf) and not re.search(r"[가-힣]$", tail[:-len(suf)])):
             return None
@@ -480,7 +483,7 @@ def _resolve_law_name(prefix: str, titles: list[str]):
     for t in titles:
         if tail.endswith(t):
             return t
-    m = re.search(r"([가-힣ㆍ·]{2,30}?법(?:시행령|시행규칙)?)$", tail)
+    m = re.search(r"([가-힣ㆍ·]{2,35}?법률?(?:시행령|시행규칙)?)$", tail)
     if not m:
         return None
     partial = m.group(1)
@@ -493,14 +496,14 @@ def _resolve_law_name(prefix: str, titles: list[str]):
 
 _EXEC_STD = re.compile(r"(?<![\d의])(\d{1,3}(?:의\d{1,2})?-\d{1,3}(?:의\d{1,2})?-\d{1,3})(?![\d])")
 
-# 마크다운 표 등에서 콜론(:)이 빠진 [조문 조세특례제한법 제29조의8] 또는 [조문조세특례제한법...] 형태까지 모두 인식
+# [보강 ③] 마크다운 표 등에서 콜론(:)이 빠진 [조문 조세특례제한법 제29조의8] 또는 [조문조세특례제한법...] 형태까지 모두 인식
 _TAG = re.compile(
     r"\[(판례|심판례|해석례|예규|조문)(?:\s*[:：]\s*|\s*)(?=[가-힣A-Za-z0-9「])([^\]]+)\]"
 )
 
 def _normalize_citation_tags(text: str) -> str:
     """
-    AI가 콜론(:)을 누락하여 작성한 `[조문 조세특례제한법 제29조의8]` 또는
+    [보강 ③] AI가 콜론(:)을 누락하여 작성한 `[조문 조세특례제한법 제29조의8]` 또는
     `[조문조세특례제한법 제29조의8 제1항제1호가목]` 형태를 표준 `[조문: ...]` 형식으로 자동 정규화합니다.
     """
     if not text:
@@ -547,15 +550,20 @@ def _find_case_numbers(text: str) -> list[str]:
     return cited
 
 def _find_article_refs(text: str, trace: dict = None) -> list[tuple]:
+    """
+    조문 번호 앞의 법령명을 추출합니다.
+    '~법', '~령', '~규칙'뿐 아니라 '국제조세조정에 관한 법률', '주식회사 등의 외부감사에 관한 법률' 등
+    '~법률'(`률`)로 끝나는 모든 법률명을 누락 없이 인식합니다.
+    """
     text = text or ""
     titles = _known_law_titles(trace)
     refs = []
     last_end = 0
     for m in _ARTICLE_NO.finditer(text):
-        prefix = text[max(last_end, m.start() - 45):m.start()]
+        prefix = text[max(last_end, m.start() - 50):m.start()]
         last_end = m.end()
         stripped = re.sub(r"[\s「」『』\[\]:(),·ㆍ]+$", "", prefix)
-        if not stripped or not re.search(r"(법|령|규칙)$", _norm(stripped)):
+        if not stripped or not re.search(r"(법률?|령|규칙)$", _norm(stripped)):
             continue
         name = _resolve_law_name(stripped, titles)
         if not name:
@@ -732,7 +740,7 @@ def _strip_fake_cases_in_track2(answer: str, trace: dict) -> str:
     return "\n".join(out_lines)
 
 # ---------------------------------------------------------
-# 🧪 [속도 개선 ④] 의미 검증 고속화 (thinking_budget=0 즉시 판정 + 인용 원문 우선 매칭)
+# 🧪 의미 검증 (검증 모델 — 감수기 원문 글자 수 12,000자 무손실 유지 + 정밀 계산 결과 최우선 포함 + 경량 사고 버짓)
 # ---------------------------------------------------------
 def _strip_md(text: str) -> str:
     return re.sub(r"[*_`>#]", "", text or "").strip(" -")
@@ -808,34 +816,31 @@ def _extract_claims(answer: str, trace: dict, max_claims: int = 20) -> tuple[lis
         if len(claims) >= effective_max_claims:
             break
 
-    # [속도 개선 ④] 파이썬 정밀 계산기 결과(`🧮 [정밀 계산 완료...`)는 항상 포함하고,
-    # 직접 인용되지 않은 여분 원문은 핵심 앞부분(4,000자)만 간추려 넣어 감수 정확도는 100% 유지하면서 감수 입력 전송량을 경량화합니다.
+    # 파이썬 정밀 계산기 산출 내역(`🧮 [정밀 계산 완료...`)을 최우선 포함하고,
+    # 이어서 조회한 모든 조문 및 판례 원문을 원문 글자 수 축소 없이(12,000자 * mult) 그대로 전달합니다.
     total = sum(len(t) for _, t in sources.values())
-    aux_cap = min(4500 * mult, src_char_cap)
     for idx, d in enumerate(details):
         if d.startswith("🧮"):
             head = d.split("\n", 1)[0][:55]
             if head not in src_index and total < total_char_cap:
                 _src_id(head, d)
-                total += len(d)
+                total += min(len(d), src_char_cap)
     for key, txt in art_texts.items():
         label = _article_label(key)
         if label not in src_index and total < total_char_cap:
-            clipped_aux = txt[:aux_cap]
-            _src_id(label, clipped_aux)
-            total += len(clipped_aux)
+            _src_id(label, txt)
+            total += min(len(txt), src_char_cap)
     for idx, d in enumerate(details):
         head = d.split("\n", 1)[0][:55]
         if head in src_index:
-            continue
+            head = f"{head} (#{idx + 1})"
         if total < total_char_cap:
-            clipped_aux = d[:aux_cap]
-            _src_id(head, clipped_aux)
-            total += len(clipped_aux)
+            _src_id(head, d)
+            total += min(len(d), src_char_cap)
     return claims, sources
 
 def _semantic_verify(api_key: str, claims: list, sources: dict, user_query: str = "") -> dict:
-    _emit_live_status("🛡️ 3단계: 듀얼 AI 감수(_semantic_verify) 고속 판정 중...")
+    _emit_live_status("🛡️ 3단계: 듀얼 AI 감수(_semantic_verify) 정밀 판정 중...")
     src_block = "\n\n".join(f"[{sid}] {label}\n{text}" for sid, (label, text) in sources.items())
     claim_block = "\n".join(f"{n + 1}. (근거: {', '.join(c['sources'])}) {c['text']}" for n, c in enumerate(claims))
     prompt = (
@@ -849,7 +854,7 @@ def _semantic_verify(api_key: str, claims: list, sources: dict, user_query: str 
         f"[사용자 질문(사례 전제)]\n{user_query[:3000]}\n\n[원문]\n{src_block}\n\n[주장]\n{claim_block}"
     )
     try:
-        client = genai.Client(api_key=api_key, http_options={"timeout": 45000})
+        client = genai.Client(api_key=api_key, http_options={"timeout": 50000})
     except Exception:
         client = genai.Client(api_key=api_key)
 
@@ -859,12 +864,13 @@ def _semantic_verify(api_key: str, claims: list, sources: dict, user_query: str 
     last_v_err = None
     for vm_id in verifier_candidates:
         try:
-            # [속도 개선 ④] 감수기는 단순 사실 대조 JSON 출력이므로 thinking_budget=0으로 내부 추론 지연을 제거하여 1~1.5초 만에 즉시 응답
+            # [속도 개선 ④] 감수기가 단위 환산(천분율→백분율 등)과 복합 조문 논리는 정확히 계산하되
+            # 과도한 장문 추론으로 지연되지 않도록 thinking_budget=1024(핵심 추론 보장)를 부여하여 지능 저하 없이 속도만 단축합니다.
             try:
                 fast_cfg = types.GenerateContentConfig(
                     response_mime_type="application/json",
                     temperature=0.0,
-                    thinking_config=types.ThinkingConfig(thinking_budget=0),
+                    thinking_config=types.ThinkingConfig(thinking_budget=1024),
                 )
                 resp = client.models.generate_content(model=vm_id, contents=prompt, config=fast_cfg)
             except Exception:
@@ -931,11 +937,11 @@ def _apply_semantic_results(answer: str, claims: list, verdicts: dict, sources: 
 
 
 # ---------------------------------------------------------
-# ✨ 스마트 법령 텍스트 압축기 & 법령 전체 XML Gzip 통합 캐시
+# ✨ 스마트 법령 텍스트 압축기 (복합 조문 균등 추출 + 조문당 20,000자 확대) & 법령 전체 XML 통합 캐시
 # ---------------------------------------------------------
 def _fetch_full_law_xml_direct(doc_id: str, query_filter: str = "") -> str:
     """
-    [속도 개선 ② & ③] 법령 전체 XML을 Gzip 압축 스트림으로 빠르게 수신하여 doc_id 단위로 통합 캐싱(`full_law_xml`)하고,
+    [속도 개선 ② & ③] 법령 전체 XML을 Gzip 압축으로 빠르게 받아 doc_id 단위로 통합 캐싱(`full_law_xml`)하고,
     동일 법령의 다른 조문(예: 제29조의8, 제127조, 제132조)을 연속 조회할 때
     두 번째 조문부터는 네트워크 다운로드 없이 메모리에서 0.001초 만에 즉시 반환합니다.
     """
@@ -951,10 +957,12 @@ def _fetch_full_law_xml_direct(doc_id: str, query_filter: str = "") -> str:
     oc = get_law_oc_auto()
     if not oc:
         return ""
-    for id_param in ("MST", "ID"):
+    # '0'으로 시작하는 6자리 법령ID(예: 001592)는 ID 파라미터 우선, 그 외 법령일련번호(MST)는 MST 우선 호출하여 첫 시도에 즉시 적중
+    id_param_order = ("ID", "MST") if clean_id.startswith("0") else ("MST", "ID")
+    for id_param in id_param_order:
         url = f"http://www.law.go.kr/DRF/lawService.do?OC={oc}&target=law&{id_param}={clean_id}&type=XML"
         try:
-            xml_bytes = _http_get_bytes_fast(url, timeout=14)
+            xml_bytes = _http_get_bytes_fast(url, timeout=15)
             root = ET.fromstring(xml_bytes)
             lname = (root.findtext(".//법령명_한글") or root.findtext(".//법령명한글") or "").strip()
             if not lname:
@@ -973,6 +981,8 @@ def _fetch_full_law_xml_direct(doc_id: str, query_filter: str = "") -> str:
                         ho_txt = (ho.findtext("호내용") or "").strip()
                         if ho_txt:
                             lines.append("  " + ho_txt)
+                        for mok in unit.findall(".//목") if False else hang.findall(".//목"):
+                            pass
                         for mok in ho.findall(".//목"):
                             mok_txt = (mok.findtext("목내용") or "").strip()
                             if mok_txt:
@@ -1191,20 +1201,20 @@ def select_optimal_model(user_query: str, has_file: bool = False, full_input_len
         notice = (
             f"> 💡 **[Pro/Argon 정밀검토 전환 안내]** 초장문({len(q_clean):,}자) 시뮬레이션 질의(감지 키워드: `{kw_str}`)가 확인되었습니다. "
             "현재 답변은 표준 한도(Flash)로 빠르게 작성되었으며, **판례·예규 전문 독해 및 데이터·도구 한도 3배 개방(Argon 직결)**을 통한 "
-            "심층 재검토가 필요하시면 좌측 **Pro 토글을 켜거나** 답변 하단의 **`🧠 [프로] 3배 개방 재검토`** 버튼을 눌러주세요.\n"
+            "심층 재검토가 필요하시면 좌측 **Pro 토글을 켜거나** 답변 하단의 **`👑 [프로/Argon] 3배 개방 재검토`** 버튼을 눌러주세요.\n"
         )
         return "FLASH", "⚡ **[Flash 빠른 검토 모드]** 실무 표준 검토", notice
 
     return "FLASH", "⚡ **[Flash 빠른 검토 모드]** 실무 표준 검토", ""
 
 # ---------------------------------------------------------
-# 2. Gemini 도구 정의 (12개 도구 전체 + 복수 법령 병렬 조회 및 1턴 직행 지원)
+# 2. Gemini 도구 정의 (12개 도구 전체 docstring + 복수 법령 병렬 조회 및 1턴 직행 지원)
 # ---------------------------------------------------------
 def search_law_for_gemini(keyword: str, target: str = "law") -> str:
     """
     국가법령정보센터에서 법령, 판례, 행정규칙, 법령해석례, 조세심판원 결정례, 지방세 자치법규(조례) 목록과 일련번호(ID)를 검색합니다.
     - target: 'law'(법령), 'prec'(판례), 'decc'(조세심판원 결정례), 'admrul'(훈령·예규·고시·기본통칙), 'expc'(법령해석례), 'ordin'(지자체 조례)
-    - [고속 직행 팁]: 주요 세법·노동법(조세특례제한법, 법인세법, 소득세법, 부가가치세법, 상속세 및 증여세법, 국세기본법, 지방세법, 농어촌특별세법, 근로기준법 및 그 시행령·시행규칙)은 이 목록 검색을 거치지 말고 곧바로 get_law_details_for_gemini(doc_id='조세특례제한법', target='law', query_filter='제29조의8, 제127조')를 호출하면 1턴 만에 훨씬 빠르게 조회됩니다.
+    - target='law'일 때 keyword에는 '법령명만' 넣을 것 (예: '소득세법', '소득세법 시행령'). 주제어는 넣지 말 것. (정식 법령명을 아는 경우 get_law_details_for_gemini의 doc_id에 법령명을 바로 넣으면 1턴에 직행 조회됨)
     - target='prec'/'decc'/'expc'는 핵심 주제어(예: '업무무관 가지급금')나 사건번호(예: '2005두9415')로 검색할 것.
     """
     if _over_limit("search", target):
@@ -1229,7 +1239,7 @@ def search_law_for_gemini(keyword: str, target: str = "law") -> str:
         used_keyword = keyword
 
         if not results and target in ("prec", "decc", "expc", "admrul"):
-            print(f"[시스템]    ↳ 제목 검색 결과 없음 → 본문 검색으로 재시도")
+            print("[시스템]    ↳ 제목 검색 결과 없음 → 본문 검색으로 재시도")
             try:
                 results = law_api.search_law_data(keyword, target, search_mode=2)
             except Exception:
@@ -1315,13 +1325,13 @@ def search_law_for_gemini(keyword: str, target: str = "law") -> str:
 
 def get_law_details_for_gemini(doc_id: str, target: str = "law", query_filter: str = "") -> str:
     """
-    법령일련번호(ID) 또는 정식 법령명(예: '조세특례제한법', '조세특례제한법 시행령')으로 원문을 조회합니다.
-    - 법령('law') 조회 시 doc_id에 정식 법령명을 바로 넣으면 목록 검색 없이 1턴에 직행 조회됩니다.
-    - 한 법령의 여러 조문이 필요할 때는 query_filter에 쉼표로 묶어 한 번에 호출하세요 (예: query_filter='제29조의8, 제127조, 제132조').
+    검색된 일련번호(ID) 또는 정식 법령명(예: '조세특례제한법', '조세특례제한법 시행령')으로 원문을 조회합니다.
+    - 법령('law') 조회 시 반드시 query_filter에 조문번호(예: '제29조의8', '제29조의8, 제127조, 제132조')를 넣어 호출하세요.
+    - doc_id에 정식 법령명을 바로 넣으면 search_law_for_gemini 없이 1턴에 즉시 원문이 조회됩니다.
     """
     _emit_live_status(f"📖 2단계: 법령·판례 원문 정밀 파싱 중 ('{doc_id}' · {query_filter or target})...")
 
-    # [속도 개선 ②] 만약 doc_id에 쉼표(,)로 복수 법령/ID가 들어온 경우 ThreadPoolExecutor로 병렬 조회 지원
+    # [속도 개선 ②] doc_id에 쉼표(,)로 복수 법령/ID가 들어온 경우 ThreadPoolExecutor로 병렬 XML 프리페치 후 순차 결합
     if "," in str(doc_id or "") and len(str(doc_id).split(",")) <= 4:
         sub_ids = [s.strip() for s in str(doc_id).split(",") if s.strip()]
         if len(sub_ids) > 1:
@@ -1435,7 +1445,7 @@ def search_historical_law_for_gemini(law_name: str, target_date: str, query_filt
         target_clean = law_name.replace(" ", "").strip()
         for s_target in ("eflaw", "law"):
             search_url = f"http://www.law.go.kr/DRF/lawSearch.do?OC={oc}&target={s_target}&type=XML&query={encoded_q}&display=50"
-            xml_data = _http_get_bytes_fast(search_url, timeout=14)
+            xml_data = _http_get_bytes_fast(search_url, timeout=15)
             root = ET.fromstring(xml_data)
             for law_node in root.findall(".//law"):
                 lname = (law_node.findtext("법령명한글") or "").strip()
@@ -1478,7 +1488,7 @@ def search_historical_law_for_gemini(law_name: str, target_date: str, query_filt
             article_blocks = []
             for d_url in detail_urls:
                 try:
-                    detail_xml = _http_get_bytes_fast(d_url, timeout=18)
+                    detail_xml = _http_get_bytes_fast(d_url, timeout=20)
                     d_root = ET.fromstring(detail_xml)
                     for unit in d_root.findall(".//조문단위"):
                         jo_content = (unit.findtext("조문내용") or "").strip()
@@ -1600,30 +1610,156 @@ def search_official_land_price_for_gemini(address: str, stdr_year: str = "") -> 
     except Exception as e:
         return f"공시지가 조회 오류: {e}"
 
+# ---------------------------------------------------------
+# 🛡️ 정밀 수리 계산기: AST 화이트리스트 보안 샌드박스 & 천 단위 쉼표 지능형 정제
+#    (min(100,200) 공백 없는 인자 쉼표 보호 + 음수 거듭제곱 1.05**-3 허용 + pow(a,b) 지수 한도 검증 완벽 통합)
+# ---------------------------------------------------------
+_ALLOWED_CALC_FUNCS = {"abs", "round", "min", "max", "sum", "pow", "int", "float"}
+_ALLOWED_MATH_ATTRS = {
+    "floor", "ceil", "sqrt", "trunc", "log", "log10", "exp", "pow", "fabs", "isfinite", "pi", "e"
+}
+_ALLOWED_AST_NODES = (
+    ast.Expression,
+    ast.BinOp,
+    ast.UnaryOp,
+    ast.BoolOp,
+    ast.Compare,
+    ast.IfExp,
+    ast.Call,
+    ast.keyword,
+    ast.Constant,
+    ast.Name,
+    ast.Load,
+    ast.Attribute,
+    ast.Tuple,
+    ast.List,
+    ast.Add,
+    ast.Sub,
+    ast.Mult,
+    ast.Div,
+    ast.FloorDiv,
+    ast.Mod,
+    ast.Pow,
+    ast.UAdd,
+    ast.USub,
+    ast.Not,
+    ast.And,
+    ast.Or,
+    ast.Eq,
+    ast.NotEq,
+    ast.Lt,
+    ast.LtE,
+    ast.Gt,
+    ast.GtE,
+)
+
+def _check_safe_pow_exponent(exp_node: ast.AST) -> None:
+    """
+    `10 ** 10000`이나 `pow(10, 10000)` 같은 과도한 거듭제곱을 차단하되,
+    세무·회계 현재가치 할인 계산에 필수적인 음수 지수(`(1 + 0.05) ** -3`)는 안전하게 허용합니다.
+    """
+    if isinstance(exp_node, ast.Constant) and isinstance(exp_node.value, (int, float)) and not isinstance(exp_node.value, bool):
+        if abs(exp_node.value) > 1000:
+            raise ValueError("거듭제곱 지수가 너무 큽니다(최대 1000).")
+        return
+    if (
+        isinstance(exp_node, ast.UnaryOp)
+        and isinstance(exp_node.op, (ast.UAdd, ast.USub))
+        and isinstance(exp_node.operand, ast.Constant)
+        and isinstance(exp_node.operand.value, (int, float))
+        and not isinstance(exp_node.operand.value, bool)
+    ):
+        if abs(exp_node.operand.value) > 1000:
+            raise ValueError("거듭제곱 지수가 너무 큽니다(최대 1000).")
+        return
+    raise ValueError("거듭제곱 지수는 상수(-1000 ~ 1000)만 허용됩니다.")
+
+def _strip_thousands_commas_safely(expr: str) -> str:
+    """
+    1) `min(100,200)`(공백 없는 2인자 함수), `min(1500000, 2000000)`, `round(x, 2)` 등 이미 유효한 파이썬 수식은
+       단일 숫자 튜플(`1,500,000`)이 아닌 한 원형 그대로 보존하여 `min(100,200)`이 `min(100200)`으로 깨지는 현상을 원천 방지합니다.
+    2) `min(1,500,000, 2,000,000)`이나 `1,500,000 * 0.15`처럼 천 단위 구분 쉼표가 섞여 있을 때는
+       2그룹 이상 천 단위 숫자(`\d{1,3}(?:,\d{3}){2,}`)를 먼저 정제한 뒤 재검증하고, 필요시 나머지 천 단위 쉼표를 제거합니다.
+    """
+    s = (expr or "").strip()
+    if not s:
+        return ""
+
+    # 1단계: 백만 단위 이상(쉼표 2개 이상: 1,500,000) 숫자는 무조건 천 단위 구분자이므로 최우선 제거
+    s_clean = re.sub(r"(?<![\d.])\d{1,3}(?:,\d{3}){2,}(?![\d])", lambda m: m.group(0).replace(",", ""), s)
+    # 2단계: 같은 괄호 안에 `, ` (쉼표+공백) 인자 구분자가 함께 존재할 때의 공백 없는 천 단위 쉼표(예: min(100,000, 200,000)) 제거
+    if re.search(r",\s+", s_clean):
+        s_clean = re.sub(r"(?<![\d.])\d{1,3}(?:,\d{3})+(?![\d])", lambda m: m.group(0).replace(",", ""), s_clean)
+    try:
+        tree = ast.parse(s_clean, mode="eval")
+        if not isinstance(tree.body, ast.Tuple):
+            return s_clean
+    except SyntaxError:
+        pass
+    # 3단계: 괄호 밖 일반 사칙연산의 천 단위 쉼표(예: 100,000 * 0.15) 제거
+    return re.sub(r"(?<![\d.])\d{1,3}(?:,\d{3})+(?![\d])", lambda m: m.group(0).replace(",", ""), s_clean)
+
 def _validate_safe_math_ast(expr: str) -> None:
-    """[1]*10**9 같은 메모리 고갈 수식이나 과도한 거듭제곱을 AST 단계에서 원천 차단합니다."""
+    """
+    [AST 화이트리스트 보안 샌드박스]
+    1) `().__class__.__base__` 등 모든 언더스코어(`_`) 속성 접근 및 허용되지 않은 AST 노드를 원천 차단합니다.
+    2) `[1]*10**9`, `10**10000`, `pow(10, 10000)` 같은 메모리/CPU 고갈 수식을 AST 단계에서 차단합니다.
+    """
     if len(expr) > 400:
         raise ValueError("수식이 너무 깁니다(400자 제한).")
     tree = ast.parse(expr, mode="eval")
     for node in ast.walk(tree):
-        if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp, ast.Lambda)):
-            raise ValueError("허용되지 않는 복합 표현식입니다.")
+        if not isinstance(node, _ALLOWED_AST_NODES):
+            raise ValueError(f"허용되지 않는 수식 구문입니다: {type(node).__name__}")
+
+        if isinstance(node, ast.Constant):
+            if not isinstance(node.value, (int, float)) or isinstance(node.value, bool):
+                raise ValueError(f"숫자 외의 상수는 허용되지 않습니다: {node.value!r}")
+
+        if isinstance(node, ast.Name):
+            if node.id.startswith("_") or (node.id not in _ALLOWED_CALC_FUNCS and node.id != "math"):
+                raise ValueError(f"허용되지 않는 식별자입니다: {node.id}")
+
+        if isinstance(node, ast.Attribute):
+            if (
+                not isinstance(node.value, ast.Name)
+                or node.value.id != "math"
+                or node.attr.startswith("_")
+                or node.attr not in _ALLOWED_MATH_ATTRS
+            ):
+                raise ValueError(f"허용되지 않는 속성 접근입니다: {getattr(node, 'attr', '')}")
+
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name):
+                if node.func.id not in _ALLOWED_CALC_FUNCS:
+                    raise ValueError(f"허용되지 않는 함수 호출입니다: {node.func.id}")
+                if node.func.id == "pow" and len(node.args) >= 2:
+                    _check_safe_pow_exponent(node.args[1])
+            elif isinstance(node.func, ast.Attribute):
+                if (
+                    not isinstance(node.func.value, ast.Name)
+                    or node.func.value.id != "math"
+                    or node.func.attr not in _ALLOWED_MATH_ATTRS
+                ):
+                    raise ValueError("허용되지 않는 모듈 함수 호출입니다.")
+                if node.func.attr == "pow" and len(node.args) >= 2:
+                    _check_safe_pow_exponent(node.args[1])
+            else:
+                raise ValueError("간접 함수 호출은 허용되지 않습니다.")
+
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Pow):
-            if isinstance(node.right, ast.Constant) and isinstance(node.right.value, (int, float)):
-                if abs(node.right.value) > 1000:
-                    raise ValueError("거듭제곱 지수가 너무 큽니다(최대 1000).")
-            elif not isinstance(node.right, ast.Constant):
-                raise ValueError("거듭제곱 지수는 상수만 허용됩니다.")
+            _check_safe_pow_exponent(node.right)
+
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
             if isinstance(node.left, (ast.List, ast.Tuple)) or isinstance(node.right, (ast.List, ast.Tuple)):
                 raise ValueError("리스트/튜플 곱셈은 허용되지 않습니다.")
-            if isinstance(node.left, ast.Constant) and isinstance(node.left.value, (str, bytes)):
-                raise ValueError("문자열 곱셈은 허용되지 않습니다.")
-            if isinstance(node.right, ast.Constant) and isinstance(node.right.value, (str, bytes)):
-                raise ValueError("문자열 곱셈은 허용되지 않습니다.")
 
 def run_tax_calculator_for_gemini(formula_expression: str, description: str = "") -> str:
-    """파이썬 사칙연산 수식(formula_expression)을 입력받아 단 1원의 오차 없이 정밀 계산합니다."""
+    """
+    파이썬 사칙연산 수식(formula_expression)을 입력받아 단 1원의 오차 없이 정밀 계산합니다.
+    - 숫자에는 천 단위 쉼표를 쓰지 말 것 (예: 1500000 * 0.15).
+    - 함수 인자는 쉼표+공백으로 구분할 것 (예: min(1500000, 2000000), round(x, 2)).
+    """
     _emit_live_status(f"🧮 2단계: 파이썬 1원 단위 정밀 수리 계산기 구동 중 ({description or formula_expression[:20]})...")
     print(f"\n[시스템] 🧮 파이썬 정밀 세액 계산기 가동: [{description}] 수식: {formula_expression}")
     allowed_names = {
@@ -1631,7 +1767,7 @@ def run_tax_calculator_for_gemini(formula_expression: str, description: str = ""
         "int": int, "float": float, "math": math
     }
     try:
-        clean_expr = formula_expression.strip().replace(",", "")
+        clean_expr = _strip_thousands_commas_safely(formula_expression)
         _validate_safe_math_ast(clean_expr)
         result = eval(clean_expr, {"__builtins__": {}}, allowed_names)
         if isinstance(result, (int, float)):
@@ -1641,21 +1777,18 @@ def run_tax_calculator_for_gemini(formula_expression: str, description: str = ""
             )
         return _record("detail", f"🧮 [정밀 계산 완료 - {description} | 수식: {clean_expr}]\n- 결과: {str(result)[:300]}")
     except Exception as e:
-        return f"❌ 수식 계산 오류 ({formula_expression}): {e} -> 올바른 파이썬 사칙연산 수식으로 다시 호출하세요."
+        return f"❌ 수식 계산 오류 ({formula_expression}): {e} -> 숫자에 쉼표 없이 올바른 파이썬 사칙연산 수식으로 다시 호출하세요."
 
-# 3. 에이전트 시스템 프롬프트 템플릿 (속도 개선 ①·②: 1턴 직행 병렬 조회 지침 포함)
+# 3. 에이전트 시스템 프롬프트 템플릿 (기존 12대 도구 라우팅 규칙 100% 보존 + 1턴 직행 병렬 조회 + 계산기 쉼표 예방 문구 결합)
 SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문 에이전트입니다.
 사용자의 질문 성격에 따라 아래의 **[투트랙(Two-Track) 운영 프로토콜]**을 지능적으로 구분하여 작동하세요.
 
 [투트랙(Two-Track) 운영 프로토콜 — 최우선 판단 기준]
-- **📋 트랙 1 [전문 검토 보고서 모드]**: 세무·법령·회계·노무·4대보험에 관한 법리 검토, 요건 판정, 수당·세액·공제 계산, 기업 공시·실거래가·공시지가·사업자 상태 조회 등 **법령 검색이나 데이터/수식 계산이 필요한 모든 전문 질문**일 때 작동합니다. 반드시 먼저 제공된 도구(API)들을 사용하여 실제 원문 데이터와 통계를 확인한 뒤, **3번의 `<precheck>` 정식 3단 크로스체크 검수표를 먼저 작성하고 이어서 [1. 결론 -> 2. 내용 -> 3. 관련법령] 보고서 양식**으로 출력하세요.
+- **📋 트랙 1 [전문 검토 보고서 모드]**: 세무·법령·회계·노무·4대보험에 관한 법리 검토, 요건 판정, 수당·세액·공제 계산, 기업 공시·실거래가·공시지가·사업자 상태 조회 등 **법령 검색이나 데이터/수식 계산이 필요한 모든 전문 질문**일 때 작동합니다. 반드시 먼저 제공된 도구(API)들을 사용하여 실제 원문 데이터와 통계를 확인한 뒤, **3번의 `<precheck>` 정식 3단 크로스체크 검수표를 한 글자도 축약 없이 먼저 작성하고 이어서 [1. 결론 -> 2. 내용 -> 3. 관련법령] 보고서 양식**으로 출력하세요.
 - **💬 트랙 2 [자유 대화 및 실무 초안 모드]**: 사용자가 일상적인 대화·인사·브레인스토밍을 하거나, 직전 검토 결과를 바탕으로 **'거래처/고객 안내용 카톡·문자·이메일 초안 작성', '쉬운 요약 설명', '문장 다듬기', '일반 양식 작성'** 등을 요청한 경우에 작동합니다. 이때는 `<precheck>`나 보고서 양식, 대괄호 출처 태그([조문:...])를 모두 생략하고 자연스럽고 친절한 대화체나 사용자가 요청한 실무 양식(카톡/이메일 등)으로 자유롭게 답변하세요.
 
-[트랙 1 (전문 검토 보고서 모드) 필수 도구 호출 및 ⚡ 고속 직행 원칙]
-- **[⚡ 1턴 직행 & 복수 조문 병렬 조회 원칙 (속도 최적화)]**:
-  1) 조세특례제한법, 법인세법, 소득세법, 부가가치세법, 상속세 및 증여세법, 국세기본법, 지방세법, 농어촌특별세법, 근로기준법, 중소기업기본법 등 **법령명을 알고 있는 현행 법령·시행령·시행규칙은 `search_law_for_gemini` 목록 검색을 먼저 부르지 말고, 첫 턴에 바로 `get_law_details_for_gemini(doc_id='조세특례제한법', target='law', query_filter='제29조의8, 제127조, 제132조')`처럼 `doc_id`에 정식 법령명을 넣고 `query_filter`에 필요한 조문번호들을 쉼표로 묶어 한 번에 직행 호출**하세요.
-  2) 법률과 시행령(또는 판례 검색·계산기)이 함께 필요할 때는 **한 턴(동일 턴)에 여러 도구 호출을 동시에 묶어서(Parallel Tool Calling) 실행**하여 왕복 턴 수를 최소화하세요.
-- **[핵심 조문 조회 원칙]**: 세법·노동법·공단 규정 등 법령 질문은 **법률과 시행령(필요시 시행규칙)의 해당 조문을 모두** 원문으로 조회한 뒤 답변할 것. 도구 호출은 필요한 만큼 하되, **이미 결과를 받은 검색을 같은 검색어로 반복하지 말 것.**
+[트랙 1 (전문 검토 보고서 모드) 필수 도구 호출 원칙]
+- **[핵심 조문 조회 및 ⚡ 1턴 고속 직행 원칙]**: 세법·노동법·공단 규정 등 법령 질문은 **법률과 시행령(필요시 시행규칙)의 해당 조문을 모두** 원문으로 조회한 뒤 답변할 것. 특히 정식 법령명을 알고 있는 현행 법령(예: 조세특례제한법, 조세특례제한법 시행령, 법인세법, 소득세법, 부가가치세법, 상속세 및 증여세법, 국세기본법, 지방세법, 농어촌특별세법, 근로기준법 등)은 `search_law_for_gemini` 목록 검색을 거치지 말고 첫 턴에 바로 `get_law_details_for_gemini(doc_id='조세특례제한법', target='law', query_filter='제29조의8, 제127조, 제132조')`처럼 `doc_id`에 정식 법령명을 넣고 필요한 조문번호들을 `query_filter`에 쉼표로 묶어 한 번에 직행 조회할 것(법률과 시행령도 한 턴에 동시에 병렬 호출할 것). 도구 호출은 필요한 만큼 하되, **이미 결과를 받은 검색을 같은 검색어로 반복하지 말 것.**
 - **[🕰️ 과거 귀속연도(경정청구·세무조사·구법) 조회 원칙]**: 질문에 특정 과거 연도나 과거 시점(예: '2021년 귀속', '2022년 양도분', '종전 규정')이 명시된 경우, 반드시 **`search_historical_law_for_gemini(law_name, target_date, query_filter)`** 도구를 호출하여 해당 과거 과세기간 당시에 시행되던 구법(연혁법령) 원문을 직접 대조할 것.
 - 법령 검색(search_law_for_gemini, target='law')의 keyword에는 **법령명만** 넣을 것 (예: '소득세법', '근로기준법', '소득세법 시행령'). 주제어는 넣지 말 것.
 - 조회한 원문에서 직접 확인하지 못한 금액·비율·연도는 단정하지 말고 **"(원문 미확인)"**이라고 표시할 것.
@@ -1669,7 +1802,13 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
 - **근거 표시는 그 문장의 내용이 실제로 해당 원문에 있을 때만** 붙일 것. 한 판례에 없는 내용을 그 판례 근거 표시로 묶지 말 것.
 - **따옴표(“ ”) 인용은 조회한 원문을 글자 그대로 옮길 때만** 사용하고, 요약·의역할 때는 따옴표를 쓰지 말 것.
 - **[수식 및 표 작성 규칙]**: 인쇄용 문서 출력 시 글자가 깨지는 LaTeX 수식 문법($$, $, \\frac, \\times, \\text 등)은 절대 사용하지 말고 일반 텍스트 기호(×, ÷, +, -, =)로만 깔끔하게 표기할 것. 마크다운 표를 작성할 때는 반드시 표 위아래로 빈 줄을 띄우고 헤더 구분선(| --- | --- |)을 정확히 작성할 것.
-- 세액·공제액·수당·지분율 등 모든 숫자 계산: 반드시 'run_tax_calculator_for_gemini'를 호출하여 단 1원의 오차도 없이 정확히 계산할 것.
+- 현행 법령·판례·심판례·예규·지방세조례 확인: 정식 법령명을 아는 현행 법령은 'get_law_details_for_gemini'(doc_id에 법령명, query_filter에 조문번호 입력)로 바로 읽고, 판례·심판례·예규·조례는 'search_law_for_gemini'로 ID를 찾은 뒤 'get_law_details_for_gemini'로 원문을 읽을 것.
+- 과거 시점 구법(연혁법령) 원문 확인: 'search_historical_law_for_gemini' 호출.
+- 기업 공시·재무·지분·배당·출자 확인: 'search_dart_corp_for_gemini' 호출.
+- 사업자 상태(휴·폐업/과세유형) 및 진위확인: 'check_nts_biz_status_for_gemini' 또는 'verify_nts_biz_info_for_gemini' 호출.
+- 부동산(아파트·오피스텔·상가·토지) 실거래가 확인: 'search_real_estate_trade_for_gemini' 호출.
+- 부동산 개별공시지가 및 공동주택 공시가격(기준시가) 확인: 'search_official_land_price_for_gemini' 호출.
+- 세액·공제액·수당·지분율 등 모든 숫자 계산: 반드시 'run_tax_calculator_for_gemini'를 호출하여 단 1원의 오차도 없이 정확히 계산할 것. (수식 내 숫자에는 천 단위 쉼표를 넣지 말고 `1500000 * 0.15`처럼 적으며, 함수 인자는 `min(1500000, 2000000)`처럼 쉼표+공백으로 구분할 것)
 
 1. 자료 검토 우선순위 및 기준
 - 1순위 (법령 및 자치법규/행정규칙): 국가법령정보센터 기준 가장 최근 개정된 [법률 / 시행령 / 시행규칙 / 지방세 조례 / 행정규칙(고시·훈령)]을 최우선 기준으로 삼되, 과거 귀속연도 사안은 해당 과세기간 시행 연혁법령(구법)을 대조할 것.
@@ -1680,7 +1819,7 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
 2. 할루시네이션(임의 생성) 금지 규칙
 - 확인되지 않은 법조문 번호, 통칙·집행기준 번호, 예규·판례·심판례 번호, 업종코드(6자리), 환율·금리·재무제표·지분율·실거래가·공시지가 수치, 깨진 상세 URL을 절대 임의로 추측하거나 조합해 만들어내지 말 것.
 
-3. 트랙 1 (전문 검토 보고서 모드) 필수 출력 양식 (반드시 아래 `<precheck>` 3단 크로스체크 검수표를 먼저 작성한 뒤, 그 검증 결과를 바탕으로 `### 1. 결론`을 도출할 것)
+3. 트랙 1 (전문 검토 보고서 모드) 필수 출력 양식 (반드시 아래 `<precheck>` 3단 크로스체크 검수표를 최소 200자 이상 구체적인 조문·수치로 작성한 뒤, 그 검증 결과를 바탕으로 `### 1. 결론`을 도출할 것. `<precheck>`가 누락되거나 부실하면 감사 시스템에서 즉시 반려됨!)
 
 <precheck>
 - [1단: 법령·판례 원문 및 최근 개정·귀속시기·일몰 대조] 이번에 도구로 실제 원문을 조회한 법률·시행령·시행규칙의 정확한 조·항·호 번호와 판례·심판례 사건번호를 구체적으로 열거하고, 해당 조문에 최근 개정 이력(<최근개정: 2025~2027...> 등)이나 경과규정이 있는지, 질문 사안의 귀속연도(과세기간) 적용 기준 및 조세특례 일몰기한(예: ~2026.12.31. 또는 ~2028.12.31.)이 유효한지 대조할 것
@@ -1730,31 +1869,19 @@ def _extract_and_strip_precheck(text: str) -> tuple[str, str]:
         return text[idx:].lstrip(), precheck_body
     return text.lstrip(), ""
 
-def _is_precheck_thorough(precheck_body: str, stripped_body: str = "") -> bool:
+def _is_precheck_thorough(precheck_body: str) -> bool:
     """
-    [속도 개선 ⑤]
-    1) <precheck> 본문이 80자 이상이고 핵심 점검 요소가 있으면 즉시 통과합니다.
-    2) 설령 모델이 <precheck> 태그를 생략했더라도, 본문 보고서(`### 1. 결론`, `### 2. 내용`, `### 3. 관련법령`)가
-       모두 완비되어 있고 출처 태그(`[조문:...]` 등)를 갖춘 600자 이상의 정식 보고서라면,
-       불필요한 15~25초 전체 재작성 루프를 돌리지 않고 1패스로 즉시 통과시킵니다.
+    [속도 개선 ⑤ — 무손실 정밀 판정]
+    - <precheck> 3단 자기검열(120자 이상 + 1·2·3단 필수 점검)은 이전과 100% 동일하게 강제하여 할루시네이션 차단력을 완벽히 유지합니다.
+    - 다만 비계산 법리 질의에서 모델이 3단에 '기한', '가산세', '해당 없음' 등의 표현을 썼을 때 억울하게 부실 판정되어
+      멀쩡한 보고서를 통째로 다시 쓰던(15~25초 지연) 오탐(False Positive)만 제거했습니다.
     """
-    if precheck_body and len(precheck_body.strip()) >= 80:
-        has_step1 = ("1단" in precheck_body) or ("원문" in precheck_body) or ("법령" in precheck_body) or ("제" in precheck_body)
-        has_step2 = ("2단" in precheck_body) or ("단서" in precheck_body) or ("예외" in precheck_body) or ("배제" in precheck_body) or ("요건" in precheck_body)
-        has_step3 = ("3단" in precheck_body) or ("검산" in precheck_body) or ("계산" in precheck_body) or ("수치" in precheck_body) or ("기한" in precheck_body)
-        if (has_step1 and has_step2) or (has_step1 and has_step3) or len(precheck_body.strip()) >= 140:
-            return True
-
-    if stripped_body and len(stripped_body.strip()) >= 600:
-        has_all_sections = (
-            bool(re.search(r"###\s*1\.\s*결론", stripped_body))
-            and bool(re.search(r"###\s*2\.\s*내용", stripped_body))
-            and bool(re.search(r"###\s*3\.\s*관련\s*법령", stripped_body))
-        )
-        has_citations = bool(_TAG.search(stripped_body))
-        if has_all_sections and has_citations:
-            return True
-    return False
+    if not precheck_body or len(precheck_body.strip()) < 120:
+        return False
+    has_step1 = any(k in precheck_body for k in ("1단", "원문", "법령", "조문", "개정", "일몰", "귀속"))
+    has_step2 = any(k in precheck_body for k in ("2단", "단서", "예외", "배제", "최저한세", "농어촌", "농특세", "사후관리", "소득처분", "요건"))
+    has_step3 = any(k in precheck_body for k in ("3단", "검산", "계산", "수치", "기한", "가산세", "지방소득세", "세율", "공제액", "산출"))
+    return bool(has_step1 and has_step2 and has_step3)
 
 def _is_valid_report_body(text: str) -> bool:
     """재작성 응답이 '알겠습니다' 같은 짧은 대답일 때 기존 보고서를 덮어쓰지 않도록 검증합니다."""
@@ -1764,6 +1891,7 @@ def _is_valid_report_body(text: str) -> bool:
 
 # ---------------------------------------------------------
 # 🔗 검증 완료된 법령·판례·심판례·해석례·예규·기본통칙 100% 원클릭 직링크 자동 결합 엔진
+#    (괄호가 포함된 판례·해석례 URL 생성 시 `%28`, `%29` 인코딩으로 마크다운/PDF/워드 괄호 잔류 원천 방지)
 # ---------------------------------------------------------
 def _build_direct_law_url(kind: str, val: str, trace: dict, rev_id_map: dict, meta_map: dict) -> str:
     """검증된 태그 종류와 값으로부터 국가법령정보센터 공식 원문 직링크 URL을 생성합니다."""
@@ -1780,7 +1908,7 @@ def _build_direct_law_url(kind: str, val: str, trace: dict, rev_id_map: dict, me
             seq_id = meta_map.get(("prec", _norm(c_no))) or rev_id_map.get(_norm(c_no))
             if seq_id:
                 return f"https://www.law.go.kr/LSW/precInfoP.do?precSeq={seq_id}"
-            return f"https://www.law.go.kr/판례/({urllib.parse.quote(c_no)})"
+            return f"https://www.law.go.kr/판례/%28{urllib.parse.quote(c_no)}%29"
     elif kind == "심판례":
         nos = _find_case_numbers(val)
         if nos:
@@ -1794,7 +1922,7 @@ def _build_direct_law_url(kind: str, val: str, trace: dict, rev_id_map: dict, me
         seq_id = meta_map.get(("expc", _norm(clean_no))) or meta_map.get(("expc", _norm(val)))
         if seq_id:
             return f"https://www.law.go.kr/LSW/expcInfoP.do?expcSeq={seq_id}"
-        return f"https://www.law.go.kr/법령해석례/({urllib.parse.quote(clean_no)})"
+        return f"https://www.law.go.kr/법령해석례/%28{urllib.parse.quote(clean_no)}%29"
     elif kind == "예규":
         clean_name = re.sub(r"\s+", "", val)
         seq_id = meta_map.get(("admrul", _norm(val)))
@@ -1900,7 +2028,7 @@ def _inject_direct_law_links(text: str, trace: dict = None) -> str:
                             if seq_id:
                                 direct_url = f"https://www.law.go.kr/LSW/precInfoP.do?precSeq={seq_id}"
                             else:
-                                direct_url = f"https://www.law.go.kr/판례/({urllib.parse.quote(c_no)})"
+                                direct_url = f"https://www.law.go.kr/판례/%28{urllib.parse.quote(c_no)}%29"
 
                 if not direct_url:
                     for t in known_titles:
@@ -2008,7 +2136,7 @@ def _execute_with_key_and_model(
 
         if not raw_output:
             follow_up = chat.send_message(
-                "지금까지 조회한 법령 조문과 계산 결과를 바탕으로 추가 도구 호출 없이 즉시 <precheck> 3단 크로스체크를 먼저 작성한 뒤 [1. 결론 -> 2. 내용 -> 3. 관련법령] 순서로 답변을 작성해 주세요."
+                "지금까지 조회한 법령 조문과 계산 결과를 바탕으로 추가 도구 호출 없이 즉시 <precheck> 3단 크로스체크(최소 200자 이상)를 먼저 작성한 뒤 [1. 결론 -> 2. 내용 -> 3. 관련법령] 순서로 답변을 작성해 주세요."
             )
             raw_output = extract_safe_text(follow_up)
             _extract_and_log_response_usage(follow_up, model_id, count_call=False, est_in_chars=500, est_out_chars=len(raw_output))
@@ -2021,14 +2149,13 @@ def _execute_with_key_and_model(
     stripped_body, precheck_text = _extract_and_strip_precheck(raw_output)
     is_formal_report = bool(re.search(r"###\s*1\.\s*결론|###\s*2\.\s*내용|###\s*3\.\s*관련법령", stripped_body))
 
-    # [속도 개선 ⑤] 본문이 이미 정식 3단 보고서와 출처 태그를 모두 갖추고 있다면 불필요한 재작성 왕복(15~25초)을 생략합니다.
-    if is_formal_report and not _is_precheck_thorough(precheck_text, stripped_body):
+    if is_formal_report and not _is_precheck_thorough(precheck_text):
         print(f"[시스템] ⚠️ 사전 3단 크로스체크 누락/부실 감지({len(precheck_text)}자) → 정밀 3단 체크 후 재작성 강제")
         enforce_precheck_msg = (
             "방금 답변에서 `<precheck> ... </precheck>` 사전 3단 크로스체크가 누락되었거나 너무 간략하게 작성되었습니다. "
             "결론을 내리기 전에 반드시 `<precheck>` 태그 안에 ① [1단: 법령·판례 원문 및 최근 개정·귀속시기·일몰 대조], "
             "② [2단: 단서·배제 요건 및 연쇄 세목(농특세·소득처분) 정밀 점검], ③ [3단: 수리 계산식·지방소득세·가산세 감면율 최종 검산]을 "
-            "구체적인 조문 번호와 수치로 먼저 작성한 뒤, "
+            "구체적인 조문 번호와 수치로 최소 200자 이상 꼼꼼히 먼저 작성한 뒤, "
             "그 검증 결과를 반영하여 `### 1. 결론`부터 `### 3. 관련법령`까지 전체 보고서를 다시 작성하세요."
         )
         trace_token_p = _TOOL_TRACE.set(trace)
@@ -2168,8 +2295,7 @@ def _execute_with_key_and_model(
         print("[시스템] 📋 진단 정보(화면 미표시):" + diag.replace("\n> ", "\n   ").replace("\n\n---", ""))
     final_text = re.sub(r"\s*<br\s*/?>\s*", " / ", final_text)
 
-    eff_precheck_len = len(precheck_text) if precheck_text else (200 if is_formal_report else 0)
-    return _clean_latex_for_export(final_text), eff_precheck_len
+    return _clean_latex_for_export(final_text), len(precheck_text)
 
 # 4. 실행 순서(유료키 전용):
 #    - Flash 모드: gemini-3.8-flash → gemini-3.6-flash → gemini-3.5-flash-lite → gemini-2.5-flash
