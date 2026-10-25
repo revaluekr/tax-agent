@@ -6,10 +6,10 @@
 1. "자율 에이전트AI"(app.py)와 100% 동일한 Pretendard 폰트, 에메랄드 그린(#16a34a/#22c55e) & 다크 네이비(#1e293b) 테마,
    상단 슬림 미니 상태바(.top-mini-status-bar), 사이드바 카드 타이틀(.sb-card-title) 및 배지(.sb-badge-green) 완벽 통일.
 2. 귀속사업연도 선택 리스트에 [2024, 2025, 2026, 2027, 2028] 전체 탑재 및 선택 연도별 동적 서류·법령 안내.
-3. 기본 체크리스트 외의 파일(예: 2022~2024년 과거 원천징수부, 근로계약서·4대보험 명부 등) 업로드 시
-   자동 인식하여 표 하단에 '➕ 추가 인식된 과거·보충 자료'로 표시하고 2단계 사원정보 연도 표에도 자동 반영.
-4. 2026년 귀속 선택 시 조특법 제29조의8 제1항 단서('2024.12.31. 이전 개시 과세연도 제외')에 따라
-   신규 공제는 2025년 대비(A)만 계산하고 2024년은 구법 연속공제·사후관리 검증용임을 명확히 표시.
+3. 2단계 사원표 스마트 노출:
+   - 2026년 귀속 선택 시 2024년 원천징수부를 안 올렸다면 빈 2024년 사원표를 띄우지 않고 '2026년·2025년' 사원표 2개만 깔끔하게 표시!
+   - 2024년 인원은 '기신고 상시근로자 명세서'에서 읽어온 숫자(또는 요약 카드에서 직접 입력)로 처리.
+   - 단, 사용자가 2024년(또는 2023년) 원천징수부를 직접 올렸거나 좌측에서 '2024년 귀속 / 2025년 귀속'을 선택했을 때만 해당 과거 연도 사원표가 자동으로 나타납니다.
 """
 from __future__ import annotations
 
@@ -44,6 +44,8 @@ def _S() -> dict:
             "ext": None, "ext_sig": None, "built_sig": None,
             "biz": {}, "biz_confirmed": [],
             "people": {}, "year_recs": {},
+            "prev_summary": {},     # 기신고 명세서 또는 수기 입력 과거연도 인원 {"2024": {"상시": 0.0, "청년등": 0.0}, ...}
+            "manual_extra_years": [],
             "grid_ver": {}, "last_sent": {},
             "industry_alert_for": "",
             "next_pid_seq": 1,
@@ -52,23 +54,55 @@ def _S() -> dict:
     return store[ws_id]
 
 
-def _years(s: dict) -> list[int]:
-    """
-    기본 3개 연도(당해 T, 직전 T-1, 전전 T-2)에 더해,
-    사용자가 추가로 업로드한 과거 원천징수부 연도(예: 2023년 등)가 있으면 자동으로 포함하여 내림차순 반환합니다.
-    """
-    t = int(s["tax_year"])
-    base_years = {t - i for i in range(R.YEARS_SHOWN_BACK + 1)}
+def _uploaded_wht_years(s: dict) -> set[int]:
+    """실제로 원천징수부 파일이 업로드된 연도 집합을 반환합니다."""
+    yrs = set()
     for f in (s.get("files") or {}).values():
         fk = str(f.get("key") or "")
         if fk.startswith("wht_"):
             ys = fk.replace("wht_", "").strip()
             if ys.isdigit():
-                base_years.add(int(ys))
-    for y_str in ((s.get("ext") or {}).get("wht") or {}).keys():
-        if str(y_str).isdigit():
-            base_years.add(int(y_str))
-    return sorted(base_years, reverse=True)
+                yrs.add(int(ys))
+    for y_str, rows in ((s.get("ext") or {}).get("wht") or {}).items():
+        if str(y_str).isdigit() and rows:
+            yrs.add(int(y_str))
+    return yrs
+
+
+def _years(s: dict) -> list[int]:
+    """
+    [2단계 사원정보 표에 표시할 연도 목록 결정]
+    1) 기본 필수 비교연도:
+       - 2024·2025·2026년 귀속: 당해연도(T)와 직전연도(T-1) 2개만 기본 표시!
+         (예: 2026년 귀속은 2026·2025년만, 2025년 귀속은 2025·2024년만, 2024년 귀속은 2024·2023년만 기본 표시)
+       - 2027년 귀속: 2027·2026·2025년 (A·B 산식 대상)
+       - 2028년 귀속: 2028·2027·2026·2025년 (A·B·C 산식 대상)
+    2) 추가 확장 연도:
+       - 사용자가 1단계에서 직접 원천징수부를 업로드한 연도(예: 2026년 귀속인데 2024년·2023년 원천징수부를 직접 올린 경우)
+       - 또는 2단계에서 사용자가 '과거연도 사원표 직접 열기'로 추가한 연도
+    """
+    t = int(s["tax_year"])
+    comp = H.valid_comparison_years_for_new_credit(t)
+    active_years = {t, t - 1}
+    for k in ("A", "B", "C"):
+        if comp.get(k) is not None:
+            active_years.add(int(comp[k]))
+
+    # 사용자가 실제로 원천징수부를 업로드한 연도는 모두 표로 보여줌
+    active_years.update(_uploaded_wht_years(s))
+    # 사용자가 수동으로 열기를 선택한 과거 연도도 포함
+    for my in (s.get("manual_extra_years") or []):
+        if isinstance(my, int):
+            active_years.add(my)
+
+    return sorted(active_years, reverse=True)
+
+
+def _all_possible_years(s: dict) -> list[int]:
+    """사원 데이터 초기화 시 사용할 전체 후보 연도 범위."""
+    t = int(s["tax_year"])
+    cands = {t - i for i in range(4)} | _uploaded_wht_years(s) | set(s.get("manual_extra_years") or [])
+    return sorted(cands, reverse=True)
 
 
 def _ctx(s: dict, year: int) -> dict:
@@ -358,7 +392,7 @@ def _top_status_bar(s: dict):
     cap = H.is_capital_area(b.get("사업장소재지", ""))
     loc_str = "수도권" if cap is True else ("비수도권(수도권 밖)" if cap is False else "소재지 미입력")
     tax_yr = int(s.get("tax_year") or R.DEFAULT_TAX_YEAR)
-    law_ver = "개정 신법 (인별 합산 · A+B+C 점증형)" if tax_yr >= 2026 else "구법 (월별 합산 · 3년 균등공제 · 신법기준 전년도 재계산)"
+    law_ver = "개정 신법 (인별 합산 · A+B+C 점증형)" if tax_yr >= 2026 else "구법 (3년 균등공제 · 신법기준 전년도 재계산)"
     step_nm = STEPS[max(0, min(len(STEPS) - 1, int(s.get("step", 1)) - 1))]
 
     st.markdown(
@@ -469,6 +503,7 @@ def render_credit_sidebar():
         )
         if new_year != s["tax_year"]:
             s["tax_year"] = new_year
+            s["manual_extra_years"] = []
             s["built_sig"] = None            # 귀속연도가 바뀌면 해당 연도 기준으로 사원표 재구성
             st.rerun()
 
@@ -545,18 +580,19 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
     if tax_yr == 2026:
         st.markdown(
             "<div class='ec-law-banner'>"
-            "💡 <b>[2026년 귀속 개정 세법 안내]</b> 「조세특례제한법」 제29조의8 제1항 단서에 따라 직전 3개 과세연도 중 "
-            "<b>2024.12.31. 이전에 개시한 과세연도(2024년·2023년)는 신규 공제 비교 대상에서 제외</b>되므로, "
-            "2026년 신규 고용증가분은 <b>2025년 대비 증가분(A)만 계산</b>합니다. "
-            "(단, 2023~2024년 원천징수부나 기신고서를 추가로 올리시면 <b>구법 기공제분의 연속공제·사후관리 검증 및 입사일 이력</b>으로 함께 반영됩니다.)"
+            "💡 <b>[2026년 귀속 개정 세법 안내]</b> 「조세특례제한법」 제29조의8 제1항 단서에 따라 "
+            "<b>2026년 신규 공제(A+B+C)는 2025년 대비 증가분(A)만 계산</b>하므로 <b>2026년·2025년 원천징수부만 필수</b>입니다. "
+            "2024·2025년 구법 기공제분의 2·3차 연속공제 및 사후관리는 <b>「2025년 기신고 상시근로자 명세서」</b>의 인원수로 간편하게 처리됩니다 "
+            "(2024년 원천징수부를 직접 올리신 경우에만 2단계에 2024년 사원표가 추가로 열립니다)."
             "</div>",
             unsafe_allow_html=True,
         )
     elif tax_yr in (2024, 2025):
         st.markdown(
             f"<div class='ec-law-banner'>"
-            f"💡 <b>[{tax_yr}년 귀속 경정청구·기한후신고·사후관리 안내]</b> {tax_yr}년 귀속분 계산 시 직전 과세연도({tax_yr - 1}년)의 "
-            f"상시근로자 및 청년등(만 15~34세) 인원수도 당해연도와 동일한 기준(신법 연령 기준)으로 재산정하여 비교합니다."
+            f"💡 <b>[{tax_yr}년 귀속 경정청구·기한후신고 안내]</b> {tax_yr}년 귀속분 계산을 위해 "
+            f"<b>{tax_yr}년(당해) 및 {tax_yr - 1}년(직전) 원천징수부</b>가 필수이며, 직전 과세연도({tax_yr - 1}년) 인원도 "
+            f"당해연도와 동일한 신법 기준(만 15~34세 등)으로 재산정하여 비교합니다."
             f"</div>",
             unsafe_allow_html=True,
         )
@@ -582,7 +618,7 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
             have.setdefault(f["key"], []).append(name)
 
     trs = []
-    # 1) 현재 귀속연도 기준 기본 7종 서류 행
+    # 1) 현재 귀속연도 기준 기본 체크리스트 서류 행
     for key, label, required, _ in doc_types:
         on = bool(have.get(key))
         pill = "<span class='ec-req-pill'>필수</span>" if required else "<span class='ec-opt-pill'>선택</span>"
@@ -599,7 +635,7 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
     for extra_key, extra_files in have.items():
         if extra_key not in base_keys and extra_files:
             extra_lbl = all_labels.get(extra_key, extra_key)
-            extra_help = doc_help.get(extra_key, "과거 연도 인원 비교·근속기간 확인 및 사후관리 검증에 자동 반영됩니다.")
+            extra_help = doc_help.get(extra_key, "과거 연도 사원정보 표 생성 및 연속공제·사후관리 검증에 자동 반영됩니다.")
             trs.append(
                 f"<tr class='extra'>"
                 f"<td class='led-cell'><span class='ec-led on'></span></td>"
@@ -698,9 +734,19 @@ def _enter_step2():
     sig = f"{s['ext_sig']}|{s['tax_year']}"
     if s["built_sig"] != sig:
         ext = s["ext"] or {}
-        # 기존 사이드바에 수기 입력된 사업자정보가 있으면 보존하며 병합
         s["biz"], s["biz_confirmed"] = P.build_biz_info(ext, int(s["tax_year"]), existing_biz=s.get("biz"))
-        s["people"], s["year_recs"] = P.build_people(ext, _years(s))
+        s["people"], s["year_recs"] = P.build_people(ext, _all_possible_years(s))
+
+        # 기신고 명세서에서 읽어온 연도별 상시·청년등 숫자를 prev_summary에 초기 세팅
+        prev_from_doc = ((ext.get("prev_filing") or {}).get("연도별") or {})
+        ps = s.setdefault("prev_summary", {})
+        for y_str, vals in prev_from_doc.items():
+            if isinstance(vals, dict):
+                ps[str(y_str)] = {
+                    "상시": float(vals.get("상시") or 0.0) if vals.get("상시") is not None else None,
+                    "청년등": float(vals.get("청년등") or 0.0) if vals.get("청년등") is not None else None,
+                }
+
         s["grid_ver"], s["last_sent"] = {}, {}
         s["built_sig"] = sig
         for k in list(st.session_state.keys()):
@@ -1048,7 +1094,7 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
         except Exception:
             back = None
     if isinstance(back, pd.DataFrame) and _apply_changes(s, year, rows, back):
-        for y in _years(s):
+        for y in _all_possible_years(s):
             s["grid_ver"][y] = s["grid_ver"].get(y, 0) + 1
         st.rerun()
 
@@ -1066,9 +1112,68 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
     return computed, totals
 
 
+def _render_prev_filing_summary_card(s: dict, shown_years: list[int]):
+    """
+    [요청 반영 핵심 기능]
+    2024년(또는 T-2년) 원천징수부를 직접 올리지 않아 2단계에 2024년 사원표가 뜨지 않을 때,
+    기신고 상시근로자 명세서에서 읽어온 2024년 인원 숫자를 보여주거나(또는 3단계에서도 입력 가능하도록)
+    필요시 사용자가 과거연도 사원표를 직접 열 수 있는 옵션을 제공합니다.
+    """
+    tax_yr = int(s["tax_year"])
+    t2_year = tax_yr - 2
+    if t2_year in shown_years:
+        return
+
+    ps = s.setdefault("prev_summary", {})
+    y_entry = ps.setdefault(str(t2_year), {"상시": None, "청년등": None})
+    has_prev_doc = bool(((s.get("ext") or {}).get("prev_filing") or {}).get("연도별"))
+
+    with st.expander(
+        f"📋 {t2_year}년 인원 처리 안내 — 원천징수부 미첨부로 빈 {t2_year}년 사원표는 숨김 처리되었습니다 (기신고 명세서 숫자 활용 또는 3단계에서 직접 입력)",
+        expanded=has_prev_doc,
+    ):
+        st.caption(
+            f"💡 **{tax_yr}년 귀속 신규 공제(A)**에는 **{tax_yr}년·{tax_yr - 1}년 사원표 2개**만 필요합니다. "
+            f"{t2_year}년 귀속 구법 기공제분의 연속공제·사후관리가 있는 경우, 1단계에 올리신 **기신고 상시근로자 명세서**에서 읽어온 아래 숫자로 처리하거나 "
+            f"**3단계(공제액 계산)** 화면에서 직접 입력할 수 있습니다."
+        )
+        c1, c2, c3 = st.columns([1.8, 1.8, 2.4])
+        with c1:
+            reg_val = st.number_input(
+                f"{t2_year}년 기신고 전체 상시근로자 수",
+                min_value=0.0,
+                step=0.01,
+                format="%.2f",
+                value=float(y_entry.get("상시") or 0.0),
+                key=f"prev_sum_reg_{t2_year}",
+            )
+            y_entry["상시"] = reg_val
+        with c2:
+            yth_val = st.number_input(
+                f"{t2_year}년 기신고 청년등 상시근로자 수",
+                min_value=0.0,
+                step=0.01,
+                format="%.2f",
+                value=float(y_entry.get("청년등") or 0.0),
+                key=f"prev_sum_yth_{t2_year}",
+            )
+            y_entry["청년등"] = yth_val
+        with c3:
+            st.write("")
+            if st.button(f"➕ {t2_year}년 사원정보 표 직접 열어서 인별 계산하기", use_container_width=True, key=f"btn_open_yr_{t2_year}"):
+                extra = s.setdefault("manual_extra_years", [])
+                if t2_year not in extra:
+                    extra.append(t2_year)
+                for pid in s["people"]:
+                    s["year_recs"].setdefault(t2_year, {}).setdefault(pid, P.new_year_rec())
+                st.rerun()
+
+
 def _page_employees(room_key: str):
     s = _S()
     tax_yr = int(s["tax_year"])
+    shown_years = _years(s)
+
     st.markdown(f"### 👥 2. 사원정보 및 상시근로자 판정 ({tax_yr}년 귀속)")
     st.markdown(
         "<div class='ec-legend'>"
@@ -1090,9 +1195,12 @@ def _page_employees(room_key: str):
         st.info("읽어온 근로자가 없습니다. 아래 [➕ 사원 추가] 버튼으로 직접 입력하시거나 [⬅️ 이전]을 눌러 원천징수부를 업로드하세요.")
 
     computed_all, totals_all, ctx_all = {}, {}, {}
-    for y in _years(s):
+    for y in shown_years:
         computed_all[y], totals_all[y] = _render_year(s, y, room_key)
         ctx_all[y] = _ctx(s, y)
+
+    # 2024년(또는 T-2년) 원천징수부를 올리지 않았을 때 기신고 명세서 숫자 확인·입력 카드 표시
+    _render_prev_filing_summary_card(s, shown_years)
 
     # 직전연도 대비 증감(Cap 적용) 요약 미리보기 배너
     if tax_yr in totals_all and (tax_yr - 1) in totals_all:
@@ -1123,7 +1231,7 @@ def _page_employees(room_key: str):
             "pid": pid, "성명": f"신규사원{seq}", "생년월일": "", "입사일": "", "퇴사일": "",
             "계약체결일": "", "병역개월": 0, "월급여": {}, "연도별_퇴사일": {}, "_confirmed": []
         }
-        for y in _years(s):
+        for y in _all_possible_years(s):
             s["year_recs"].setdefault(y, {})[pid] = P.new_year_rec()
             s["grid_ver"][y] = s["grid_ver"].get(y, 0) + 1
         st.rerun()
@@ -1132,8 +1240,9 @@ def _page_employees(room_key: str):
         st.rerun()
     if c_rev.button("🔍 오류 검토", use_container_width=True):
         prev = ((s.get("ext") or {}).get("prev_filing") or {}).get("연도별")
-        _dlg_review(H.review(s["people"], s["year_recs"], _years(s), ctx_all, computed_all, prev))
+        _dlg_review(H.review(s["people"], s["year_recs"], shown_years, ctx_all, computed_all, prev))
     if c_next.button("다음 (3단계) ➡️", type="primary", use_container_width=True):
+        s["totals_snapshot"] = totals_all
         s["step"] = 3
         st.rerun()
 
