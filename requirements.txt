@@ -1,10 +1,11 @@
 google-genai
 requests
 python-dotenv
-streamlit
+streamlit>=1.40
 pandas
 openpyxl
 xlrd
 pypdf
 python-docx
 reportlab
+streamlit-aggrid
