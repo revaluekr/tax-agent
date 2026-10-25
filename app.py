@@ -262,39 +262,39 @@ div[class*="st-key-room_btn_"] button:hover {
     color: #0f172a !important;
 }
 
-/* 상태 1: 빈 방 (우측 빈 동그라미) */
-div[class*="st-key-room_btn_"][class*="_empty"] button::after {
+/* 상태 1: 빈 방 (우측 빈 동그라미 — 작성 중이 아닐 때만 적용) */
+div[class*="st-key-room_btn_"][class*="_empty"]:not([class*="_running"]) button::after {
     content: "" !important;
     position: absolute !important;
     right: 10px !important;
     top: 50% !important;
-    transform: translateY(-50%) !important;
+    transform: translateY(-50%);
     width: 8px !important;
     height: 8px !important;
     border-radius: 50% !important;
     border: 1.5px solid #cbd5e1 !important;
-    background-color: transparent !important;
+    background-color: transparent;
 }
 
-/* 상태 2: 대화 기록이 있는 방 (우측 초록불 점등) */
+/* 상태 2: 대화 기록이 있는 방 (우측 초록불 점등 — 작성 중이 아닐 때만 초록불 적용) */
 div[class*="st-key-room_btn_"][class*="_hasmsg"] button {
     color: #0f172a !important;
     font-weight: 700 !important;
 }
-div[class*="st-key-room_btn_"][class*="_hasmsg"] button::after {
+div[class*="st-key-room_btn_"][class*="_hasmsg"]:not([class*="_running"]) button::after {
     content: "" !important;
     position: absolute !important;
     right: 10px !important;
     top: 50% !important;
-    transform: translateY(-50%) !important;
+    transform: translateY(-50%);
     width: 8px !important;
     height: 8px !important;
     border-radius: 50% !important;
-    background-color: #22c55e !important;
-    box-shadow: 0 0 5px rgba(34, 197, 94, 0.55) !important;
+    background-color: #22c55e;
+    box-shadow: 0 0 5px rgba(34, 197, 94, 0.55);
 }
 
-/* 상태 3: 현재 선택된 방 (칸 전체 연녹색 강조 + 우측 진초록 LED) */
+/* 상태 3: 현재 선택된 방 (칸 전체 연녹색 강조 + 작성 중이 아닐 때만 우측 진초록 LED) */
 div[class*="st-key-room_btn_"][class*="_active"] button {
     background-color: #dcfce7 !important;
     border: 1.5px solid #16a34a !important;
@@ -305,40 +305,41 @@ div[class*="st-key-room_btn_"][class*="_active"] button p {
     color: #14532d !important;
     font-weight: 800 !important;
 }
-div[class*="st-key-room_btn_"][class*="_active"] button::after {
+div[class*="st-key-room_btn_"][class*="_active"]:not([class*="_running"]) button::after {
     content: "" !important;
     position: absolute !important;
     right: 10px !important;
     top: 50% !important;
-    transform: translateY(-50%) !important;
+    transform: translateY(-50%);
     width: 9px !important;
     height: 9px !important;
     border-radius: 50% !important;
-    background-color: #16a34a !important;
-    box-shadow: 0 0 6px rgba(22, 163, 74, 0.7) !important;
+    background-color: #16a34a;
+    box-shadow: 0 0 6px rgba(22, 163, 74, 0.7);
 }
 
-/* 상태 4: 🌌 [옵션 C] 작성 중(분석 중)인 방 — 제미나이 오로라 블루·인디고·바이올렛 회전/펄스 LED */
+/* 상태 4: 🌌 [옵션 C] 작성 중(분석 중)인 방 — 제미나이 오로라 블루·인디고·바이올렛 회전/펄스 LED
+   (CSS 표준상 !important 속성이 @keyframes 애니메이션을 덮어쓰지 않도록 :not([class*="_running"]) 분리 완료) */
 @keyframes geminiAuroraPulse {
     0% {
-        background-color: #3b82f6;
-        box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.75), 0 0 8px #3b82f6;
-        transform: translateY(-50%) scale(0.95);
+        background-color: #2563eb;
+        box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.85), 0 0 9px 2px #3b82f6;
+        transform: translateY(-50%) scale(0.92);
     }
-    35% {
+    33% {
         background-color: #6366f1;
-        box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.25), 0 0 11px #6366f1;
-        transform: translateY(-50%) scale(1.18);
+        box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.30), 0 0 12px 3px #6366f1;
+        transform: translateY(-50%) scale(1.22);
     }
-    70% {
+    66% {
         background-color: #a855f7;
-        box-shadow: 0 0 0 2px rgba(168, 85, 247, 0.4), 0 0 11px #ec4899;
-        transform: translateY(-50%) scale(1.08);
+        box-shadow: 0 0 0 3px rgba(217, 70, 239, 0.35), 0 0 12px 3px #ec4899;
+        transform: translateY(-50%) scale(1.10);
     }
     100% {
-        background-color: #3b82f6;
-        box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.75), 0 0 8px #3b82f6;
-        transform: translateY(-50%) scale(0.95);
+        background-color: #2563eb;
+        box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.85), 0 0 9px 2px #3b82f6;
+        transform: translateY(-50%) scale(0.92);
     }
 }
 div[class*="st-key-room_btn_"][class*="_running"] button::after {
@@ -346,11 +347,12 @@ div[class*="st-key-room_btn_"][class*="_running"] button::after {
     position: absolute !important;
     right: 10px !important;
     top: 50% !important;
-    width: 9px !important;
-    height: 9px !important;
+    width: 10px !important;
+    height: 10px !important;
     border-radius: 50% !important;
     border: none !important;
-    animation: geminiAuroraPulse 1.6s infinite ease-in-out !important;
+    background-color: #6366f1;
+    animation: geminiAuroraPulse 1.4s infinite ease-in-out !important;
 }
 
 /* 상단 슬림 미니 상태바 */
