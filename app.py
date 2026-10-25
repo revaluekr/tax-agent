@@ -2567,6 +2567,11 @@ with st.sidebar:
                 st.session_state.ws_widget_ver = ws_widget_ver + 1
                 st.rerun()
 
+    # 📦 [통합고용세액공제 모드 전용] 귀속사업연도 · 사업자정보 (내 작업공간 바로 아래)
+    if st.session_state.app_top_mode == "CREDIT_CALC":
+        import employment_credit
+        employment_credit.render_credit_sidebar()
+
     # 📦 [카드 3] 멀티 대화방 (입체 비우기 버튼 + 1~10번 좌측 정렬 리스트 + 옵션 C 제미나이 오로라 로딩 LED)
     with st.container(border=True):
         if "current_room" not in st.session_state or st.session_state.current_room not in ROOM_IDS:
@@ -2703,11 +2708,9 @@ if st.session_state.app_top_mode == "CREDIT_CALC":
             if st.button("✖️ API 관리창 닫기"):
                 st.session_state.show_inline_api_manager = False
                 st.rerun()
-    import tax_credit_engine
-    tax_credit_engine.render_tax_credit_calculator_ui(
+    import employment_credit
+    employment_credit.render_credit_wizard(
         extract_file_fn=extract_file_content,
-        create_pdf_fn=create_pdf_report,
-        create_docx_fn=create_word_docx,
         log_tokens_fn=_log_custom_tokens,
         active_room_key=current_task_key,
     )
