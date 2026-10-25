@@ -2573,107 +2573,115 @@ with st.sidebar:
         employment_credit.render_credit_sidebar()
 
     # 📦 [카드 3] 멀티 대화방 (입체 비우기 버튼 + 1~10번 좌측 정렬 리스트 + 옵션 C 제미나이 오로라 로딩 LED)
-    with st.container(border=True):
-        if "current_room" not in st.session_state or st.session_state.current_room not in ROOM_IDS:
-            st.session_state.current_room = ROOM_IDS[0]
-        selected_room = st.session_state.current_room
-        active_room_key = f"{effective_ws_id}::{selected_room}"
+    # 방 선택값은 다른 화면에서도 쓰므로 카드 밖에서 먼저 정함
+    if "current_room" not in st.session_state or st.session_state.current_room not in ROOM_IDS:
+        st.session_state.current_room = ROOM_IDS[0]
+    selected_room = st.session_state.current_room
+    active_room_key = f"{effective_ws_id}::{selected_room}"
 
-        rooms_with_rev_cnt = sum(
-            1 for r_id in ROOM_IDS
-            if get_room_revision_alerts(effective_ws_id, r_id, st.session_state.chat_rooms.get(r_id, []), law_prom_map)[0]
-        )
-        rev_header_pill = (
-            f"<span class='sb-badge-amber'>🔄 {rooms_with_rev_cnt}개방 개정</span>"
-            if rooms_with_rev_cnt > 0 else ""
-        )
-        st.markdown(f"<div class='sb-card-title'><span>🗂️ 멀티 대화방 (1~10번)</span>{rev_header_pill}</div>", unsafe_allow_html=True)
+    # 통합고용세액공제 모드에서는 멀티 대화방 카드를 숨김
+    if st.session_state.app_top_mode != "CREDIT_CALC":
+        with st.container(border=True):
+            if "current_room" not in st.session_state or st.session_state.current_room not in ROOM_IDS:
+                st.session_state.current_room = ROOM_IDS[0]
+            selected_room = st.session_state.current_room
+            active_room_key = f"{effective_ws_id}::{selected_room}"
 
-        room_search_kw = st.text_input(
-            "전체 대화방 통합 검색",
-            placeholder="🔎 1~10번 방 통합 키워드 검색",
-            label_visibility="collapsed",
-            key=f"room_search_{effective_ws_id}"
-        )
-        if room_search_kw.strip():
-            kw_lower = room_search_kw.strip().lower()
-            matched_rooms = []
-            for r_id in ROOM_IDS:
-                r_title = st.session_state.room_titles.get(r_id, "")
-                r_fname = st.session_state.room_files[r_id].get("name") or ""
+            rooms_with_rev_cnt = sum(
+                1 for r_id in ROOM_IDS
+                if get_room_revision_alerts(effective_ws_id, r_id, st.session_state.chat_rooms.get(r_id, []), law_prom_map)[0]
+            )
+            rev_header_pill = (
+                f"<span class='sb-badge-amber'>🔄 {rooms_with_rev_cnt}개방 개정</span>"
+                if rooms_with_rev_cnt > 0 else ""
+            )
+            st.markdown(f"<div class='sb-card-title'><span>🗂️ 멀티 대화방 (1~10번)</span>{rev_header_pill}</div>", unsafe_allow_html=True)
+
+            room_search_kw = st.text_input(
+                "전체 대화방 통합 검색",
+                placeholder="🔎 1~10번 방 통합 키워드 검색",
+                label_visibility="collapsed",
+                key=f"room_search_{effective_ws_id}"
+            )
+            if room_search_kw.strip():
+                kw_lower = room_search_kw.strip().lower()
+                matched_rooms = []
+                for r_id in ROOM_IDS:
+                    r_title = st.session_state.room_titles.get(r_id, "")
+                    r_fname = st.session_state.room_files[r_id].get("name") or ""
+                    r_msgs = st.session_state.chat_rooms.get(r_id, [])
+                    hit_cnt = sum(1 for m in r_msgs if kw_lower in m.get("content", "").lower())
+                    if kw_lower in r_title.lower() or kw_lower in r_fname.lower():
+                        hit_cnt += 1
+                    if hit_cnt > 0:
+                        matched_rooms.append((r_id, r_title, hit_cnt))
+                if matched_rooms:
+                    for m_rid, m_title, m_cnt in matched_rooms:
+                        if st.button(f"👉 {m_rid} [{m_title}] ({m_cnt}건 일치)", key=f"jump_{m_rid}", use_container_width=True):
+                            st.session_state.current_room = m_rid
+                            st.rerun()
+                else:
+                    st.caption(f"'{room_search_kw}' 검색 결과가 없습니다.")
+
+            title_widget_key = f"title_input_{effective_ws_id}_{selected_room}"
+            # 위젯(st.text_input)이 렌더링되기 전에만 상태 동기화를 수행합니다.
+            if (
+                title_widget_key in st.session_state
+                and st.session_state[title_widget_key] in ("빈 대화방", "메인 대화")
+                and st.session_state.room_titles[selected_room] not in ("빈 대화방", "메인 대화")
+                and st.session_state.chat_rooms.get(selected_room)
+            ):
+                st.session_state[title_widget_key] = st.session_state.room_titles[selected_room]
+
+            new_title = st.text_input(
+                "방 주제 메모",
+                value=st.session_state.room_titles[selected_room],
+                placeholder="✏️ 현재 방 주제 메모 (예: A사 세무조사)",
+                label_visibility="collapsed",
+                key=title_widget_key
+            )
+            if new_title != st.session_state.room_titles[selected_room]:
+                st.session_state.room_titles[selected_room] = new_title
+                save_workspace_to_disk(effective_ws_id)
+                st.rerun()
+
+            if st.button(f"🗑️ [{selected_room}] 현재 방 비우기", key="btn_clear_current_room", use_container_width=True):
+                with task_mgr["lock"]:
+                    task_mgr["tasks"].pop(active_room_key, None)
+                st.session_state.chat_rooms[selected_room] = []
+                st.session_state.room_files[selected_room] = {"name": None, "text": "", "items": []}
+                st.session_state.room_titles[selected_room] = "빈 대화방"
+                # 이미 인스턴스화된 위젯 키는 값을 대입하지 않고 pop()으로 제거하여 StreamlitAPIException 원천 방지
+                st.session_state.pop(title_widget_key, None)
+                st.session_state.setdefault("room_diff_banners", {})[selected_room] = ""
+                st.session_state[f"diff_banner_open_{effective_ws_id}_{selected_room}"] = False
+                if hasattr(agent, "reset_room_usage"):
+                    agent.reset_room_usage(active_room_key)
+                st.session_state[f"reset_cnt_{selected_room}"] = st.session_state.get(f"reset_cnt_{selected_room}", 0) + 1
+                save_workspace_to_disk(effective_ws_id, force_overwrite_room=selected_room)
+                st.rerun()
+
+            for idx_r, r_id in enumerate(ROOM_IDS, start=1):
+                r_title = (st.session_state.room_titles.get(r_id, "빈 대화방") or "빈 대화방").strip()
+                short_title = r_title[:14] + ("…" if len(r_title) > 14 else "")
                 r_msgs = st.session_state.chat_rooms.get(r_id, [])
-                hit_cnt = sum(1 for m in r_msgs if kw_lower in m.get("content", "").lower())
-                if kw_lower in r_title.lower() or kw_lower in r_fname.lower():
-                    hit_cnt += 1
-                if hit_cnt > 0:
-                    matched_rooms.append((r_id, r_title, hit_cnt))
-            if matched_rooms:
-                for m_rid, m_title, m_cnt in matched_rooms:
-                    if st.button(f"👉 {m_rid} [{m_title}] ({m_cnt}건 일치)", key=f"jump_{m_rid}", use_container_width=True):
-                        st.session_state.current_room = m_rid
+                q_cnt = (len(r_msgs) + 1) // 2
+                f_cnt = len(st.session_state.room_files[r_id].get("items", []))
+                t_info = task_mgr["tasks"].get(f"{effective_ws_id}::{r_id}")
+                is_run = bool(t_info and t_info.get("status") == "running")
+                rev_alerts, _ = get_room_revision_alerts(effective_ws_id, r_id, r_msgs, law_prom_map)
+
+                base_state = "active" if r_id == selected_room else ("hasmsg" if q_cnt > 0 else "empty")
+                run_suffix = "_running" if is_run else ""
+                btn_key = f"room_btn_{idx_r}_{base_state}{run_suffix}"
+
+                extra_badges = (" 📎" if f_cnt else "") + (" 🔄" if rev_alerts else "") + (" (작성중)" if is_run else "")
+                btn_label = f"{idx_r}. {short_title} ({q_cnt}건){extra_badges}"
+
+                if st.button(btn_label, key=btn_key, use_container_width=True):
+                    if r_id != selected_room:
+                        st.session_state.current_room = r_id
                         st.rerun()
-            else:
-                st.caption(f"'{room_search_kw}' 검색 결과가 없습니다.")
-
-        title_widget_key = f"title_input_{effective_ws_id}_{selected_room}"
-        # 위젯(st.text_input)이 렌더링되기 전에만 상태 동기화를 수행합니다.
-        if (
-            title_widget_key in st.session_state
-            and st.session_state[title_widget_key] in ("빈 대화방", "메인 대화")
-            and st.session_state.room_titles[selected_room] not in ("빈 대화방", "메인 대화")
-            and st.session_state.chat_rooms.get(selected_room)
-        ):
-            st.session_state[title_widget_key] = st.session_state.room_titles[selected_room]
-
-        new_title = st.text_input(
-            "방 주제 메모",
-            value=st.session_state.room_titles[selected_room],
-            placeholder="✏️ 현재 방 주제 메모 (예: A사 세무조사)",
-            label_visibility="collapsed",
-            key=title_widget_key
-        )
-        if new_title != st.session_state.room_titles[selected_room]:
-            st.session_state.room_titles[selected_room] = new_title
-            save_workspace_to_disk(effective_ws_id)
-            st.rerun()
-
-        if st.button(f"🗑️ [{selected_room}] 현재 방 비우기", key="btn_clear_current_room", use_container_width=True):
-            with task_mgr["lock"]:
-                task_mgr["tasks"].pop(active_room_key, None)
-            st.session_state.chat_rooms[selected_room] = []
-            st.session_state.room_files[selected_room] = {"name": None, "text": "", "items": []}
-            st.session_state.room_titles[selected_room] = "빈 대화방"
-            # 이미 인스턴스화된 위젯 키는 값을 대입하지 않고 pop()으로 제거하여 StreamlitAPIException 원천 방지
-            st.session_state.pop(title_widget_key, None)
-            st.session_state.setdefault("room_diff_banners", {})[selected_room] = ""
-            st.session_state[f"diff_banner_open_{effective_ws_id}_{selected_room}"] = False
-            if hasattr(agent, "reset_room_usage"):
-                agent.reset_room_usage(active_room_key)
-            st.session_state[f"reset_cnt_{selected_room}"] = st.session_state.get(f"reset_cnt_{selected_room}", 0) + 1
-            save_workspace_to_disk(effective_ws_id, force_overwrite_room=selected_room)
-            st.rerun()
-
-        for idx_r, r_id in enumerate(ROOM_IDS, start=1):
-            r_title = (st.session_state.room_titles.get(r_id, "빈 대화방") or "빈 대화방").strip()
-            short_title = r_title[:14] + ("…" if len(r_title) > 14 else "")
-            r_msgs = st.session_state.chat_rooms.get(r_id, [])
-            q_cnt = (len(r_msgs) + 1) // 2
-            f_cnt = len(st.session_state.room_files[r_id].get("items", []))
-            t_info = task_mgr["tasks"].get(f"{effective_ws_id}::{r_id}")
-            is_run = bool(t_info and t_info.get("status") == "running")
-            rev_alerts, _ = get_room_revision_alerts(effective_ws_id, r_id, r_msgs, law_prom_map)
-
-            base_state = "active" if r_id == selected_room else ("hasmsg" if q_cnt > 0 else "empty")
-            run_suffix = "_running" if is_run else ""
-            btn_key = f"room_btn_{idx_r}_{base_state}{run_suffix}"
-
-            extra_badges = (" 📎" if f_cnt else "") + (" 🔄" if rev_alerts else "") + (" (작성중)" if is_run else "")
-            btn_label = f"{idx_r}. {short_title} ({q_cnt}건){extra_badges}"
-
-            if st.button(btn_label, key=btn_key, use_container_width=True):
-                if r_id != selected_room:
-                    st.session_state.current_room = r_id
-                    st.rerun()
 
     # 📦 [카드 4 — 최하단 고정: [💳 결제] 및 [🔑 API키] 버튼]
     with st.container(border=True):
