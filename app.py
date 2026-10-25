@@ -498,7 +498,6 @@ WATCHED_TAX_LAWS = [
     "근로기준법"
 ]
 
-# [보강 ③] 콜론(:)이 빠진 [조문 조세특례제한법 제29조의8] 또는 [조문조세특례제한법...] 형태까지 모두 인식하는 정규식
 _CITED_ARTICLE_TAG_RE = re.compile(
     r"\[조문(?:\s*[:：]\s*|\s*)(?=[가-힣A-Za-z0-9「])([^\]]+)\]"
 )
@@ -603,7 +602,6 @@ def fetch_latest_tax_law_promulgations() -> dict[str, dict]:
             if res:
                 fetched_dict[res[0]] = res[1]
 
-    # WATCHED_TAX_LAWS 정의 순서대로 정렬하여 일관성 유지
     results_map = {}
     for ln in target_names:
         tc = ln.replace(" ", "")
@@ -662,7 +660,6 @@ def fetch_official_revision_reason_zero_token(
         except Exception:
             continue
 
-    # 최신 공포본이 '타법개정'이어서 개정이유서가 비어있는 경우, 연혁법령(eflaw)에서 직전 '일부개정' 본을 자동 탐색
     if not reason_texts and law_name:
         try:
             enc_q = urllib.parse.quote(law_name.strip())
@@ -725,7 +722,6 @@ def generate_banner_law_diff_table(
     """
     본문 대화를 늘리지 않고 상단 배너 안에서만 열고 닫을 수 있는
     [조문명 / 구법내용 / 개정법내용 / 개정효과] 4열 마크다운 비교표를 생성합니다.
-    (본문에서 실제 인용된 조문만 비교하며, 인용되지 않은 무관한 타 조문은 절대 포함하지 않습니다.)
     """
     pool = agent.get_live_gemini_key_pool() if hasattr(agent, "get_live_gemini_key_pool") else []
     api_key = pool[0][1] if pool else (os.getenv("GEMINI_PAID_KEY") or os.getenv("GEMINI_API_KEY") or "")
@@ -786,6 +782,7 @@ def generate_banner_law_diff_table(
     models_to_try = [
         getattr(agent, "FLASH_MODEL_ID", "gemini-3.8-flash"),
         getattr(agent, "FLASH_BACKUP_ID", "gemini-3.6-flash"),
+        getattr(agent, "FLASH_LITE_ID", "gemini-3.5-flash-lite"),
         "gemini-2.5-flash"
     ]
     for m_id in dict.fromkeys(models_to_try):
@@ -817,11 +814,9 @@ def save_room_law_ack(ack_data: dict) -> None:
 
 def extract_cited_laws_in_room(messages: list[dict], law_prom_map: dict[str, dict]) -> list[dict]:
     """
-    [보강 ② & ③]
-    - 콜론(:)이 빠진 [조문 ...] 태그까지 모두 추출합니다.
-    - 단순 가나다순(sorted)이 아니라 **본문에서 실제로 가장 많이 인용된 빈도순(동률 시 첫 등장 순서)**으로 정렬하여,
-      부수적 인용 법령(예: 법인세법 시행령 1회) 대신 본문의 핵심 법령(예: 조세특례제한법 다수 인용)이
-      항상 대표(1순위)로 선정되도록 보장합니다.
+    콜론(:)이 빠진 [조문 ...] 태그까지 모두 추출하며,
+    단순 가나다순(sorted)이 아니라 **본문에서 실제로 가장 많이 인용된 빈도순(동률 시 첫 등장 순서)**으로 정렬하여
+    본문의 핵심 법령이 항상 대표(1순위)로 선정되도록 보장합니다.
     """
     if not messages or not law_prom_map:
         return []
@@ -848,7 +843,6 @@ def extract_cited_laws_in_room(messages: list[dict], law_prom_map: dict[str, dic
             if matched_cname not in first_seen_order:
                 first_seen_order[matched_cname] = idx
 
-    # 인용 횟수가 많은 순서(내림차순) -> 먼저 등장한 순서(오름차순)로 정렬
     ordered_cnames = sorted(
         cite_counts.keys(),
         key=lambda c: (-cite_counts[c], first_seen_order[c])
@@ -882,9 +876,6 @@ def get_room_revision_alerts(ws_id: str, room_id: str, messages: list[dict], law
     if post_rev_alerts:
         return post_rev_alerts, True
 
-    # [보강 ②] 부수적으로 1회 인용된 시행령만 60일 이내 공포 조건에 걸려 배너가 뜰 때,
-    # 이 대화방에서 가장 많이 인용된 1순위 핵심 주력 법령(cited_list[0])이 확인(ack) 전이라면
-    # 맨 앞(대표 법령)에 함께 포함시켜 개정이유서 모달 및 신·구법 비교의 중심을 잡아줍니다.
     if recent_info_alerts and cited_list:
         primary_law = cited_list[0]
         p_cname = primary_law["clean_name"]
@@ -1103,13 +1094,26 @@ def _background_agent_worker(
     task_info: dict
 ) -> None:
     room_key = f"{ws_id}::{room_id}"
+
+    def _on_live_step(msg: str):
+        task_info["live_step"] = msg
+
     try:
-        response_text = run_agent(
-            user_input=full_input,
-            raw_query=raw_query,
-            has_file=has_file,
-            room_key=room_key
-        )
+        try:
+            response_text = run_agent(
+                user_input=full_input,
+                raw_query=raw_query,
+                has_file=has_file,
+                room_key=room_key,
+                status_callback=_on_live_step
+            )
+        except TypeError:
+            response_text = run_agent(
+                user_input=full_input,
+                raw_query=raw_query,
+                has_file=has_file,
+                room_key=room_key
+            )
     except Exception as e:
         response_text = f"❌ 에이전트 실행 중 오류가 발생했습니다: {e}"
 
@@ -1150,6 +1154,7 @@ def _ocr_with_gemini_flash(file_bytes: bytes, mime_type: str, filename: str, roo
     models_to_try = [
         getattr(agent, "FLASH_MODEL_ID", "gemini-3.8-flash"),
         getattr(agent, "FLASH_BACKUP_ID", "gemini-3.6-flash"),
+        getattr(agent, "FLASH_LITE_ID", "gemini-3.5-flash-lite"),
         "gemini-2.5-flash"
     ]
     last_err = ""
@@ -1173,8 +1178,7 @@ def _ocr_with_gemini_flash(file_bytes: bytes, mime_type: str, filename: str, roo
             _log_custom_tokens(m_id, in_tok, out_tok, count_call=True, room_key=room_key)
             if extracted.strip():
                 return f"[📸 AI 비전 OCR 자동 판독 완료: {filename}]\n{extracted.strip()}"
-        except Exception as e:
-            last_err = str(e)
+        except Exception:
             continue
     return f"❌ 이미지/스캔본 OCR 판독 실패 ({filename}): {last_err}"
 
@@ -1225,7 +1229,7 @@ def extract_file_content(uploaded_file, room_key: str = "") -> str:
                 text_parts.append("\n--- [워드 문서 내 표(Table) 데이터] ---")
                 for t_idx, table in enumerate(doc.tables):
                     text_parts.append(f"\n[표 {t_idx+1}]")
-                    for row in table.rows:
+                    for row in doc.tables[t_idx].rows:
                         row_cells = [cell.text.strip().replace("\n", " ") for cell in row.cells]
                         text_parts.append(" | ".join(row_cells))
             return "\n".join(text_parts)[:MAX_DOC_CHARS_PRO]
@@ -1239,13 +1243,13 @@ def extract_file_content(uploaded_file, room_key: str = "") -> str:
         return f"❌ 파일 읽기 오류: {e}"
 
 # ---------------------------------------------------------
-# 공통 정제 도우미 & [미세 디테일 1 & 2 + URL 내부 물결표 보호 취소선 방지] 화면 렌더링 전용 마크다운 보정기
+# 공통 정제 도우미 & 화면 렌더링 전용 마크다운 보정기
 # ---------------------------------------------------------
 _URL_OR_MD_LINK_RE = re.compile(r"(\]\(https?://[^\s)]+\)|https?://[^\s)<>\"]+)")
 
 def _escape_tilde_outside_urls(text: str) -> str:
     """
-    [보강 ④] 일반 텍스트의 물결표(~)는 마크다운 취소선(<del>) 오작동 방지를 위해 &#126;으로 안전 변환하되,
+    일반 텍스트의 물결표(~)는 마크다운 취소선(<del>) 오작동 방지를 위해 &#126;으로 안전 변환하되,
     마크다운 링크 ](https://...) 및 순수 URL 내부에 포함된 물결표(~)는 주소가 깨지지 않도록 원형 그대로 보존합니다.
     """
     if not text or "~" not in text:
@@ -1256,26 +1260,12 @@ def _escape_tilde_outside_urls(text: str) -> str:
     return "".join(parts)
 
 def _format_markdown_for_screen(md_text: str) -> str:
-    """
-    0) [물결표 취소선 방지 + URL 보호]: 한 문장에 숫자 범위 물결표(~)가 2개 이상 들어갈 때(예: '중견기업 8~9%, 대기업 10~17%')
-       마크다운 파서가 두 물결표 사이를 취소선(<del>)으로 오인해 가운데 줄을 긋고 물결표를 삼키는 현상을 차단하되,
-       URL 주소 내부의 물결표(~)는 원형 보존합니다.
-    1) [미세 디테일 1]: 한국어 마크다운 파서에서 닫는 괄호/따옴표/퍼센트 등이 포함된 **굵은글씨** 바로 뒤에
-       한글 조사(이, 가, 은, 는, 을, 를, 에 등)가 붙어 별표(**) 기호가 화면에 그대로 노출되는 현상을
-       <strong>...</strong> 태그로 자동 변환하여 100% 깔끔한 굵은 글씨로 표시합니다.
-    2) [미세 디테일 2]: '### 3. 관련법령' 섹션의 리스트를 전용 컴팩트 컨테이너(<div class='related-laws-compact-box'>)로
-       감싸서 관련법령 항목들의 줄간격만 조밀하고 정갈하게 렌더링합니다.
-    """
     if not md_text:
         return ""
 
-    # 0. URL 내부의 물결표(~)는 보존하면서 일반 본문 물결표(~)만 &#126;으로 안전 변환
     s = _escape_tilde_outside_urls(md_text)
-
-    # 1. **텍스트** 패턴을 <strong>텍스트</strong>으로 안전하게 변환 (줄바꿈 없는 인라인 볼드 대상)
     s = re.sub(r"\*\*([^\*\n]+?)\*\*", r"<strong>\1</strong>", s)
 
-    # 2. '### 3. 관련법령' 섹션 리스트를 .related-laws-compact-box로 감싸기
     pattern_rel = re.compile(r"(###\s*3\.\s*관련\s*법령[^\n]*\n)(.*)", flags=re.DOTALL)
     m = pattern_rel.search(s)
     if m:
@@ -1301,7 +1291,6 @@ def _sanitize_math_text(text: str) -> str:
     if not text:
         return ""
     s = text
-    # [보강 ③] 콜론(:)이 빠진 [조문 조세특례제한법...] 형태도 먼저 표준 [조문: ...] 형태로 정규화한 뒤 링크 언래핑 수행
     s = re.sub(
         r"\[(판례|심판례|해석례|예규|조문)(?:\s*[:：]\s*|\s+)(?=[가-힣A-Za-z0-9「])([^\]]+)\]",
         r"[\1: \2]",
@@ -1736,6 +1725,7 @@ def _trigger_agent_task(
         "status": "running",
         "response": None,
         "is_pro": is_pro_request,
+        "live_step": "",
         "started_at": time.time()
     }
     worker_thread = threading.Thread(
@@ -1933,8 +1923,6 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
             "아무나 `[🔑 API키]` 버튼을 눌러 API 키 목록이나 관리 링크를 열람·복사하지 못하도록, "
             "본인(Manager)의 Google 계정 이메일과 관리자 보안 비밀번호를 등록합니다."
         )
-        # [핵심 수정] st.form으로 감싸서 마지막 비밀번호 칸에 입력 후 Enter를 치지 않고 바로 초록색 버튼을 눌러도
-        # 모든 입력값(reg_email, reg_pin1, reg_pin2)이 빈 문자열("")로 누락되지 않고 한 번에 정상 전달되도록 보강!
         with st.form("mgr_initial_register_form", clear_on_submit=False):
             st.markdown("##### 🛡️ 관리자(Manager) Google 계정 최초 등록")
             default_em = oauth_google_email if oauth_google_email else "re.value.kr@gmail.com"
@@ -2014,7 +2002,6 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
                     "💡 현재 앱에 Streamlit OIDC(`secrets.toml`의 `[auth]`) 설정이 없어 아래 **방법 2(관리자 Google 이메일 + 보안 비밀번호 인증)**로 즉시 로그인하실 수 있습니다."
                 )
 
-        # [핵심 수정] 방법 2 로그인 창도 st.form으로 감싸서 비밀번호 입력 후 바로 버튼을 클릭해도 값이 누락되지 않도록 처리!
         with st.form("mgr_login_verify_form", clear_on_submit=False):
             st.markdown("##### 🔑 방법 2. 등록된 Manager Google 계정 & 보안 암호로 열기")
             input_g_email = st.text_input(
@@ -2178,11 +2165,14 @@ if _dialog_decorator:
         _render_api_key_manager_body(expiry_all_status, law_prom_map)
 
 # ---------------------------------------------------------
-# 2. 왼쪽 사이드바 제어판 (현재 크기·비율 유지 + 겹침 방지 여백 최적화 + 옵션 C 오로라 로딩 LED)
+# 2. 왼쪽 사이드바 제어판 (18대 세법 ID 즉시 프리워밍 연동 + 겹침 방지 여백 최적화 + 옵션 C 오로라 로딩 LED)
 # ---------------------------------------------------------
 task_mgr = get_background_task_manager()
 expiry_alerts, expiry_all_status = check_api_expiry_alerts()
 law_prom_map = fetch_latest_tax_law_promulgations()
+# [속도 개선 ①] 18대 주요 세법·시행령 최신 법령ID를 에이전트 메모리 캐시에 즉시 등록하여 1턴 직행 조회 활성화
+if hasattr(agent, "register_prewarmed_law_ids") and law_prom_map:
+    agent.register_prewarmed_law_ids(law_prom_map)
 budget_exceeded = False
 
 if "app_top_mode" not in st.session_state:
@@ -2216,19 +2206,19 @@ with st.sidebar:
         unsafe_allow_html=True
     )
     
-    # 📦 [카드 1] 엔진 출력 모드 제어
+    # 📦 [카드 1] 엔진 출력 모드 제어 (1번 아르곤 직결 방식)
     with st.container(border=True):
         is_pro_now = st.session_state.get("pro_toggle_state", False)
         mode_pill = (
-            "<span class='sb-badge-pro'>🧠 Pro 3배 개방</span>"
+            "<span class='sb-badge-pro'>👑 Argon 직결 (3배 개방)</span>"
             if is_pro_now else
             "<span class='sb-badge-green'>⚡ Flash 고속</span>"
         )
         st.markdown(f"<div class='sb-card-title'><span>🚀 엔진 출력 모드</span>{mode_pill}</div>", unsafe_allow_html=True)
         pro_toggle_on = st.toggle(
-            "Pro 심층 모드 (3배 리미트 해제)",
+            "Pro 심층 모드 (Argon 직결 · 3배 개방)",
             value=is_pro_now,
-            help="켜두면 질문 앞에 [프로]를 입력하지 않아도 최대 15만 자 문서 독해 및 30회 도구 호출 모드로 작동합니다."
+            help="켜두면 최상위 Gemini 4 Argon 엔진이 1순위로 직결 가동되며 최대 15만 자 문서 독해 및 데이터·도구 한도 3배 개방 모드로 작동합니다."
         )
         st.session_state.pro_toggle_state = pro_toggle_on
 
@@ -2265,7 +2255,6 @@ with st.sidebar:
                 st.session_state.current_room = ROOM_IDS[0]
             st.rerun()
 
-        # 백그라운드 완료 작업 자동 반영
         for r_id in ROOM_IDS:
             st.session_state.room_files[r_id] = _normalize_room_file_entry(st.session_state.room_files.get(r_id, {}))
             t_key = f"{effective_ws_id}::{r_id}"
@@ -2339,7 +2328,6 @@ with st.sidebar:
             save_workspace_to_disk(effective_ws_id)
             st.rerun()
 
-        # 🗑️ 입체감이 살아있는 [현재 방 비우기] 버튼
         if st.button(f"🗑️ [{selected_room}] 현재 방 비우기", key="btn_clear_current_room", use_container_width=True):
             task_mgr["tasks"].pop(active_room_key, None)
             st.session_state.chat_rooms[selected_room] = []
@@ -2353,7 +2341,6 @@ with st.sidebar:
             save_workspace_to_disk(effective_ws_id)
             st.rerun()
 
-        # 📋 [1번~10번 세로 1열 클릭 리스트 — 왼쪽 정렬 + 우측 끝 동그라미 LED (작성 중일 때는 옵션 C 오로라 펄스 작동)]
         for idx_r, r_id in enumerate(ROOM_IDS, start=1):
             r_title = (st.session_state.room_titles.get(r_id, "빈 대화방") or "빈 대화방").strip()
             short_title = r_title[:14] + ("…" if len(r_title) > 14 else "")
@@ -2389,7 +2376,7 @@ with st.sidebar:
                     st.session_state.show_inline_api_manager = not st.session_state.get("show_inline_api_manager", False)
 
 # ---------------------------------------------------------
-# 3. 메인 화면 상단 (슬림 상태바 + 문구가 깔끔해진 법령 개정 배너 버튼: '📜 개정이유서' / '⚡ 신·구법 비교')
+# 3. 메인 화면 상단 (슬림 상태바 + 법령 개정 배너 버튼: '📜 개정이유서' / '⚡ 신·구법 비교')
 # ---------------------------------------------------------
 current_messages = st.session_state.chat_rooms[selected_room]
 current_room_title = st.session_state.room_titles[selected_room]
@@ -2419,7 +2406,7 @@ if st.session_state.app_top_mode == "CREDIT_CALC":
 # 상단 미니 상태바
 q_count_now = (len(current_messages) + 1) // 2
 mode_badge_html = (
-    "🧠 <b>Pro 심층 모드 (3배 리미트 개방 ON)</b>"
+    "👑 <b>Pro 심층 모드 — Argon 직결 (3배 리미트 개방 ON)</b>"
     if pro_toggle_on else
     "⚡ <b>Flash 표준 모드 (고속 검토)</b>"
 )
@@ -2443,7 +2430,7 @@ if expiry_alerts:
         with c_al2:
             st.link_button("🔗 연장·재발급", alert_item["url"], use_container_width=True)
 
-# 🔄 2) [개정세법 안내 배너 — 보강 ①: 닫는 괄호 뒤 한글 조사로 인한 ** 노출 방지]
+# 🔄 2) [개정세법 안내 배너]
 current_room_rev_alerts, is_post_revision = get_room_revision_alerts(
     effective_ws_id, selected_room, current_messages, law_prom_map
 )
@@ -2451,8 +2438,6 @@ saved_diff_md = st.session_state.get("room_diff_banners", {}).get(selected_room,
 is_diff_open = st.session_state.get(f"diff_banner_open_{selected_room}", False)
 
 if current_room_rev_alerts:
-    # 닫는 소괄호 ')' 바깥에 '**'와 한글 조사('이', '의')가 맞닿으면 CommonMark 파서가 볼드를 닫지 못하고 '**'를 노출하므로,
-    # 법령명(「...」)만 굵게 감싸고 공포·시행일 괄호는 볼드 바깥에 배치하여 어느 조사와 결합해도 '**' 기호가 절대 노출되지 않도록 처리합니다.
     rev_names_str = ", ".join(
         f"**「{it['law_name']}」**(공포:{it['prom_date']}/시행:{it['enf_date']})" for it in current_room_rev_alerts
     )
@@ -2494,7 +2479,6 @@ if current_room_rev_alerts:
             acknowledge_room_laws(effective_ws_id, selected_room, current_room_rev_alerts)
             st.rerun()
 
-# 📊 본문 대화와 무관하게 언제든 열었다 닫았다 할 수 있는 상단 [조문명/구법내용/개정법내용/개정효과] 배너
 if saved_diff_md:
     with st.expander("📊 [신·구법 비교] 조문명 / 구법내용 / 개정법내용 / 개정효과 (클릭하여 열기·닫기)", expanded=is_diff_open):
         st.markdown(f"<div class='law-diff-banner-box'>\n\n{_format_markdown_for_screen(saved_diff_md)}\n\n</div>", unsafe_allow_html=True)
@@ -2511,7 +2495,6 @@ if saved_diff_md:
                     save_workspace_to_disk(effective_ws_id)
                 st.rerun()
 
-# 구버전 Streamlit 폴백용 인라인 뷰어들
 if st.session_state.get("show_inline_reason_viewer"):
     with st.container(border=True):
         st.subheader("📜 법제처 공식 『제·개정이유 및 주요내용』 원문 뷰어")
@@ -2529,7 +2512,7 @@ if st.session_state.get("show_inline_api_manager"):
             st.rerun()
 
 # ---------------------------------------------------------
-# 4. 대화방 메시지 목록 렌더링 (미세 디테일 1·2 + 물결표 취소선 방지 자동 보정 적용)
+# 4. 대화방 메시지 목록 렌더링
 # ---------------------------------------------------------
 for idx, message in enumerate(current_messages):
     with st.chat_message(message["role"]):
@@ -2543,7 +2526,6 @@ for idx, message in enumerate(current_messages):
         st.markdown(display_content, unsafe_allow_html=True)
 
         if message["role"] == "assistant":
-            # 📥 1줄: 문서 다운로드 버튼 4종 (PDF / 워드 / 표 엑셀(.xlsx) / 마크다운)
             excel_bytes = create_excel_from_markdown_tables(message["content"])
             col1, col2, col3, col4 = st.columns(4)
             with col1:
@@ -2586,7 +2568,6 @@ for idx, message in enumerate(current_messages):
                     use_container_width=True
                 )
 
-            # ⚡ 2줄: 타이핑 제로 원클릭 후속 작업 버튼 3종 (카톡/이메일은 Flash 초저가 강제 실행)
             act1, act2, act3 = st.columns(3)
             with act1:
                 if st.button(
@@ -2614,7 +2595,7 @@ for idx, message in enumerate(current_messages):
                     )
             with act3:
                 if st.button(
-                    "🧠 [프로] 3배 개방 재검토",
+                    "👑 [프로/Argon] 3배 개방 재검토",
                     key=f"repro_{effective_ws_id}_{selected_room}_{idx}",
                     disabled=is_current_room_running,
                     use_container_width=True
@@ -2629,22 +2610,26 @@ for idx, message in enumerate(current_messages):
                 st.code(_extract_clean_copy_text(message["content"]), language="markdown")
 
 # ---------------------------------------------------------
-# 5. 현재 방에서 백그라운드 작업이 진행 중일 때 실시간 상태창 표시 (유령 잔상 방지)
+# 5. 현재 방에서 백그라운드 작업이 진행 중일 때 실시간 상태창 표시 (속도 개선 ⑥: 실시간 단계 브로드캐스트)
 # ---------------------------------------------------------
 status_placeholder = st.empty()
+live_step_placeholder = None
 if active_task and active_task.get("status") == "running":
     is_pro_running = active_task.get("is_pro", False)
     status_title = (
-        f"🧠 [{selected_room}] Pro 심층 모드 백그라운드 가동 중 (데이터·도구 한도 3배 개방)..."
+        f"👑 [{selected_room}] Pro 심층 모드(Argon 직결 · 3배 개방) 백그라운드 가동 중..."
         if is_pro_running else
-        f"⚡ [{selected_room}] 실시간 법령·공시 DB 조회 및 백그라운드 정밀 검토 중..."
+        f"⚡ [{selected_room}] 실시간 법령·공시 DB 고속 조회 및 백그라운드 정밀 검토 중..."
     )
     with status_placeholder.container():
         with st.chat_message("assistant"):
             with st.status(status_title, expanded=True):
-                st.write("🔎 **1단계:** 질의 쟁점 분석 및 7대 국가·공공기관(법제처 현행·구법·국세청·DART·국토부·한은) DB 탐색 중...")
-                st.write("🧮 **2단계:** 관련 법령·판례 원문 파싱 및 파이썬 1원 단위 정밀 수리 계산기 구동 중...")
-                st.write("🛡️ **3단계:** 미조회 근거 강제 차단(`_scan_violations`) 및 듀얼 AI 감수(`_semantic_verify`) 수행 중...")
+                live_step_placeholder = st.empty()
+                cur_live_msg = active_task.get("live_step") or "🔎 **1단계:** 질의 쟁점 분석 및 18대 주요 세법 프리워밍 캐시·공공기관 DB 탐색 중..."
+                live_step_placeholder.markdown(f"**실시간 진행 상태:** {cur_live_msg}")
+                st.write("🔎 **1단계:** 질의 쟁점 분석 및 7대 국가·공공기관(법제처 현행·구법·국세청·DART·국토부·한은) DB 1턴 직행 탐색")
+                st.write("🧮 **2단계:** 관련 법령·판례 원문 Gzip 고속 파싱 및 파이썬 1원 단위 정밀 수리 계산기 구동")
+                st.write("🛡️ **3단계:** 미조회 근거 강제 차단(`_scan_violations`) 및 듀얼 AI 고속 감수(`_semantic_verify`) 수행")
                 st.caption("💡 **백그라운드 멀티태스킹 작동 중:** 지금 좌측 대화방 리스트를 눌러 다른 대화방으로 이동하셔도 이 방의 AI 검토는 멈추지 않고 끝까지 완료됩니다.")
 
 # ---------------------------------------------------------
@@ -2655,7 +2640,6 @@ st.session_state.room_files[selected_room] = room_file_entry
 saved_items = room_file_entry["items"]
 reset_cnt = st.session_state.get(f"reset_cnt_{selected_room}", 0)
 
-# 이미 대화방에 첨부되어 유지 중인 파일이 있으면 하단 입력창 바로 위에 슬림한 칩 형태로 표시
 if saved_items:
     with st.container(border=True):
         c_head1, c_head2 = st.columns([8.5, 1.5])
@@ -2680,7 +2664,6 @@ chat_input_placeholder = (
     f"[{selected_room}] 검토할 이슈를 입력하거나 이 칸에 파일(엑셀·PDF·워드·사진)을 바로 끌어다 놓으세요 (+ 버튼 첨부 가능)"
 )
 
-# ⚠️ 중요: st.chat_input을 st.container() 밖(최상위 루트)에 단독 호출해야 화면 맨 아래(Bottom)에 고정됩니다!
 _chat_sig = inspect.signature(st.chat_input).parameters
 try:
     if "accept_file" in _chat_sig:
@@ -2735,10 +2718,19 @@ if chat_val:
     elif inline_files:
         st.rerun()
 
-# 백그라운드 작업 폴링 (하단 입력창까지 모두 렌더링한 뒤 깔끔하게 대기 후 완료 시 즉시 갱신)
+# [속도 개선 ⑥] 백그라운드 작업 0.15초 초고속 폴링 및 실시간 단계(live_step) UI 업데이트
 if active_task and active_task.get("status") == "running":
+    last_shown_step = active_task.get("live_step", "")
     while active_task.get("status") == "running":
-        time.sleep(0.4)
+        time.sleep(0.15)
+        cur_step = active_task.get("live_step", "")
+        if live_step_placeholder is not None and cur_step and cur_step != last_shown_step:
+            last_shown_step = cur_step
+            try:
+                elapsed_sec = int(time.time() - active_task.get("started_at", time.time()))
+                live_step_placeholder.markdown(f"**실시간 진행 상태 ({elapsed_sec}초 경과):** {cur_step}")
+            except Exception:
+                pass
     status_placeholder.empty()
     ans = active_task.get("response", "")
     if ans and (not current_messages or current_messages[-1].get("role") != "assistant" or current_messages[-1].get("content") != ans):
