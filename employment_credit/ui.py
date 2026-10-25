@@ -10,6 +10,10 @@
    - 2026년 귀속 선택 시 2024년 원천징수부를 안 올렸다면 빈 2024년 사원표를 띄우지 않고 '2026년·2025년' 사원표 2개만 깔끔하게 표시!
    - 2024년 인원은 '기신고 상시근로자 명세서'에서 읽어온 숫자(또는 요약 카드에서 직접 입력)로 처리.
    - 단, 사용자가 2024년(또는 2023년) 원천징수부를 직접 올렸거나 좌측에서 '2024년 귀속 / 2025년 귀속'을 선택했을 때만 해당 과거 연도 사원표가 자동으로 나타납니다.
+4. UI 레이아웃 디테일 개선:
+   - 1단계 '📋 자료 확인 안내' 및 '🚫 적용 불가 업종 안내' 다이얼로그 창 가로 폭을 넓혀(width="large" + CSS 최소 폭 보강) 문장이 두 줄로 꺾이지 않도록 개선.
+   - 2단계 하단 버튼 배치를 상단 [➕ 사원 추가](좌측 끝)와 분리하여,
+     그 아래 줄에 [⬅️ 이전](좌측 끝) <---> [🔍 오류 검토] [다음 (3단계) ➡️](우측 끝) 2단 구조로 깔끔하게 정렬.
 """
 from __future__ import annotations
 
@@ -122,6 +126,21 @@ def _ctx(s: dict, year: int) -> dict:
 CSS = """
 <style>
 @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
+
+/* 🪟 모달(Dialog) 창 가로 폭 확장 — 안내 문구가 줄바꿈으로 잘리지 않도록 여유 폭 보장 */
+div[data-testid="stDialog"] > div[role="dialog"],
+div[role="dialog"] {
+    min-width: min(680px, 94vw) !important;
+    max-width: 780px !important;
+}
+div[role="dialog"] li,
+div[role="dialog"] p {
+    font-family: 'Pretendard', 'Malgun Gothic', sans-serif !important;
+    font-size: 0.98rem !important;
+    line-height: 1.65 !important;
+    color: #1e293b !important;
+    word-break: keep-all !important;
+}
 
 /* 🧭 4단계 스텝 진행바 — 자율 에이전트 그린(#16a34a) & 네이비(#1e293b) 테마 */
 .ec-steps {
@@ -380,6 +399,10 @@ CSS = """
     margin-bottom: 12px;
     line-height: 1.55;
 }
+.ec-nav-divider {
+    border-top: 1px dashed #cbd5e1;
+    margin: 14px 0 12px 0;
+}
 </style>
 """
 
@@ -423,9 +446,9 @@ def _progress(step: int):
 
 
 # ══════════════════════════════════════════════════════════════════
-# 2. 별도 창(대화상자)
+# 2. 별도 창(대화상자 — width="large" 적용으로 가로 폭 확보)
 # ══════════════════════════════════════════════════════════════════
-@st.dialog("📋 자료 확인 안내")
+@st.dialog("📋 자료 확인 안내", width="large")
 def _dlg_missing(msgs: list[str]):
     for m in msgs:
         st.markdown(f"- {m}")
@@ -435,7 +458,7 @@ def _dlg_missing(msgs: list[str]):
         st.rerun()
 
 
-@st.dialog("🚫 통합고용세액공제 적용 불가 업종 안내")
+@st.dialog("🚫 통합고용세액공제 적용 불가 업종 안내", width="large")
 def _dlg_industry(text: str):
     st.markdown(f"감지된 업태·종목: **{text}**")
     st.markdown(
@@ -1114,7 +1137,6 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
 
 def _render_prev_filing_summary_card(s: dict, shown_years: list[int]):
     """
-    [요청 반영 핵심 기능]
     2024년(또는 T-2년) 원천징수부를 직접 올리지 않아 2단계에 2024년 사원표가 뜨지 않을 때,
     기신고 상시근로자 명세서에서 읽어온 2024년 인원 숫자를 보여주거나(또는 3단계에서도 입력 가능하도록)
     필요시 사용자가 과거연도 사원표를 직접 열 수 있는 옵션을 제공합니다.
@@ -1192,7 +1214,7 @@ def _page_employees(room_key: str):
     )
 
     if not s["people"]:
-        st.info("읽어온 근로자가 없습니다. 아래 [➕ 사원 추가] 버튼으로 직접 입력하시거나 [⬅️ 이전]을 눌러 원천징수부를 업로드하세요.")
+        st.info("읽어온 근로자가 없습니다. 아래 [➕ 사원 추가] 버튼으로 직접 입력하시거나 [< 이전]을 눌러 원천징수부를 업로드하세요.")
 
     computed_all, totals_all, ctx_all = {}, {}, {}
     for y in shown_years:
@@ -1222,7 +1244,8 @@ def _page_employees(room_key: str):
             unsafe_allow_html=True,
         )
 
-    c_add, _, c_prev, c_rev, c_next = st.columns([1.3, 2.5, 1.0, 1.1, 1.2])
+    # ── 1단: 왼쪽 끝 [➕ 사원 추가] ─────────────────────────────────────
+    c_add, _ = st.columns([1.3, 5.8])
     if c_add.button("➕ 사원 추가", use_container_width=True):
         seq = int(s.get("next_pid_seq", 1))
         s["next_pid_seq"] = seq + 1
@@ -1235,13 +1258,17 @@ def _page_employees(room_key: str):
             s["year_recs"].setdefault(y, {})[pid] = P.new_year_rec()
             s["grid_ver"][y] = s["grid_ver"].get(y, 0) + 1
         st.rerun()
-    if c_prev.button("⬅️ 이전", use_container_width=True):
+
+    # ── 2단(살짝 간격을 둔 하단 네비게이션): [< 이전] (왼쪽 끝) <---> [오류 검토] [다음(3단계)] (오른쪽 끝) ──
+    st.markdown("<div class='ec-nav-divider'></div>", unsafe_allow_html=True)
+    c_prev, _, c_rev, c_next = st.columns([1.3, 3.4, 1.1, 1.3])
+    if c_prev.button("< 이전", use_container_width=True):
         s["step"] = 1
         st.rerun()
-    if c_rev.button("🔍 오류 검토", use_container_width=True):
+    if c_rev.button("오류 검토", use_container_width=True):
         prev = ((s.get("ext") or {}).get("prev_filing") or {}).get("연도별")
         _dlg_review(H.review(s["people"], s["year_recs"], shown_years, ctx_all, computed_all, prev))
-    if c_next.button("다음 (3단계) ➡️", type="primary", use_container_width=True):
+    if c_next.button("다음(3단계)", type="primary", use_container_width=True):
         s["totals_snapshot"] = totals_all
         s["step"] = 3
         st.rerun()
@@ -1262,6 +1289,6 @@ def render_credit_wizard(extract_file_fn, log_tokens_fn=None, active_room_key: s
         _page_employees(active_room_key)
     else:
         st.info("3단계(공제액 계산)와 4단계(보고서)는 2단계 확인이 끝난 뒤 이어서 만듭니다.")
-        if st.button("⬅️ 이전 (2단계 사원정보)"):
+        if st.button("< 이전 (2단계 사원정보)"):
             s["step"] = 2
             st.rerun()
