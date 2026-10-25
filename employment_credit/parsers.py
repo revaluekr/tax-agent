@@ -2,9 +2,15 @@
 """
 업로드 자료 분류 및 정보 추출
 
-- 파일 종류 분류: 파일명·본문 키워드로 먼저 판정 (AI 미사용)
-- 내용 추출: Gemini가 서류에서 값을 JSON으로 '읽어오기'만 함
-- 주민등록번호: AI에는 앞 7자리만 받게 하고, 생년월일·내외국인 판정은 파이썬이 한 뒤 버림
+[개선 및 버그 패치 내역]
+1. 파일 종류 자동 분류 확장: 2021년~2028년 모든 연도의 근로소득원천징수부(`wht_YYYY`), 다년도 기신고 명세서(`prev_filing`),
+   근로계약서·4대보험 가입자명부 등 보충서류(`labor_contract`)까지 유연하게 자동 인식합니다.
+2. 주민등록번호 7자리 안전 파싱(`birth_from_rrn7`): KeyError 및 비정상 연도 생성 원천 방지.
+3. 다년도 원천징수부 병합 시 재입사자 퇴사일 잔류 버그 패치:
+   과거 연도(예: 2024·2025)에 퇴사일이 있었으나 이후 연도(예: 2026)에 재입사하여 퇴사일이 없는 경우,
+   과거 퇴사일이 최신 연도의 근무월을 0으로 덮어쓰지 않도록 연도별 퇴사일(`연도별_퇴사일`)을 분리 보존합니다.
+4. 사이드바 수기 입력 보존(`build_biz_info`): 1단계에서 사용자가 사이드바에 먼저 입력한 상호·소재지·업종 등을
+   2단계 진입 시 빈 값으로 덮어쓰지 않고 안전하게 병합(Merge)합니다.
 """
 from __future__ import annotations
 
@@ -19,29 +25,47 @@ MAX_TEXT_CHARS = 120_000
 
 
 # ══════════════════════════════════════════════════════════════════
-# 1. 파일 종류 분류 (키워드)
+# 1. 파일 종류 분류 (2021~2028 전 연도 원천징수부 + 보조서류 자동 인식)
 # ══════════════════════════════════════════════════════════════════
 def classify_file(name: str, text: str) -> str | None:
     n = (name or "").replace(" ", "")
-    head = (text or "")[:3000].replace(" ", "")
+    head = (text or "")[:3500].replace(" ", "")
     both = n + " " + head
 
-    if "원천징수부" in both or ("원천징수" in n and "근로" in both):
-        for y in ("2026", "2025", "2024"):
-            if y in n:
-                return f"wht_{y}"
-        m = re.search(r"(?:귀속연도|귀속년도|과세연도)[^0-9]{0,6}(20\d\d)", head)
-        if m and m.group(1) in ("2026", "2025", "2024"):
+    # 1) 근로소득원천징수부 (2021~2028 모든 연도 인식)
+    if "원천징수부" in both or ("원천징수" in n and "근로" in both) or ("소득자별" in both and "원천징수" in both):
+        for y in sorted(R.WHT_YEAR_RANGE, reverse=True):
+            ys = str(y)
+            if ys in n:
+                return f"wht_{ys}"
+        m = re.search(r"(?:귀속연도|귀속년도|과세연도|귀속)[^0-9]{0,8}(202[1-8])", head)
+        if m:
             return f"wht_{m.group(1)}"
+        for y in sorted(R.WHT_YEAR_RANGE, reverse=True):
+            if str(y) in head[:800]:
+                return f"wht_{y}"
         return None
-    if any(k in both for k in ("상시근로자명세", "통합고용", "세액공제신청서", "공제세액계산서")):
+
+    # 2) 기신고 통합고용세액공제 / 고용증대세액공제 명세서·신청서
+    if any(k in both for k in ("상시근로자명세", "통합고용", "고용증대", "세액공제신청서", "공제세액계산서")):
         return "prev_filing"
-    if "주주명부" in both or ("주주" in n):
+
+    # 3) 주주명부 / 출자자명부
+    if any(k in both for k in ("주주명부", "주식등변동", "출자자명부")) or ("주주" in n):
         return "shareholder"
+
+    # 4) 사업자등록증
     if "사업자등록증" in both or "사업자등록" in n:
         return "biz_reg"
-    if "등기" in both or "등본" in n:
+
+    # 5) 법인 등기부등본 (등기사항전부증명서)
+    if any(k in both for k in ("등기사항전부증명", "등기부등본", "법인등기")) or ("등기" in n or "등본" in n):
         return "corp_reg"
+
+    # 6) 근로계약서 · 4대보험 가입자명부 · 급여대장 등 추가 보충자료
+    if any(k in both for k in ("근로계약서", "연봉계약서", "4대보험", "가입자명부", "건강보험", "국민연금", "고용보험")):
+        return "labor_contract"
+
     return None
 
 
@@ -86,7 +110,7 @@ def call_gemini_json(instruction: str, text: str, log_tokens_fn=None, room_key: 
 
 
 # ══════════════════════════════════════════════════════════════════
-# 3. 서류별 추출
+# 3. 서류별 추출 프롬프트 및 안전 파서
 # ══════════════════════════════════════════════════════════════════
 PROMPT_BIZ = """다음은 사업자등록증입니다. 아래 형식으로 값을 읽어주세요.
 {"상호":"", "사업자번호":"000-00-00000", "개업일":"YYYY-MM-DD", "법인등록번호앞6자리":"", "대표자":"",
@@ -105,23 +129,34 @@ PROMPT_WHT = """다음은 소득자별 근로소득원천징수부입니다. 근
 {"근로자":[{"성명":"", "주민번호7":"000000-0", "입사일":"YYYY-MM-DD", "퇴사일":"YYYY-MM-DD 또는 빈칸",
   "월급여":[0,0,0,0,0,0,0,0,0,0,0,0]}]}"""
 
-PROMPT_PREV = """다음은 이미 신고한 통합고용세액공제 관련 서식(상시근로자 명세서·공제세액계산서)입니다.
-연도별 상시근로자 수와 청년등상시근로자 수를 읽어주세요. 서식에 적힌 연도와 숫자만 그대로 옮기세요.
-{"연도별":{"2024":{"상시":null,"청년등":null}, "2025":{"상시":null,"청년등":null}},
+PROMPT_PREV = """다음은 이미 신고한 통합고용세액공제(또는 고용증대세액공제) 관련 서식(상시근로자 명세서·공제세액계산서)입니다.
+서식에 등장하는 모든 연도(예: 2022, 2023, 2024, 2025 등)의 상시근로자 수와 청년등상시근로자 수를 읽어주세요.
+서식에 적힌 연도와 숫자만 그대로 옮기세요.
+{"연도별":{"2023":{"상시":null,"청년등":null}, "2024":{"상시":null,"청년등":null}, "2025":{"상시":null,"청년등":null}},
  "공제적용연도":"서식상 최초공제 귀속연도(있으면)", "공제세액":null}"""
+
+PROMPT_CONTRACT = """다음은 근로계약서 또는 4대보험 가입자명부 등 보충 서류입니다.
+근로자별로 확인되는 계약체결일, 고용형태(정규직/기간제/단시간), 월평균(또는 주당) 소정근로시간을 읽어주세요.
+{"근로자":[{"성명":"", "계약체결일":"YYYY-MM-DD", "고용유형":"정규직|계약직(기간제)|단시간(60시간 이상)|단시간(60시간 미만)"}]}"""
 
 
 def birth_from_rrn7(rrn7: str) -> tuple[date | None, bool]:
-    """'900101-1' → (1990-01-01, 외국인여부)"""
+    """'900101-1' → (1990-01-01, 외국인여부). 잘못된 뒷자리 숫자나 오타에도 예외 없이 안전 동작."""
     d = re.sub(r"[^0-9]", "", rrn7 or "")
-    if len(d) < 7:
+    if len(d) < 6:
         return None, False
-    yy, mm, dd, g = int(d[:2]), int(d[2:4]), int(d[4:6]), int(d[6])
-    century = {1: 1900, 2: 1900, 5: 1900, 6: 1900, 3: 2000, 4: 2000, 7: 2000, 8: 2000, 9: 1800, 0: 1800}[g]
+    yy, mm, dd = int(d[:2]), int(d[2:4]), int(d[4:6])
+    g = int(d[6]) if len(d) >= 7 else 0
+    century_map = {1: 1900, 2: 1900, 5: 1900, 6: 1900, 3: 2000, 4: 2000, 7: 2000, 8: 2000}
+    century = century_map.get(g, 2000 if yy <= 26 else 1900)
+    is_foreign = g in (5, 6, 7, 8)
     try:
-        return date(century + yy, mm, dd), g in (5, 6, 7, 8)
+        dt = date(century + yy, mm, dd)
+        if not (1920 <= dt.year <= 2028):
+            return None, is_foreign
+        return dt, is_foreign
     except ValueError:
-        return None, g in (5, 6, 7, 8)
+        return None, is_foreign
 
 
 def _num(v) -> float:
@@ -137,8 +172,8 @@ def _iso(v) -> str:
 
 
 def extract_all(doc_texts: dict[str, str], log_tokens_fn=None, room_key: str = "") -> dict:
-    """doc_texts: {"biz_reg": "...", "wht_2026": "...", ...} → 정리된 추출 결과"""
-    out = {"biz": {}, "corp": {}, "shareholders": [], "wht": {}, "prev_filing": {}}
+    """doc_texts: {"biz_reg": "...", "wht_2026": "...", "wht_2023": "...", ...} → 정리된 추출 결과"""
+    out = {"biz": {}, "corp": {}, "shareholders": [], "wht": {}, "prev_filing": {}, "contracts": []}
 
     if doc_texts.get("biz_reg"):
         out["biz"] = call_gemini_json(PROMPT_BIZ, doc_texts["biz_reg"], log_tokens_fn, room_key) or {}
@@ -147,42 +182,55 @@ def extract_all(doc_texts: dict[str, str], log_tokens_fn=None, room_key: str = "
     if doc_texts.get("shareholder"):
         out["shareholders"] = (call_gemini_json(PROMPT_SH, doc_texts["shareholder"], log_tokens_fn, room_key)
                                or {}).get("주주", []) or []
-    for y in ("2026", "2025", "2024"):
-        if doc_texts.get(f"wht_{y}"):
-            res = call_gemini_json(PROMPT_WHT, doc_texts[f"wht_{y}"], log_tokens_fn, room_key) or {}
-            rows = []
-            for e in res.get("근로자", []) or []:
-                birth, foreign = birth_from_rrn7(e.get("주민번호7", ""))
-                pay = [_num(x) for x in (e.get("월급여") or [])][:12]
-                rows.append({
-                    "성명": (e.get("성명") or "").strip(),
-                    "생년월일": birth.isoformat() if birth else "",
-                    "외국인": foreign,
-                    "입사일": _iso(e.get("입사일")),
-                    "퇴사일": _iso(e.get("퇴사일")),
-                    "월급여": pay + [0.0] * (12 - len(pay)) if pay else None,
-                })
-            out["wht"][y] = rows
+
+    # 2021~2028 중 업로드된 모든 원천징수부 연도 추출
+    wht_keys = sorted([k for k in doc_texts.keys() if k.startswith("wht_") and doc_texts.get(k)])
+    for wk in wht_keys:
+        y = wk.replace("wht_", "").strip()
+        res = call_gemini_json(PROMPT_WHT, doc_texts[wk], log_tokens_fn, room_key) or {}
+        rows = []
+        for e in res.get("근로자", []) or []:
+            birth, foreign = birth_from_rrn7(e.get("주민번호7", ""))
+            pay = [_num(x) for x in (e.get("월급여") or [])][:12]
+            rows.append({
+                "성명": (e.get("성명") or "").strip(),
+                "생년월일": birth.isoformat() if birth else "",
+                "외국인": foreign,
+                "입사일": _iso(e.get("입사일")),
+                "퇴사일": _iso(e.get("퇴사일")),
+                "월급여": pay + [0.0] * (12 - len(pay)) if pay else None,
+            })
+        out["wht"][y] = rows
+
     if doc_texts.get("prev_filing"):
         out["prev_filing"] = call_gemini_json(PROMPT_PREV, doc_texts["prev_filing"], log_tokens_fn, room_key) or {}
+    if doc_texts.get("labor_contract"):
+        c_res = call_gemini_json(PROMPT_CONTRACT, doc_texts["labor_contract"], log_tokens_fn, room_key) or {}
+        out["contracts"] = c_res.get("근로자", []) or []
     return out
 
 
 # ══════════════════════════════════════════════════════════════════
 # 4. 추출 결과 → 사업자정보·사원 DB
 # ══════════════════════════════════════════════════════════════════
-def build_biz_info(ext: dict, tax_year: int) -> tuple[dict, list[str]]:
-    """반환: (사업자정보, 서류로 확인된 항목 목록)"""
+def build_biz_info(ext: dict, tax_year: int, existing_biz: dict | None = None) -> tuple[dict, list[str]]:
+    """
+    반환: (사업자정보, 서류로 확인된 항목 목록)
+    [버그 패치] 사용자가 1단계에서 사이드바에 먼저 수기 입력한 값(existing_biz)이 있으면
+    서류 추출값이 비어 있을 때 절대 날리지 않고 그대로 보존합니다.
+    """
     biz, corp = ext.get("biz") or {}, ext.get("corp") or {}
+    prev = existing_biz or {}
     info, confirmed = {}, []
 
     def put(field, *vals):
         for v in vals:
-            if v not in (None, ""):
+            if v not in (None, "") and str(v).strip():
                 info[field] = str(v).strip()
                 confirmed.append(field)
                 return
-        info[field] = ""
+        # 서류에 없으면 기존 사이드바 수기 입력값 유지
+        info[field] = str(prev.get(field, "") or "").strip()
 
     put("상호", biz.get("상호"), corp.get("상호"))
     put("설립일", corp.get("설립일"), biz.get("개업일"))
@@ -193,10 +241,10 @@ def build_biz_info(ext: dict, tax_year: int) -> tuple[dict, list[str]]:
 
     from .headcount import default_months_for_year
     founded = parse_date(info.get("설립일"))
-    info["당해_월수"] = default_months_for_year(tax_year, founded)
-    info["전년_월수"] = default_months_for_year(tax_year - 1, founded)
-    info["전전년_월수"] = default_months_for_year(tax_year - 2, founded)
-    info["기업구분"] = "중소기업"
+    info["당해_월수"] = prev.get("당해_월수") or default_months_for_year(tax_year, founded)
+    info["전년_월수"] = prev.get("전년_월수") or default_months_for_year(tax_year - 1, founded)
+    info["전전년_월수"] = prev.get("전전년_월수") or default_months_for_year(tax_year - 2, founded)
+    info["기업구분"] = prev.get("기업구분") or "중소기업"
     return info, confirmed
 
 
@@ -220,40 +268,90 @@ def _shareholder_relations(shareholders: list[dict]) -> dict[str, str]:
 def build_people(ext: dict, years: list[int]) -> tuple[dict, dict]:
     """
     반환: people {pid: 사람정보}, year_recs {연도: {pid: 연도별 입력값}}
-    같은 사람은 (성명, 생년월일)로 묶어 한 번만 보관합니다.
+    - 같은 사람은 (성명, 생년월일)로 묶되, 생년월일이 한쪽 연도에만 있는 경우에도 이름으로 매칭하여 중복 생성을 막습니다.
+    - [버그 패치] 과거 연도에 퇴사 후 최신 연도에 재입사(퇴사일 공란)한 근로자의 과거 퇴사일이
+      최신 연도 재직 판정을 덮어쓰지 않도록 안전하게 처리합니다.
     """
     people: dict[str, dict] = {}
+    name_to_pid: dict[str, str] = {}
     rel_map = _shareholder_relations(ext.get("shareholders") or [])
     execs = {(e.get("성명") or "").strip(): (e.get("직위") or "")
              for e in ((ext.get("corp") or {}).get("임원") or [])}
+    contract_map = {(c.get("성명") or "").strip(): c for c in (ext.get("contracts") or []) if c.get("성명")}
 
     for y in sorted(ext.get("wht", {}).keys()):
         for e in ext["wht"][y]:
-            if not e["성명"]:
+            nm = (e.get("성명") or "").strip()
+            if not nm:
                 continue
-            pid = f"{e['성명']}|{e['생년월일']}"
+            b_str = e.get("생년월일") or ""
+            pid = f"{nm}|{b_str}" if b_str else name_to_pid.get(nm, f"{nm}|")
+            if nm in name_to_pid and name_to_pid[nm].endswith("|") and b_str:
+                old_pid = name_to_pid[nm]
+                if old_pid in people:
+                    p_old = people.pop(old_pid)
+                    p_old["pid"] = pid
+                    people[pid] = p_old
+            name_to_pid[nm] = pid
+
             p = people.setdefault(pid, {
-                "pid": pid, "성명": e["성명"], "생년월일": e["생년월일"], "입사일": "", "퇴사일": "",
-                "외국인": e.get("외국인", False), "병역개월": 0, "월급여": {}, "_confirmed": ["성명"],
+                "pid": pid, "성명": nm, "생년월일": b_str, "입사일": "", "퇴사일": "",
+                "계약체결일": "", "외국인": e.get("외국인", False), "병역개월": 0,
+                "월급여": {}, "연도별_퇴사일": {}, "_confirmed": ["성명"],
             })
-            if e["생년월일"] and "생년월일" not in p["_confirmed"]:
+            if b_str and not p.get("생년월일"):
+                p["생년월일"] = b_str
+            if p.get("생년월일") and "생년월일" not in p["_confirmed"]:
                 p["_confirmed"].append("생년월일")
-            for f in ("입사일", "퇴사일"):
-                if e.get(f):
-                    p[f] = e[f]                       # 최근 연도 값이 우선
-                    if f not in p["_confirmed"]:
-                        p["_confirmed"].append(f)
+
+            if e.get("입사일"):
+                # 더 최근 연도 원천징수부에 새로운 입사일이 찍혀 있고 퇴사일이 비어 있으면(재입사), 과거 퇴사일 초기화
+                if p.get("입사일") and e["입사일"] > p["입사일"] and not e.get("퇴사일"):
+                    p["퇴사일"] = ""
+                    if "퇴사일" in p["_confirmed"]:
+                        p["_confirmed"].remove("퇴사일")
+                p["입사일"] = e["입사일"]
+                if "입사일" not in p["_confirmed"]:
+                    p["_confirmed"].append("입사일")
+
+            if e.get("퇴사일"):
+                p["퇴사일"] = e["퇴사일"]
+                p.setdefault("연도별_퇴사일", {})[str(y)] = e["퇴사일"]
+                if "퇴사일" not in p["_confirmed"]:
+                    p["_confirmed"].append("퇴사일")
+            else:
+                # 해당 연도 원천징수부에서 연말 현재 재직 중(퇴사일 없음)이면 해당 연도 퇴사일은 빈 값으로 명시
+                p.setdefault("연도별_퇴사일", {})[str(y)] = ""
+                if p.get("퇴사일") and p["퇴사일"][:4] < str(y):
+                    p["퇴사일"] = ""
+                    if "퇴사일" in p["_confirmed"]:
+                        p["_confirmed"].remove("퇴사일")
+
             if e.get("월급여"):
-                p["월급여"][y] = e["월급여"]
-            if e["성명"] in rel_map:
-                p["주주관계"] = rel_map[e["성명"]]
+                p["월급여"][str(y)] = e["월급여"]
+            if nm in rel_map:
+                p["주주관계"] = rel_map[nm]
+            if nm in contract_map:
+                c_info = contract_map[nm]
+                if c_info.get("계약체결일"):
+                    p["계약체결일"] = _iso(c_info.get("계약체결일"))
 
     year_recs = {y: {} for y in years}
     for pid, p in people.items():
-        pos = execs.get(p["성명"], "")
-        emp = R.EMP_CEO if "대표" in pos else (R.EMP_EXEC if pos else R.EMP_REGULAR)
+        nm = p["성명"]
+        pos = execs.get(nm, "")
+        c_emp = (contract_map.get(nm) or {}).get("고용유형") or ""
+        if "대표" in pos:
+            emp, conf_emp = R.EMP_CEO, True
+        elif pos:
+            emp, conf_emp = R.EMP_EXEC, True
+        elif c_emp in R.EMP_TYPES:
+            emp, conf_emp = c_emp, True
+        else:
+            emp, conf_emp = R.EMP_REGULAR, False
+
         for y in years:
-            year_recs[y][pid] = new_year_rec(emp, confirmed_emp=bool(pos))
+            year_recs[y][pid] = new_year_rec(emp, confirmed_emp=conf_emp)
     return people, year_recs
 
 
@@ -274,9 +372,9 @@ def new_year_rec(emp_type: str = R.EMP_REGULAR, confirmed_emp: bool = False) -> 
 # 5. [다음] 버튼 경고 — 코드 판정 + AI 보충
 # ══════════════════════════════════════════════════════════════════
 def check_missing(classified: dict[str, list[str]], ext: dict | None, tax_year: int) -> list[str]:
-    """파일 누락·핵심 항목 누락은 코드로 확정 판정"""
+    """선택된 귀속사업연도(tax_year) 기준 필수 서류 및 핵심 항목 누락을 코드로 확정 판정합니다."""
     msgs = []
-    for key, label, required, _ in R.DOC_TYPES:
+    for key, label, required, _ in R.get_doc_types(tax_year):
         if required and not classified.get(key):
             msgs.append(f"{label} 자료가 없습니다.")
     if ext:
@@ -300,7 +398,8 @@ def check_missing(classified: dict[str, list[str]], ext: dict | None, tax_year: 
 def ai_extra_warnings(ext: dict, log_tokens_fn=None, room_key: str = "") -> list[str]:
     """코드가 못 잡는 '내용상 부족한 점'만 AI가 짧게 안내 (최대 3개)"""
     summary = {
-        "사업자": ext.get("biz"), "등기": {k: v for k, v in (ext.get("corp") or {}).items() if k != "임원"},
+        "사업자": ext.get("biz"),
+        "등기": {k: v for k, v in (ext.get("corp") or {}).items() if k != "임원"},
         "주주수": len(ext.get("shareholders") or []),
         "연도별_근로자수": {y: len(v) for y, v in (ext.get("wht") or {}).items()},
         "기신고": ext.get("prev_filing"),
