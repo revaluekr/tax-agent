@@ -278,7 +278,7 @@ def check_missing(classified: dict[str, list[str]], ext: dict | None, tax_year: 
     msgs = []
     for key, label, required, _ in R.DOC_TYPES:
         if required and not classified.get(key):
-            msgs.append(f"{label}이(가) 없습니다.")
+            msgs.append(f"{label} 자료가 없습니다.")
     if ext:
         for y in (str(tax_year), str(tax_year - 1)):
             rows = ext.get("wht", {}).get(y)

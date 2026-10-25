@@ -73,6 +73,16 @@ CSS = """
 .st-key-ec_biz input:not(:disabled), .st-key-ec_biz textarea:not(:disabled){color:#1d4ed8 !important;background:#fff !important}
 .st-key-ec_biz input:disabled, .st-key-ec_biz textarea:disabled{color:#111827 !important;-webkit-text-fill-color:#111827 !important;
          background:#e5e7eb !important}
+.ec-docs{width:100%;border-collapse:collapse;margin:4px 0 14px 0;font-size:.92rem}
+.ec-docs th{background:#f8fafc;color:#475569;font-weight:700;text-align:left;padding:8px 10px;border-bottom:1px solid #e2e8f0}
+.ec-docs td{padding:8px 10px;border-bottom:1px solid #f1f5f9;color:#0f172a;vertical-align:middle}
+.ec-docs td.led-cell, .ec-docs th.led-cell{width:44px;text-align:center;padding-left:4px;padding-right:4px}
+.ec-docs td.help{color:#64748b;font-size:.85rem}
+.ec-docs td.fname{color:#047857;font-size:.85rem}
+.ec-docs tr.on td{background:#f0fdf4}
+.ec-led{display:inline-block;width:8px;height:8px;border-radius:50%;border:1.5px solid #cbd5e1;background:transparent}
+.ec-led.on{border:none;width:9px;height:9px;background:#22c55e;box-shadow:0 0 5px rgba(34,197,94,.55)}
+.ec-req{color:#b91c1c;font-weight:700;font-size:.85rem}
 .ec-legend span{display:inline-block;padding:1px 8px;margin-right:6px;border-radius:3px;font-size:.8rem}
 .ec-sum{font-size:.95rem;margin:2px 0 22px 2px;color:#0f172a}
 .ec-sum b{color:#0369a1}
@@ -192,19 +202,28 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
         st.rerun()
 
     st.subheader("자료 업로드")
-    st.caption("아래 자료를 한 번에 끌어다 놓으면 종류를 자동으로 구분합니다. 잘못 구분된 파일은 오른쪽에서 바꿀 수 있습니다.")
+    st.caption("아래 자료를 한 번에 끌어다 놓으면 종류를 자동으로 구분합니다. 잘못 구분된 파일은 아래 목록에서 바꿀 수 있습니다. "
+               "자료가 없어도 [다음]으로 넘어가 사원정보를 직접 입력할 수 있습니다.")
 
     have = {}
     for name, f in s["files"].items():
         if f.get("key"):
             have.setdefault(f["key"], []).append(name)
 
-    rows = []
+    trs = []
     for key, label, required, _ in R.DOC_TYPES:
-        state = "✅ 업로드됨" if have.get(key) else ("❗ 필수" if required else "선택")
-        rows.append({"자료": label, "상태": state, "용도": R.DOC_HELP.get(key, ""),
-                     "파일": ", ".join(have.get(key, []))})
-    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+        on = bool(have.get(key))
+        req = " <span class='ec-req'>(필수)</span>" if required else ""
+        files = ", ".join(have.get(key, []))
+        trs.append(
+            f"<tr class='{'on' if on else ''}'>"
+            f"<td class='led-cell'><span class='ec-led{' on' if on else ''}'></span></td>"
+            f"<td>{label}{req}</td><td class='help'>{R.DOC_HELP.get(key, '')}</td>"
+            f"<td class='fname'>{files}</td></tr>")
+    st.markdown(
+        "<table class='ec-docs'><thead><tr><th class='led-cell'></th><th>자료명</th><th>용도</th>"
+        "<th>올린 파일</th></tr></thead><tbody>" + "".join(trs) + "</tbody></table>",
+        unsafe_allow_html=True)
 
     _, mid, _ = st.columns([1, 4, 1])
     with mid:
@@ -236,7 +255,7 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
 
     st.write("")
     _, right = st.columns([5, 1])
-    if right.button("다음", type="primary", use_container_width=True, disabled=not s["files"]):
+    if right.button("다음", type="primary", use_container_width=True):
         classified = {}
         for name, f in s["files"].items():
             if f.get("key"):
@@ -244,12 +263,17 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
         sig = json.dumps(sorted((n, f.get("key")) for n, f in s["files"].items()), ensure_ascii=False)
         if s["ext_sig"] != sig:
             texts = {k: "\n\n".join(s["files"][n]["text"] for n in names) for k, names in classified.items()}
-            with st.spinner("서류에서 사업자·근로자 정보를 읽는 중입니다... (1~2분 걸릴 수 있습니다)"):
-                s["ext"] = P.extract_all(texts, log_tokens_fn, room_key)
-                s["ext_sig"] = sig
-                msgs = P.check_missing(classified, s["ext"], int(s["tax_year"]))
-                msgs += [m for m in P.ai_extra_warnings(s["ext"], log_tokens_fn, room_key) if m not in msgs]
-                s["pending_msgs"] = msgs
+            if texts:
+                with st.spinner("서류에서 사업자·근로자 정보를 읽는 중입니다... (1~2분 걸릴 수 있습니다)"):
+                    s["ext"] = P.extract_all(texts, log_tokens_fn, room_key)
+                    msgs = P.check_missing(classified, s["ext"], int(s["tax_year"]))
+                    msgs += [m for m in P.ai_extra_warnings(s["ext"], log_tokens_fn, room_key) if m not in msgs]
+            else:
+                s["ext"] = {}
+                msgs = P.check_missing(classified, None, int(s["tax_year"]))
+                msgs.append("올린 자료가 없어 사업자정보와 사원정보를 모두 직접 입력해야 합니다.")
+            s["ext_sig"] = sig
+            s["pending_msgs"] = msgs
         msgs = s.get("pending_msgs") or []
         if msgs:
             _dlg_missing(msgs)
