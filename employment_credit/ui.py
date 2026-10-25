@@ -10,10 +10,10 @@
    - 2026년 귀속 선택 시 2024년 원천징수부를 안 올렸다면 빈 2024년 사원표를 띄우지 않고 '2026년·2025년' 사원표 2개만 깔끔하게 표시!
    - 2024년 인원은 '기신고 상시근로자 명세서'에서 읽어온 숫자(또는 요약 카드에서 직접 입력)로 처리.
    - 단, 사용자가 2024년(또는 2023년) 원천징수부를 직접 올렸거나 좌측에서 '2024년 귀속 / 2025년 귀속'을 선택했을 때만 해당 과거 연도 사원표가 자동으로 나타납니다.
-4. UI 레이아웃 디테일 개선:
-   - 1단계 '📋 자료 확인 안내' 및 '🚫 적용 불가 업종 안내' 다이얼로그 창 가로 폭을 넓혀(width="large" + CSS 최소 폭 보강) 문장이 두 줄로 꺾이지 않도록 개선.
-   - 2단계 하단 버튼 배치를 상단 [➕ 사원 추가](좌측 끝)와 분리하여,
-     그 아래 줄에 [⬅️ 이전](좌측 끝) <---> [🔍 오류 검토] [다음 (3단계) ➡️](우측 끝) 2단 구조로 깔끔하게 정렬.
+4. UI 레이아웃 및 즉시 반응성 개선:
+   - 1단계 하단 드롭다운에서 서류 종류를 변경하면 상단 체크리스트 표에 즉시 초록불(🟢)과 파일명이 반영되도록 렌더링 순서(하단 드롭다운 먼저 갱신 → 상단 체크리스트 표 렌더링) 수정.
+   - 1단계 '📋 자료 확인 안내' 등 별도 모달 창을 기본 크기(약 500px)로 되돌리고 화면 정중앙(가로·세로 중앙)에 깔끔하게 배치.
+   - 1단계 [다음(2단계)] 버튼과 2단계 [다음(3단계)] 버튼의 가로 폭·비율(1.3 / 7.1) 및 텍스트 스타일을 동일하게 통일.
 """
 from __future__ import annotations
 
@@ -127,17 +127,24 @@ CSS = """
 <style>
 @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
 
-/* 🪟 모달(Dialog) 창 가로 폭 확장 — 안내 문구가 줄바꿈으로 잘리지 않도록 여유 폭 보장 */
+/* 🪟 모달(Dialog) 창 기본 아담한 크기 복원 + 화면 정중앙(가로·세로 중앙) 배치 */
+div[data-testid="stDialog"] {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+}
 div[data-testid="stDialog"] > div[role="dialog"],
 div[role="dialog"] {
-    min-width: min(680px, 94vw) !important;
-    max-width: 780px !important;
+    width: 520px !important;
+    max-width: 92vw !important;
+    margin: auto !important;
+    border-radius: 12px !important;
 }
 div[role="dialog"] li,
 div[role="dialog"] p {
     font-family: 'Pretendard', 'Malgun Gothic', sans-serif !important;
-    font-size: 0.98rem !important;
-    line-height: 1.65 !important;
+    font-size: 0.95rem !important;
+    line-height: 1.6 !important;
     color: #1e293b !important;
     word-break: keep-all !important;
 }
@@ -446,9 +453,9 @@ def _progress(step: int):
 
 
 # ══════════════════════════════════════════════════════════════════
-# 2. 별도 창(대화상자 — width="large" 적용으로 가로 폭 확보)
+# 2. 별도 창(대화상자 — 기본 크기 복원 및 화면 정중앙 표시)
 # ══════════════════════════════════════════════════════════════════
-@st.dialog("📋 자료 확인 안내", width="large")
+@st.dialog("📋 자료 확인 안내")
 def _dlg_missing(msgs: list[str]):
     for m in msgs:
         st.markdown(f"- {m}")
@@ -458,7 +465,7 @@ def _dlg_missing(msgs: list[str]):
         st.rerun()
 
 
-@st.dialog("🚫 통합고용세액공제 적용 불가 업종 안내", width="large")
+@st.dialog("🚫 통합고용세액공제 적용 불가 업종 안내")
 def _dlg_industry(text: str):
     st.markdown(f"감지된 업태·종목: **{text}**")
     st.markdown(
@@ -471,7 +478,7 @@ def _dlg_industry(text: str):
         st.rerun()
 
 
-@st.dialog("🔍 법령·심판례 기반 오류 검토 결과", width="large")
+@st.dialog("🔍 법령·심판례 기반 오류 검토 결과")
 def _dlg_review(items: list[tuple[str, str]]):
     errs = [m for lv, m in items if lv == "오류"]
     chks = [m for lv, m in items if lv == "확인"]
@@ -588,7 +595,7 @@ def render_credit_sidebar():
 
 
 # ══════════════════════════════════════════════════════════════════
-# 4. 1단계: 자료 업로드 (귀속연도 연동 + 추가 과거/보충 자료 무제한 수용)
+# 4. 1단계: 자료 업로드 (하단 드롭다운 선택 시 상단 초록불 즉시 반영 + 버튼 사이즈 통일)
 # ══════════════════════════════════════════════════════════════════
 def _page_upload(extract_file_fn, log_tokens_fn, room_key):
     s = _S()
@@ -635,44 +642,11 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
     all_labels = R.get_all_selectable_doc_labels(tax_yr)
     base_keys = {k for k, *_ in doc_types}
 
-    have: dict[str, list[str]] = {}
-    for name, f in s["files"].items():
-        if f.get("key"):
-            have.setdefault(f["key"], []).append(name)
-
-    trs = []
-    # 1) 현재 귀속연도 기준 기본 체크리스트 서류 행
-    for key, label, required, _ in doc_types:
-        on = bool(have.get(key))
-        pill = "<span class='ec-req-pill'>필수</span>" if required else "<span class='ec-opt-pill'>선택</span>"
-        files_str = ", ".join(have.get(key, [])) or "-"
-        trs.append(
-            f"<tr class='{'on' if on else ''}'>"
-            f"<td class='led-cell'><span class='ec-led{' on' if on else ''}'></span></td>"
-            f"<td><b>{label}</b> {pill}</td>"
-            f"<td class='help'>{doc_help.get(key, '')}</td>"
-            f"<td class='fname'>{files_str}</td></tr>"
-        )
-
-    # 2) 사용자가 기본 리스트 외에 추가로 올린 파일(예: 2022·2023년 원천징수부, 근로계약서 등) 자동 표시 행
-    for extra_key, extra_files in have.items():
-        if extra_key not in base_keys and extra_files:
-            extra_lbl = all_labels.get(extra_key, extra_key)
-            extra_help = doc_help.get(extra_key, "과거 연도 사원정보 표 생성 및 연속공제·사후관리 검증에 자동 반영됩니다.")
-            trs.append(
-                f"<tr class='extra'>"
-                f"<td class='led-cell'><span class='ec-led on'></span></td>"
-                f"<td><b>{extra_lbl}</b> <span class='ec-extra-pill'>➕ 추가 인식됨</span></td>"
-                f"<td class='help'>{extra_help}</td>"
-                f"<td class='fname'>{', '.join(extra_files)}</td></tr>"
-            )
-
-    st.markdown(
-        "<table class='ec-docs'><thead><tr>"
-        "<th class='led-cell'>상태</th><th>자료명</th><th>검토 용도 및 법령 기준</th><th>업로드된 파일</th>"
-        "</tr></thead><tbody>" + "".join(trs) + "</tbody></table>",
-        unsafe_allow_html=True,
-    )
+    # 🎯 [초록불 즉시 점등 핵심 패치]
+    # 상단 체크리스트 표 자리(placeholder)를 먼저 잡아두고,
+    # 아래 드롭다운 위젯에서 사용자가 선택한 최신 서류 종류(f["key"])를 먼저 반영한 뒤
+    # 상단 표를 그리면 드롭다운을 바꾸는 즉시 0.01초 만에 상단 초록불(🟢)과 파일명이 함께 켜집니다!
+    docs_table_slot = st.empty()
 
     _, mid, _ = st.columns([0.6, 4.8, 0.6])
     with mid:
@@ -723,9 +697,50 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
                     s["files"].pop(name, None)
                     st.rerun()
 
-    st.write("")
-    _, right = st.columns([4.5, 1.5])
-    if right.button("다음 (2단계 사원정보) ➡️", type="primary", use_container_width=True):
+    # 이제 하단 드롭다운의 최신 선택값(f["key"])이 모두 업데이트되었으므로 상단 체크리스트 표를 렌더링합니다.
+    have: dict[str, list[str]] = {}
+    for name, f in s["files"].items():
+        if f.get("key"):
+            have.setdefault(f["key"], []).append(name)
+
+    trs = []
+    # 1) 현재 귀속연도 기준 기본 체크리스트 서류 행
+    for key, label, required, _ in doc_types:
+        on = bool(have.get(key))
+        pill = "<span class='ec-req-pill'>필수</span>" if required else "<span class='ec-opt-pill'>선택</span>"
+        files_str = ", ".join(have.get(key, [])) or "-"
+        trs.append(
+            f"<tr class='{'on' if on else ''}'>"
+            f"<td class='led-cell'><span class='ec-led{' on' if on else ''}'></span></td>"
+            f"<td><b>{label}</b> {pill}</td>"
+            f"<td class='help'>{doc_help.get(key, '')}</td>"
+            f"<td class='fname'>{files_str}</td></tr>"
+        )
+
+    # 2) 사용자가 기본 리스트 외에 추가로 올린 파일(예: 2022·2023년 원천징수부, 근로계약서 등) 자동 표시 행
+    for extra_key, extra_files in have.items():
+        if extra_key not in base_keys and extra_files:
+            extra_lbl = all_labels.get(extra_key, extra_key)
+            extra_help = doc_help.get(extra_key, "과거 연도 사원정보 표 생성 및 연속공제·사후관리 검증에 자동 반영됩니다.")
+            trs.append(
+                f"<tr class='extra'>"
+                f"<td class='led-cell'><span class='ec-led on'></span></td>"
+                f"<td><b>{extra_lbl}</b> <span class='ec-extra-pill'>➕ 추가 인식됨</span></td>"
+                f"<td class='help'>{extra_help}</td>"
+                f"<td class='fname'>{', '.join(extra_files)}</td></tr>"
+            )
+
+    docs_table_slot.markdown(
+        "<table class='ec-docs'><thead><tr>"
+        "<th class='led-cell'>상태</th><th>자료명</th><th>검토 용도 및 법령 기준</th><th>업로드된 파일</th>"
+        "</tr></thead><tbody>" + "".join(trs) + "</tbody></table>",
+        unsafe_allow_html=True,
+    )
+
+    # ── 하단 네비게이션: 2단계의 [다음(3단계)] 버튼과 100% 동일한 가로 비율([5.8, 1.3]) 적용 ──
+    st.markdown("<div class='ec-nav-divider'></div>", unsafe_allow_html=True)
+    _, right = st.columns([5.8, 1.3])
+    if right.button("다음(2단계)", type="primary", use_container_width=True):
         classified: dict[str, list[str]] = {}
         for name, f in s["files"].items():
             if f.get("key"):
@@ -734,7 +749,7 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
         if s["ext_sig"] != sig:
             texts = {k: "\n\n".join(s["files"][n]["text"] for n in names) for k, names in classified.items()}
             if texts:
-                with st.spinner("🤖 서류에서 사업자·주주·임원·연도별 근로자 정보를 정밀 추출하고 있습니다..."):
+                with st.spinner("🤖 서류에서 사업자·주주·임원·연도별 근로자 정보를 병렬 고속 추출하고 있습니다..."):
                     s["ext"] = P.extract_all(texts, log_tokens_fn, room_key)
                     msgs = P.check_missing(classified, s["ext"], tax_yr)
                     msgs += [m for m in P.ai_extra_warnings(s["ext"], log_tokens_fn, room_key) if m not in msgs]
