@@ -707,7 +707,7 @@ def fetch_official_revision_reason_zero_token(
             s_url = f"http://www.law.go.kr/DRF/lawSearch.do?OC={oc}&target=eflaw&type=XML&query={enc_q}&display=20"
             req_s = urllib.request.Request(s_url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req_s, timeout=12) as resp_s:
-                s_root = ET.fromstring(req_s_bytes := resp_s.read())
+                s_root = ET.fromstring(resp_s.read())
             target_clean = law_name.replace(" ", "")
             for node in s_root.findall(".//law"):
                 nm = (node.findtext("법령명한글") or "").replace(" ", "")
