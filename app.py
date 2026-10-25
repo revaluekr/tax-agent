@@ -171,6 +171,8 @@ section[data-testid="stSidebar"] div[data-testid="stMarkdownContainer"] {
 }
 div.stButton > button[kind="primary"],
 div.stButton > button[data-testid="stBaseButton-primary"],
+div.stfFormSubmitButton > button[kind="primary"],
+div[data-testid="stFormSubmitButton"] > button[kind="primary"],
 .st-key-btn_top_mode_agent button[kind="primary"],
 .st-key-btn_top_mode_credit button[kind="primary"] {
     background-color: #16a34a !important;
@@ -179,13 +181,15 @@ div.stButton > button[data-testid="stBaseButton-primary"],
     font-weight: 800 !important;
 }
 div.stButton > button[kind="primary"]:hover,
-div.stButton > button[data-testid="stBaseButton-primary"]:hover {
+div.stButton > button[data-testid="stBaseButton-primary"]:hover,
+div[data-testid="stFormSubmitButton"] > button[kind="primary"]:hover {
     background-color: #15803d !important;
     border-color: #166534 !important;
     color: #ffffff !important;
 }
 div.stButton > button[kind="primary"] p,
-div.stButton > button[data-testid="stBaseButton-primary"] p {
+div.stButton > button[data-testid="stBaseButton-primary"] p,
+div[data-testid="stFormSubmitButton"] > button[kind="primary"] p {
     color: #ffffff !important;
     font-weight: 800 !important;
 }
@@ -1927,41 +1931,50 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
             "아무나 `[🔑 API키]` 버튼을 눌러 API 키 목록이나 관리 링크를 열람·복사하지 못하도록, "
             "본인(Manager)의 Google 계정 이메일과 관리자 보안 비밀번호를 등록합니다."
         )
-        with st.container(border=True):
+        # [핵심 수정] st.form으로 감싸서 마지막 비밀번호 칸에 입력 후 Enter를 치지 않고 바로 초록색 버튼을 눌러도
+        # 모든 입력값(reg_email, reg_pin1, reg_pin2)이 빈 문자열("")로 누락되지 않고 한 번에 정상 전달되도록 보강!
+        with st.form("mgr_initial_register_form", clear_on_submit=False):
             st.markdown("##### 🛡️ 관리자(Manager) Google 계정 최초 등록")
-            default_em = oauth_google_email if oauth_google_email else ""
+            default_em = oauth_google_email if oauth_google_email else "re.value.kr@gmail.com"
             reg_email = st.text_input(
                 "관리자 Google 이메일 주소",
                 value=default_em,
-                placeholder="예: myaccount@gmail.com",
-                key="mgr_reg_google_email"
+                placeholder="예: myaccount@gmail.com"
             )
             reg_pin1 = st.text_input(
                 "관리자 전용 보안 비밀번호 설정 (API키 잠금 해제용)",
                 type="password",
-                placeholder="본인만 아는 보안 비밀번호 입력",
-                key="mgr_reg_pin1"
+                placeholder="본인만 아는 보안 비밀번호 입력 (4자리 이상)"
             )
             reg_pin2 = st.text_input(
                 "관리자 전용 보안 비밀번호 확인",
                 type="password",
-                placeholder="보안 비밀번호 다시 입력",
-                key="mgr_reg_pin2"
+                placeholder="보안 비밀번호 다시 입력"
             )
-            if st.button("✅ 내 Google 계정을 유일한 관리자로 등록 및 잠금 활성화", type="primary", use_container_width=True):
-                clean_reg_em = reg_email.strip().lower()
+            submitted_reg = st.form_submit_button(
+                "✅ 내 Google 계정을 유일한 관리자로 등록 및 잠금 활성화",
+                type="primary",
+                use_container_width=True
+            )
+            if submitted_reg:
+                clean_reg_em = (reg_email or "").strip().lower()
+                p1 = (reg_pin1 or "").strip()
+                p2 = (reg_pin2 or "").strip()
                 if not clean_reg_em or "@" not in clean_reg_em:
                     st.error("유효한 Google 이메일 주소(예: example@gmail.com)를 입력해 주세요.")
-                elif len(reg_pin1.strip()) < 4:
-                    st.error("보안 비밀번호는 최소 4자리 이상 입력해 주세요.")
-                elif reg_pin1.strip() != reg_pin2.strip():
+                elif len(p1) < 4:
+                    st.error("보안 비밀번호는 최소 4자리 이상 입력해 주세요. (브라우저 자동완성 대신 직접 타이핑 후 버튼을 눌러주세요.)")
+                elif p1 != p2:
                     st.error("입력하신 두 보안 비밀번호가 일치하지 않습니다.")
                 else:
-                    _save_manager_google_config(clean_reg_em, reg_pin1.strip())
+                    _save_manager_google_config(clean_reg_em, p1)
                     st.session_state.manager_google_authed_email = clean_reg_em
-                    st.success(f"✅ 관리자 Google 계정({clean_reg_em}) 등록 및 보안 잠금이 완료되었습니다!")
-                    st.rerun()
-        return
+                    registered_email = clean_reg_em
+                    registered_pin_hash = _hash_manager_secret(p1)
+                    session_authed_email = clean_reg_em
+                    st.success(f"✅ 관리자 Google 계정({clean_reg_em}) 등록 및 인증이 완료되었습니다!")
+        if not str(st.session_state.get("manager_google_authed_email", "")).strip():
+            return
 
     is_oauth_manager = bool(oauth_google_email and oauth_google_email == registered_email)
     is_session_manager = bool(session_authed_email and session_authed_email == registered_email)
@@ -1999,31 +2012,37 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
                     "💡 현재 앱에 Streamlit OIDC(`secrets.toml`의 `[auth]`) 설정이 없어 아래 **방법 2(관리자 Google 이메일 + 보안 비밀번호 인증)**로 즉시 로그인하실 수 있습니다."
                 )
 
-        with st.container(border=True):
+        # [핵심 수정] 방법 2 로그인 창도 st.form으로 감싸서 비밀번호 입력 후 바로 버튼을 클릭해도 값이 누락되지 않도록 처리!
+        with st.form("mgr_login_verify_form", clear_on_submit=False):
             st.markdown("##### 🔑 방법 2. 등록된 Manager Google 계정 & 보안 암호로 열기")
             input_g_email = st.text_input(
                 "Google 계정 이메일",
-                placeholder=f"등록된 관리자 구글 이메일 입력 ({masked_mgr})",
-                key="login_mgr_google_email"
+                value=registered_email,
+                placeholder=f"등록된 관리자 구글 이메일 입력 ({masked_mgr})"
             )
             input_g_pin = st.text_input(
                 "관리자 보안 비밀번호",
                 type="password",
-                placeholder="관리자 보안 비밀번호 입력",
-                key="login_mgr_google_pin"
+                placeholder="관리자 보안 비밀번호 입력"
             )
-            if st.button("🔓 관리자 Google 계정 인증 및 API키 열기", type="primary", use_container_width=True, key="btn_verify_mgr_pin"):
-                cand_email = input_g_email.strip().lower()
-                cand_pin_hash = _hash_manager_secret(input_g_pin.strip())
+            submitted_login = st.form_submit_button(
+                "🔓 관리자 Google 계정 인증 및 API키 열기",
+                type="primary",
+                use_container_width=True
+            )
+            if submitted_login:
+                cand_email = (input_g_email or "").strip().lower()
+                cand_pin_hash = _hash_manager_secret((input_g_pin or "").strip())
                 if cand_email != registered_email:
                     st.error("🚫 입력하신 이메일이 등록된 관리자(Manager) Google 계정과 일치하지 않습니다.")
                 elif registered_pin_hash and not hmac.compare_digest(cand_pin_hash, registered_pin_hash):
                     st.error("🚫 관리자 보안 비밀번호가 일치하지 않습니다.")
                 else:
                     st.session_state.manager_google_authed_email = registered_email
+                    is_manager_verified = True
                     st.success("✅ 관리자(Manager) Google 계정 인증이 완료되었습니다.")
-                    st.rerun()
-        return
+        if not is_manager_verified:
+            return
 
     with st.container(border=True):
         c_top1, c_top2 = st.columns([3.6, 1.4])
@@ -2123,21 +2142,20 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
     if st.button("💾 수정한 API 만료일 저장", use_container_width=True):
         save_api_expiry_dates(updated_expiry_map)
         st.success("API 만료일이 저장되었습니다!")
-        st.rerun()
 
     with st.expander("⚙️ 관리자(Manager) Google 계정 또는 보안 비밀번호 변경"):
-        new_mgr_em = st.text_input("변경할 관리자 Google 이메일", value=registered_email, key="chg_mgr_email")
-        new_mgr_pw = st.text_input("새 관리자 보안 비밀번호 (4자리 이상)", type="password", key="chg_mgr_pw")
-        if st.button("🔄 관리자 보안 정보 업데이트", key="btn_chg_mgr_save"):
-            if "@" not in new_mgr_em.strip():
-                st.error("유효한 Google 이메일을 입력해 주세요.")
-            elif len(new_mgr_pw.strip()) < 4:
-                st.error("새 보안 비밀번호를 4자리 이상 입력해 주세요.")
-            else:
-                _save_manager_google_config(new_mgr_em.strip().lower(), new_mgr_pw.strip())
-                st.session_state.manager_google_authed_email = new_mgr_em.strip().lower()
-                st.success("✅ 관리자 Google 계정 및 보안 비밀번호가 변경되었습니다.")
-                st.rerun()
+        with st.form("mgr_change_cred_form", clear_on_submit=False):
+            new_mgr_em = st.text_input("변경할 관리자 Google 이메일", value=registered_email)
+            new_mgr_pw = st.text_input("새 관리자 보안 비밀번호 (4자리 이상)", type="password")
+            if st.form_submit_button("🔄 관리자 보안 정보 업데이트"):
+                if "@" not in (new_mgr_em or "").strip():
+                    st.error("유효한 Google 이메일을 입력해 주세요.")
+                elif len((new_mgr_pw or "").strip()) < 4:
+                    st.error("새 보안 비밀번호를 4자리 이상 입력해 주세요.")
+                else:
+                    _save_manager_google_config(new_mgr_em.strip().lower(), new_mgr_pw.strip())
+                    st.session_state.manager_google_authed_email = new_mgr_em.strip().lower()
+                    st.success("✅ 관리자 Google 계정 및 보안 비밀번호가 변경되었습니다.")
 
 if _dialog_decorator:
     @_dialog_decorator("📜 법제처 공식 『제·개정이유 및 주요내용』 원문 뷰어", width="large")
