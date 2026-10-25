@@ -289,6 +289,7 @@ def _new_trace(unleash: bool = False) -> dict:
         "list": [],
         "detail": [],
         "articles": set(),
+        "mentioned_articles": set(),
         "article_texts": {},
         "counts": {},
         "id_map": {},
@@ -327,6 +328,12 @@ def _record(kind: str, text: str) -> str:
     return text
 
 def _record_law_articles(text: str) -> None:
+    """
+    [보강]
+    1) 조문 제목 괄호가 없는 시행규칙이나 공백이 섞인 조문(`제10조 ` 등)도 누락 없이 조회 목록에 등록합니다.
+    2) 조회한 조문 원문 본문 안에서 직접 인용·언급하고 있는 타 법령 조문(예: 조특법 제29조의8 본문 내 '중소기업기본법 제2조')을
+       `mentioned_articles`에 함께 기록하여, AI가 조문 원문 문구를 그대로 설명할 때 억울한 미조회 판정(재작성 루프)이 발생하지 않도록 보호합니다.
+    """
     trace = _TOOL_TRACE.get()
     if trace is None or not text:
         return
@@ -335,12 +342,16 @@ def _record_law_articles(text: str) -> None:
         return
     raw_header = m.group(1).split("|")[0].strip()
     title = _norm(raw_header)
-    starts = list(re.finditer(r"(?m)^제(\d+)조(?:의(\d+))?\(", text))
+    starts = list(re.finditer(r"(?m)^\s*제\s*(\d+)\s*조(?:\s*의\s*(\d+))?(?:\s*\(|\s+)", text))
     for n, am in enumerate(starts):
         key = (title, int(am.group(1)), int(am.group(2) or 0))
         trace["articles"].add(key)
         end = starts[n + 1].start() if n + 1 < len(starts) else len(text)
         trace["article_texts"][key] = text[am.start():end].strip()
+
+    mentioned = trace.setdefault("mentioned_articles", set())
+    for m_ref in _find_article_refs(text, trace):
+        mentioned.add(m_ref)
 
 _CASE_NO_PATTERNS = [
     re.compile(r"(?<!\d)((?:19|20)?\d{2})\s?(재두|재다|가합|가단|구합|구단|헌바|헌마|헌가|두|누|다|도|나|후|허|므|구|부|노|고단|고합)\s?(\d{2,6})(?!\d)"),
@@ -479,6 +490,7 @@ def _scan_violations(answer: str, trace: dict) -> list[tuple]:
     detail_blob = _norm(" ".join(trace["detail"]))
     list_blob = _norm(" ".join(trace["list"]))
     fetched = trace["articles"]
+    mentioned = trace.get("mentioned_articles", set())
 
     violations = []
     in_refs_section = False
@@ -515,7 +527,7 @@ def _scan_violations(answer: str, trace: dict) -> list[tuple]:
                 problems.append(f"판례·심판례 {no} (조회 기록 없음)")
 
         for ref in _find_article_refs(line, trace):
-            if ref in fetched:
+            if ref in fetched or (not in_refs_section and ref in mentioned):
                 verified_source = True
             else:
                 problems.append(f"{_article_label(ref)} (조문 원문 미조회)")
@@ -744,13 +756,28 @@ def _semantic_verify(api_key: str, claims: list, sources: dict, user_query: str 
         client = genai.Client(api_key=api_key, http_options={"timeout": 60000})
     except Exception:
         client = genai.Client(api_key=api_key)
-    resp = client.models.generate_content(
-        model=VERIFIER_MODEL_ID,
-        contents=prompt,
-        config=types.GenerateContentConfig(response_mime_type="application/json"),
-    )
+
+    verifier_candidates = list(dict.fromkeys([VERIFIER_MODEL_ID, FLASH_BACKUP_ID, "gemini-2.5-flash"]))
+    resp = None
+    used_v_model = VERIFIER_MODEL_ID
+    last_v_err = None
+    for vm_id in verifier_candidates:
+        try:
+            resp = client.models.generate_content(
+                model=vm_id,
+                contents=prompt,
+                config=types.GenerateContentConfig(response_mime_type="application/json"),
+            )
+            used_v_model = vm_id
+            break
+        except Exception as e:
+            last_v_err = e
+            continue
+    if resp is None:
+        raise last_v_err or RuntimeError("감수 모델 호출 실패")
+
     raw = extract_safe_text(resp)
-    _extract_and_log_response_usage(resp, VERIFIER_MODEL_ID, count_call=False, est_in_chars=len(prompt), est_out_chars=len(raw))
+    _extract_and_log_response_usage(resp, used_v_model, count_call=False, est_in_chars=len(prompt), est_out_chars=len(raw))
     raw = re.sub(r"^```(?:json)?|```$", "", raw.strip()).strip()
     data = json.loads(raw)
     result = {}
@@ -802,18 +829,28 @@ def _apply_semantic_results(answer: str, claims: list, verdicts: dict, sources: 
 
 
 # ---------------------------------------------------------
-# ✨ 스마트 법령 텍스트 압축기 (조문당 20,000자 확대) & law_api.py 절단 우회 직접 파서
+# ✨ 스마트 법령 텍스트 압축기 (복합 조문 균등 추출 + 조문당 20,000자 확대) & 법령 전체 XML 통합 캐시
 # ---------------------------------------------------------
 def _fetch_full_law_xml_direct(doc_id: str, query_filter: str = "") -> str:
     """
-    law_api.py가 조문을 12,000~15,000자에서 자르는 한계를 우회하기 위해,
-    원문이 길거나 Pro 모드일 때 법제처 DRF XML에서 직접 조문 전체를 무손실로 읽어옵니다.
+    [속도 개선 ②] 법령 전체 XML을 doc_id 단위로 통합 캐싱(`full_law_xml`)하여,
+    동일 법령의 다른 조문(예: 제29조의8, 제127조, 제132조)을 연속 조회할 때
+    두 번째 조문부터는 네트워크 다운로드 없이 메모리에서 0.001초 만에 즉시 반환합니다.
     """
+    clean_id = str(doc_id).strip()
+    if not clean_id.isdigit():
+        return ""
+    today_ymd = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d")
+    full_cache_key = ("full_law_xml", today_ymd, clean_id)
+    cached_full = _cache_get(full_cache_key)
+    if cached_full is not None:
+        return cached_full
+
     oc = get_law_oc_auto()
-    if not oc or not str(doc_id).strip().isdigit():
+    if not oc:
         return ""
     for id_param in ("ID", "MST"):
-        url = f"http://www.law.go.kr/DRF/lawService.do?OC={oc}&target=law&{id_param}={str(doc_id).strip()}&type=XML"
+        url = f"http://www.law.go.kr/DRF/lawService.do?OC={oc}&target=law&{id_param}={clean_id}&type=XML"
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=15) as resp:
@@ -842,10 +879,60 @@ def _fetch_full_law_xml_direct(doc_id: str, query_filter: str = "") -> str:
                                 lines.append("    " + mok_txt)
                 article_blocks.append("\n".join(lines))
             if article_blocks:
-                return f"📘 [{lname}]\n\n" + "\n\n".join(article_blocks)
+                full_text = f"📘 [{lname}]\n\n" + "\n\n".join(article_blocks)
+                _cache_set(full_cache_key, full_text)
+                return full_text
         except Exception:
             continue
     return ""
+
+def _resolve_law_id_if_name(doc_id: str) -> str:
+    """
+    [Flash 보강] AI가 search_law_for_gemini를 거치지 않고 doc_id 자리에
+    '조세특례제한법', '법인세법 시행령' 등 법령명을 직접 넣었을 때 자동으로 법령일련번호(ID)로 변환합니다.
+    """
+    s_id = str(doc_id or "").strip()
+    if not s_id or s_id.isdigit():
+        return s_id
+
+    clean_q = re.sub(r"[「」『』\[\]\"']", "", s_id).strip()
+    clean_norm = clean_q.replace(" ", "")
+    for alias, full in _LAW_ALIASES.items():
+        if clean_norm == alias:
+            clean_q = full
+            clean_norm = full
+            break
+        elif clean_norm == alias + "시행령":
+            clean_q = full + " 시행령"
+            clean_norm = full + "시행령"
+            break
+        elif clean_norm == alias + "시행규칙":
+            clean_q = full + " 시행규칙"
+            clean_norm = full + "시행규칙"
+            break
+
+    today_ymd = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d")
+    map_key = ("law_name_to_id", today_ymd, clean_norm)
+    cached_id = _cache_get(map_key)
+    if cached_id:
+        return cached_id
+
+    try:
+        res = law_api.search_law_data(clean_q, "law")
+        if res:
+            if isinstance(res, dict):
+                res = [res]
+            exact = [it for it in res if str(it.get("법령명한글", "")).replace(" ", "") == clean_norm]
+            cands = exact if exact else res[:1]
+            cands.sort(key=lambda x: (str(x.get("공포일자", "")), str(x.get("시행일자", ""))), reverse=True)
+            found_id = str(cands[0].get("법령일련번호") or cands[0].get("법령ID") or "").strip()
+            if found_id:
+                _cache_set(map_key, found_id)
+                print(f"[시스템] 🔄 법령명 자동 ID 변환 완료: '{doc_id}' -> ID '{found_id}'")
+                return found_id
+    except Exception:
+        pass
+    return s_id
 
 def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
     if not raw_text:
@@ -866,12 +953,14 @@ def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
 
     mult = 3 if _is_unleashed() else 1
     art_matches = re.findall(r"제?\s*(\d+)\s*조(?:\s*의\s*(\d+))?", query_filter or "")
+    base_limit = 20000 if art_matches else 5000
+    limit = base_limit * mult
 
     if art_matches:
-        target_prefixes = [
+        target_prefixes = list(dict.fromkeys(
             f"제{m[0]}조" + (f"의{m[1]}" if m[1] else "")
             for m in art_matches
-        ]
+        ))
         blocks = cleaned.split("\n\n")
         header = blocks[0] if blocks else ""
         exact_articles = []
@@ -881,6 +970,7 @@ def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
             blk_clean = blk.strip().replace(" ", "")
             if any(
                 blk_clean.startswith(tp + "(") or blk_clean.startswith(tp + " ") or blk_clean == tp
+                or re.match(rf"^{re.escape(tp)}(?![0-9의])", blk_clean)
                 for tp in target_prefixes
             ):
                 exact_articles.append(blk.strip())
@@ -888,7 +978,19 @@ def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
                 other_mentions.append(blk.strip())
 
         if exact_articles:
-            cleaned = header + "\n\n" + "\n\n".join(exact_articles)
+            # 2개 이상의 조문을 동시에 요청했을 때 앞 조문이 너무 길어 뒤 조문이 통째로 잘리는 현상 방지
+            total_exact_len = sum(len(x) for x in exact_articles)
+            if len(exact_articles) > 1 and total_exact_len > limit:
+                per_art_quota = max(5000, (limit - len(header) - 200) // len(exact_articles))
+                balanced_articles = []
+                for ea in exact_articles:
+                    if len(ea) > per_art_quota:
+                        balanced_articles.append(ea[:per_art_quota] + f"\n...[※ 해당 조문 {len(ea):,}자 중 {per_art_quota:,}자 표시]")
+                    else:
+                        balanced_articles.append(ea)
+                cleaned = header + "\n\n" + "\n\n".join(balanced_articles)
+            else:
+                cleaned = header + "\n\n" + "\n\n".join(exact_articles)
         elif other_mentions:
             cleaned = header + "\n\n" + "\n\n".join(other_mentions[:3 * mult])
     elif query_filter and query_filter.strip():
@@ -902,8 +1004,6 @@ def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
     cleaned = re.sub(r"[ \t]+", " ", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
 
-    base_limit = 20000 if art_matches else 5000
-    limit = base_limit * mult
     if len(cleaned) > limit:
         return (cleaned[:limit]
                 + f"\n\n[※ 원문 {len(cleaned):,}자 중 {limit:,}자까지만 표시됨. 필요한 조문이 더 있으면 "
@@ -919,6 +1019,7 @@ def _model_id(env_key: str, default: str) -> str:
 
 FLASH_MODEL_ID     = _model_id("GEMINI_FLASH_MODEL", "gemini-3.8-flash")
 FLASH_BACKUP_ID    = _model_id("GEMINI_FLASH_BACKUP_MODEL", "gemini-3.6-flash")
+FLASH_FALLBACK_ID  = "gemini-2.5-flash"
 VERIFIER_MODEL_ID  = _model_id("GEMINI_VERIFIER_MODEL", "gemini-3.8-flash")
 SEMANTIC_VERIFY_ON = (
     (_get_secret_or_env("SEMANTIC_VERIFY").lower() in ("on", "true", "1"))
@@ -1003,7 +1104,8 @@ def search_law_for_gemini(keyword: str, target: str = "law") -> str:
         return (f"[검색 한도 도달] 이번 질문에서 '{target}' 검색은 더 할 수 없습니다. "
                 "지금까지 조회한 원문만으로 답변을 작성하고, 찾지 못한 근거는 '관련 원문을 확인하지 못했다'고 쓰세요.")
 
-    cache_key = ("search", datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d"), keyword.strip(), target)
+    today_ymd = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d")
+    cache_key = ("search", today_ymd, keyword.strip(), target)
     cached_pack = _cache_get(cache_key)
     if cached_pack is not None:
         results, used_keyword = cached_pack
@@ -1046,6 +1148,13 @@ def search_law_for_gemini(keyword: str, target: str = "law") -> str:
 
     if isinstance(results, dict):
         results = [results]
+
+    if target == "law":
+        for item in results[:5]:
+            lnm = str(item.get("법령명한글", "")).replace(" ", "").strip()
+            lid = str(item.get("법령일련번호") or item.get("법령ID") or "").strip()
+            if lnm and lid:
+                _cache_set(("law_name_to_id", today_ymd, lnm), lid)
 
     top_n = 10 if _is_unleashed() else 5
     summary = ""
@@ -1099,6 +1208,9 @@ def get_law_details_for_gemini(doc_id: str, target: str = "law", query_filter: s
     """
     검색된 일련번호(ID)로 원문을 조회합니다. 법령('law') 조회 시 반드시 query_filter에 조문번호(예: '제29조의8', '제78조의3 제8항')를 넣어 호출하세요.
     """
+    if target == "law":
+        doc_id = _resolve_law_id_if_name(doc_id)
+
     trace = _TOOL_TRACE.get()
     if trace is not None and target != "law":
         seen = trace.setdefault("seen_docs", set())
@@ -1110,22 +1222,31 @@ def get_law_details_for_gemini(doc_id: str, target: str = "law", query_filter: s
         return (f"[원문 조회 한도 도달] 이번 질문에서 '{target}' 원문 조회는 더 할 수 없습니다. "
                 "이미 조회한 원문만으로 답변을 작성하세요.")
 
-    cache_key = ("detail_raw", datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d"), str(doc_id).strip(), target, query_filter.strip())
-    raw_text = _cache_get(cache_key)
-    if raw_text is not None:
-        print(f"\n[시스템] ⚡ [메모리 캐시 즉시 히트(0.001초)] 원문 조회: ID '{doc_id}' (대상: {target}, 필터: '{query_filter}')")
-    else:
-        print(f"\n[시스템] 📖 원문 정밀 조회 가동: ID '{doc_id}' (대상: {target}, 필터: '{query_filter}')")
-        try:
-            raw_text = law_api.get_law_content(doc_id, target, query_filter)
-        except Exception as e:
-            raw_text = f"❌ 원문 조회 오류: {e}"
+    today_ymd = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d")
+    clean_id = str(doc_id).strip()
+    cache_key = ("detail_raw", today_ymd, clean_id, target, query_filter.strip())
 
-        # law_api.py의 12,000~15,000자 절단 한계에 걸린 대형 조문은 법제처 XML 직접 파서로 무손실 전문을 가져와 20,000자까지 보존
-        if target == "law" and (_is_unleashed() or len(raw_text or "") >= 11800):
-            full_direct = _fetch_full_law_xml_direct(doc_id, query_filter)
-            if full_direct and len(full_direct) > len(raw_text or ""):
-                raw_text = full_direct
+    # 동일 법령의 전체 XML이 이미 메모리에 캐싱되어 있으면 API 호출 없이 0.001초 만에 즉시 활용
+    full_law_cached = _cache_get(("full_law_xml", today_ymd, clean_id)) if target == "law" else None
+    raw_text = full_law_cached if full_law_cached is not None else _cache_get(cache_key)
+
+    if raw_text is not None:
+        print(f"\n[시스템] ⚡ [메모리 캐시 즉시 히트(0.001초)] 원문 조회: ID '{clean_id}' (대상: {target}, 필터: '{query_filter}')")
+    else:
+        print(f"\n[시스템] 📖 원문 정밀 조회 가동: ID '{clean_id}' (대상: {target}, 필터: '{query_filter}')")
+        if target == "law" and clean_id.isdigit():
+            # 법령('law')은 무손실 XML 직접 파서로 1회 전체 캐싱하여 후속 다른 조문 조회 시 0.001초 응답 보장
+            raw_text = _fetch_full_law_xml_direct(clean_id, query_filter)
+            if not raw_text:
+                try:
+                    raw_text = law_api.get_law_content(clean_id, target, query_filter)
+                except Exception as e:
+                    raw_text = f"❌ 원문 조회 오류: {e}"
+        else:
+            try:
+                raw_text = law_api.get_law_content(clean_id, target, query_filter)
+            except Exception as e:
+                raw_text = f"❌ 원문 조회 오류: {e}"
 
         if raw_text and not str(raw_text).startswith("❌"):
             _cache_set(cache_key, raw_text)
@@ -1134,14 +1255,14 @@ def get_law_details_for_gemini(doc_id: str, target: str = "law", query_filter: s
     body_ok = bool(result and not result.startswith("❌") and len(result) >= 80)
 
     if trace is not None and target != "law" and body_ok:
-        trace.setdefault("seen_docs", set()).add((target, str(doc_id)))
+        trace.setdefault("seen_docs", set()).add((target, clean_id))
 
     preview = result[:150].replace("\n", " ")
     print(f"[시스템]    ↳ 원문 {len(raw_text or ''):,}자 → 전달 {len(result):,}자 | 앞부분: {preview}")
     if target == "law" and body_ok:
         _record_law_articles(result)
     if trace is not None and target in ("prec", "decc"):
-        rno = trace["id_map"].get(str(doc_id).strip())
+        rno = trace["id_map"].get(clean_id)
         if rno and body_ok and _norm(rno) not in _norm(result):
             result = f"[사건(청구)번호: {rno}]\n" + result
         if not body_ok:
@@ -1221,50 +1342,56 @@ def search_historical_law_for_gemini(law_name: str, target_date: str, query_filt
         mst_id = chosen["mst"]
         ef_yd_str = str(chosen["ef_yd"])
 
-        detail_urls = [
-            f"http://www.law.go.kr/DRF/lawService.do?OC={oc}&target=eflaw&MST={mst_id}&efYd={ef_yd_str}&type=XML",
-            f"http://www.law.go.kr/DRF/lawService.do?OC={oc}&target=law&MST={mst_id}&type=XML",
-            f"http://www.law.go.kr/DRF/lawService.do?OC={oc}&target=law&ID={mst_id}&type=XML",
-        ]
-        article_blocks = []
-        for d_url in detail_urls:
-            try:
-                req2 = urllib.request.Request(d_url, headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(req2, timeout=20) as resp2:
-                    detail_xml = resp2.read()
-                d_root = ET.fromstring(detail_xml)
-                for unit in d_root.findall(".//조문단위"):
-                    jo_content = (unit.findtext("조문내용") or "").strip()
-                    if not jo_content:
-                        continue
-                    lines = [jo_content]
-                    for hang in unit.findall(".//항"):
-                        h_txt = (hang.findtext("항내용") or "").strip()
-                        if h_txt:
-                            lines.append(h_txt)
-                        for ho in hang.findall(".//호"):
-                            ho_txt = (ho.findtext("호내용") or "").strip()
-                            if ho_txt:
-                                lines.append("  " + ho_txt)
-                            for mok in ho.findall(".//목"):
-                                mok_txt = (mok.findtext("목내용") or "").strip()
-                                if mok_txt:
-                                    lines.append("    " + mok_txt)
-                    article_blocks.append("\n".join(lines))
-                if article_blocks:
-                    break
-            except Exception:
-                continue
+        full_hist_key = ("hist_law_full", mst_id, ef_yd_str)
+        full_raw = _cache_get(full_hist_key)
 
-        if not article_blocks:
-            fallback_txt = law_api.get_law_content(mst_id, "law", query_filter)
-            return _record("detail", compress_legal_text(fallback_txt, query_filter))
+        if not full_raw:
+            detail_urls = [
+                f"http://www.law.go.kr/DRF/lawService.do?OC={oc}&target=eflaw&MST={mst_id}&efYd={ef_yd_str}&type=XML",
+                f"http://www.law.go.kr/DRF/lawService.do?OC={oc}&target=law&MST={mst_id}&type=XML",
+                f"http://www.law.go.kr/DRF/lawService.do?OC={oc}&target=law&ID={mst_id}&type=XML",
+            ]
+            article_blocks = []
+            for d_url in detail_urls:
+                try:
+                    req2 = urllib.request.Request(d_url, headers={"User-Agent": "Mozilla/5.0"})
+                    with urllib.request.urlopen(req2, timeout=20) as resp2:
+                        detail_xml = resp2.read()
+                    d_root = ET.fromstring(detail_xml)
+                    for unit in d_root.findall(".//조문단위"):
+                        jo_content = (unit.findtext("조문내용") or "").strip()
+                        if not jo_content:
+                            continue
+                        lines = [jo_content]
+                        for hang in unit.findall(".//항"):
+                            h_txt = (hang.findtext("항내용") or "").strip()
+                            if h_txt:
+                                lines.append(h_txt)
+                            for ho in hang.findall(".//호"):
+                                ho_txt = (ho.findtext("호내용") or "").strip()
+                                if ho_txt:
+                                    lines.append("  " + ho_txt)
+                                for mok in ho.findall(".//목"):
+                                    mok_txt = (mok.findtext("목내용") or "").strip()
+                                    if mok_txt:
+                                        lines.append("    " + mok_txt)
+                        article_blocks.append("\n".join(lines))
+                    if article_blocks:
+                        break
+                except Exception:
+                    continue
 
-        header_str = (
-            f"📘 [{chosen['lname']} | 🕰️ 구법(연혁법령) 타임머신 조회 (기준일: {ymd_int}) | "
-            f"시행일: {chosen['ef_yd']} | 공포번호: 제{chosen['anc_no']}호 ({chosen['rev_nm']}) | MST: {mst_id}]"
-        )
-        full_raw = header_str + "\n\n" + "\n\n".join(article_blocks)
+            if not article_blocks:
+                fallback_txt = law_api.get_law_content(mst_id, "law", query_filter)
+                return _record("detail", compress_legal_text(fallback_txt, query_filter))
+
+            header_str = (
+                f"📘 [{chosen['lname']} | 🕰️ 구법(연혁법령) 타임머신 조회 (기준일: {ymd_int}) | "
+                f"시행일: {chosen['ef_yd']} | 공포번호: 제{chosen['anc_no']}호 ({chosen['rev_nm']}) | MST: {mst_id}]"
+            )
+            full_raw = header_str + "\n\n" + "\n\n".join(article_blocks)
+            _cache_set(full_hist_key, full_raw)
+
         compressed = compress_legal_text(full_raw, query_filter)
         _cache_set(cache_key, compressed)
         _record_law_articles(compressed)
@@ -1906,7 +2033,7 @@ def _execute_with_key_and_model(
 
     return _clean_latex_for_export(final_text), len(precheck_text)
 
-# 4. 실행 순서(유료키 전용): 3.8-flash → 3.6-flash (Pro 모드 시 3.1-pro-preview → 2.5-pro, Argon은 기본 잠금)
+# 4. 실행 순서(유료키 전용): 3.8-flash → 3.6-flash → 2.5-flash 안전 폴백 (Pro 모드 시 3.1-pro-preview → 2.5-pro, Argon은 기본 잠금)
 def run_agent(user_input: str, raw_query: str = "", has_file: bool = False, room_key: str = "") -> str:
     live_pool = get_live_gemini_key_pool()
     if not live_pool:
@@ -1955,15 +2082,16 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False, room
             types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
         ]
 
+        flash_candidates = list(dict.fromkeys([FLASH_MODEL_ID, FLASH_BACKUP_ID, FLASH_FALLBACK_ID]))
         execution_plan = []
         for lbl, k in live_pool:
             if tier_mode == "PRO":
-                for m in PAID_PRO_MODEL_IDS:
+                for m in dict.fromkeys(PAID_PRO_MODEL_IDS):
                     execution_plan.append((lbl, k, m, f"{mode_badge} *(🔑 {lbl} · {m})*"))
-                for m in (FLASH_MODEL_ID, FLASH_BACKUP_ID):
+                for m in flash_candidates:
                     execution_plan.append((lbl, k, m, f"⚡ **[Pro 실패 → Flash 백업 (3배 리미트 개방 유지)]** *(🔑 {lbl} · {m})*"))
             else:
-                for m in (FLASH_MODEL_ID, FLASH_BACKUP_ID):
+                for m in flash_candidates:
                     execution_plan.append((lbl, k, m, f"{mode_badge} *(🔑 {lbl} · {m})*"))
 
         last_error = None
