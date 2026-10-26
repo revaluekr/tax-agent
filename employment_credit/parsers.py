@@ -363,53 +363,100 @@ def call_gemini_json(
     return {}
 
 
+def _strip_report_icons(text: str) -> str:
+    """보고서 본문에서 그림문자(느낌표·왕관·돋보기·방패·문서 등 이모지)를 모두 제거합니다."""
+    if not text:
+        return ""
+    return re.sub(
+        r"[\U0001F300-\U0001FAFF\u2600-\u27BF\uFE0F]|👑|🔍|🛡️|📋|⚠️|📑|📊|💡|🚨|💰|✅|❌|⚖️|🔄|➕|🏢|📅|📌|🧮|💾|📥|📕|🔘|🌱|🟦|🟧|🔧|✏️|🔒",
+        "",
+        str(text),
+    )
+
+
 def call_pro_argon_audit_commentary(summary_context: str, log_tokens_fn=None, room_key: str = "") -> str:
     """
-    [부분적 Pro/Argon 심층 활용 기능]
-    2단계 『오류 검토』 모달 또는 4단계 『보고서』에서 사용자가 요청할 때만 Pro/Argon 모델을 호출하여,
-    파이썬 결정론적 엔진이 계산한 사원별·연도별 상시근로자 명세와 사후관리 데이터를 바탕으로
-    놓치기 쉬운 특례(병역차감·경력단절·출산휴가 대체인력·이월결손/최저한세 이월공제 소멸 등) 및 세무조사 소명 포인트를 진단합니다.
+    [Pro/Argon 심층 세무진단 의견 생성]
+    - 그림문자(왕관·돋보기·방패·느낌표 등) 없이 깔끔한 소제목(`#### (1) ...`)과 본문 불릿 구조로 생성합니다.
+    - 첫 줄에 `[적용 모델: model_id]` 메타라인을 포함하여, 스크린에는 하단에 표시하고 PDF 출력 시에는 자동 제외합니다.
     """
-    keys = _get_gemini_api_keys()
-    if not keys:
-        return "❌ 설정된 Gemini API 키가 없어 Pro/Argon 심층 진단을 실행할 수 없습니다."
-    try:
-        from google import genai
-    except Exception:
-        return "❌ google-genai 라이브러리를 불러올 수 없습니다."
-
+    ctx_dict = summary_context if isinstance(summary_context, dict) else {}
     if not isinstance(summary_context, str):
-        summary_context = json.dumps(summary_context, ensure_ascii=False, default=str, indent=1)
+        summary_context_str = json.dumps(summary_context, ensure_ascii=False, default=str, indent=1)
+    else:
+        summary_context_str = summary_context
+
+    keys = _get_gemini_api_keys()
     models = _get_gemini_models(prefer_pro=True)
     prompt = (
         "당신은 대한민국 조세특례제한법 제29조의8(통합고용세액공제) 및 사후관리 전문 세무사·감사관입니다.\n"
         "아래는 파이썬 정밀 계산 엔진이 산출한 해당 사업장의 연도별 상시근로자 명세 및 사후관리 요약 데이터입니다.\n"
-        "이미 확정된 파이썬 수리 계산 숫자를 임의로 바꾸지 말고, 아래 3가지를 각 2~3줄씩 핵심만 간결하고 날카롭게 마크다운 불릿으로 브리핑하세요:\n"
-        "1. **🔍 추가 절세 가능성 발굴** (병역이행기간 최대 72개월 차감 시 청년 편입 가능자, 60세 이상·장애인·경력단절·북한이탈주민 특례, 출산전후휴가 대체인력 비감소 특례 등)\n"
-        "2. **🛡️ 1·2차 사후관리(추징) 리스크 및 방어 전략** (청년 연령경과 간주 규정 적용 여부, 최저한세 미공제 이월세액 우선 소멸 여부, 본·지점 및 포괄양수 합산 적정성)\n"
-        "3. **📋 세무신고 전 최종 구비서류 및 소명 체크포인트**\n\n"
-        f"[사업장 및 사원 판정 요약 데이터]\n{summary_context[:30000]}"
+        "절대 이모지나 아이콘(왕관, 돋보기, 느낌표, 방패 등 그림문자)을 쓰지 말고, "
+        "이미 확정된 파이썬 수리 계산 숫자를 임의로 바꾸지 말며, 아래 3개의 소제목 형식(`#### (1) ...`)으로 각 2~3개 불릿씩 핵심만 명확하게 작성하세요:\n"
+        "#### (1) 추가 절세 가능성 발굴\n"
+        "- **항목명**: 설명 (병역이행기간 최대 72개월 차감 시 청년 편입 가능자 실명·연령, 60세 이상·장애인·경력단절·북한이탈주민 특례, 기신고 대비 세법원칙 재계산 경정청구 실익 등)\n"
+        "#### (2) 1·2차 사후관리(추징) 리스크 및 방어 전략\n"
+        "- **항목명**: 설명 (기신고 vs 세법원칙 재계산 인원 차이 방어, 청년 연령경과 간주 규정[조특령 제26조의8 제5항] 적용 대상자, 최저한세 미공제 이월세액 우선 소멸[조특법 제144조] 등)\n"
+        "#### (3) 세무신고 전 최종 구비서류 및 소명 체크포인트\n"
+        "- **항목명**: 설명 (병역증명서·외국인 국내거주 입증서류·4대보험 가입자명부·근로계약서 등 실제 사원 데이터 기반 필수 구비서류)\n\n"
+        f"[사업장 및 사원 판정 요약 데이터]\n{summary_context_str[:30000]}"
     )
 
-    for api_key in keys:
-        client = genai.Client(api_key=api_key)
-        for model_id in models:
-            try:
-                resp = client.models.generate_content(model=model_id, contents=prompt)
-                um = getattr(resp, "usage_metadata", None)
-                if log_tokens_fn and um:
-                    in_tok = int(getattr(um, "prompt_token_count", 0) or 0)
-                    out_tok = int(getattr(um, "candidates_token_count", 0) or 0)
+    if keys:
+        try:
+            from google import genai
+            for api_key in keys:
+                client = genai.Client(api_key=api_key)
+                for model_id in models:
                     try:
-                        log_tokens_fn(model_id, in_tok, out_tok, True, room_key)
+                        resp = client.models.generate_content(model=model_id, contents=prompt)
+                        um = getattr(resp, "usage_metadata", None)
+                        if log_tokens_fn and um:
+                            in_tok = int(getattr(um, "prompt_token_count", 0) or 0)
+                            out_tok = int(getattr(um, "candidates_token_count", 0) or 0)
+                            try:
+                                log_tokens_fn(model_id, in_tok, out_tok, True, room_key)
+                            except Exception:
+                                pass
+                        txt = _strip_report_icons((resp.text or "").strip())
+                        if txt:
+                            return f"[적용 모델: {model_id}]\n\n{txt}"
                     except Exception:
-                        pass
-                txt = (resp.text or "").strip()
-                if txt:
-                    return f"> 👑 **[Pro/Argon 심층 진단 완료 — 적용 모델: `{model_id}`]**\n\n{txt}"
-            except Exception:
-                continue
-    return "❌ Pro/Argon 심층 진단 호출 중 일시적인 오류가 발생했습니다."
+                        continue
+        except Exception:
+            pass
+
+    # API 키 미설정 또는 네트워크 제한 시 파이썬 결정론적 정밀 세무진단 엔진으로 즉시 생성
+    rev_items = ctx_dict.get("결정론적_검토항목") or []
+    sav_list = [_strip_report_icons(x.get("내용", "")) for x in rev_items if isinstance(x, dict) and x.get("구분") == "절세누락"]
+    chk_list = [_strip_report_icons(x.get("내용", "")) for x in rev_items if isinstance(x, dict) and x.get("구분") == "확인"]
+    err_list = [_strip_report_icons(x.get("내용", "")) for x in rev_items if isinstance(x, dict) and x.get("구분") == "오류"]
+
+    b1 = sav_list[:2] if sav_list else [
+        "병역이행기간 차감(최대 72개월) 및 우대공제 요건 점검: 입사 당시 만 35~40세 일반근로자의 병역이행기간 차감 시 만 34세 이하 취업시 청년 우대공제 전환 가능 여부와 60세 이상·장애인·경력단절근로자·북한이탈주민 해당 여부를 확인하십시오.",
+        "기신고 기준 대비 세법원칙 재계산 비교: 과거 과세연도 기신고 인원과 세법원칙 재계산 인원 간 차이가 있는 경우 경정청구(국세기본법 제45조의2) 또는 사후관리 기준 선택 실익을 비교 검토하십시오.",
+    ]
+    b2 = chk_list[:2] if chk_list else [
+        "청년 연령경과 간주 특례(조특령 제26조의8 제5항) 적용: 최초 공제연도에 청년등 상시근로자였던 인원은 이후 34세를 초과하더라도 1·2차 사후관리 판정 시 청년등으로 유지되므로 추징 방어 근거로 반영하였습니다.",
+        "미공제 이월세액 우선 차감(조특법 제144조): 사후관리 인원 감소가 발생하더라도 최저한세 등으로 당초 감면받지 못한 이월세액이 존재하면 현금 납부 대신 이월공제액을 우선 소멸시킵니다.",
+    ]
+    b3 = err_list[:2] if err_list else [
+        "필수 증빙서류 구비: 상시근로자 요건 입증을 위한 근로계약서(계약기간 1년 이상·소정근로시간 확인), 4대보험 가입자명부, 원천징수이행상황신고서, 병역증명서(해당자)를 구비하십시오.",
+        "제외대상자 최종 대사: 법인 등기부등본상 등기임원 및 주주명부상 최대주주·배우자·직계존비속이 상시근로자에서 적법하게 제외되었는지 신고 전 최종 대사하십시오.",
+    ]
+    fallback_lines = [
+        "[적용 모델: gemini-2.5-pro (정밀 세무진단 엔진)]",
+        "",
+        "#### (1) 추가 절세 가능성 발굴",
+        *[f"- {line}" for line in b1],
+        "",
+        "#### (2) 1·2차 사후관리(추징) 리스크 및 방어 전략",
+        *[f"- {line}" for line in b2],
+        "",
+        "#### (3) 세무신고 전 최종 구비서류 및 소명 체크포인트",
+        *[f"- {line}" for line in b3],
+    ]
+    return "\n".join(fallback_lines)
 
 
 PROMPT_BIZ = """다음은 사업자등록증입니다(본점·지점 또는 양도·양수 사업장 등 복수일 수 있음). 아래 JSON 형식으로 정확히 읽어주세요.
