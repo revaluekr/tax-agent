@@ -568,17 +568,66 @@ def _compose_doc_texts_with_wp(s: dict, classified: dict[str, list[str]]) -> dic
     return texts
 
 
+def _merge_ext_dicts(base_ext: dict | None, new_ext: dict | None) -> dict:
+    """
+    백업 복원(restored=True) 상태에서 새로운 파일(예: 23년 원천징수부, 24년 근로자고용현황/세액공제조정명세서 등)을 추가 업로드한 경우,
+    기존 ext 데이터를 보존하면서 새로 추출된 new_ext 데이터를 병합합니다.
+    """
+    if not base_ext:
+        return copy.deepcopy(new_ext or {})
+    if not new_ext:
+        return copy.deepcopy(base_ext)
+    merged = copy.deepcopy(base_ext)
+    for top_k in ("biz_reg", "corp_reg"):
+        src = new_ext.get(top_k) or {}
+        if isinstance(src, dict) and src:
+            dst = merged.setdefault(top_k, {})
+            for fk, fv in src.items():
+                if fv:
+                    dst[fk] = fv
+    if new_ext.get("shareholder"):
+        merged["shareholder"] = copy.deepcopy(new_ext["shareholder"])
+    for yr_s, rows in ((new_ext.get("wht") or {}).items()):
+        if rows:
+            merged.setdefault("wht", {})[str(yr_s)] = copy.deepcopy(rows)
+    if new_ext.get("credit_stmt"):
+        dst_cs = merged.setdefault("credit_stmt", {})
+        for k_cs, v_cs in new_ext["credit_stmt"].items():
+            dst_cs[k_cs] = copy.deepcopy(v_cs)
+    new_pf = ((new_ext.get("prev_filing") or {}).get("연도별")) or {}
+    if isinstance(new_pf, dict) and new_pf:
+        dst_pf = merged.setdefault("prev_filing", {}).setdefault("연도별", {})
+        for y_s, y_vals in new_pf.items():
+            if isinstance(y_vals, dict):
+                cur_e = dst_pf.setdefault(str(y_s), {})
+                for fk, fv in y_vals.items():
+                    if fv is not None:
+                        cur_e[fk] = fv
+    return merged
+
+
 def _carry_over_user_edits(s: dict, old_people: dict, old_recs: dict) -> None:
     """
     사원표를 다시 만들 때(귀속연도 변경·파일 추가 등) 2단계에서 직접 입력한 값을 이어 붙입니다.
-    같은 사람 판정: 성명+생년월일. 서류 없이 직접 추가한 사원은 그대로 옮깁니다.
+    같은 사람 판정: 성명+생년월일(한쪽에만 생년월일이 있는 경우 성명 단독 매칭 지원). 서류 없이 직접 추가한 사원은 그대로 옮깁니다.
     """
     if not old_people:
         return
     key = lambda p: f"{p.get('성명', '')}|{p.get('생년월일', '')}"
     new_by_key = {key(p): pid for pid, p in s["people"].items()}
+    new_by_name: dict[str, list[str]] = {}
+    for pid, p in s["people"].items():
+        nm = str(p.get("성명") or "").strip()
+        if nm:
+            new_by_name.setdefault(nm, []).append(pid)
+
     for opid, op in old_people.items():
         npid = new_by_key.get(key(op))
+        if npid is None:
+            nm = str(op.get("성명") or "").strip()
+            cands = new_by_name.get(nm, [])
+            if len(cands) == 1:
+                npid = cands[0]
         if npid is None:
             if op.get("월급여"):
                 continue  # 서류에서 온 사람인데 이번 자료 범위에 없으면 제외
@@ -606,13 +655,18 @@ def _ensure_built_for_tax_year(s: dict):
     )
     sig = f"{s.get('ext_sig')}|{s['tax_year']}|{wp_sig}"
     if s.get("built_sig") != sig and (s.get("ext") is not None or s.get("files")):
-        if s.get("ext") is None and s.get("files"):
-            classified: dict[str, list[str]] = {}
-            for name, f in s["files"].items():
-                if f.get("key"):
-                    classified.setdefault(f["key"], []).append(name)
-            texts = _compose_doc_texts_with_wp(s, classified)
+        files_with_text: dict[str, list[str]] = {}
+        for name, f in (s.get("files") or {}).items():
+            if f.get("key") and f.get("text"):
+                files_with_text.setdefault(f["key"], []).append(name)
+        if s.get("ext") is None and files_with_text:
+            texts = _compose_doc_texts_with_wp(s, files_with_text)
             s["ext"] = P.extract_all(texts, None, "")
+            s["ext_sig"] = wp_sig
+        elif s.get("ext") is not None and files_with_text and s.get("ext_sig") != wp_sig:
+            texts = _compose_doc_texts_with_wp(s, files_with_text)
+            new_ext = P.extract_all(texts, None, "")
+            s["ext"] = _merge_ext_dicts(s.get("ext"), new_ext)
             s["ext_sig"] = wp_sig
 
         ext = s.get("ext") or {}
@@ -652,6 +706,8 @@ def _ensure_built_for_tax_year(s: dict):
                     "기추징세액": int(vals.get("기추징세액")) if vals.get("기추징세액") is not None else old.get("기추징세액"),
                     "수도권": vals.get("수도권") if vals.get("수도권") is not None else old.get("수도권"),
                     "_증가_역산": bool(vals.get("_증가_역산") or old.get("_증가_역산")),
+                    "_증가_추정": bool(vals.get("_증가_추정") or old.get("_증가_추정")),
+                    "_2차_AI판독": bool(vals.get("_2차_AI판독")),
                     "_소재지_추정": bool(vals.get("_소재지_추정") or old.get("_소재지_추정")),
                 }
 
@@ -664,20 +720,40 @@ def _ensure_built_for_tax_year(s: dict):
 # 0-B. 상시근로자 명세서 A4 가로(Landscape) 정식 PDF 생성 엔진
 # ══════════════════════════════════════════════════════════════════
 def _ensure_korean_pdf_font() -> tuple[str, str]:
+    """
+    ReportLab PDF 한글 폰트 등록 및 폰트 패밀리(<b> 태그 매핑) 보장:
+    1) 이미 app.py에 등록된 KoreanFont/KoreanFontBold가 있으면 즉시 재사용하거나,
+    2) Windows 맑은고딕(malgun.ttf), STORAGE_DIR 내 NanumGothic.ttf, Linux 시스템 한글 TrueType 폰트
+       (/usr/share/fonts/truetype/nanum/NanumGothic.ttf, DroidSansFallbackFull.ttf, UnDotum.ttf 등)를 탐색하여
+       실제 글리프가 임베딩되는 TTFont로 등록합니다(HYGothic-Medium CID 폰트 단독 사용 시 한글 투명 누락 방지).
+    3) pdfmetrics.registerFontFamily를 호출하여 Paragraph 내 <b>...</b> 태그가 Helvetica로 풀리지 않도록 합니다.
+    """
     reg_name = "ECKoreanFont"
     bold_name = "ECKoreanFontBold"
-    if reg_name in pdfmetrics.getRegisteredFontNames():
+    registered = pdfmetrics.getRegisteredFontNames()
+    if reg_name in registered and bold_name in registered:
         return reg_name, bold_name
 
-    win_malgun = "C:/Windows/Fonts/malgun.ttf"
-    win_malgun_bd = "C:/Windows/Fonts/malgunbd.ttf"
+    os.makedirs(STORAGE_DIR, exist_ok=True)
     reg_path = os.path.join(STORAGE_DIR, "NanumGothic.ttf")
     bold_path = os.path.join(STORAGE_DIR, "NanumGothicBold.ttf")
 
-    if os.path.exists(win_malgun):
-        reg_path = win_malgun
-        bold_path = win_malgun_bd if os.path.exists(win_malgun_bd) else win_malgun
-    elif not os.path.exists(reg_path):
+    # 후보 폰트 경로 탐색 (Windows -> 캐시 -> Linux/macOS 시스템 TrueType 한글 폰트)
+    candidate_pairs = [
+        ("C:/Windows/Fonts/malgun.ttf", "C:/Windows/Fonts/malgunbd.ttf"),
+        (reg_path, bold_path),
+        ("/usr/share/fonts/truetype/nanum/NanumGothic.ttf", "/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf"),
+        ("/usr/share/fonts/truetype/unfonts-core/UnDotum.ttf", "/usr/share/fonts/truetype/unfonts-core/UnDotumBold.ttf"),
+    ]
+
+    chosen_reg, chosen_bold = None, None
+    for rp, bp in candidate_pairs:
+        if os.path.exists(rp):
+            chosen_reg = rp
+            chosen_bold = bp if os.path.exists(bp) else rp
+            break
+
+    if chosen_reg is None:
         try:
             urllib.request.urlretrieve(
                 "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Regular.ttf",
@@ -687,19 +763,42 @@ def _ensure_korean_pdf_font() -> tuple[str, str]:
                 "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Bold.ttf",
                 bold_path,
             )
+            if os.path.exists(reg_path):
+                chosen_reg = reg_path
+                chosen_bold = bold_path if os.path.exists(bold_path) else reg_path
         except Exception:
             pass
 
-    if os.path.exists(reg_path):
+    if chosen_reg and os.path.exists(chosen_reg):
         try:
-            pdfmetrics.registerFont(TTFont(reg_name, reg_path))
-            pdfmetrics.registerFont(TTFont(bold_name, bold_path if os.path.exists(bold_path) else reg_path))
+            pdfmetrics.registerFont(TTFont(reg_name, chosen_reg))
+            pdfmetrics.registerFont(TTFont(bold_name, chosen_bold if (chosen_bold and os.path.exists(chosen_bold)) else chosen_reg))
+            pdfmetrics.registerFontFamily(
+                reg_name,
+                normal=reg_name,
+                bold=bold_name,
+                italic=reg_name,
+                boldItalic=bold_name,
+            )
             return reg_name, bold_name
         except Exception:
             pass
 
+    if "KoreanFont" in registered:
+        kf_bold = "KoreanFontBold" if "KoreanFontBold" in registered else "KoreanFont"
+        try:
+            pdfmetrics.registerFontFamily("KoreanFont", normal="KoreanFont", bold=kf_bold, italic="KoreanFont", boldItalic=kf_bold)
+        except Exception:
+            pass
+        return "KoreanFont", kf_bold
+
     try:
         pdfmetrics.registerFont(UnicodeCIDFont("HYGothic-Medium"))
+        try:   # <b> 태그가 영문 Helvetica로 풀려 한글이 사라지지 않도록 같은 글꼴로 묶음
+            pdfmetrics.registerFontFamily("HYGothic-Medium", normal="HYGothic-Medium", bold="HYGothic-Medium",
+                                          italic="HYGothic-Medium", boldItalic="HYGothic-Medium")
+        except Exception:
+            pass
         return "HYGothic-Medium", "HYGothic-Medium"
     except Exception:
         return "Helvetica", "Helvetica-Bold"
@@ -754,63 +853,204 @@ def _read_upload_text(u, extract_file_fn, room_key: str = "") -> str:
 
 
 def _pdf_text(t: str) -> str:
-    """PDF 문단용: 특수문자 이스케이프 + 마크다운 굵게(**...**)만 살림"""
+    """PDF 문단용: 특수문자 이스케이프 + 마크다운 굵게(**...**) 및 인라인 코드(`...`) 변환"""
+    _, bold_font = _ensure_korean_pdf_font()
     t = str(t or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    return re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", t)
+    t = re.sub(r"\*\*(.+?)\*\*", rf"<font name='{bold_font}'><b>\1</b></font>", t)
+    t = re.sub(r"`([^`]+)`", rf"<font name='{bold_font}'><b>\1</b></font>", t)
+    return t
 
 
-def _build_text_report_pdf_bytes(title: str, subtitle: str, sections: list[tuple[str, list[str]]]) -> bytes:
-    """제목 + (소제목, 문단 목록) 구성의 A4 세로 PDF"""
+def _clean_md_for_pdf(txt: str) -> str:
+    return _pdf_text(txt)
+
+
+def _build_review_pdf_bytes(s: dict, items: list[tuple[str, str]], pro_comment: str = "") -> bytes:
+    """
+    2단계 [🔍 오류 검토] 모달의 『법령·심판례·절세누락 12대 정밀 오류 검토』 결과 및
+    『👑 Pro/Argon AI 심층 세무진단 코멘트』를 A4 세로(Portrait) 고해상도 정식 PDF로 생성합니다.
+    (실제 TrueType 한글 폰트 임베딩으로 모든 브라우저·OS PDF 뷰어에서 한글 100% 선명 표시)
+    """
     reg_font, bold_font = _ensure_korean_pdf_font()
     buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=36)
-    st_title = ParagraphStyle("RvTitle", fontName=bold_font, fontSize=14, leading=19, textColor=colors.HexColor("#0f172a"), spaceAfter=4)
-    st_sub = ParagraphStyle("RvSub", fontName=reg_font, fontSize=9, leading=13, textColor=colors.HexColor("#64748b"), spaceAfter=10)
-    st_h = ParagraphStyle("RvH", fontName=bold_font, fontSize=11, leading=15, textColor=colors.HexColor("#1e3a8a"), spaceBefore=8, spaceAfter=4)
-    st_p = ParagraphStyle("RvP", fontName=reg_font, fontSize=9.5, leading=14, leftIndent=10, spaceAfter=3)
-    story = [Paragraph(_pdf_text(title), st_title), Paragraph(_pdf_text(subtitle), st_sub)]
-    for head, lines in sections:
-        if not lines:
-            continue
-        story.append(Paragraph(_pdf_text(head), st_h))
-        for ln in lines:
-            ln = str(ln).strip()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=A4,
+        leftMargin=28,
+        rightMargin=28,
+        topMargin=28,
+        bottomMargin=28,
+    )
+
+    styles = getSampleStyleSheet()
+    st_title = ParagraphStyle(
+        "ECRevTitle",
+        parent=styles["Normal"],
+        fontName=bold_font,
+        fontSize=14,
+        leading=19,
+        textColor=colors.HexColor("#0f172a"),
+        spaceAfter=4,
+    )
+    st_sub = ParagraphStyle(
+        "ECRevSub",
+        parent=styles["Normal"],
+        fontName=reg_font,
+        fontSize=9.2,
+        leading=13.5,
+        textColor=colors.HexColor("#334155"),
+        spaceAfter=10,
+    )
+    st_sec = ParagraphStyle(
+        "ECRevSec",
+        parent=styles["Normal"],
+        fontName=bold_font,
+        fontSize=11,
+        leading=15,
+        textColor=colors.HexColor("#1e3a8a"),
+        spaceBefore=10,
+        spaceAfter=6,
+    )
+    st_item = ParagraphStyle(
+        "ECRevItem",
+        parent=styles["Normal"],
+        fontName=reg_font,
+        fontSize=9.3,
+        leading=14.2,
+        textColor=colors.HexColor("#1e293b"),
+    )
+    st_pro_body = ParagraphStyle(
+        "ECRevProBody",
+        parent=styles["Normal"],
+        fontName=reg_font,
+        fontSize=9.5,
+        leading=14.8,
+        textColor=colors.HexColor("#0f172a"),
+        spaceAfter=4,
+    )
+
+    b = s.get("biz") or {}
+    corp_nm = (b.get("상호") or "").strip() or "상호미입력"
+    biz_no = (b.get("사업자번호") or "").strip() or "-"
+    corp_sz = b.get("기업구분") or "중소기업"
+    cap = H.is_capital_area(b.get("사업장소재지", ""))
+    loc_str = "수도권" if cap is True else ("수도권 외(비수도권)" if cap is False else "소재지미입력")
+    tax_yr = int(s.get("tax_year") or R.DEFAULT_TAX_YEAR)
+
+    errs = [m for lv, m in (items or []) if lv == "오류"]
+    savs = [m for lv, m in (items or []) if lv == "절세누락"]
+    chks = [m for lv, m in (items or []) if lv not in ("오류", "절세누락")]
+
+    story = []
+    title_suffix = " (Pro/Argon 심층 세무진단 포함)" if pro_comment else ""
+    story.append(
+        Paragraph(
+            _pdf_text(f"[{corp_nm}] {tax_yr}년 귀속 통합고용세액공제 법령·심판례·절세누락 정밀 검토 보고서{title_suffix}"),
+            st_title,
+        )
+    )
+    story.append(
+        Paragraph(
+            _pdf_text(
+                f"사업자등록번호: {biz_no}  |  기업규모·소재지: {corp_sz} · {loc_str}  |  "
+                f"검토 요약: 필수 수정 오류 {len(errs)}건 · 절세누락 주의 {len(savs)}건 · 실무·심판례 확인 {len(chks)}건  |  "
+                f"출력 {time.strftime('%Y-%m-%d %H:%M')}"
+            ),
+            st_sub,
+        )
+    )
+
+    avail_w = A4[0] - 56
+
+    def _add_group_table(sec_title: str, group_items: list[str], bg_hdr: str, fg_hdr: str, bg_row: str, border_c: str):
+        story.append(Paragraph(_pdf_text(sec_title), st_sec))
+        hdr_p = Paragraph(
+            f"<font name='{bold_font}'><b>{_pdf_text(sec_title)} ({len(group_items)}건)</b></font>",
+            ParagraphStyle("GH", parent=st_item, fontName=bold_font, textColor=colors.HexColor(fg_hdr)),
+        )
+        rows_data = [[hdr_p]]
+        for idx, msg in enumerate(group_items, start=1):
+            clean_m = _pdf_text(msg)
+            rows_data.append([Paragraph(f"<font name='{bold_font}'><b>{idx}.</b></font> {clean_m}", st_item)])
+        t = Table(rows_data, colWidths=[avail_w], repeatRows=1)
+        t.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(bg_hdr)),
+                    ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor(bg_row)),
+                    ("BOX", (0, 0), (-1, -1), 0.8, colors.HexColor(border_c)),
+                    ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#e2e8f0")),
+                    ("TOPPADDING", (0, 0), (-1, -1), 6),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+                ]
+            )
+        )
+        story.append(t)
+        story.append(Spacer(1, 8))
+
+    if not items:
+        _add_group_table(
+            "1. 법령 및 조세심판례 12대 정밀 오류 검토 결과",
+            ["법령 및 최신 조세심판례 12대 항목 검토 결과, 발견된 필수 수정 오류나 절세누락 사항이 없습니다."],
+            "#f0fdf4", "#166534", "#ffffff", "#86efac",
+        )
+    else:
+        if errs:
+            _add_group_table(
+                "1. 필수 수정 오류 (수정해야 정확한 상시근로자 수가 계산됩니다)",
+                errs, "#fef2f2", "#991b1b", "#fffafa", "#fecaca",
+            )
+        if savs:
+            _add_group_table(
+                "2. 절세누락 주의 (청년·고령자·장애인·사후관리 간주 우대공제 점검)",
+                savs, "#f0fdf4", "#166534", "#f7fee7", "#bbf7d0",
+            )
+        if chks:
+            _add_group_table(
+                "3. 실무·심판례 확인 사항 (사실관계가 맞다면 그대로 진행하셔도 됩니다)",
+                chks, "#eff6ff", "#1e40af", "#f8fafc", "#bfdbfe",
+            )
+
+    if pro_comment and str(pro_comment).strip():
+        story.append(Spacer(1, 6))
+        story.append(Paragraph(_pdf_text("■ Pro/Argon AI 심층 세무진단 의견 (특수사례·판례·사후관리 리스크 점검)"), st_sec))
+        pro_lines = []
+        for raw_ln in str(pro_comment).splitlines():
+            ln = raw_ln.strip()
             if not ln:
-                story.append(Spacer(1, 4))
                 continue
-            if ln.startswith("#"):
-                story.append(Paragraph(_pdf_text(ln.lstrip("#").strip()), st_h))
-                continue
-            ln = re.sub(r"^[-*]\s+", "• ", ln)
-            story.append(Paragraph(_pdf_text(ln if ln.startswith("•") else "• " + ln), st_p))
+            ln = re.sub(r"^>+\s*", "", ln)
+            ln = re.sub(r"^#{1,6}\s*", "", ln)
+            clean_ln = _pdf_text(ln)
+            pro_lines.append([Paragraph(clean_ln, st_pro_body)])
+        if pro_lines:
+            t_pro = Table(pro_lines, colWidths=[avail_w])
+            t_pro.setStyle(
+                TableStyle(
+                    [
+                        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f8fafc")),
+                        ("BOX", (0, 0), (-1, -1), 0.9, colors.HexColor("#93c5fd")),
+                        ("TOPPADDING", (0, 0), (-1, -1), 5),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                        ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                        ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+                    ]
+                )
+            )
+            story.append(t_pro)
+
     doc.build(story)
     return buf.getvalue()
 
 
 def _review_pdf_bytes(s: dict, items: list[tuple[str, str]]) -> bytes:
-    corp = (s.get("biz") or {}).get("상호") or "사업장"
-    secs = [
-        ("필수 수정 오류", [m for lv, m in items if lv == "오류"]),
-        ("절세누락 주의", [m for lv, m in items if lv == "절세누락"]),
-        ("실무·심판례 확인 사항", [m for lv, m in items if lv not in ("오류", "절세누락")]),
-    ]
-    if not items:
-        secs = [("검토 결과", ["발견된 오류가 없습니다."])]
-    return _build_text_report_pdf_bytes(
-        f"[{corp}] {s.get('tax_year')}년 귀속 통합고용세액공제 오류 검토",
-        f"법령·심판례·절세누락 정밀 오류 검토 결과 · 출력 {time.strftime('%Y-%m-%d %H:%M')}",
-        secs,
-    )
+    return _build_review_pdf_bytes(s, items, pro_comment="")
 
 
 def _pro_comment_pdf_bytes(s: dict, comment: str) -> bytes:
-    corp = (s.get("biz") or {}).get("상호") or "사업장"
-    body = [ln for ln in str(comment or "").splitlines() if not ln.strip().startswith(">")]
-    return _build_text_report_pdf_bytes(
-        f"[{corp}] {s.get('tax_year')}년 귀속 Pro/Argon AI 심층 세무진단",
-        f"AI가 작성한 참고 의견입니다. 계산 결과와 법령을 확인한 뒤 활용하세요 · 출력 {time.strftime('%Y-%m-%d %H:%M')}",
-        [("심층 진단 의견", body)],
-    )
+    return _build_review_pdf_bytes(s, [], pro_comment=comment)
 
 
 def _build_schedule_pdf_bytes(s: dict, target_years: list[int], include_summary: bool = False) -> bytes:
@@ -1989,8 +2229,11 @@ def _dlg_review(items: list[tuple[str, str]], audit_payload: dict | None = None,
         sections_html.append("</div>")
         st.markdown("".join(sections_html), unsafe_allow_html=True)
 
+    corp_fn = re.sub(r'[\\/:*?"<>|\s]+', "_", str((s.get("biz") or {}).get("상호") or "사업장"))[:30]
+    tax_yr = int(s.get("tax_year") or R.DEFAULT_TAX_YEAR)
+
     st.markdown("<div class='ec-nav-divider' style='margin:10px 0;'></div>", unsafe_allow_html=True)
-    c_ai, c_close = st.columns([2.2, 1.0])
+    c_ai, c_pdf_rev, c_close = st.columns([2.15, 1.15, 0.85])
     with c_ai:
         if audit_payload:
             if st.button("👑 Pro/Argon AI 심층 세무진단 코멘트 생성 (특수사례·판례 정밀점검)", use_container_width=True, key="btn_run_pro_audit"):
@@ -1999,39 +2242,39 @@ def _dlg_review(items: list[tuple[str, str]], audit_payload: dict | None = None,
                         audit_payload, log_tokens_fn=log_tokens_fn, room_key=room_key
                     )
                     _save_ec_to_disk(s)
+    with c_pdf_rev:
+        with st.container(key="ec_btn_pdf_rev_only"):
+            st.download_button(
+                "📕 오류검토 PDF 다운",
+                data=_build_review_pdf_bytes(s, items, pro_comment=""),
+                file_name=f"통합고용_오류검토_{corp_fn}_{tax_yr}귀속.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+                key="btn_dl_review_pdf",
+                help="현재 화면의 법령·심판례·절세누락 12대 정밀 오류 검토 내역을 A4 PDF로 다운로드합니다.",
+            )
     with c_close:
         if st.button("닫기", type="primary", use_container_width=True, key="btn_close_dlg_review"):
             st.rerun()
 
-    corp_fn = re.sub(r'[\\/:*?"<>|\s]+', "_", str((s.get("biz") or {}).get("상호") or "사업장"))[:30]
-    try:
-        st.download_button(
-            "📄 오류 검토 결과 PDF 다운",
-            data=_review_pdf_bytes(s, items),
-            file_name=f"통합고용_오류검토_{corp_fn}_{s.get('tax_year')}귀속.pdf",
-            mime="application/pdf",
-            use_container_width=True,
-            key="btn_dl_review_pdf",
-        )
-    except Exception as e:
-        st.caption(f"PDF를 만들지 못했습니다: {e}")
-
     if s.get("pro_audit_comment"):
         with st.container(border=True):
-            st.markdown("##### 👑 Pro/Argon AI 심층 세무진단 의견")
+            c_pro_hdr, c_pro_pdf = st.columns([3.0, 1.25])
+            with c_pro_hdr:
+                st.markdown("##### 👑 Pro/Argon AI 심층 세무진단 의견")
+            with c_pro_pdf:
+                if not str(s["pro_audit_comment"]).startswith("❌"):
+                    with st.container(key="ec_btn_pdf_rev_pro"):
+                        st.download_button(
+                            "📕 심층진단 포함 PDF 다운",
+                            data=_build_review_pdf_bytes(s, items, pro_comment=str(s.get("pro_audit_comment") or "")),
+                            file_name=f"통합고용_심층진단_{corp_fn}_{tax_yr}귀속.pdf",
+                            mime="application/pdf",
+                            use_container_width=True,
+                            key="btn_dl_pro_pdf",
+                            help="12대 정밀 오류 검토 내역과 Pro/Argon AI 심층 세무진단 코멘트를 함께 A4 PDF로 다운로드합니다.",
+                        )
             st.markdown(s["pro_audit_comment"])
-            if not str(s["pro_audit_comment"]).startswith("❌"):
-                try:
-                    st.download_button(
-                        "📄 심층 세무진단 의견 PDF 다운",
-                        data=_pro_comment_pdf_bytes(s, s["pro_audit_comment"]),
-                        file_name=f"통합고용_심층진단_{corp_fn}_{s.get('tax_year')}귀속.pdf",
-                        mime="application/pdf",
-                        use_container_width=True,
-                        key="btn_dl_pro_pdf",
-                    )
-                except Exception as e:
-                    st.caption(f"PDF를 만들지 못했습니다: {e}")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -2570,17 +2813,32 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
             ensure_ascii=False,
         )
         restored_left = [n for n, f in s["files"].items() if f.get("restored") and not f.get("text")]
+        classified_with_text: dict[str, list[str]] = {}
+        for name, f in s["files"].items():
+            if f.get("key") and f.get("text"):
+                classified_with_text.setdefault(f["key"], []).append(name)
+
         if s["ext_sig"] != sig and restored_left and s.get("ext"):
-            # 백업에서 복원한 파일은 원문이 없어 다시 읽을 수 없음 → 기존에 읽어둔 결과를 그대로 사용
-            st.warning(
-                "백업에서 복원한 파일(" + ", ".join(restored_left[:3]) + (" 외" if len(restored_left) > 3 else "") + ")은 "
-                "원문이 없어 다시 읽을 수 없습니다. 지금 읽어둔 사원정보를 그대로 쓰고 다음 단계로 넘어갑니다. "
-                "서류를 새로 읽게 하려면 복원 표시된 파일을 모두 삭제하고 원본 서류를 다시 올려주세요."
-            )
-            s["ext_sig"] = sig
-            s["built_sig"] = _current_build_sig(s)
+            if classified_with_text:
+                texts_new = _compose_doc_texts_with_wp(s, classified_with_text)
+                with st.spinner("⚡ 새로 추가·변경된 서류를 추출하여 기존 복원 데이터에 병합하고 있습니다..."):
+                    new_ext = P.extract_all(texts_new, log_tokens_fn, room_key)
+                    s["ext"] = _merge_ext_dicts(s.get("ext"), new_ext)
+                    msgs = P.check_missing(classified, s["ext"], tax_yr)
+                s["ext_sig"] = sig
+                s["built_sig"] = None
+                s["pending_msgs"] = msgs
+                _save_ec_to_disk(s)
+            else:
+                st.warning(
+                    "백업에서 복원한 파일(" + ", ".join(restored_left[:3]) + (" 외" if len(restored_left) > 3 else "") + ")은 "
+                    "원문이 없어 다시 읽을 수 없습니다. 지금 읽어둔 사원정보를 그대로 쓰고 다음 단계로 넘어갑니다. "
+                    "서류를 새로 읽게 하려면 원본 서류를 추가로 끌어다 놓거나 복원 표시된 파일을 삭제 후 다시 올려주세요."
+                )
+                s["ext_sig"] = sig
+                s["built_sig"] = _current_build_sig(s)
         if s["ext_sig"] != sig:
-            texts = _compose_doc_texts_with_wp(s, classified)
+            texts = _compose_doc_texts_with_wp(s, classified_with_text or classified)
             if texts:
                 with st.spinner("⚡ 자체 고속 파서(1순위) 및 하이브리드 Pro/Argon AI(2순위)로 사업자·복수사업장·사원 정보를 추출하고 있습니다..."):
                     s["ext"] = P.extract_all(texts, log_tokens_fn, room_key)
@@ -3272,6 +3530,8 @@ def _apply_changes(s: dict, year: int, sent: list[dict], back: pd.DataFrame) -> 
             yrec["고용유형"] = nv
             yrec["_user_set"] = [x for x in us if x not in ("제외사유", "청년등")] + ["고용유형"]
             us = yrec["_user_set"]
+            if nv not in R.EMP_AUTO_EXCLUDE and float(old.get("합계") or 0.0) == 0.0:
+                yrec["월_override"] = {}
             changed = True
 
         nv = _norm(nr.get("제외사유"))
@@ -3379,6 +3639,9 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
         return computed, totals
 
     df = pd.DataFrame(rows)
+    for _mc in MONTH_COLS:
+        if _mc in df.columns:
+            df[_mc] = df[_mc].apply(lambda v: "" if (v is None or pd.isna(v) or v == "") else f"{float(v):g}")
     s["last_sent"][year] = rows
     ver = s["grid_ver"].get(year, 0)
     show_all_4 = bool(s.get("show_all_4_blocks", True))
@@ -4342,10 +4605,6 @@ def _page_calculation():
     tax_yr = int(s["tax_year"])
     b = s["biz"]
     corp_size = b.get("기업구분", "중소기업")
-    try:
-        P.fill_missing_increments(s.setdefault("prev_summary", {}), corp_size)
-    except Exception:
-        pass
     cap_bool = H.is_capital_area(b.get("사업장소재지", ""))
     is_capital = True if cap_bool is None else bool(cap_bool)
     loc_label = "수도권" if is_capital else "수도권 외"
@@ -4385,6 +4644,15 @@ def _page_calculation():
 
     for cohort in (tax_yr - 1, tax_yr - 2, tax_yr - 3):
         ps.setdefault(str(cohort), {})
+
+    # 백업 복원 등으로 이미 저장된 prev_summary에도 증가인원/수도권 자동 보완 적용
+    _ext_pf_map = ((s.get("ext") or {}).get("prev_filing") or {}).get("연도별") or {}
+    _extra_cnts = {
+        str(yk): {"상시": float(yv["상시"]), "청년등": float(yv["청년등"])}
+        for yk, yv in _ext_pf_map.items()
+        if isinstance(yv, dict) and yv.get("상시") is not None and yv.get("청년등") is not None
+    }
+    P.fill_missing_increments(ps, corp_size, _extra_cnts)
 
     p1 = ps[str(tax_yr - 1)]
     p2 = ps[str(tax_yr - 2)]
@@ -4541,8 +4809,8 @@ def _page_calculation():
     prev_s = pkg["prev_s"]
     cur_inc = pkg["cur_inc"]
 
-    # 신규공제(1차년도)의 직전연도 인원은 사후관리 기준 선택과 무관하게 신법 재계산 값(2단계 사원표)을 씁니다.
-    # (기신고 기준은 2·3차년도 사후관리의 최초공제연도 인원에만 적용 — 요약표·합계와 같은 값)
+    # 당해(1차년도) 신규 공제는 항상 2단계에서 확정한 직전·당해 사원표 재계산 인원 기준
+    # (사후관리 기준 선택은 과거 공제분의 유지/추징 판정에만 적용)
     prv_reg_disp = prev_s["regular"]
     prv_yth_disp = prev_s["youth"]
     prv_gen_disp = prev_s["non_youth"]
@@ -4802,6 +5070,48 @@ def _page_calculation():
         f"</div>",
         unsafe_allow_html=True,
     )
+    for _coh_yr, _pm_cur, _pm_rc, _base_key in (
+        (tax_yr - 1, pkg["pm_y1"], pkg["pm_y1_recalc"], "base_y1"),
+        (tax_yr - 2, pkg["pm_y2"], pkg["pm_y2_recalc"], "base_y2"),
+    ):
+        if _pm_cur.get("base_missing") and not _pm_rc.get("base_missing"):
+            _c_w, _c_b = st.columns([3.8, 2.2])
+            with _c_w:
+                st.info(
+                    f"💡 **2단계 사원표 기준 {_coh_yr}년 귀속분 재계산 값**: "
+                    f"상시 **{_pm_rc.get('init_reg', 0):.2f}명** (청년등 **{_pm_rc.get('init_yth', 0):.2f}명**), "
+                    f"증가 **+{_pm_rc.get('init_yth_inc', 0) + _pm_rc.get('init_gen_inc', 0):.2f}명** → "
+                    f"사후관리 **{_pm_rc.get('case_code')}** "
+                    f"(공제 **+{_pm_rc.get('continued_credit_won', 0):,}원** / 추징 **-{_pm_rc.get('clawback_net_payable_won', 0):,}원**)"
+                )
+            with _c_b:
+                if st.button(
+                    f"🔄 {_coh_yr}년 사원표 재계산 값을 기신고 기초값에 바로 반영",
+                    type="primary",
+                    use_container_width=True,
+                    key=f"btn_quick_fill_{_coh_yr}_{tax_yr}",
+                ):
+                    _fd = ps.setdefault(str(_coh_yr), {})
+                    _brc = (pkg.get(_base_key) or {}).get("recalc") or {}
+                    if _brc.get("init_reg") is not None:
+                        _fd["상시"] = float(_brc["init_reg"])
+                    if _brc.get("init_yth") is not None:
+                        _fd["청년등"] = float(_brc["init_yth"])
+                    if _brc.get("init_yth_inc") is not None:
+                        _fd["청년등_증가"] = float(_brc["init_yth_inc"])
+                    if _brc.get("init_gen_inc") is not None:
+                        _fd["청년등외_증가"] = float(_brc["init_gen_inc"])
+                    if _fd.get("공제세액") is None:
+                        _rc_rates = H.get_unit_rates(corp_size, _cohort_capital(s, _coh_yr, is_capital), scheme="legacy", retention_year=1)
+                        _fd["공제세액"] = int(
+                            round(
+                                (float(_fd.get("청년등_증가") or 0.0) * _rc_rates["청년등"]
+                                 + float(_fd.get("청년등외_증가") or 0.0) * _rc_rates["청년등외"]) * 10_000
+                            )
+                        )
+                    s["fill_ver"] = int(s.get("fill_ver", 0)) + 1
+                    _save_ec_to_disk(s)
+                    st.rerun()
 
     # 추가공제(육아휴직복귀/정규직전환) 또는 농특세가 있는 경우 요약 안내
     if pkg["additional_credit_won"] > 0 or pkg["additional_clawback_won"] > 0 or pkg["rural_special_tax_won"] > 0:
@@ -4992,8 +5302,14 @@ def _page_calculation():
                     f["_소재지_추정"] = False
                 f["수도권"] = new_loc
                 notes = []
-                if f.get("_증가_역산"):
+                if f.get("_증가_추정"):
+                    st.warning("⚠️ 공제세액을 만드는 증가인원 조합이 여러 개라 그중 하나를 추정했습니다. "
+                               "단시간근로자가 있었던 회사는 틀릴 수 있으니 기신고 상시근로자 명세서로 꼭 확인하세요.")
+                elif f.get("_증가_역산"):
                     notes.append("증가인원은 기신고 공제세액에서 역산한 값입니다")
+                if f.get("_2차_AI판독") and cohort == tax_yr - 2:
+                    st.warning("⚠️ 2차 공제세액은 세액공제조정명세서 계산명세(18S)로 확인하지 못해 AI가 읽은 값입니다. "
+                               f"{tax_yr-1}년 신고서의 통합고용세액공제 2차 금액과 맞는지 확인하세요.")
                 if f.get("_소재지_추정") and new_loc is not None:
                     notes.append(f"소재지는 기신고 공제세액이 {'수도권' if new_loc else '수도권 밖'} 단가와 맞아 자동 선택했습니다")
                 if notes:

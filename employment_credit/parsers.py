@@ -29,7 +29,53 @@ from .headcount import parse_date, default_months_for_year, get_unit_rates, calc
 
 MAX_TEXT_CHARS = 120_000
 FILE_WP_MARKER_RE = re.compile(r"^<<<FILE_WP:(.*?)>>>$")
-_RRN_LIKE_RE = re.compile(r"(?<!\d)(\d{6})\s*-\s*([1-8])")
+_RRN_LIKE_RE = re.compile(r"(?<!\d)(\d{6})\s*-\s*([1-8*])")
+
+
+def _collapse_vertical_pdf_chunk(chunk: str) -> str:
+    """
+    pypdf가 더존/세무사랑/위하고 등 세무 프로그램 인쇄 PDF에서 글자마다 줄바꿈(\n)을 넣어
+    추출한 경우 이를 감지하여 정상적인 가로 줄 텍스트로 복원합니다.
+    """
+    lines = chunk.splitlines()
+    non_empty = [ln for ln in lines if ln.strip()]
+    if len(non_empty) < 20:
+        return chunk
+    short_cnt = sum(1 for ln in non_empty if len(ln.strip()) <= 2)
+    if short_cnt / len(non_empty) < 0.60:
+        return chunk
+
+    buf: list[str] = []
+    for ln in lines:
+        s = ln.strip()
+        if not s:
+            if buf and buf[-1] != " ":
+                buf.append(" ")
+        else:
+            buf.append(s)
+    joined = "".join(buf)
+    joined = re.sub(
+        r"\s*((?:①|②|③|④|⑤|⑥|⑦|⑧|⑨|⑩|⑪|⑫|⑬|⑭|⑮|Ⅰ\.|Ⅱ\.|Ⅲ\.|■|\(사원코드|\(성명:|(?<!\d)(?:1[0-2]|[1-9])월(?=20\d{2}/)))",
+        r"\n\1",
+        joined,
+    )
+    return joined
+
+
+def _normalize_pdf_text(text: str) -> str:
+    """페이지 구분자 및 <<<FILE_WP:...>>> 마커를 보존하면서 세로 1글자 줄바꿈 PDF 본문을 정규화합니다."""
+    if not text:
+        return ""
+    parts = re.split(r"(--- \d+페이지 ---|<<<FILE_WP:.*?>>>|\[첨부 [^\n]+\])", text)
+    out: list[str] = []
+    for pt in parts:
+        if not pt:
+            continue
+        if re.match(r"^(--- \d+페이지 ---|<<<FILE_WP:.*?>>>|\[첨부 [^\n]+\])$", pt):
+            out.append(pt)
+        else:
+            out.append(_collapse_vertical_pdf_chunk(pt))
+    return "\n".join(out)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -69,7 +115,7 @@ def infer_workplace_name(name: str, text: str = "") -> str:
         raw_name = m_att.group(1).strip()
 
     stem = os.path.splitext(os.path.basename(raw_name))[0]
-    head = (text or "")[:2000]
+    head = _normalize_pdf_text(text or "")[:2000]
 
     # 1) 명시적 사업장 패턴 (1번사업장, 제2사업장, OO지점, 본점 등)
     m_num_wp = re.search(
@@ -91,7 +137,7 @@ def infer_workplace_name(name: str, text: str = "") -> str:
 
     # 3) 파일명에서 연도·서류종류·시스템 키워드를 제거한 나머지 토큰 확인
     cleaned = re.sub(
-        r"(첨부|엑셀|워드|이미지|PDF|CSV|파일명|파일|총\s*\d+\s*행|총\s*\d+\s*페이지|202[0-9]\s*년?|2[0-9]\s*년|귀속|소득자별|근로소득|원천징수부|원천징수|급여대장|급여명세서|사원대장|사업자등록증|공제감면세액계산서|상시근로자명세서|임의|샘플|업로드용|자료|\d+\s*월|wht|biz_reg)",
+        r"(첨부|엑셀|워드|이미지|PDF|CSV|파일명|파일|총\s*\d+\s*행|총\s*\d+\s*페이지|202[0-9]\s*년?|2[0-9]\s*년|귀속|소득자별|근로소득|원천징수부|원천징수|급여대장|급여명세서|사원대장|사업자등록증|공제감면세액계산서|상시근로자명세서|세액공제조정명세서|근로자고용현황|고용현황|임의|샘플|업로드용|자료|\d+\s*월|wht|biz_reg)",
         " ",
         stem,
         flags=re.IGNORECASE,
@@ -105,8 +151,8 @@ def infer_workplace_name(name: str, text: str = "") -> str:
 
 
 def classify_file(name: str, text: str = "") -> str | None:
-    n = (name or "").lower().replace(" ", "")
-    head = (text or "")[:4000].replace(" ", "")
+    n = re.sub(r"\s+", "", (name or "").lower())
+    head = re.sub(r"\s+", "", (text or "")[:8000].lower())
     both = n + " " + head
 
     # 1) 사업자등록증 / 등기부등본 / 주주명부 우선 판별
@@ -121,7 +167,8 @@ def classify_file(name: str, text: str = "") -> str | None:
     wht_keywords = ("원천징수", "급여대장", "급여명세", "사원대장", "임직원", "wht")
     is_wht_like = any(k in both for k in wht_keywords)
     credit_form_marks = (
-        "공제감면세액", "공제감면", "공제세액계산", "세액공제신청", "상시근로자명세", "세액조정계산", "최저한세조정"
+        "공제감면세액", "공제감면", "공제세액계산", "세액공제신청", "상시근로자명세",
+        "세액조정계산", "세액공제조정명세", "최저한세조정", "근로자고용현황"
     )
     is_credit_form = any(k in both for k in credit_form_marks)
     if is_wht_like and not is_credit_form:
@@ -139,12 +186,13 @@ def classify_file(name: str, text: str = "") -> str | None:
         if m_head:
             return f"wht_{m_head.group(1)}"
         for yr in range(2028, 2020, -1):
-            if f"{yr}년" in head[:1500] or f"{yr}귀속" in head[:1500]:
+            if f"{yr}년" in head[:2500] or f"{yr}귀속" in head[:2500]:
                 return f"wht_{yr}"
 
-    # 3) 공제감면세액계산서 / 기신고 상시근로자 명세서 판별
+    # 3) 공제감면세액계산서 / 기신고 상시근로자 명세서 / 근로자고용현황 / 세액공제조정명세서 판별
     credit_calc_keywords = (
-        "공제감면", "감면세액", "공제세액계산", "세액공제신청", "상시근로자", "통합고용", "고용증대", "조정명세", "사후관리", "credit_calc"
+        "공제감면", "감면세액", "공제세액계산", "세액공제신청", "상시근로자",
+        "통합고용", "고용증대", "조정명세", "사후관리", "근로자고용현황", "고용현황", "인원현황", "credit_calc"
     )
     if any(k in both for k in credit_calc_keywords):
         for yr in range(2028, 2020, -1):
@@ -152,7 +200,7 @@ def classify_file(name: str, text: str = "") -> str | None:
             if str(yr) in n or f"{short_yr}년" in n or f"_{short_yr}" in n:
                 return f"credit_calc_{yr}" if yr >= 2025 else "prev_filing"
         for yr in range(2028, 2024, -1):
-            if f"{yr}년" in head[:1500] or f"{yr}귀속" in head[:1500]:
+            if f"{yr}년" in head[:2500] or f"{yr}귀속" in head[:2500]:
                 return f"credit_calc_{yr}"
         return "prev_filing"
 
@@ -267,11 +315,12 @@ def call_gemini_json(
         return {}
 
     models = _get_gemini_models(prefer_pro=prefer_pro)
+    clean_text = _normalize_pdf_text(text or "")
     prompt = (
         instruction
         + "\n\n규칙: JSON만 출력하고 설명·마크다운은 쓰지 마세요. "
         "서류에 없는 값은 지어내지 말고 빈 문자열(\"\")이나 null로 두세요.\n\n[서류 내용]\n"
-        + (text or "")[:MAX_TEXT_CHARS]
+        + clean_text[:MAX_TEXT_CHARS]
     )
 
     for api_key in keys:
@@ -975,7 +1024,10 @@ def extract_all(doc_texts: dict[str, str], log_tokens_fn=None, room_key: str = "
                 out.setdefault("_truncated", []).append(yr)      # 읽기 상한으로 잘린 파일 → 경고
             if nts_n:
                 nts_rows = _parse_nts_wht_form(text)
-                if len(nts_rows) == nts_n:
+                # 같은 파일에 같은 사람(성명+주민번호 앞자리)이 두 번 이상 있으면 한 건으로 합쳐지므로
+                # '서로 다른 사람 수'와 비교 (재입사자 등으로 건수가 줄어도 판독 결과를 버리지 않음)
+                uniq_n = _nts_wht_unique_people_count(text)
+                if nts_rows and (len(nts_rows) == nts_n or uniq_n <= len(nts_rows) <= nts_n):
                     out["wht"][yr] = nts_rows          # 국세청 서식 전원 판독 → AI 호출 없음
                     continue
             fast_rows = _try_fast_parse_wht_table(text)
@@ -1082,14 +1134,23 @@ def build_prev_summary(ext: dict, tax_year: int, corp_size: str = "중소기업"
     cs = {int(k): v for k, v in ((ext or {}).get("credit_stmt") or {}).items()}
     for y_str, o in out.items():
         y = int(y_str)
-        if y in cs:
-            o["공제세액"] = float(cs[y]["1차"])
-        # AI가 읽은 '2차 공제세액'은 귀속연도 대응이 자주 틀려, 다음 해 계산명세로 확인될 때만 사용
-        o["2차_공제세액"] = float(cs[y + 1]["2차"]) if (y + 1) in cs else None
+        if cs:
+            if y in cs:
+                o["공제세액"] = float(cs[y]["1차"])
+            # AI가 읽은 '2차 공제세액'은 귀속연도 대응이 자주 틀려, 다음 해 계산명세로 확인될 때만 사용
+            o["2차_공제세액"] = float(cs[y + 1]["2차"]) if (y + 1) in cs else None
+        elif o.get("2차_공제세액") is not None:
+            o["_2차_AI판독"] = True                # 18S 서식이 없어 AI 판독값 사용 → 화면에서 확인 경고
         # ② 이월세액이 공제세액 이상이면 소계·공제세액을 잘못 읽은 것 → 비움 (직접 입력)
         cf, cr = o.get("이월세액"), o.get("공제세액")
         if cf is not None and (cr is None or cf >= cr):
             o["이월세액"] = None
+        # 공제세액이 0원으로 확인된 해는 공제받은 증가인원도 0명
+        if cr is not None and float(cr) == 0.0:
+            if o.get("청년등_증가") is None:
+                o["청년등_증가"] = 0.0
+            if o.get("청년등외_증가") is None:
+                o["청년등외_증가"] = 0.0
     # ③ 증가인원·최초공제연도 소재지 보완 (기신고 인원 차이 우선 → 공제세액 조합 역산)
     prior_counts = {}
     for y_str, vals in prev_map.items():
@@ -1104,7 +1165,7 @@ def fill_missing_increments(ps: dict, corp_size: str = "중소기업", extra_cou
     기신고 기초값(ps)에서 비어 있는 '공제받은 증가인원'과 '공제 당시 소재지'를 보완합니다.
     1순위: 그해와 직전연도의 기신고 인원(상시·청년등)이 모두 있으면 법정 산식(전체 증가 한도)으로 증가인원을 계산하고,
            그 인원 × 단가가 기신고 공제세액과 정확히 맞을 때만 채택 (맞는 단가표로 소재지도 결정)
-    2순위: 공제세액을 만드는 청년등·청년등외 조합이 하나뿐일 때만 채택
+    2순위: 공제세액을 만드는 청년등·청년등외 조합 역산 (_infer_increase_and_location)
     이미 값이 있으면 건드리지 않고, 소재지만 비어 있으면 추정합니다. 계산 단계에서도 다시 호출해 예전 백업도 보완됩니다.
     """
     counts = dict(extra_counts or {})
@@ -1137,11 +1198,21 @@ def fill_missing_increments(ps: dict, corp_size: str = "중소기업", extra_cou
         _infer_increase_and_location(o, corp_size)
 
 
+def _twelfth_consistent(v) -> bool:
+    """인원(소수 둘째 자리)이 '정수 근무월수 합계 ÷ 12'를 절사한 값으로 설명되는지"""
+    try:
+        c = round(float(v) * 100)
+    except (TypeError, ValueError):
+        return False
+    return any((m * 100) // 12 == c for m in range(max(0, c * 12 // 100 - 1), c * 12 // 100 + 3))
+
+
 def _infer_increase_and_location(o: dict, corp_size: str = "중소기업") -> None:
     """
     기신고 공제세액과 인원으로 (a) 최초공제연도 수도권 여부, (b) 비어 있는 증가인원을 역산합니다.
     - 증가인원이 있으면: 어느 단가표(수도권/수도권 밖)로 공제세액이 맞는지 확인해 소재지를 추정
-    - 증가인원이 없으면: 청년등·청년등외 증가인원 조합 중 공제세액과 정확히 맞는 조합이 하나뿐일 때만 채움
+    - 증가인원이 없으면: 청년등·청년등외 증가인원 조합 중 공제세액과 정확히 맞는 조합을 역산
+      (0.01 단위 전수 탐색에서 유일해가 있으면 즉시 채택하고, 복수해가 있을 때는 12개월 절사 나머지 조건·정수 증가 조건으로 유일해 판별)
     """
     credit = o.get("공제세액")
     if not credit:
@@ -1177,10 +1248,34 @@ def _infer_increase_and_location(o: dict, corp_size: str = "중소기업") -> No
                 continue
             if rest % (rg * 100) == 0 and rest // (rg * 100) <= round(gen_cap * 100):
                 sols.append((cap, yc / 100, rest / (rg * 100) / 100))
+    picked = None
     if len(sols) == 1:
-        cap, y, g = sols[0]
+        picked = sols[0]
+    elif len(sols) > 1 and _twelfth_consistent(reg) and _twelfth_consistent(yth):
+        # 복수해 필터는 '인원 = 근무월수 ÷ 12'(정규직만)일 때만 성립.
+        # 단시간(0.5·0.75) 가중치가 섞여 당해 인원이 12분의 1 단위로 설명되지 않으면 쓰지 않고 비워 둠 (틀린 값 채움 방지)
+        twelfth_rem = {(m * 100) // 12 for m in range(12)}
+        r_cur = round(float(reg) * 100) % 100
+        y_cur = round(float(yth) * 100) % 100
+        valid_tot_rem = {(r_cur - rp) % 100 for rp in twelfth_rem}
+        valid_yth_rem = {(y_cur - yp) % 100 for yp in twelfth_rem}
+        f1 = [
+            (cap, y, g) for (cap, y, g) in sols
+            if (round((y + g) * 100) % 100) in valid_tot_rem
+            and (round(g * 100) == 0 or (round(y * 100) % 100) in valid_yth_rem)
+        ]
+        if len(f1) == 1:
+            picked = f1[0]
+        elif len(f1) > 1 and r_cur == 0 and y_cur == 0:
+            f2 = [(cap, y, g) for (cap, y, g) in f1 if round(y * 100) % 100 == 0 and round(g * 100) % 100 == 0]
+            if len(f2) == 1:
+                picked = f2[0]
+    if picked is not None:
+        cap, y, g = picked
         o["청년등_증가"], o["청년등외_증가"] = y, g
         o["_증가_역산"] = True
+        if len(sols) > 1:
+            o["_증가_추정"] = True          # 여러 조합 중 필터로 고른 값 → 화면에서 확인 경고
         if o.get("수도권") is None:
             o["수도권"] = cap
             o["_소재지_추정"] = True
@@ -1630,41 +1725,132 @@ def _infer_birth(yymmdd: str, gender_digit: str = "") -> date | None:
         return None
 
 
-def _parse_nts_wht_form(text: str) -> list[dict]:
+def _parse_nts_wht_form(text: str, default_wp: str = "") -> list[dict]:
     """
     소득자별 근로소득원천징수부(소득세법 시행규칙 별지 제25호서식(1)) 판독.
-    사원마다 1쪽(근로소득지급명세)의 '월 + 지급연월(YYYY/MM) + 급여'가 있는 달을 급여 지급 월로 봄.
+    - 복수사업장 구분자(<<<FILE_WP:사업장명>>>) 보존
+    - 당월지급(2023/01) 및 익월지급(2023/02) 모두 지원하며 급여구간(~) 직전 과세총급여(계) 우선 추출
+    - 3쪽 징수의무자 대표자이면서 급여가 0원인 경우 대표이사(R.EMP_CEO)로 자동 분류
     """
+    if not text:
+        return []
+    if "<<<FILE_WP:" in text:
+        combined: list[dict] = []
+        cur_wp = default_wp
+        buf: list[str] = []
+        for ln in text.splitlines():
+            m_wp = FILE_WP_MARKER_RE.match(ln.strip())
+            if m_wp is not None:
+                if buf:
+                    combined.extend(_parse_nts_wht_form("\n".join(buf), default_wp=cur_wp))
+                    buf = []
+                raw_wp = m_wp.group(1).strip()
+                cur_wp = "" if _is_employee_id_token(raw_wp) else raw_wp
+            else:
+                buf.append(ln)
+        if buf:
+            combined.extend(_parse_nts_wht_form("\n".join(buf), default_wp=cur_wp))
+        return combined
+
+    clean_wp = "" if _is_employee_id_token(default_wp) else default_wp
     s = _squash(text)
+    signer_tails = re.findall(r"징수의무자:\(서명또는인\)\d{8}([^※]{2,30})(?:※|210mm)", s)
     chunks = re.split(r"①귀속연도", s)
     out: list[dict] = []
+    seen_idx: dict[tuple[str, str], int] = {}
+
     for ch in chunks:
-        # 변환 방식에 따라 항목 순서가 달라지므로 각각 따로 찾음
         m = re.search(r"⑤성명([가-힣A-Za-z·]{1,20}?)⑥주민등록번호(\d{6})-?([\d\*]?)", ch)
         if not m:
             continue
         name = m.group(1)
-        birth = _infer_birth(m.group(2), m.group(3) if m.group(3) not in ("*", "") else "")
-        mh = re.search(r"⑦입사일(\d{4})년(\d{1,2})월(\d{1,2})일", ch)
-        mr = re.search(r"⑦퇴사일(\d{4})년(\d{1,2})월(\d{1,2})일", ch)
+        rrn6 = m.group(2)
+        g_dig = m.group(3) if m.group(3) not in ("*", "") else ""
+        birth = _infer_birth(rrn6, g_dig)
+        rrn7 = f"{rrn6}-{m.group(3) or '*'}"
+        mh = (
+            re.search(r"⑦입사일(\d{4})년(\d{1,2})월(\d{1,2})일", ch)
+            or re.search(r"⑦입사일(\d{4})[-./](\d{1,2})[-./](\d{1,2})", ch)
+        )
+        mr = (
+            re.search(r"⑦퇴사일(\d{4})년(\d{1,2})월(\d{1,2})일", ch)
+            or re.search(r"⑦퇴사일(\d{4})[-./](\d{1,2})[-./](\d{1,2})", ch)
+        )
         try:
             hire = date(int(mh.group(1)), int(mh.group(2)), int(mh.group(3))) if mh else None
             retire = date(int(mr.group(1)), int(mr.group(2)), int(mr.group(3))) if mr else None
         except ValueError:
             hire = retire = None
-        page1 = ch.split("Ⅱ.비과세소득")[0]
+        page1 = re.split(r"Ⅱ\.비과세소득|Ⅲ\.근로소득원천징수액등", ch)[0]
+        m_tbl = re.search(r"소득세1월(.*?)연말종전납세", page1)
+        tbl_str = "1월" + m_tbl.group(1) if m_tbl else page1
         pay = {str(k): 0.0 for k in range(1, 13)}
-        for mm in re.finditer(r"(\d{1,2})월(\d{4})/(\d{2})(" + _NUM + ")", page1):
-            mon = int(mm.group(1))
-            if 1 <= mon <= 12 and int(mm.group(3)) == mon:
-                pay[str(mon)] = float(mm.group(4).replace(",", "") or 0) or 1.0
+
+        # 당월지급 및 익월지급 모두 포착 (지급연월 YYYY/MM 뒤 행 토큰에서 과세급여 추출)
+        for m_paid in re.finditer(
+            r"(1[0-2]|[1-9])월(20\d{2}/(?:0[1-9]|1[0-2]))(.*?)(?=(?:1[0-2]|[1-9])월(?:20\d{2}/|(?:1[0-2]|[1-9])월|연말)|연말|$)",
+            tbl_str,
+        ):
+            mon = int(m_paid.group(1))
+            if not (1 <= mon <= 12):
+                continue
+            row_tail = m_paid.group(3)
+            tokens = re.findall(r"\d{1,3}(?:,\d{3})+(?:~\d{1,3}(?:,\d{3})+)?", row_tail)
+            pre_range: list[float] = []
+            has_tilde = any("~" in tk for tk in tokens)
+            for tk in tokens:
+                if "~" in tk:
+                    break
+                pre_range.append(float(tk.replace(",", "")))
+            if pre_range:
+                if has_tilde:
+                    pay[str(mon)] = pre_range[-1]
+                elif len(pre_range) >= 3 and abs(pre_range[0] + pre_range[1] - pre_range[2]) < 10:
+                    pay[str(mon)] = pre_range[2]
+                else:
+                    pay[str(mon)] = pre_range[0]
+            else:
+                m_simple = re.match(r"^(" + _NUM + ")", row_tail)
+                if m_simple:
+                    pay[str(mon)] = float(m_simple.group(1).replace(",", "") or 0) or 1.0
+
         foreign = "⑧내외국인구분외국인" in ch
-        out.append({
-            "사업장명": "", "성명": name, "생년월일": birth.isoformat() if birth else "",
-            "외국인": foreign, "입사일": hire.isoformat() if hire else "", "퇴사일": retire.isoformat() if retire else "",
-            "고용유형": R.EMP_REGULAR, "병역개월": 0, "월급여": pay,
-        })
+        is_signer = any(t.endswith(name) for t in signer_tails)
+        emp_type = R.EMP_CEO if (is_signer and sum(pay.values()) == 0) else R.EMP_REGULAR
+        dedup_k = (clean_wp, name, rrn6)
+        if dedup_k in seen_idx:
+            ex = out[seen_idx[dedup_k]]
+            for k in range(1, 13):
+                mk = str(k)
+                ex["월급여"][mk] = float(ex["월급여"].get(mk, 0.0)) + float(pay.get(mk, 0.0))
+            if hire and (not ex.get("입사일") or hire.isoformat() < ex["입사일"]):
+                ex["입사일"] = hire.isoformat()
+            if retire:
+                ex["퇴사일"] = retire.isoformat()
+        else:
+            seen_idx[dedup_k] = len(out)
+            out.append({
+                "사업장명": clean_wp,
+                "성명": name,
+                "주민번호앞7자리": rrn7,
+                "생년월일": birth.isoformat() if birth else "",
+                "외국인": foreign,
+                "입사일": hire.isoformat() if hire else "",
+                "퇴사일": retire.isoformat() if retire else "",
+                "고용유형": emp_type,
+                "병역개월": 0,
+                "월급여": pay,
+            })
     return out
+
+
+def _nts_wht_unique_people_count(text: str) -> int:
+    """서식 안의 서로 다른 사람 수 (사업장 구분 + 성명 + 주민번호 앞 6자리 기준)"""
+    total = 0
+    for seg in re.split(r"<<<FILE_WP:.*?>>>", str(text or "")):
+        pairs = re.findall(r"⑤성명([가-힣A-Za-z·]{1,20}?)⑥주민등록번호(\d{6})", _squash(seg))
+        total += len(set(pairs))
+    return total
 
 
 def _nts_wht_people_count(text: str) -> int:

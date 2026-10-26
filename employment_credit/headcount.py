@@ -468,7 +468,10 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
     other_year_pay = any(
         _has_any_pay_record(v) for k, v in (person.get("월급여") or {}).items() if str(k) != str(year)
     )
-    absent_in_wht = int(year) in wht_years and not has_any_pay_data and other_year_pay
+    # 그해 원천징수부에 없는 사람은 사용자가 '상시'를 O로 직접 지정했을 때만 산입
+    # (고용유형만 바꾼 경우까지 산입하면 승계·전입자가 직전연도에 이중 계산될 수 있음. 월별 값 직접 입력은 별도로 항상 반영)
+    user_activated_row = yrec.get("상시_override") == "O"
+    absent_in_wht = int(year) in wht_years and not has_any_pay_data and other_year_pay and not user_activated_row
 
     # 기중양도(고용승계 포함, 조특령 제23조 제13항 준용): 양도일 현재 근무자는 개시일에 승계시킨 것으로 보아 그해 0
     tr_out_map = ctx.get("transfer_out_map") or {}
