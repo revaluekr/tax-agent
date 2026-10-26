@@ -1406,13 +1406,15 @@ def _shareholder_relations(shareholders: list[dict]) -> dict[str, str]:
 
 
 def new_year_rec(emp_type: str = R.EMP_REGULAR, confirmed_emp: bool = False) -> dict:
+    # 고용유형은 원천징수부만으로 확정할 수 없으므로(단시간 0.5/0.75, 계약직, 임원 여부 등 실무 변경 필수)
+    # 항상 입력·선택 가능한 열림 상태로 유지합니다.
     return {
         "고용유형": emp_type if emp_type in R.EMP_TYPES else R.EMP_REGULAR,
         "제외사유": "",
         "청년등": "",
         "상시_override": "",
         "월_override": {},
-        "_confirmed": ["고용유형"] if confirmed_emp else [],
+        "_confirmed": [],
         "_user_set": [],
         "_unlocked": False,
     }

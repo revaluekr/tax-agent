@@ -47,6 +47,9 @@ _RRN_FULL_RE = re.compile(r"(?<!\d)(\d{6})\s*-\s*([1-8])\d{6}(?!\d)")
 BACKUP_KEYS = (
     "tax_year",
     "step",
+    "max_step_reached",
+    "max_step_reached",
+    "max_step_reached",
     "biz",
     "sub_biz_list",
     "files",
