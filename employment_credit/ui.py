@@ -81,6 +81,9 @@ _PERSIST_KEYS = (
 # ══════════════════════════════════════════════════════════════════
 # 0. 작업공간별 상태 보관 (메모리 + 디스크 `.workspace_storage` 자동 동기화)
 # ══════════════════════════════════════════════════════════════════
+_RRN_FULL_RE = re.compile(r"(?<!\d)(\d{6})\s*-\s*([1-8])\d{6}(?!\d)")
+
+
 def _ec_disk_path(ws_id: str) -> str:
     safe_hash = hashlib.md5(str(ws_id or "default_ec").encode("utf-8")).hexdigest()[:16]
     return os.path.join(STORAGE_DIR, f"ec_state_{safe_hash}.json")
@@ -114,8 +117,17 @@ def _save_ec_to_disk(s: dict | None = None) -> None:
             s = store.get(ws_id)
         if not isinstance(s, dict):
             return
+        if ws_id == "default_ec":
+            return          # 작업공간 없이 쓰는 경우 다른 사용자와 같은 파일을 공유하게 되므로 디스크에 저장하지 않음
         os.makedirs(STORAGE_DIR, exist_ok=True)
         payload = {k: s.get(k) for k in _PERSIST_KEYS if k in s}
+        # 주민등록번호 뒷자리는 저장하지 않음 (계산에는 앞 7자리만 필요)
+        if isinstance(payload.get("files"), dict):
+            payload["files"] = {
+                n: {**f, "text": _RRN_FULL_RE.sub(r"\1-\2******", str(f.get("text") or ""))}
+                if isinstance(f, dict) else f
+                for n, f in payload["files"].items()
+            }
         with open(_ec_disk_path(ws_id), "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False)
     except Exception:
@@ -286,6 +298,87 @@ def _workplace_close_month_map(s: dict, year: int) -> dict[str, int]:
     return out
 
 
+def _succession_map(s: dict, year: int) -> dict[str, dict]:
+    """
+    포괄양수·합병·분할·법인전환 승계 사업장 중 해당 연도(year)에 승계한 사업장:
+    {사업장명: {"month": 승계월, "date": 승계일, "keep_hire": 입사일 유지 여부}}
+    승계일은 사이드바 '개업·양수일'을 쓰고, 비어 있으면 그 사업장 직원의 첫 급여월로 추정합니다.
+    """
+    out: dict[str, dict] = {}
+    for sb in (s.get("sub_biz_list") or []):
+        tp = str(sb.get("구분") or "")
+        wp = str(sb.get("상호") or "").strip()
+        if not wp or not any(k in tp for k in ("포괄양수", "승계", "합병", "분할", "법인전환")):
+            continue
+        d = H.parse_date(sb.get("개업일"))
+        if d is None:
+            first = []
+            for p in (s.get("people") or {}).values():
+                if ((p.get("연도별_사업장명") or {}).get(str(year)) or p.get("사업장명")) != wp:
+                    continue
+                pay = (p.get("월급여") or {}).get(str(year))
+                ms = [m for m in range(1, 13) if (H._get_month_pay(pay, m) or 0) > 0]
+                if ms:
+                    first.append(min(ms))
+            if first:
+                from datetime import date as _date
+                d = _date(int(year), min(first), 1)
+        if d is None or d.year != int(year):
+            continue
+        out[wp] = {"month": d.month, "date": d, "keep_hire": bool(sb.get("고용승계_입사일유지", True))}
+    return out
+
+
+def _transfer_out_map(s: dict, year: int) -> dict:
+    """기중양도 사업장 중 '양수인이 근로자를 승계'로 표시하고 그해 양도일이 있는 사업장: {사업장명: 양도일}"""
+    out = {}
+    for sb in (s.get("sub_biz_list") or []):
+        tp = str(sb.get("구분") or "")
+        wp = str(sb.get("상호") or "").strip()
+        d = H.parse_date(sb.get("폐업일"))
+        if wp and "기중양도" in tp and sb.get("양도_고용승계") and d and d.year == int(year):
+            out[wp] = d
+    return out
+
+
+def _adjusted_prev_totals(s: dict, prev_t: dict) -> tuple[dict, float, float]:
+    """
+    직전연도(tax_yr-1) 합계에 승계 조정을 적용한 사본을 돌려줍니다 (조특령 제23조 제13항 준용).
+    - 승계한 기업: 사이드바에 입력한 피승계 사업장 직전연도 인원을 더함
+    - 승계시킨 기업(기중양도·고용승계): 당해 양도로 넘어간 근로자의 직전연도 인원을 사원표에서 자동 계산해 뺌
+    반환: (조정된 합계, 가산 인원, 차감 인원)
+    """
+    t = int(s["tax_year"])
+    adj = dict(prev_t or {})
+    if not adj:
+        return adj, 0.0, 0.0
+    m1 = int(adj.get("months_in_year") or 12)
+    suc_reg, suc_yth = _succeeded_prev_headcount_sum(s)
+
+    ded_reg = ded_yth = 0.0
+    if _transfer_out_map(s, t):
+        _, comp_cur, _ = _build_year_rows(s, t)
+        out_pids = {pid for pid, c in comp_cur.items() if c.get("transferred_out")}
+        if out_pids:
+            _, comp_prev, _ = _build_year_rows(s, t - 1)
+            if comp_prev:
+                full = H.year_totals(list(comp_prev.values()), m1, year=t - 1)
+                kept = H.year_totals([c for pid, c in comp_prev.items() if pid not in out_pids], m1, year=t - 1)
+                ded_reg = round(full["상시_평균"] - kept["상시_평균"], 2)
+                ded_yth = round(full["청년등_평균"] - kept["청년등_평균"], 2)
+
+    if suc_reg or suc_yth or ded_reg or ded_yth:
+        adj["상시_평균"] = round(float(adj.get("상시_평균") or 0.0) + suc_reg - ded_reg, 2)
+        adj["청년등_평균"] = round(float(adj.get("청년등_평균") or 0.0) + suc_yth - ded_yth, 2)
+        adj["청년외_평균"] = round(max(0.0, adj["상시_평균"] - adj["청년등_평균"]), 2)
+        adj["b1_reg"], adj["b1_yth"], adj["b1_gen"] = adj["상시_평균"], adj["청년등_평균"], adj["청년외_평균"]
+        adj["상시_합계"] = round(float(adj.get("상시_합계") or 0.0) + (suc_reg - ded_reg) * m1, 2)
+        adj["청년등_합계"] = round(float(adj.get("청년등_합계") or 0.0) + (suc_yth - ded_yth) * m1, 2)
+        adj["청년외_합계"] = round(max(0.0, adj["상시_합계"] - adj["청년등_합계"]), 2)
+        adj["has_data"] = True
+    return adj, suc_reg, ded_reg
+
+
 def _succeeded_prev_headcount_sum(s: dict) -> tuple[float, float]:
     """
     합산 사유 구분이 '포괄양수 사업장(기중 양수)' 또는 '합병·분할·법인전환 승계'인 사업장에 입력된
@@ -323,6 +416,9 @@ def _ctx(s: dict, year: int) -> dict:
         "include_unpaid_hire_month": bool(s.get("include_unpaid_hire_month", True)),
         "last_paid_month": last_m,
         "workplace_close_month_map": _workplace_close_month_map(s, year),
+        "wht_years": sorted(_uploaded_wht_years(s)),
+        "succession_map": _succession_map(s, year),
+        "transfer_out_map": _transfer_out_map(s, year),
     }
 
 
@@ -564,7 +660,7 @@ def _build_schedule_pdf_bytes(s: dict, target_years: list[int], include_summary:
         rows, _, totals = _build_year_rows(s, y)
         totals_by_yr[y] = totals
         role_desc = _year_role_description(s, tax_yr, y)
-        trunc_mode = "인별절사" if int(y) >= 2025 else "전체절사"
+        trunc_mode = "합산 후 절사"
         b3_t, b4_t, b5_t = _block_titles_for_year(y, two_line=False)
 
         has_y1 = _has_year_data(s, y - 1) or bool(s.get("show_empty_pm_blocks", False))
@@ -699,10 +795,10 @@ def _build_schedule_pdf_bytes(s: dict, target_years: list[int], include_summary:
 
     if include_summary and tax_yr in totals_by_yr and (tax_yr - 1) in totals_by_yr:
         story.append(Spacer(1, 10))
-        cur_t, prv_t = totals_by_yr[tax_yr], totals_by_yr[tax_yr - 1]
-        suc_reg, suc_yth = _succeeded_prev_headcount_sum(s)
-        eff_prv_reg = round(prv_t["상시_평균"] + suc_reg, 2)
-        eff_prv_yth = round(prv_t["청년등_평균"] + suc_yth, 2)
+        cur_t = totals_by_yr[tax_yr]
+        adj_prv, _, _ = _adjusted_prev_totals(s, totals_by_yr[tax_yr - 1])
+        eff_prv_reg = round(adj_prv["상시_평균"], 2)
+        eff_prv_yth = round(adj_prv["청년등_평균"], 2)
         eff_prv_gen = round(max(0.0, eff_prv_reg - eff_prv_yth), 2)
         inc = H.calc_increase_with_cap(
             cur_t["상시_평균"], cur_t["청년등_평균"], cur_t["청년외_평균"], eff_prv_reg, eff_prv_yth, eff_prv_gen
@@ -1238,9 +1334,9 @@ def _top_status_bar(s: dict):
     tax_yr = int(s.get("tax_year") or R.DEFAULT_TAX_YEAR)
     pm_lbl = R.PM_BASIS_LABELS.get(s.get("pm_basis", R.PM_BASIS_FILED), "기신고 기준")
     law_ver = (
-        f"{tax_yr}귀속 (인별절사 · 사후관리: {pm_lbl})"
+        f"{tax_yr}귀속 (합산 후 절사 · 사후관리: {pm_lbl})"
         if tax_yr >= 2025
-        else f"{tax_yr}귀속 (전체절사 · 사후관리: {pm_lbl})"
+        else f"{tax_yr}귀속 (합산 후 절사 · 사후관리: {pm_lbl})"
     )
     step_nm = STEPS[max(0, min(len(STEPS) - 1, int(s.get("step", 1)) - 1))]
 
@@ -1366,9 +1462,9 @@ def render_credit_sidebar():
 
     with st.container(border=True):
         yr_badge = (
-            f"<span class='sb-badge-green'>{tax_yr}년 (인별절사)</span>"
+            f"<span class='sb-badge-green'>{tax_yr}년 (합산 후 절사)</span>"
             if tax_yr >= 2025
-            else f"<span class='sb-badge-amber'>{tax_yr}년 (전체절사)</span>"
+            else f"<span class='sb-badge-amber'>{tax_yr}년 (합산 후 절사)</span>"
         )
         st.markdown(
             f"<div class='sb-card-title'><span>📅 귀속사업연도</span>{yr_badge}</div>",
@@ -1378,7 +1474,7 @@ def render_credit_sidebar():
             "통합고용세액공제 계산 기준 사업연도",
             options=R.SUPPORTED_TAX_YEARS,
             index=R.SUPPORTED_TAX_YEARS.index(tax_yr),
-            format_func=lambda y: f"{y}년 귀속 ({'인별절사' if y >= 2025 else '전체절사'} · {(y-1)%100:02d}·{(y-2)%100:02d} 사후관리)",
+            format_func=lambda y: f"{y}년 귀속 ({'합산 후 절사'} · {(y-1)%100:02d}·{(y-2)%100:02d} 사후관리)",
             label_visibility="collapsed",
             key="ec_sb_tax_year_select",
         )
@@ -1513,7 +1609,8 @@ def render_credit_sidebar():
 
                     tp_str = str(sb.get("구분") or "")
                     if any(k in tp_str for k in ("포괄양수", "승계", "합병", "분할", "법인전환")):
-                        st.caption("⚖️ **조특령 제26조의8 제10항 (고용승계·포괄양수 특례)**: 피승계(양도) 사업장의 직전연도 상시·청년등 인원을 입력하면 3단계 직전연도 비교 인원에 자동 합산됩니다.")
+                        st.caption("⚖️ **승계한 기업 특례 (조특령 제23조 제13항 준용)**: 피승계 사업장의 직전연도 인원을 입력하면 직전연도 비교 인원에 더합니다. "
+                                   "당해연도는 『개업·양수일』을 승계일로 보고 그 이전 달도 산입합니다(비워두면 이 사업장 직원의 첫 급여월로 추정).")
                         cp1, cp2 = st.columns(2)
                         sb["승계_직전상시"] = cp1.number_input(
                             f"피승계 직전({tax_yr-1}년) 상시",
@@ -1540,9 +1637,18 @@ def render_credit_sidebar():
                             help="포괄양수·법인전환 등으로 고용을 승계한 근로자는 종전 사업장 최초 근로계약 체결일 기준으로 청년 연령 및 1년 이상 근속 여부를 판정합니다.",
                         )
                     elif "기중양도" in tp_str:
-                        st.caption(
-                            "⚖️ **기중양도·폐업 사업장 특례**: 위 『폐업·양도일』을 입력하면 타 사업장으로 전출(`→`)되지 않은 소속 근로자는 양도월 이후 미도래 월에 대해 연말재직 가정(1 채움)이 자동 중단(`0` 처리)됩니다."
+                        sb["양도_고용승계"] = st.checkbox(
+                            "양수인이 근로자를 승계함 (포괄양도)",
+                            value=bool(sb.get("양도_고용승계", False)),
+                            key=f"ec_sub_tr_succ_{idx}",
+                            help="체크하면 조특령 제23조 제13항(준용)에 따라, 양도일 현재 이 사업장 근로자를 과세연도 개시일에 넘긴 것으로 보아 "
+                                 "당해 인원에서 빼고 직전연도 인원에서도 자동으로 차감합니다.",
                         )
+                        if sb.get("양도_고용승계"):
+                            st.caption("⚖️ **승계시킨 기업 특례**: 『폐업·양도일』 현재 이 사업장 근로자는 당해 인원에서 제외되고, "
+                                       "그 근로자들의 직전연도 인원은 사원표로 자동 계산해 직전연도 비교 인원에서 뺍니다.")
+                        else:
+                            st.caption("⚖️ **단순 폐업·양도(고용승계 없음)**: 『폐업·양도일』 이후 달은 0으로 처리하고, 그 전 달은 정상 산입합니다.")
                     else:
                         st.caption(
                             "⚖️ **법인 본·지점 합산 특례**: 본·지점 간 전출입(`본점→지점`) 근로자는 동일인으로 통합하여 월급여를 합산하며 중복 산입을 자동 방지합니다."
@@ -1603,14 +1709,14 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
         st.markdown(
             "<div class='ec-law-banner'>"
             "💡 <b>[2026년 귀속 통합 계산 안내]</b> 2026년 귀속 신고 시에는 "
-            "<b>① 26년 세액공제(인별절사)</b>, <b>② 25년 1차 사후관리(2차년도 연속공제·추징)</b>, "
+            "<b>① 26년 세액공제(합산 후 절사)</b>, <b>② 25년 1차 사후관리(2차년도 연속공제·추징)</b>, "
             "<b>③ 24년 2차 사후관리(3차년도 연속공제·추징)</b>를 함께 검토합니다. "
             "본점·지점 또는 기중 양도(1번)·포괄양수(2번) 복수 사업장 원천징수부를 함께 올리면 자동 합산됩니다."
             "</div>",
             unsafe_allow_html=True,
         )
     elif tax_yr in (2024, 2025):
-        trunc_lbl = "인별절사" if tax_yr >= 2025 else "전체절사"
+        trunc_lbl = "합산 후 절사"
         st.markdown(
             f"<div class='ec-law-banner'>"
             f"💡 <b>[{tax_yr}년 귀속 세액공제({trunc_lbl}) 및 사후관리 안내]</b> 2단계 진입 시 <b>『{tax_yr}년 귀속 상시근로자 명세』</b>가 맨 위에 표시되며, "
@@ -1931,7 +2037,7 @@ def _block_titles_for_year(year: int, two_line: bool = False) -> tuple[str, str,
     y0 = int(year)
     y1 = y0 - 1
     y2 = y0 - 2
-    trunc_mode = "인별절사" if y0 >= 2025 else "전체절사"
+    trunc_mode = "합산 후 절사"
     if two_line:
         return (
             f"3. {y0}년\n세액공제({trunc_mode})",
@@ -2307,7 +2413,7 @@ def _grid_options(
     go["columnDefs"] = col_defs
 
     n = totals["months_in_year"]
-    trunc_mode = "인별절사" if int(year) >= 2025 else "전체절사"
+    trunc_mode = "합산 후 절사"
     pinned = [
         {
             "사업장명": "합산합계",
@@ -2651,7 +2757,7 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
             f"<span class='kpi-sub'>(청년등 <b>{totals['b3_yth']:.2f}</b> · 청년외 <b>{totals['b3_gen']:.2f}</b>)</span>"
             f"</div>"
         )
-    trunc_mode = "인별절사" if int(year) >= 2025 else "전체절사"
+    trunc_mode = "합산 후 절사"
     st.markdown(
         f"<div class='ec-kpi-bar'>"
         f"<div class='ec-kpi-items'>{''.join(kpi_chips)}</div>"
@@ -2719,7 +2825,7 @@ def _render_prev_filing_summary_card(s: dict, shown_years: list[int]):
             y_entry["청년등"] = yth_val
         with c3:
             st.write("")
-            if st.button(f"➕ {t2_year}년 사원정보 표 직접 열어서 전체절사 계산하기", use_container_width=True, key=f"btn_open_yr_{t2_year}"):
+            if st.button(f"➕ {t2_year}년 사원정보 표 직접 열어서 계산하기", use_container_width=True, key=f"btn_open_yr_{t2_year}"):
                 extra = s.setdefault("manual_extra_years", [])
                 if t2_year not in extra:
                     extra.append(t2_year)
@@ -2822,10 +2928,10 @@ def _page_employees(room_key: str, log_tokens_fn=None):
     _render_prev_filing_summary_card(s, shown_years)
 
     if tax_yr in totals_all and (tax_yr - 1) in totals_all:
-        cur_t, prv_t = totals_all[tax_yr], totals_all[tax_yr - 1]
-        suc_reg, suc_yth = _succeeded_prev_headcount_sum(s)
-        eff_prv_reg = round(prv_t["상시_평균"] + suc_reg, 2)
-        eff_prv_yth = round(prv_t["청년등_평균"] + suc_yth, 2)
+        cur_t = totals_all[tax_yr]
+        adj_prv, suc_reg, ded_reg = _adjusted_prev_totals(s, totals_all[tax_yr - 1])
+        eff_prv_reg = round(adj_prv["상시_평균"], 2)
+        eff_prv_yth = round(adj_prv["청년등_평균"], 2)
         eff_prv_gen = round(max(0.0, eff_prv_reg - eff_prv_yth), 2)
         inc = H.calc_increase_with_cap(
             cur_t["상시_평균"],
@@ -2838,7 +2944,8 @@ def _page_employees(room_key: str, log_tokens_fn=None):
         cap_note = ""
         if inc.get("청년등_한도적용전", 0) > inc["청년등_증가"] or inc.get("청년등외_한도적용전", 0) > inc["청년등외_증가"]:
             cap_note = " &nbsp;·&nbsp; ⚠️ <b>전체 상시근로자 증가인원 한도(Cap) 자동 적용됨</b>"
-        suc_note = f" (포괄양수·승계 직전인원 +{suc_reg:.2f}명 반영)" if suc_reg > 0 else ""
+        suc_note = (f" (포괄양수·승계 직전인원 +{suc_reg:.2f}명 반영)" if suc_reg > 0 else "") + \
+                   (f" (기중양도 승계 근로자 직전인원 −{ded_reg:.2f}명 차감)" if ded_reg > 0 else "")
         st.markdown(
             f"<div class='ec-law-banner'>"
             f"📊 <b>[{tax_yr}년 vs {tax_yr-1}년 신규공제 고용증가 요약{suc_note}]</b> &nbsp; "
@@ -2983,20 +3090,9 @@ def _ensure_totals_snapshot(s: dict) -> dict[int, dict]:
                 "has_data": has_d,
             }
 
-    suc_reg, suc_yth = _succeeded_prev_headcount_sum(s)
-    if (suc_reg > 0 or suc_yth > 0) and (tax_yr - 1) in totals_all:
-        t1 = totals_all[tax_yr - 1]
-        m1 = int(t1.get("months_in_year") or 12)
-        t1["상시_평균"] = round(float(t1.get("상시_평균") or 0.0) + suc_reg, 2)
-        t1["청년등_평균"] = round(float(t1.get("청년등_평균") or 0.0) + suc_yth, 2)
-        t1["청년외_평균"] = round(max(0.0, t1["상시_평균"] - t1["청년등_평균"]), 2)
-        t1["b1_reg"] = t1["상시_평균"]
-        t1["b1_yth"] = t1["청년등_평균"]
-        t1["b1_gen"] = t1["청년외_평균"]
-        t1["상시_합계"] = round(float(t1.get("상시_합계") or 0.0) + suc_reg * m1, 2)
-        t1["청년등_합계"] = round(float(t1.get("청년등_합계") or 0.0) + suc_yth * m1, 2)
-        t1["청년외_합계"] = round(max(0.0, t1["상시_합계"] - t1["청년등_합계"]), 2)
-        t1["has_data"] = True
+    # 승계 조정(포괄양수 가산 / 기중양도 차감)을 직전연도 합계에 반영
+    if (tax_yr - 1) in totals_all:
+        totals_all[tax_yr - 1], _, _ = _adjusted_prev_totals(s, totals_all[tax_yr - 1])
 
     s["totals_snapshot"] = totals_all
     return totals_all
@@ -3207,11 +3303,11 @@ def _page_calculation():
                 else:
                     f["공제세액"] = _num_in(
                         a,
-                        f"{cohort}년분 누적 공제세액(1·2차년도, 원, 한도)",
+                        f"{cohort}년 최초 공제세액(1차년도, 원)",
                         f.get("공제세액"),
                         f"pf_{cohort}_clm_{kver}",
                         is_won=True,
-                        help_txt="2년차 추가납부 한도는 직전 2년 내 공제받은 세액 합계입니다.",
+                        help_txt="2년차 추가납부 한도는 이 금액과 아래 2차 공제세액을 자동으로 더해 계산합니다. 1차년도 금액만 넣으세요.",
                     )
                 f["이월세액"] = _num_in(
                     b_, f"{cohort}년분 미공제 이월세액(원)", f.get("이월세액"), f"pf_{cohort}_cf_{kver}", is_won=True
@@ -3417,7 +3513,7 @@ def _page_calculation():
             "전체 [총인원(연인원) / 평균]": f"{pkg['cur_s']['reg_total']:g}명 / {pkg['cur_s']['regular']:.2f}명",
             "청년등 [총인원 / 평균]": f"{pkg['cur_s']['yth_total']:g}명 / {pkg['cur_s']['youth']:.2f}명",
             "청년등 외 [총인원 / 평균]": f"{pkg['cur_s']['non_youth_total']:g}명 / {pkg['cur_s']['non_youth']:.2f}명",
-            "적용 기준 및 비교 안내": f"당해({tax_yr}년) 원천징수부 기준 (÷{pkg['cur_s']['months_in_year']}개월 · {'인별절사' if tax_yr >= 2025 else '전체절사'})",
+            "적용 기준 및 비교 안내": f"당해({tax_yr}년) 원천징수부 기준 (÷{pkg['cur_s']['months_in_year']}개월 · {'합산 후 절사'})",
         },
     ]
     if _has_year_data(s, tax_yr - 1):
@@ -3427,7 +3523,7 @@ def _page_calculation():
                 "전체 [총인원(연인원) / 평균]": f"{pkg['cur_s']['reg_total']:g}명 / {pkg['cur_s']['b2_reg']:.2f}명",
                 "청년등 [총인원 / 평균]": f"{pkg['cur_s']['b2_yth_total']:g}명 / {pkg['cur_s']['b2_yth']:.2f}명",
                 "청년등 외 [총인원 / 평균]": f"{cur_b2_gtot:g}명 / {cur_b2_gen:.2f}명",
-                "적용 기준 및 비교 안내": f"{tax_yr-1}년 입사 청년 연령경과(34세 초과) 간주 특례 반영 ({'인별절사' if (tax_yr-1) >= 2025 else '전체절사'})",
+                "적용 기준 및 비교 안내": f"{tax_yr-1}년 입사 청년 연령경과(34세 초과) 간주 특례 반영 ({'합산 후 절사'})",
             }
         )
     if has_t2_data:
@@ -3437,7 +3533,7 @@ def _page_calculation():
                 "전체 [총인원(연인원) / 평균]": f"{pkg['cur_s']['reg_total']:g}명 / {pkg['cur_s']['b3_reg']:.2f}명",
                 "청년등 [총인원 / 평균]": f"{pkg['cur_s']['b3_yth_total']:g}명 / {pkg['cur_s']['b3_yth']:.2f}명",
                 "청년등 외 [총인원 / 평균]": f"{cur_b3_gtot:g}명 / {cur_b3_gen:.2f}명",
-                "적용 기준 및 비교 안내": f"{tax_yr-2}년 입사 청년 연령경과(34세 초과) 간주 특례 반영 ({'인별절사' if (tax_yr-2) >= 2025 else '전체절사'})",
+                "적용 기준 및 비교 안내": f"{tax_yr-2}년 입사 청년 연령경과(34세 초과) 간주 특례 반영 ({'합산 후 절사'})",
             }
         )
     if pkg.get("base_y1"):
@@ -3623,7 +3719,7 @@ def _build_report_markdown(s: dict) -> str:
         "## 3. 연도별·사후관리 코호트별 상시근로자 수 상세 (총인원수 / 평균인원수)",
         "| 구분 | 전체 상시 [총인원 / 평균] | 청년등 [총인원 / 평균] | 청년등 외 [총인원 / 평균] | 적용 기준 |",
         "| :--- | ---: | ---: | ---: | :--- |",
-        f"| **{tax_yr}년 귀속 [{b3_title}]** | {pkg['cur_s']['reg_total']:g}명 / {pkg['cur_s']['regular']:.2f}명 | {pkg['cur_s']['yth_total']:g}명 / {pkg['cur_s']['youth']:.2f}명 | {pkg['cur_s']['non_youth_total']:g}명 / {pkg['cur_s']['non_youth']:.2f}명 | 근로계약 체결일 현재 연령 기준 ({'인별절사' if tax_yr >= 2025 else '전체절사'}) |",
+        f"| **{tax_yr}년 귀속 [{b3_title}]** | {pkg['cur_s']['reg_total']:g}명 / {pkg['cur_s']['regular']:.2f}명 | {pkg['cur_s']['yth_total']:g}명 / {pkg['cur_s']['youth']:.2f}명 | {pkg['cur_s']['non_youth_total']:g}명 / {pkg['cur_s']['non_youth']:.2f}명 | 근로계약 체결일 현재 연령 기준 ({'합산 후 절사'}) |",
         f"| **{tax_yr}년 귀속 [{b4_title}]** | {pkg['cur_s']['reg_total']:g}명 / {pkg['cur_s']['b2_reg']:.2f}명 | {pkg['cur_s']['b2_yth_total']:g}명 / {pkg['cur_s']['b2_yth']:.2f}명 | {round(max(0.0, pkg['cur_s']['reg_total']-pkg['cur_s']['b2_yth_total']),2):g}명 / {round(max(0.0, pkg['cur_s']['b2_reg']-pkg['cur_s']['b2_yth']),2):.2f}명 | 구 조특령 제26조의8 제5항 연령경과 간주 특례 |",
         f"| **{tax_yr}년 귀속 [{b5_title}]** | {pkg['cur_s']['reg_total']:g}명 / {pkg['cur_s']['b3_reg']:.2f}명 | {pkg['cur_s']['b3_yth_total']:g}명 / {pkg['cur_s']['b3_yth']:.2f}명 | {round(max(0.0, pkg['cur_s']['reg_total']-pkg['cur_s']['b3_yth_total']),2):g}명 / {round(max(0.0, pkg['cur_s']['b3_reg']-pkg['cur_s']['b3_yth']),2):.2f}명 | 구 조특령 제26조의8 제5항 연령경과 간주 특례 |",
         f"| **{tax_yr-1}년 사후관리 기초 ({basis_lbl})** | - / {pm1['init_reg']:.2f}명 | - / {pm1['init_yth']:.2f}명 | - / {round(max(0.0, pm1['init_reg']-pm1['init_yth']),2):.2f}명 | 1차 사후관리 비교 기준 (증가 청년 {pm1['init_yth_inc']:.2f}명 / 일반 {pm1['init_gen_inc']:.2f}명) |",
@@ -3661,7 +3757,7 @@ def _build_csv_bytes(s: dict) -> bytes:
         rows, _, totals = _build_year_rows(s, y)
         has_y1 = _has_year_data(s, y - 1)
         has_y2 = _has_year_data(s, y - 2)
-        trunc_mode = "인별절사" if int(y) >= 2025 else "전체절사"
+        trunc_mode = "합산 후 절사"
         for r in rows:
             writer.writerow(
                 [
