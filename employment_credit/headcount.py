@@ -3,14 +3,18 @@
 통합고용세액공제 상시근로자 · 청년등 상시근로자 · 사후관리(추가납부세액) 통합 계산 엔진
 근거: 조세특례제한법 제29조의8, 같은 법 시행령 제26조의8, 제11조의2
 
-[크로스체크 및 자체검증 완비 내역 (①~⑭ 전 항목 해결 + 사후관리 '기신고 기준' vs '세법원칙 기준' 듀얼 계산 완비)]
-1. [오류 ① 해결] 과거 입사자(예: 2010년 30세 입사, 2024년 현재 44세)가 사후관리에서 청년으로 과대 간주되던 버그 수정.
-2. [오류 ② 해결] 2024년 자료가 없을 때 2025년분 연속공제가 부풀려지는 버그 수정.
-3. [오류 ③·④ 해결] 2차 사후관리(3차년도) 추징 시 1차 사후관리 기납부 추징세액 차감 및 기공제세액 한도 캡 적용.
+[크로스체크 및 클로드 코드 장점 통합 내역]
+1. [오류 ① 해결 + 클로드 코호트 사원표 연동 결합]
+   - `is_youth_month_for_cohort`: 최초공제연도(cohort_year) 사원표에서 판정된 청년등 여부(`was_youth_in_cohort`)를 우선 반영하되,
+     사원표가 없을 때는 그해 실제로 재직하며 청년 요건을 충족한 달이 있었는지를 엄격히 검증.
+   - 북한이탈주민(`YOUTH_NK`)은 2025.2.28 시행령 개정 사항이므로 `cohort_year >= 2025`일 때만 코호트 청년등으로 인정.
+2. [오류 ② 해결] 2024년 자료가 없을 때 2025년분 연속공제가 부풀려지는 버그 원천 차단.
+3. [오류 ③·④ 해결 + 클로드 2차공제 수령액(`y1_continued_credit_won`) 한도 합산 결합]
+   - 2차 사후관리(3차년도) 추징 시 직전 2년 내 실제 공제받은 횟수(`count = 1 or 2`)와 누적 공제세액 한도(`init_credit_claimed_won + y1_continued_credit_won`),
+     그리고 1차 사후관리 기납부 추징세액(`prior_clawback_paid_won` / `y1_paid_won`) 차감을 모두 정밀 반영.
 4. [오류 ⑥·⑨ 해결] 2026~2028년 귀속 신법 A(직전)+B(전전)+C(전전전) 점증형 공제 및 제3호 최소고용증가인원 차감 산식 완벽 구현.
 5. [오류 ⑧·⑪ 해결] 출산전후휴가자 대체인력 비감소 요건 특례(조특령 제26조의8 제7항) 및 농어촌특별세 실공제 기준 산출(농특세법 제5조 제1항) 지원.
-6. [신규 요청 반영] 사후관리 계산 시 『기신고 기준(원칙)』과 『세법원칙 기준(원천징수부 재계산)』을 모두 산출하여,
-   사후관리 총인원수(연인원)/평균인원수 및 사후관리세액(연속공제·추가납부) 표 우측 상단에서 즉시 비교·전환 가능하도록 구현.
+6. [자료구조 양방향 호환] `월급여` 데이터가 `dict`(`{"1": ...}`)이든 `list`(`[...]`)이든 100% 호환 처리.
 """
 from __future__ import annotations
 
@@ -25,7 +29,7 @@ from . import rules as R
 
 
 # ══════════════════════════════════════════════════════════════════
-# 1. 날짜 · 연령 · 소수점 둘째자리 절사 유틸리티
+# 1. 날짜 · 연령 · 소수점 둘째자리 절사 · 월급여 조회 유틸리티
 # ══════════════════════════════════════════════════════════════════
 def parse_date(val) -> date | None:
     if isinstance(val, date) and not isinstance(val, datetime):
@@ -33,7 +37,7 @@ def parse_date(val) -> date | None:
     if isinstance(val, datetime):
         return val.date()
     s = str(val or "").strip()
-    if not s or s.lower() in ("none", "null", "nan", "-"):
+    if not s or s.lower() in ("none", "null", "nan", "nat", "-"):
         return None
     s = re.sub(r"[년월/.]", "-", s)
     s = re.sub(r"일|\s+", "", s).strip("-")
@@ -110,11 +114,46 @@ def trunc2(x: Fraction | float) -> float:
     return float(d.quantize(Decimal("0.01"), rounding=ROUND_DOWN))
 
 
+def _get_month_pay(pay_obj: Any, month: int) -> float | None:
+    """
+    연도별 월급여 데이터가 dict({"1": 3000000, ...})이든 list([3000000, ...])이든
+    100% 호환하여 해당 월(1~12)의 급여액을 반환합니다. 데이터가 아예 없으면 None을 반환합니다.
+    """
+    if not pay_obj:
+        return None
+    if isinstance(pay_obj, dict):
+        raw = pay_obj.get(str(month), pay_obj.get(month, None))
+        if raw is None:
+            return None
+        try:
+            return float(raw or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+    if isinstance(pay_obj, (list, tuple)):
+        idx = month - 1
+        if 0 <= idx < len(pay_obj):
+            try:
+                return float(pay_obj[idx] or 0.0)
+            except (TypeError, ValueError):
+                return 0.0
+    return None
+
+
+def _has_any_pay_record(pay_obj: Any) -> bool:
+    if not pay_obj:
+        return False
+    if isinstance(pay_obj, dict):
+        return len(pay_obj) > 0
+    if isinstance(pay_obj, (list, tuple)):
+        return len(pay_obj) > 0
+    return False
+
+
 # ══════════════════════════════════════════════════════════════════
 # 2. 업종 · 소재지 · 과세연도 월수 판정
 # ══════════════════════════════════════════════════════════════════
 def is_excluded_industry(biz_type_text: str) -> bool:
-    t = str(biz_type_text or "")
+    t = str(biz_type_text or "").replace(" ", "")
     if not t:
         return False
     for exc in R.EXCLUDED_INDUSTRY_EXCEPTIONS:
@@ -146,7 +185,7 @@ def default_months_for_year(year: int, founded: date | None) -> int:
 
 
 def valid_comparison_years_for_new_credit(tax_year: int) -> dict[str, int | None]:
-    t = int(tax_year)
+    t = int(tax_year or R.DEFAULT_TAX_YEAR)
     if t <= 2025:
         return {"A": t - 1, "B": None, "C": None}
     return {
@@ -169,9 +208,10 @@ def employed_at_month_end(hire: date | None, retire: date | None, year: int, mon
 
 
 def worked_in_year(person: dict, year: int) -> bool:
-    pay_by_yr = (person.get("월급여") or {}).get(str(year)) or {}
-    if any(float(v or 0) > 0 for v in pay_by_yr.values()):
-        return True
+    pay_by_yr = (person.get("월급여") or {}).get(str(year))
+    if _has_any_pay_record(pay_by_yr):
+        if any((_get_month_pay(pay_by_yr, m) or 0.0) > 0 for m in range(1, 13)):
+            return True
     hire = parse_date(person.get("입사일"))
     yr_ret_str = (person.get("연도별_퇴사일") or {}).get(str(year))
     retire = parse_date(yr_ret_str if yr_ret_str is not None else person.get("퇴사일"))
@@ -240,6 +280,17 @@ def is_youth_month(person: dict, year: int, month: int, corp_size: str) -> bool:
     return me <= hold_end_month_last
 
 
+def was_youth_in_year_by_age(person: dict, year: int, corp_size: str) -> bool:
+    """사원표가 없을 때의 보조 판정: 그해(year) 매월 말 재직한 달 중 청년 요건을 충족한 달이 실제로 있었는지 검증."""
+    hire = parse_date(person.get("입사일"))
+    yr_ret = (person.get("연도별_퇴사일") or {}).get(str(year))
+    retire = parse_date(yr_ret if yr_ret is not None else person.get("퇴사일"))
+    return any(
+        employed_at_month_end(hire, retire, year, m) and is_youth_month(person, year, m, corp_size)
+        for m in range(1, 13)
+    )
+
+
 def is_youth_month_for_cohort(
     person: dict,
     eval_year: int,
@@ -247,14 +298,17 @@ def is_youth_month_for_cohort(
     cohort_year: int,
     corp_size: str,
     youth_label: str,
+    was_youth_in_cohort: bool | None = None,
 ) -> bool:
     """
-    [사후관리 및 2·3년차 연속공제용 코호트별 청년등 판정 — 구 조특령 제26조의8 제5항 완벽 반영 (오류 ① 해결)]
+    [사후관리 및 2·3년차 연속공제용 코호트별 청년등 판정 — 구 조특령 제26조의8 제5항 완벽 반영]
     """
     if youth_label == R.YOUTH_NONE:
         return False
-    if youth_label in (R.YOUTH_SENIOR, R.YOUTH_DISABLED, R.YOUTH_CAREER, R.YOUTH_NK):
+    if youth_label in (R.YOUTH_SENIOR, R.YOUTH_DISABLED, R.YOUTH_CAREER):
         return True
+    if youth_label == R.YOUTH_NK:
+        return cohort_year >= 2025
 
     birth = parse_date(person.get("생년월일"))
     c_dt = contract_date(person)
@@ -270,11 +324,9 @@ def is_youth_month_for_cohort(
         return True
 
     if eval_year > cohort_year and c_dt <= date(cohort_year, 12, 31):
-        was_youth_in_cohort = any(
-            is_youth_month(person, cohort_year, m, corp_size) for m in range(1, 13)
-        )
-        if was_youth_in_cohort:
-            return True
+        if was_youth_in_cohort is not None:
+            return bool(was_youth_in_cohort)
+        return was_youth_in_year_by_age(person, cohort_year, corp_size)
 
     return False
 
@@ -326,20 +378,17 @@ def _pick(yrec: dict, field: str, suggestion: str) -> str:
 
 def detect_last_paid_month(people: dict, year: int) -> int:
     max_m = 0
-    has_any_pay_record = False
+    has_any_pay = False
     for p in (people or {}).values():
-        pay = (p.get("월급여") or {}).get(str(year)) or {}
-        if pay:
-            has_any_pay_record = True
-        for m in range(1, 13):
-            v = pay.get(str(m), pay.get(m, 0))
-            try:
-                if float(v or 0) > 0:
+        pay_obj = (p.get("월급여") or {}).get(str(year))
+        if _has_any_pay_record(pay_obj):
+            has_any_pay = True
+            for m in range(1, 13):
+                v = _get_month_pay(pay_obj, m)
+                if v is not None and v > 0:
                     if m > max_m:
                         max_m = m
-            except (TypeError, ValueError):
-                pass
-    if not has_any_pay_record or max_m == 0:
+    if not has_any_pay or max_m == 0:
         return 12
     return max_m
 
@@ -373,18 +422,20 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
     hire = parse_date(person.get("입사일"))
     yr_ret_str = (person.get("연도별_퇴사일") or {}).get(str(year))
     retire = parse_date(yr_ret_str if yr_ret_str is not None else person.get("퇴사일"))
-    pay_by_month = (person.get("월급여") or {}).get(str(year)) or {}
-    has_any_pay_data = len(pay_by_month) > 0
+    pay_obj = (person.get("월급여") or {}).get(str(year))
+    has_any_pay_data = _has_any_pay_record(pay_obj)
     weight = R.EMP_WEIGHT.get(emp_type, 1.0)
     m_ovr = yrec.get("월_override") or {}
 
     paid_in_last_m = False
     if last_paid_month < 12 and has_any_pay_data:
-        raw_lp = pay_by_month.get(str(last_paid_month), pay_by_month.get(last_paid_month, 0))
-        try:
-            paid_in_last_m = float(raw_lp or 0) > 0
-        except (TypeError, ValueError):
-            paid_in_last_m = False
+        lp_val = _get_month_pay(pay_obj, last_paid_month)
+        paid_in_last_m = bool(lp_val is not None and lp_val > 0)
+
+    cmap = ctx.get("cohort_youth_map") or {}
+    pid = person.get("pid")
+    c1_was_youth = (cmap.get(year - 1) or {}).get(pid) if (year - 1) in cmap else None
+    c2_was_youth = (cmap.get(year - 2) or {}).get(pid) if (year - 2) in cmap else None
 
     months: list[float | None] = []
     youth_flags_b1: list[bool] = []
@@ -401,14 +452,15 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
             youth_flags_b3.append(False)
             continue
 
+        ovr_v = m_ovr.get(str(m), m_ovr.get(m, None))
         if is_regular == "X":
             val = 0.0
-        elif str(m) in m_ovr:
-            val = float(m_ovr[str(m)])
+        elif ovr_v is not None:
+            val = float(ovr_v)
         else:
             emp_ok = employed_at_month_end(hire, retire, year, m)
-            raw_pay = pay_by_month.get(str(m), pay_by_month.get(m, None))
-            paid = (float(raw_pay or 0) > 0) if raw_pay is not None else None
+            m_pay = _get_month_pay(pay_obj, m)
+            paid = (m_pay > 0) if m_pay is not None else None
 
             if not emp_ok:
                 val = 0.0
@@ -417,7 +469,8 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
                     if paid:
                         val = weight
                     elif last_paid_month < 12 and m > last_paid_month:
-                        if assume_year_end and (paid_in_last_m or (hire and hire <= month_end(year, m))):
+                        hired_after_cut = bool(hire and hire > month_end(year, last_paid_month))
+                        if assume_year_end and (paid_in_last_m or hired_after_cut):
                             val = weight
                             projected_months.append(m)
                         else:
@@ -436,11 +489,13 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
             elif youth == R.YOUTH_YOUNG:
                 birth_ok = parse_date(person.get("생년월일")) is not None and contract_date(person) is not None
                 yf1 = is_youth_month(person, year, m, corp_size) if birth_ok else True
+            elif youth == R.YOUTH_NK:
+                yf1 = year >= 2025
             else:
                 yf1 = True
 
-            yf2 = is_youth_month_for_cohort(person, year, m, year - 1, corp_size, youth)
-            yf3 = is_youth_month_for_cohort(person, year, m, year - 2, corp_size, youth)
+            yf2 = is_youth_month_for_cohort(person, year, m, year - 1, corp_size, youth, c1_was_youth)
+            yf3 = is_youth_month_for_cohort(person, year, m, year - 2, corp_size, youth, c2_was_youth)
         else:
             yf1 = yf2 = yf3 = False
 
@@ -448,11 +503,15 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
         youth_flags_b2.append(yf2)
         youth_flags_b3.append(yf3)
 
-    active_vals = [v for v in months if v is not None]
-    row_sum = round(sum(active_vals), 4)
-    yth_sum_b1 = round(sum(v for v, f in zip(months, youth_flags_b1) if v is not None and f), 4)
-    yth_sum_b2 = round(sum(v for v, f in zip(months, youth_flags_b2) if v is not None and f), 4)
-    yth_sum_b3 = round(sum(v for v, f in zip(months, youth_flags_b3) if v is not None and f), 4)
+    row_sum_frac = sum((Fraction(str(v)) for v in months if v), Fraction(0))
+    yth_b1_frac = sum((Fraction(str(v)) for v, f in zip(months, youth_flags_b1) if v and f), Fraction(0))
+    yth_b2_frac = sum((Fraction(str(v)) for v, f in zip(months, youth_flags_b2) if v and f), Fraction(0))
+    yth_b3_frac = sum((Fraction(str(v)) for v, f in zip(months, youth_flags_b3) if v and f), Fraction(0))
+
+    row_sum = float(row_sum_frac)
+    yth_sum_b1 = float(yth_b1_frac)
+    yth_sum_b2 = float(yth_b2_frac)
+    yth_sum_b3 = float(yth_b3_frac)
 
     gen_sum_b1 = round(max(0.0, row_sum - yth_sum_b1), 4)
     gen_sum_b2 = round(max(0.0, row_sum - yth_sum_b2), 4)
@@ -470,8 +529,8 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
     b3_yth_indiv = round(yth_sum_b3 / months_in_year, 2)
     b3_gen_indiv = round(gen_sum_b3 / months_in_year, 2)
 
-    b4_reg_trunc = trunc2(Fraction(int(round(row_sum * 100)), months_in_year * 100))
-    b4_yth_trunc = trunc2(Fraction(int(round(yth_sum_b1 * 100)), months_in_year * 100))
+    b4_reg_trunc = trunc2(row_sum_frac / months_in_year)
+    b4_yth_trunc = trunc2(yth_b1_frac / months_in_year)
     b4_gen_trunc = round(max(0.0, b4_reg_trunc - b4_yth_trunc), 2)
 
     return {
@@ -483,6 +542,7 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
         "상시": is_regular,
         "상시_auto": auto_regular,
         "취업연령": contract_age(person),
+        "현재연령": current_year_end_age(person, year),
         "months": months,
         "youth_flags": youth_flags_b1,
         "youth_flags_b2": youth_flags_b2,
@@ -513,7 +573,7 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
 
 def year_totals(computed_rows: list[dict], months_in_year: int) -> dict:
     """
-    과세연도 전체 상시근로자 수 및 4대 우측 블록 집계 (연인원 총인원수 및 평균인원수 모두 포함):
+    과세연도 전체 상시근로자 수 및 4대 우측 블록 집계 (Fraction 정밀 합산 후 1회 절사):
     """
     n = max(1, min(12, int(months_in_year or 12)))
     act = set(active_months(2025, n))
@@ -529,39 +589,46 @@ def year_totals(computed_rows: list[dict], months_in_year: int) -> dict:
             m_non.append(None)
             continue
         idx = m - 1
-        r_sum = round(sum((r["months"][idx] or 0.0) for r in computed_rows), 4)
-        y_sum = round(
-            sum((r["months"][idx] or 0.0) for r in computed_rows if r["youth_flags"][idx]),
-            4,
+        r_sum_f = sum((Fraction(str(r["months"][idx])) for r in computed_rows if r["months"][idx]), Fraction(0))
+        y_sum_f = sum(
+            (Fraction(str(r["months"][idx])) for r in computed_rows if r["months"][idx] and r["youth_flags"][idx]),
+            Fraction(0),
         )
+        r_sum = float(r_sum_f)
+        y_sum = float(y_sum_f)
         m_reg.append(r_sum)
         m_yth.append(y_sum)
         m_non.append(round(r_sum - y_sum, 4))
 
-    reg_total = round(sum(v for v in m_reg if v is not None), 4)
-    yth_total_b1 = round(sum(v for v in m_yth if v is not None), 4)
+    reg_total_f = sum((Fraction(str(r["row_sum"])) for r in computed_rows), Fraction(0))
+    yth_b1_f = sum((Fraction(str(r["youth_sum"])) for r in computed_rows), Fraction(0))
+    yth_b2_f = sum((Fraction(str(r.get("youth_sum_b2", r["youth_sum"]))) for r in computed_rows), Fraction(0))
+    yth_b3_f = sum((Fraction(str(r.get("youth_sum_b3", r["youth_sum"]))) for r in computed_rows), Fraction(0))
+
+    reg_total = float(reg_total_f)
+    yth_total_b1 = float(yth_b1_f)
     non_total_b1 = round(reg_total - yth_total_b1, 4)
 
-    yth_total_b2 = round(sum(r.get("youth_sum_b2", 0.0) for r in computed_rows), 4)
+    yth_total_b2 = float(yth_b2_f)
     non_total_b2 = round(max(0.0, reg_total - yth_total_b2), 4)
 
-    yth_total_b3 = round(sum(r.get("youth_sum_b3", 0.0) for r in computed_rows), 4)
+    yth_total_b3 = float(yth_b3_f)
     non_total_b3 = round(max(0.0, reg_total - yth_total_b3), 4)
 
-    b1_reg = trunc2(Fraction(int(round(reg_total * 100)), n * 100))
-    b1_yth = trunc2(Fraction(int(round(yth_total_b1 * 100)), n * 100))
+    b1_reg = trunc2(reg_total_f / n)
+    b1_yth = trunc2(yth_b1_f / n)
     b1_gen = round(max(0.0, b1_reg - b1_yth), 2)
 
     b2_reg = b1_reg
-    b2_yth = trunc2(Fraction(int(round(yth_total_b2 * 100)), n * 100))
+    b2_yth = trunc2(yth_b2_f / n)
     b2_gen = round(max(0.0, b2_reg - b2_yth), 2)
 
     b3_reg = b1_reg
-    b3_yth = trunc2(Fraction(int(round(yth_total_b3 * 100)), n * 100))
+    b3_yth = trunc2(yth_b3_f / n)
     b3_gen = round(max(0.0, b3_reg - b3_yth), 2)
 
-    b4_reg = round(sum(r.get("b4_reg", 0.0) for r in computed_rows), 2)
-    b4_yth = round(sum(r.get("b4_yth", 0.0) for r in computed_rows), 2)
+    b4_reg = round(sum(float(r.get("b4_reg", 0.0)) for r in computed_rows), 2)
+    b4_yth = round(sum(float(r.get("b4_yth", 0.0)) for r in computed_rows), 2)
     b4_gen = round(max(0.0, b4_reg - b4_yth), 2)
 
     return {
@@ -596,12 +663,11 @@ def year_totals(computed_rows: list[dict], months_in_year: int) -> dict:
 
 def regular_excluding_part_time(computed_rows: list[dict], emp_types: list[str], months_in_year: int) -> float:
     n = max(1, min(12, int(months_in_year or 12)))
-    total = 0.0
-    for r, et in zip(computed_rows, emp_types):
-        if et in (R.EMP_PT_050, R.EMP_PT_075):
-            continue
-        total += sum(v for v in r["months"] if v is not None)
-    return trunc2(Fraction(int(round(total * 100)), n * 100))
+    total_f = sum(
+        (Fraction(str(r["row_sum"])) for r, et in zip(computed_rows, emp_types) if et not in (R.EMP_PT_050, R.EMP_PT_075)),
+        Fraction(0),
+    )
+    return trunc2(total_f / n)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -626,19 +692,24 @@ def calc_increase_with_cap(
         prev_y = float(prev_youth or 0.0)
         prev_non_y = float(prev_non_youth if prev_non_youth is not None else max(0.0, prev_regular - prev_y))
 
-    total_inc = round(max(0.0, float(cur_regular or 0.0) - prev_regular), 2)
-    raw_youth_inc = round(max(0.0, float(cur_youth or 0.0) - prev_y), 2)
+    total_diff = round(float(cur_regular or 0.0) - prev_regular, 2)
+    youth_diff = round(float(cur_youth or 0.0) - prev_y, 2)
+    total_inc = round(max(0.0, total_diff), 2)
+    raw_youth_inc = round(max(0.0, youth_diff), 2)
     raw_non_youth_inc = round(max(0.0, cur_non_y - prev_non_y), 2)
 
     youth_inc = round(min(total_inc, raw_youth_inc), 2)
     non_youth_inc = round(max(0.0, total_inc - youth_inc), 2)
 
     return {
+        "전체_증감": total_diff,
         "전체_증가": total_inc,
         "청년등_증가": youth_inc,
         "청년등외_증가": non_youth_inc,
         "청년등_한도적용전": raw_youth_inc,
         "청년등외_한도적용전": raw_non_youth_inc,
+        "total_diff": total_diff,
+        "youth_diff": youth_diff,
         "total_inc": total_inc,
         "youth_inc": youth_inc,
         "non_youth_inc": non_youth_inc,
@@ -905,6 +976,7 @@ def calc_legacy_post_management(
     prev_pm_reg: float | None = None,
     prev_pm_yth: float | None = None,
     prior_clawback_paid_won: int = 0,
+    y1_continued_credit_won: int | None = None,
 ) -> dict[str, Any]:
     """
     [2023~2025년 귀속 공제분의 1차·2차 사후관리(2·3차년도 연속공제 및 추가납부세액) 정밀 산출]
@@ -952,7 +1024,9 @@ def calc_legacy_post_management(
     if elapsed == 1:
         prior_years_claimed_count = 1
     else:
-        if prev_pm_reg is not None and prev_pm_reg < init_reg:
+        if y1_continued_credit_won is not None:
+            prior_years_claimed_count = 2 if (y1_continued_credit_won > 0 and not is_large) else 1
+        elif prev_pm_reg is not None and prev_pm_reg < init_reg:
             prior_years_claimed_count = 1
         else:
             prior_years_claimed_count = 2 if not is_large else 1
@@ -962,8 +1036,10 @@ def calc_legacy_post_management(
         case_title = "전체 상시 및 청년등 인원 모두 유지 (전액 연속공제 · 추징 없음)"
         ret_yth = round(init_yth_inc, 2)
         ret_gen = round(init_gen_inc, 2)
-        if elapsed == 2 and prev_pm_reg is not None:
-            if prev_pm_reg < init_reg:
+        if elapsed == 2:
+            if (y1_continued_credit_won is not None and y1_continued_credit_won == 0) or (
+                prev_pm_reg is not None and prev_pm_reg < init_reg
+            ):
                 ret_yth = 0.0
                 ret_gen = 0.0
             elif prev_pm_yth is not None and prev_pm_yth < init_yth:
@@ -986,7 +1062,10 @@ def calc_legacy_post_management(
         ret_yth = round(max(0.0, init_yth_inc - capped_yth_dec), 2)
         ret_gen = round(init_gen_inc + capped_yth_dec, 2)
 
-        if elapsed == 2 and prev_pm_reg is not None and prev_pm_reg < init_reg:
+        if elapsed == 2 and (
+            (y1_continued_credit_won is not None and y1_continued_credit_won == 0)
+            or (prev_pm_reg is not None and prev_pm_reg < init_reg)
+        ):
             ret_yth = 0.0
             ret_gen = 0.0
 
@@ -1098,11 +1177,6 @@ def calculate_tax_year_package(
 ) -> dict[str, Any]:
     """
     [선택된 귀속사업연도(2024~2028)의 통합고용세액공제 종합 계산 패키지]
-    - `pm_basis`:
-      * `"filed"` (`기신고 기준`, 기본 원칙): 2025년 공제감면세액계산서 / 기신고 명세서 / 수기 입력 기신고 수치(`prior_filings`)를 기준으로 사후관리 계산.
-      * `"recalc"` (`세법원칙 기준`): 업로드된 원천징수부 사원별 데이터에서 세법 원칙대로 재계산된 수치(`summaries`)를 기준으로 사후관리 계산.
-      * 두 기준(`pm_y1_filed` vs `pm_y1_recalc`, `pm_y2_filed` vs `pm_y2_recalc`)을 모두 계산하여 반환하므로,
-        화면 우측 상단에서 즉시 전환·비교할 수 있습니다.
     """
     t = int(tax_year)
     pf = prior_filings or {}
@@ -1189,7 +1263,6 @@ def calculate_tax_year_package(
     else:
         auto_y1_inc = {"total_inc": 0.0, "youth_inc": 0.0, "non_youth_inc": 0.0}
 
-    # (2-A) 기신고 기준(filed) 파라미터
     y1_filed_reg = float(pf_y1.get("init_reg", prev_s["regular"]) or 0.0)
     y1_filed_yth = float(pf_y1.get("init_yth", prev_s["youth"]) or 0.0)
     y1_filed_yth_inc = float(
@@ -1206,7 +1279,6 @@ def calculate_tax_year_package(
     )
     y1_cf_won = int(pf_y1.get("carryforward_won", 0) or 0)
 
-    # (2-B) 세법원칙 재계산 기준(recalc) 파라미터 (원천징수부에서 계산된 prev_s 및 auto_y1_inc 사용)
     y1_recalc_reg = prev_s["regular"]
     y1_recalc_yth = prev_s["youth"]
     y1_recalc_yth_inc = auto_y1_inc["youth_inc"] if has_t2_data else y1_filed_yth_inc
@@ -1285,18 +1357,26 @@ def calculate_tax_year_package(
     y2_filed_gen_inc = float(
         pf_y2["init_gen_inc"] if pf_y2.get("init_gen_inc") is not None else auto_y2_inc["non_youth_inc"]
     )
+    y2_y1_cont_won = pf_y2.get("y1_continued_won")
     y2_1yr_credit_won = int(
         round((y2_filed_yth_inc * rates_legacy["청년등"] + y2_filed_gen_inc * rates_legacy["청년등외"]) * 10_000)
     )
-    y2_prior_years_cnt = 1 if (prev_s["b2_reg"] < y2_filed_reg and prev_s["has_data"]) else (1 if corp_size in ("일반기업", "대기업") else 2)
-    y2_default_claimed_won = y2_1yr_credit_won * y2_prior_years_cnt
+    if y2_y1_cont_won is not None and int(y2_y1_cont_won) > 0:
+        y2_default_claimed_won = y2_1yr_credit_won + int(y2_y1_cont_won)
+    else:
+        y2_prior_years_cnt = (
+            1
+            if (prev_s["b2_reg"] < y2_filed_reg and prev_s["has_data"])
+            else (1 if corp_size in ("일반기업", "대기업") else 2)
+        )
+        y2_default_claimed_won = y2_1yr_credit_won * y2_prior_years_cnt
+
     y2_filed_claimed_won = int(
         pf_y2["claimed_won"] if pf_y2.get("claimed_won") is not None and int(pf_y2.get("claimed_won") or 0) > 0 else y2_default_claimed_won
     )
     y2_cf_won = int(pf_y2.get("carryforward_won", 0) or 0)
-    y2_prior_clawback_paid_won = int(pf_y2.get("prior_clawback_paid_won", 0) or 0)
+    y2_prior_clawback_paid_won = int(pf_y2.get("prior_clawback_paid_won", pf_y2.get("y1_paid_won", 0)) or 0)
 
-    # 세법원칙 재계산 기준(recalc): 2024년 원천징수부가 업로드되어 prev2_s["has_data"]가 있으면 원천징수부 재계산 상시·청년등 인원 적용
     y2_recalc_reg = prev2_s["regular"] if prev2_s["has_data"] else y2_filed_reg
     y2_recalc_yth = prev2_s["youth"] if prev2_s["has_data"] else y2_filed_yth
     y2_recalc_yth_inc = auto_y2_inc["youth_inc"] if has_t3_data else y2_filed_yth_inc
@@ -1324,6 +1404,7 @@ def calculate_tax_year_package(
             prev_pm_reg=prev_s["b2_reg"] if prev_s["has_data"] else None,
             prev_pm_yth=prev_s["b2_yth"] if prev_s["has_data"] else None,
             prior_clawback_paid_won=y2_prior_clawback_paid_won,
+            y1_continued_credit_won=int(y2_y1_cont_won) if (y2_y1_cont_won is not None and int(y2_y1_cont_won) > 0) else None,
         )
         pm_y2_recalc = calc_legacy_post_management(
             cohort_year=t - 2,
@@ -1367,7 +1448,6 @@ def calculate_tax_year_package(
             "formula_note": f"{t-2}년 귀속분(2026년 이후 개시)은 구법 사후관리 추징 대상이 아니며, 신법 3년차(C) 유지분 공제로 반영됩니다.",
         }
 
-    # 선택된 사후관리 기준(pm_basis: "filed" 원칙 vs "recalc" 세법원칙) 활성화
     pm_y1 = pm_y1_recalc if basis == R.PM_BASIS_RECALC else pm_y1_filed
     pm_y2 = pm_y2_recalc if basis == R.PM_BASIS_RECALC else pm_y2_filed
 
@@ -1480,10 +1560,17 @@ def review(
         rows = list(c_map.values())
         emp_types = [r.get("고용유형", R.EMP_REGULAR) for r in rows]
 
-        if any(et == R.EMP_PT_075 for et in emp_types) and len(years) >= 2:
+        if any(et == R.EMP_PT_075 for et in emp_types):
+            cur_ft = regular_excluding_part_time(rows, emp_types, n_months)
+            if cur_ft < 0.75:
+                items.append(
+                    (
+                        "오류",
+                        f"[{y}년] 단시간 제외 상시근로자 수({cur_ft:.2f}명)가 최소 기준(0.75명) 미만이라 단시간 0.75명 가중치를 적용할 수 없습니다.",
+                    )
+                )
             prev_y = y - 1
             if prev_y in computed:
-                cur_ft = regular_excluding_part_time(rows, emp_types, n_months)
                 prev_rows = list(computed[prev_y].values())
                 prev_ets = [r.get("고용유형", R.EMP_REGULAR) for r in prev_rows]
                 prev_ft = regular_excluding_part_time(
@@ -1503,8 +1590,18 @@ def review(
             nm = p.get("성명") or pid
             yrec = (year_recs.get(y) or {}).get(pid) or {}
 
+            hire_dt = parse_date(p.get("입사일"))
+            ret_dt = parse_date((p.get("연도별_퇴사일") or {}).get(str(y)) or p.get("퇴사일"))
+            if hire_dt and ret_dt and ret_dt < hire_dt:
+                items.append(
+                    (
+                        "오류",
+                        f"[{y}년 · {nm}] 퇴사일({ret_dt})이 입사일({hire_dt})보다 빠릅니다.",
+                    )
+                )
+
             if c["상시"] == "O":
-                if not parse_date(p.get("입사일")):
+                if not hire_dt:
                     items.append(
                         (
                             "오류",
@@ -1516,6 +1613,16 @@ def review(
                         (
                             "오류",
                             f"[{y}년 · {nm}] 생년월일이 비어 있어 '{c['청년등']}' 연령 요건을 검증할 수 없습니다.",
+                        )
+                    )
+
+            if c["상시"] == "O" and c["청년등"] == R.YOUTH_SENIOR:
+                c_age = contract_age(p)
+                if c_age is not None and c_age < R.SENIOR_AGE:
+                    items.append(
+                        (
+                            "오류",
+                            f"[{y}년 · {nm}] 근로계약 체결일 기준 만 {c_age}세라 '취업시 60세 이상'에 해당하지 않습니다.",
                         )
                     )
 
@@ -1537,6 +1644,14 @@ def review(
                                 f"[{y}년 · {nm}] 입사 시 만 나이가 {c_age}세로 청년 연령(15~34세)을 초과합니다.",
                             )
                         )
+
+            if c["청년등"] == R.YOUTH_NK and y <= 2024:
+                items.append(
+                    (
+                        "확인",
+                        f"[{y}년 · {nm}] 북한이탈주민은 2025.2.28 시행령 개정으로 2025년 귀속분부터 청년등 상시근로자에 포함됩니다.",
+                    )
+                )
 
             if c.get("no_pay_months"):
                 m_str = ", ".join(f"{m}월" for m in c["no_pay_months"])
