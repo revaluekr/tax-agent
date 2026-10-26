@@ -13,8 +13,8 @@
    - `workplace_close_month_map`을 통해 기중양도 사업장의 양도월 이후에는 미도래 월 연말재직 가정(`_proj`)이 적용되지 않도록 제어합니다.
 3. [2026~2028년 귀속 신법 A(직전)+B(전전)+C(전전전) 점증형 공제 및 제3호 최소고용증가인원 차감 산식 완벽 구현]
 4. [귀속연도별 절사 방식 자동 분기]
-   - 2025·2026년 이후 귀속분: `인별절사` (근로자별 `trunc2(근무월수 / 과세기간월수)` 후 합산)
-   - 2024년 이전 귀속분: `전체절사` (전 직원 월별 상시근로자 수 합산 후 과세기간월수로 나누어 1회 절사)
+   - 모든 귀속연도: 근로자별 (근무개월÷사업연도 월수)의 합에서 100분의 1 미만 1회 절사 (2026.5.22. 시행령 개정 기준)
+   - 근로자별 먼저 절사한 값(2026.2.27. 문언)은 경정청구 검토용 비교값(6번 블록)으로만 표시
 5. [100% 성능 12대 결정론적 세무 오류·절세누락 검토 엔진 (`review`)]
    - `sub_biz_list` 및 `**kwargs` 완벽 호환
    - ① 입사월 익월지급(무급 산입) vs 기중 무급휴직(0 제외) 정밀 구분
@@ -402,20 +402,19 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
     last_paid_month = int(ctx.get("last_paid_month") or 12)
     act_months = set(active_months(year, months_in_year))
 
-    # 기중양도·폐업 사업장 및 포괄양수·승계 사업장 처리
+    # 기중양도·폐업 사업장인 경우 해당 양도월 이후에는 미도래 월 연말재직 가정(1 자동 채움) 차단
     wp_close_map = ctx.get("workplace_close_month_map") or {}
     person_wp = str((person.get("연도별_사업장명") or {}).get(str(year)) or person.get("사업장명") or "").strip()
-    has_transfer_arrow = "→" in person_wp
-    wp_primary = person_wp.split("→")[-1].strip() if has_transfer_arrow else person_wp
-    wp_close_month = wp_close_map.get(person_wp) if not has_transfer_arrow else None
+    wp_close_month = wp_close_map.get(person_wp)
 
-    suc_map = ctx.get("succession_map") or {}
-    suc_info = suc_map.get(wp_primary) if wp_primary in suc_map else None
-    suc_m = int(suc_info.get("month") or 1) if suc_info else None
-    suc_keep_hire = bool(suc_info.get("keep_hire", True)) if suc_info else False
-
-    tr_out_map = ctx.get("transfer_out_map") or {}
-    tr_out_date = tr_out_map.get(person_wp) if (not has_transfer_arrow and person_wp in tr_out_map) else None
+    # 포괄양수·승계 사업장(조특령 제23조 제13항 준용): 해당 과세연도 개시일에 승계한 것으로 보아 승계월 이전 달도 산입
+    succ = (ctx.get("succession_map") or {}).get(person_wp) or {}
+    succ_month = succ.get("month")
+    succ_date = succ.get("date")
+    if succ and not succ.get("keep_hire", True) and succ_date:
+        _h = parse_date(person.get("입사일"))
+        if not _h or _h < succ_date:          # 입사일 유지 안 함 → 승계일을 입사·계약일로 봄 (청년 연령·근속 판정)
+            person = dict(person, 입사일=succ_date.isoformat(), 계약체결일=succ_date.isoformat())
 
     emp_type = yrec.get("고용유형") or R.EMP_REGULAR
     sug_excl = suggest_exclusion(person, yrec, year)
@@ -439,24 +438,23 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
     pay_obj = (person.get("월급여") or {}).get(str(year))
     has_any_pay_data = _has_any_pay_record(pay_obj)
     weight = R.EMP_WEIGHT.get(emp_type, 1.0)
-    m_ovr = yrec.get("월_override") or {}
 
-    transferred_out = False
-    if tr_out_date is not None:
-        hired_before_tr = (hire is None) or (hire <= tr_out_date)
-        active_at_tr = (retire is None) or (retire >= tr_out_date)
-        if hired_before_tr and active_at_tr:
-            transferred_out = True
+    # 그해 원천징수부가 올라와 있는데 그 안에 없는 사람(다른 연도 자료에만 있음)은 그해 이 회사에서 근무하지 않은 것으로 봄
+    wht_years = {int(y) for y in (ctx.get("wht_years") or [])}
+    other_year_pay = any(
+        _has_any_pay_record(v) for k, v in (person.get("월급여") or {}).items() if str(k) != str(year)
+    )
+    absent_in_wht = int(year) in wht_years and not has_any_pay_data and other_year_pay
+
+    # 기중양도(고용승계 포함, 조특령 제23조 제13항 준용): 양도일 현재 근무자는 개시일에 승계시킨 것으로 보아 그해 0
+    tr_date = (ctx.get("transfer_out_map") or {}).get(person_wp)
+    transferred_out = bool(tr_date) and (retire is None or retire >= tr_date)
+    m_ovr = yrec.get("월_override") or {}
 
     paid_in_last_m = False
     if last_paid_month < 12 and has_any_pay_data:
         lp_val = _get_month_pay(pay_obj, last_paid_month)
         paid_in_last_m = bool(lp_val is not None and lp_val > 0)
-
-    paid_in_suc_m = False
-    if suc_m is not None and has_any_pay_data:
-        sp_val = _get_month_pay(pay_obj, suc_m)
-        paid_in_suc_m = bool(sp_val is not None and sp_val > 0)
 
     cmap = ctx.get("cohort_youth_map") or {}
     pid = person.get("pid")
@@ -470,6 +468,7 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
     no_pay_months: list[int] = []
     hire_month_nopay: list[int] = []
     projected_months: list[int] = []
+    succession_months: list[int] = []
 
     for m in range(1, 13):
         if m not in act_months:
@@ -484,8 +483,6 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
             val = 0.0
         elif ovr_v is not None:
             val = float(ovr_v)
-        elif transferred_out:
-            val = 0.0
         else:
             emp_ok = employed_at_month_end(hire, retire, year, m)
             if wp_close_month is not None and m > int(wp_close_month):
@@ -498,8 +495,6 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
             else:
                 if has_any_pay_data:
                     if paid:
-                        val = weight
-                    elif suc_m is not None and suc_keep_hire and m < suc_m and paid_in_suc_m:
                         val = weight
                     elif last_paid_month < 12 and m > last_paid_month:
                         hired_after_cut = bool(hire and hire > month_end(year, last_paid_month))
@@ -520,6 +515,19 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
                         no_pay_months.append(m)
                 else:
                     val = weight
+
+        if ovr_v is None and is_regular == "O":
+            if absent_in_wht or transferred_out:
+                val = 0.0
+            elif succ_month and m < int(succ_month) and not val:
+                hire_ok = hire is None or hire <= month_end(year, int(succ_month))
+                if hire_ok and (retire is None or retire >= month_end(year, m)):
+                    val = weight                 # 승계월 이전: 개시일 승계 의제로 산입
+                    succession_months.append(m)
+                    if m in no_pay_months:
+                        no_pay_months.remove(m)
+                    if m in hire_month_nopay:
+                        hire_month_nopay.remove(m)
 
         months.append(val)
 
@@ -557,10 +565,8 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
     gen_sum_b2 = round(max(0.0, row_sum - yth_sum_b2), 4)
     gen_sum_b3 = round(max(0.0, row_sum - yth_sum_b3), 4)
 
-    # 2025·2026년 이후 귀속은 인별절사(trunc2) 원칙, 2024년 이전 귀속은 전체절사 원칙 적용
-    use_indiv_b1 = int(year) >= 2025
-    use_indiv_b2 = int(year - 1) >= 2025
-    use_indiv_b3 = int(year - 2) >= 2025
+    # 사원별 표시값: 합산 후 절사 원칙이므로 개인 값은 참고용 반올림, 6번 블록(b4)만 근로자별 절사 비교값
+    use_indiv_b1 = use_indiv_b2 = use_indiv_b3 = False
 
     b1_reg_trunc = trunc2(row_sum_frac / months_in_year)
     b1_yth_trunc = trunc2(yth_b1_frac / months_in_year)
@@ -612,6 +618,9 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
         "youth_flags_b3": youth_flags_b3,
         "no_pay_months": no_pay_months,
         "hire_month_nopay": hire_month_nopay,
+        "succession_months": succession_months,
+        "transferred_out": transferred_out,
+        "absent_in_wht": absent_in_wht,
         "projected_months": projected_months,
         "row_sum": row_sum,
         "youth_sum": yth_sum_b1,
@@ -632,15 +641,13 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
         "b4_yth": b4_yth_trunc,
         "b4_gen": b4_gen_trunc,
         "b4_reg": b4_reg_trunc,
-        "transferred_out": transferred_out,
     }
 
 
 def year_totals(computed_rows: list[dict], months_in_year: int, year: int | None = None) -> dict:
     """
     과세연도 전체 상시근로자 수 및 우측 블록 집계:
-    - 2025·2026년 이후 귀속분: 인별절사(근로자별 소수점 둘째자리 절사 후 합산)
-    - 2024년 이전 귀속분: 전체절사(전체 합산 후 과세기간월수로 나누어 1회 절사)
+    - 모든 연도: 합산 후 1회 절사 (2026.5.22. 시행령 개정). 6번 블록(b4)은 근로자별 먼저 절사한 비교값
     """
     n = max(1, min(12, int(months_in_year or 12)))
     act = set(active_months(2025, n))
@@ -683,9 +690,9 @@ def year_totals(computed_rows: list[dict], months_in_year: int, year: int | None
     non_total_b3 = round(max(0.0, reg_total - yth_total_b3), 4)
 
     eval_yr = int(year) if year is not None else int((computed_rows[0].get("_eval_year") if computed_rows else 2026) or 2026)
-    use_indiv_b1 = eval_yr >= 2025
-    use_indiv_b2 = (eval_yr - 1) >= 2025
-    use_indiv_b3 = (eval_yr - 2) >= 2025
+    # 2026.5.22. 시행령 개정: 모든 연도 '근로자별 계산한 수의 합'에서 100분의 1 미만 절사(합산 후 1회 절사).
+    # 근로자별 먼저 절사(2026.2.27. 문언)는 경정청구 검토용 비교값(b4)으로만 제공.
+    use_indiv_b1 = use_indiv_b2 = use_indiv_b3 = False
 
     tot_trunc_reg = trunc2(reg_total_f / n)
     tot_trunc_yth_b1 = trunc2(yth_b1_f / n)
@@ -1380,7 +1387,7 @@ def calculate_tax_year_package(
                          prior_clawback_paid_won=paid,
                          y1_continued_credit_won=int(y1_cont) if y1_cont is not None else None)
 
-        def _run(vals: dict, label: str, borrowed: list[str]) -> dict:
+        def _run(vals: dict, label: str, borrowed: list[str], claimed: int = claimed, cap_note: str = "") -> dict:
             if any(v is None for v in vals.values()):
                 return _missing(cohort, f"[{label}] {cohort}년 최초공제연도의 상시·청년등 인원 또는 공제받은 증가인원이 없습니다. "
                                         f"3단계 위쪽에 기신고 숫자를 입력하세요.")
@@ -1391,6 +1398,8 @@ def calculate_tax_year_package(
             r["base_label"] = label + (f" ({', '.join(borrowed)}은 기신고 숫자 사용)" if borrowed else "")
             if claimed <= 0 and r.get("clawback_gross_won", 0) > 0:
                 r["formula_note"] += " ※ 기신고 공제세액이 없어 추가납부 한도를 적용하지 못했습니다."
+            if cap_note:
+                r["formula_note"] += cap_note
             return r
 
         r_filed = _run(filed, "기신고 기준", [])
@@ -1405,22 +1414,17 @@ def calculate_tax_year_package(
             recalc["init_yth_inc"], recalc["init_gen_inc"] = inc["youth_inc"], inc["non_youth_inc"]
         else:
             borrowed.append("증가인원")
-        recalc_claimed = claimed
-        if recalc_claimed <= 0 and recalc.get("init_yth_inc") is not None and recalc.get("init_gen_inc") is not None:
-            recalc_claimed = int(round((float(recalc["init_yth_inc"]) * rates_legacy["청년등"] + float(recalc["init_gen_inc"]) * rates_legacy["청년등외"]) * 10_000))
-            if elapsed == 2 and y1_cont is None and not (corp_size in ("일반기업", "대기업")):
-                if not (prev_s["has_data"] and prev_s["b2_reg"] < float(recalc.get("init_reg") or 0.0)):
-                    recalc_claimed *= 2
-        if recalc_claimed != claimed and not any(v is None for v in recalc.values()):
-            r_recalc = calc_legacy_post_management(
-                cohort, t, corp_size, is_capital,
-                recalc["init_reg"], recalc["init_yth"], recalc["init_yth_inc"], recalc["init_gen_inc"],
-                cur_reg, cur_yth, init_credit_claimed_won=recalc_claimed,
-                unclaimed_carryforward_won=cf, **extra
-            )
-            r_recalc["base_label"] = "세법원칙 기준" + (f" ({', '.join(borrowed)}은 기신고 숫자 사용)" if borrowed else "")
-        else:
-            r_recalc = _run(recalc, "세법원칙 기준", borrowed)
+        # 세법원칙 기준인데 기신고 공제세액이 없으면, 재계산한 증가인원 × 구법 단가로 추가납부 한도를 추정
+        recalc_claimed, cap_note = claimed, ""
+        if claimed <= 0 and recalc.get("init_yth_inc") is not None and recalc.get("init_gen_inc") is not None:
+            recalc_claimed = int(round((float(recalc["init_yth_inc"]) * rates_legacy["청년등"]
+                                        + float(recalc["init_gen_inc"]) * rates_legacy["청년등외"]) * 10_000))
+            if elapsed == 2 and y1_cont is None and corp_size not in ("일반기업", "대기업") and not (
+                prev_s["has_data"] and prev_s["b2_reg"] < float(recalc.get("init_reg") or 0.0)
+            ):
+                recalc_claimed *= 2
+            cap_note = f" ※ 한도는 재계산 증가인원 × 구법 단가로 추정({recalc_claimed:,}원)했습니다."
+        r_recalc = _run(recalc, "세법원칙 기준", borrowed, claimed=recalc_claimed, cap_note=cap_note)
         return r_filed, r_recalc, {"filed": filed, "recalc": recalc, "borrowed": borrowed}
 
     if (t - 1) <= 2025:
@@ -1660,8 +1664,11 @@ def review(
                 items.append(
                     (
                         "확인",
-                        f"[{y}년 · {nm_disp}] 총 재직기간이 {tenure_days}일({hire_dt} ~ {ret_dt})로 1년 미만이나 현재 상시근로자('O')로 산입되어 있습니다. "
-                        f"근로계약서상 최초 계약기간이 '1년 이상'이었는데 중도 자진퇴사한 경우에만 상시근로자로 인정되며, 계약기간 자체가 1년 미만이었다면 제외사유를 '근로계약기간 1년 미만'으로 변경하세요.",
+                        (f"[{y}년 · {nm_disp}] 총 근로기간이 {tenure_days}일({hire_dt} ~ {ret_dt})로 1년 미만인데 상시근로자('O')로 산입되어 있습니다. "
+                         f"2025년 귀속부터는 계약기간과 무관하게 실제 근로기간 1년 미만이면 제외됩니다(조특령 제26조의8 제2항 제1호). 상시(O/X)를 확인하세요.")
+                        if y >= 2025 else
+                        (f"[{y}년 · {nm_disp}] 총 재직기간이 {tenure_days}일({hire_dt} ~ {ret_dt})로 1년 미만이나 현재 상시근로자('O')로 산입되어 있습니다. "
+                         f"{y}년 귀속은 종전 규정(근로계약기간 1년 미만 제외)이 적용되므로, 계약기간 자체가 1년 미만이었다면 제외사유를 변경하세요."),
                     )
                 )
 
@@ -1797,6 +1804,17 @@ def review(
                     f"{nm_disp}(당해 청년 {c['b1_yth']:.2f} → 1차사후 {c['b2_yth']:.2f} / 2차사후 {c['b3_yth']:.2f})"
                 )
 
+            # 승계·양도·미등재 처리 안내
+            if c.get("succession_months"):
+                items.append(("확인", f"[{y}년 · {nm_disp}] 포괄양수·승계 근로자로 승계일 이전 {len(c['succession_months'])}개월을 "
+                                     f"과세연도 개시일 승계 의제로 산입했습니다 (조특령 제23조 제13항 준용)."))
+            if c.get("transferred_out"):
+                items.append(("확인", f"[{y}년 · {nm_disp}] 기중양도(고용승계) 사업장 근로자로, 개시일에 승계시킨 것으로 보아 {y}년 인원에서 제외하고 "
+                                     f"직전연도 인원에서도 차감했습니다 (조특령 제23조 제13항 준용)."))
+            if c.get("absent_in_wht"):
+                items.append(("확인", f"[{y}년 · {nm_disp}] {y}년 원천징수부에 없는 사람이라 {y}년에는 근무하지 않은 것으로 보아 0으로 처리했습니다. "
+                                     f"실제 근무했다면 월별 칸을 직접 입력하세요."))
+
             # 12) 수동 오버라이드 감사 추적
             if yrec.get("상시_override"):
                 items.append(
@@ -1820,7 +1838,7 @@ def review(
                 (
                     "확인",
                     f"[{y}년 · 청년 연령도과 사후관리 특례 자동적용] {', '.join(cohort_preserved_names)}: "
-                    f"취업 후 청년 인정기간(중소 5년/중견·대 3년) 도과로 당해 세액공제(3번 블록)에서는 '청년외'로 전환되었으나, "
+                    f"근로계약 체결일부터 청년 인정기간(중소·중견 4년/그 외 3년) 도과로 당해 세액공제(3번 블록)에서는 '청년외'로 전환되었으나, "
                     f"조특령 제26조의8 제5항에 따라 1·2차 사후관리(4·5번 블록)에서는 최초공제연도 기준 '청년등'으로 안전하게 유지되었습니다.",
                 )
             )

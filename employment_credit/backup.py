@@ -66,6 +66,11 @@ BACKUP_KEYS = (
     "built_sig",
     "fill_ver",
     "pro_audit_comment",
+    "biz_confirmed",
+    "include_unpaid_hire_month",
+    "show_all_4_blocks",
+    "show_empty_pm_blocks",
+    "next_pid_seq",
 )
 
 

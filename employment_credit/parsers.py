@@ -91,7 +91,7 @@ def infer_workplace_name(name: str, text: str = "") -> str:
 
     # 3) 파일명에서 연도·서류종류·시스템 키워드를 제거한 나머지 토큰 확인
     cleaned = re.sub(
-        r"(첨부|엑셀|워드|이미지|PDF|CSV|파일명|파일|총\s*\d+\s*행|총\s*\d+\s*페이지|202[0-9]\s*년?|2[0-9]\s*년|귀속|소득자별|근로소득|원천징수부|원천징수|급여대장|급여명세서|사원대장|사업자등록증|공제감면세액계산서|상시근로자명세서|임의|샘플|업로드용|자료|명|년|월|wht|biz_reg)",
+        r"(첨부|엑셀|워드|이미지|PDF|CSV|파일명|파일|총\s*\d+\s*행|총\s*\d+\s*페이지|202[0-9]\s*년?|2[0-9]\s*년|귀속|소득자별|근로소득|원천징수부|원천징수|급여대장|급여명세서|사원대장|사업자등록증|공제감면세액계산서|상시근로자명세서|임의|샘플|업로드용|자료|\d+\s*월|wht|biz_reg)",
         " ",
         stem,
         flags=re.IGNORECASE,
@@ -1354,7 +1354,11 @@ def build_people(
                 cand_ret = max(lst, key=lambda d: parse_date(d) or date.min)
                 cand_dt = parse_date(cand_ret)
                 pay_y = (p.get("월급여") or {}).get(str(ys)) or {}
-                if cand_dt and any(float(pay_y.get(str(m), 0.0) or 0.0) > 0 for m in range(cand_dt.month + 1, 13)):
+                # 사업장이 하나뿐인 퇴사자는 퇴사 다음 달 급여(익월 지급·퇴직 정산)가 있어도 퇴사일을 그대로 둠.
+                # 같은 해 여러 사업장 기록이 있는 이동자만, 퇴사월 이후 급여가 있으면 계속 근무로 봄.
+                if len(lst) > 1 and cand_dt and any(
+                    float(pay_y.get(str(m), 0.0) or 0.0) > 0 for m in range(cand_dt.month + 1, 13)
+                ):
                     continue
                 yr_ret[ys] = cand_ret
         p["연도별_퇴사일"] = yr_ret
