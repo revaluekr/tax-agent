@@ -263,6 +263,10 @@ def tenure_under_1y(person: dict, year: int | None = None) -> bool:
     retire = parse_date(yr_ret_str if yr_ret_str is not None else person.get("퇴사일"))
     if not hire or not retire or retire < hire:
         return False
+    # 근로기간 1년 미만은 해당 과세연도 말 기준으로 판단: 과세연도 종료일 현재 재직 중이었다면
+    # (그 뒤에 1년을 못 채우고 퇴사했더라도) 그 연도에는 1년 이상 근무할 것으로 봄. 퇴사한 연도에 제외.
+    if year and retire > date(int(year), 12, 31):
+        return False
     one_yr_later = add_years(hire, 1)
     return (retire.toordinal() - hire.toordinal() + 1) < (one_yr_later.toordinal() - hire.toordinal())
 

@@ -25,7 +25,7 @@ from datetime import date
 from typing import Any
 
 from . import rules as R
-from .headcount import parse_date, default_months_for_year, get_unit_rates
+from .headcount import parse_date, default_months_for_year, get_unit_rates, calc_increase_with_cap
 
 MAX_TEXT_CHARS = 120_000
 FILE_WP_MARKER_RE = re.compile(r"^<<<FILE_WP:(.*?)>>>$")
@@ -1088,9 +1088,51 @@ def build_prev_summary(ext: dict, tax_year: int, corp_size: str = "중소기업"
         cf, cr = o.get("이월세액"), o.get("공제세액")
         if cf is not None and (cr is None or cf >= cr):
             o["이월세액"] = None
-        # ③ 증가인원·최초공제연도 소재지 역산
-        _infer_increase_and_location(o, corp_size)
+    # ③ 증가인원·최초공제연도 소재지 보완 (기신고 인원 차이 우선 → 공제세액 조합 역산)
+    prior_counts = {}
+    for y_str, vals in prev_map.items():
+        if isinstance(vals, dict) and _opt_num(vals.get("상시")) is not None and _opt_num(vals.get("청년등")) is not None:
+            prior_counts[str(y_str)] = {"상시": _opt_num(vals.get("상시")), "청년등": _opt_num(vals.get("청년등"))}
+    fill_missing_increments(out, corp_size, prior_counts)
     return out
+
+
+def fill_missing_increments(ps: dict, corp_size: str = "중소기업", extra_counts: dict | None = None) -> None:
+    """
+    기신고 기초값(ps)에서 비어 있는 '공제받은 증가인원'과 '공제 당시 소재지'를 보완합니다.
+    1순위: 그해와 직전연도의 기신고 인원(상시·청년등)이 모두 있으면 법정 산식(전체 증가 한도)으로 증가인원을 계산하고,
+           그 인원 × 단가가 기신고 공제세액과 정확히 맞을 때만 채택 (맞는 단가표로 소재지도 결정)
+    2순위: 공제세액을 만드는 청년등·청년등외 조합이 하나뿐일 때만 채택
+    이미 값이 있으면 건드리지 않고, 소재지만 비어 있으면 추정합니다. 계산 단계에서도 다시 호출해 예전 백업도 보완됩니다.
+    """
+    counts = dict(extra_counts or {})
+    for y_str, o in (ps or {}).items():
+        if isinstance(o, dict) and o.get("상시") is not None and o.get("청년등") is not None:
+            counts[str(y_str)] = {"상시": float(o["상시"]), "청년등": float(o["청년등"])}
+    for y_str, o in (ps or {}).items():
+        if not isinstance(o, dict) or not str(y_str).isdigit():
+            continue
+        if o.get("청년등_증가") is not None and o.get("청년등외_증가") is not None:
+            _infer_increase_and_location(o, corp_size)          # 소재지만 확인
+            continue
+        credit = o.get("공제세액")
+        prev = counts.get(str(int(y_str) - 1))
+        if credit and prev and o.get("상시") is not None and o.get("청년등") is not None:
+            inc = calc_increase_with_cap(float(o["상시"]), float(o["청년등"]), prev["상시"], prev["청년등"])
+            yi, gi = round(inc["youth_inc"], 2), round(inc["non_youth_inc"], 2)
+            hits = []
+            for cap in (True, False):
+                r = get_unit_rates(corp_size, cap, scheme="legacy")
+                if int(round((round(yi * 100) * r["청년등"] + round(gi * 100) * r["청년등외"]) * 100)) == int(round(float(credit))):
+                    hits.append(cap)
+            if hits:
+                o["청년등_증가"], o["청년등외_증가"] = yi, gi
+                o["_증가_역산"] = True
+                if o.get("수도권") is None and len(hits) == 1:
+                    o["수도권"] = hits[0]
+                    o["_소재지_추정"] = True
+                continue
+        _infer_increase_and_location(o, corp_size)
 
 
 def _infer_increase_and_location(o: dict, corp_size: str = "중소기업") -> None:

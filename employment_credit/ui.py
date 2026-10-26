@@ -4294,6 +4294,10 @@ def _page_calculation():
     tax_yr = int(s["tax_year"])
     b = s["biz"]
     corp_size = b.get("기업구분", "중소기업")
+    try:
+        P.fill_missing_increments(s.setdefault("prev_summary", {}), corp_size)
+    except Exception:
+        pass
     cap_bool = H.is_capital_area(b.get("사업장소재지", ""))
     is_capital = True if cap_bool is None else bool(cap_bool)
     loc_label = "수도권" if is_capital else "수도권 외"
@@ -4489,17 +4493,12 @@ def _page_calculation():
     prev_s = pkg["prev_s"]
     cur_inc = pkg["cur_inc"]
 
-    # 기신고 기준 선택 시 직전연도 기신고 인원이 있으면 직전 과세연도 표시값에 반영 가능
-    if active_pm_basis == R.PM_BASIS_FILED and p1.get("상시") is not None and p1.get("청년등") is not None:
-        prv_reg_disp = float(p1["상시"])
-        prv_yth_disp = float(p1["청년등"])
-        prv_gen_disp = round(max(0.0, prv_reg_disp - prv_yth_disp), 2)
-        inc_disp = H.calc_increase_with_cap(cur_s["regular"], cur_s["youth"], prv_reg_disp, prv_yth_disp)
-    else:
-        prv_reg_disp = prev_s["regular"]
-        prv_yth_disp = prev_s["youth"]
-        prv_gen_disp = prev_s["non_youth"]
-        inc_disp = cur_inc
+    # 신규공제(1차년도)의 직전연도 인원은 사후관리 기준 선택과 무관하게 신법 재계산 값(2단계 사원표)을 씁니다.
+    # (기신고 기준은 2·3차년도 사후관리의 최초공제연도 인원에만 적용 — 요약표·합계와 같은 값)
+    prv_reg_disp = prev_s["regular"]
+    prv_yth_disp = prev_s["youth"]
+    prv_gen_disp = prev_s["non_youth"]
+    inc_disp = cur_inc
 
     cap_notice_html = ""
     if inc_disp.get("raw_youth_inc", 0) > inc_disp["youth_inc"]:
