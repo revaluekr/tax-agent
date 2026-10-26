@@ -43,6 +43,7 @@ from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from . import rules as R
 from . import headcount as H
 from . import parsers as P
+from . import backup as B
 
 STEPS = ["자료 업로드", "사원정보", "공제액 계산", "보고서"]
 MONTH_COLS = [f"M{m:02d}" for m in range(1, 13)]
@@ -1714,10 +1715,99 @@ def render_credit_sidebar():
             st.rerun()
 
     _save_ec_to_disk(s)
+    _render_backup_card(s)
     ind = f"{b.get('업태', '')} {b.get('종목', '')}".strip()
     if ind and H.is_excluded_industry(ind) and s["industry_alert_for"] != ind:
         s["industry_alert_for"] = ind
         _dlg_industry(ind)
+
+
+# ══════════════════════════════════════════════════════════════════
+# 3-1. 작업 백업 (비밀번호 암호화 파일로 내 PC에 저장 / 다시 불러오기)
+# ══════════════════════════════════════════════════════════════════
+def _current_build_sig(s: dict) -> str:
+    """_ensure_built_for_tax_year와 같은 방식의 작업 서명 (복원 후 불필요한 재구축 방지용)"""
+    wp_sig = json.dumps(
+        sorted((n, f.get("key"), f.get("wp", "")) for n, f in (s.get("files") or {}).items()),
+        ensure_ascii=False,
+    )
+    return f"{s.get('ext_sig')}|{s['tax_year']}|{wp_sig}"
+
+
+def _restore_from_backup(inner: dict) -> None:
+    """백업 내용으로 현재 작업공간의 계산기 상태를 통째로 바꿉니다."""
+    ws_id = st.session_state.get("loaded_workspace_id") or "default_ec"
+    store = st.session_state.setdefault("ec_by_ws", {})
+    base = _default_state_dict()
+    for k, v in (inner.get("state") or {}).items():
+        if v is not None:
+            base[k] = v
+    base["grid_ver"], base["last_sent"] = {}, {}
+    base["built_sig"] = _current_build_sig(base)          # 복원한 사원표를 그대로 쓰고 다시 만들지 않음
+    if base.get("people"):
+        base["step"] = max(2, int(base.get("step") or 2))
+    store[ws_id] = base
+    # 입력칸이 이전 값을 붙잡고 있지 않도록 계산기 위젯 상태 초기화
+    for k in list(st.session_state.keys()):
+        if str(k).startswith(("ec_biz_", "ec_sub_", "pf_", "calc_", "prev_sum_", "ec_grid_", "pm_basis")):
+            del st.session_state[k]
+    st.session_state.ec = base
+    _save_ec_to_disk(base)
+
+
+def _render_backup_card(s: dict) -> None:
+    with st.container(border=True):
+        st.markdown("<div class='sb-card-title'><span>💾 작업 백업 (내 PC)</span></div>", unsafe_allow_html=True)
+        if not B.crypto_available():
+            st.caption("백업 기능을 쓰려면 requirements.txt에 `cryptography`를 추가하고 앱을 재시작하세요.")
+            return
+        st.caption("앱을 재시작하면 서버의 작업 내용이 사라질 수 있습니다. 비밀번호를 건 파일로 PC에 보관했다가 다시 올려 이어서 작업하세요.")
+        tab_save, tab_load = st.tabs(["⬇️ 내려받기", "⬆️ 불러오기"])
+
+        with tab_save:
+            pw1 = st.text_input("백업 비밀번호", type="password", key="ec_bk_pw1",
+                                help=f"{B.MIN_PASSWORD_LEN}자 이상. 잊으면 이 백업은 복구할 수 없습니다.")
+            pw2 = st.text_input("비밀번호 확인", type="password", key="ec_bk_pw2")
+            if st.button("백업 파일 만들기", use_container_width=True, key="ec_bk_make"):
+                if pw1 != pw2:
+                    st.error("두 비밀번호가 다릅니다.")
+                elif not (s.get("people") or s.get("biz", {}).get("상호")):
+                    st.warning("백업할 작업 내용이 없습니다.")
+                else:
+                    try:
+                        data, fname = B.make_backup_bytes(s, pw1)
+                        st.session_state["ec_bk_ready"] = (data, fname)
+                    except B.BackupError as e:
+                        st.error(str(e))
+            ready = st.session_state.get("ec_bk_ready")
+            if ready:
+                st.download_button("📥 백업 파일 내려받기", data=ready[0], file_name=ready[1],
+                                   mime="application/octet-stream", use_container_width=True, key="ec_bk_dl",
+                                   on_click=lambda: st.session_state.pop("ec_bk_ready", None))
+                st.caption(f"`{ready[1]}`  \n고객 자료와 같은 보안 폴더에 보관하세요. 비밀번호는 파일과 따로 관리하세요.")
+
+        with tab_load:
+            up = st.file_uploader("백업 파일 (.ecbak)", type=[B.FILE_EXT], key="ec_bk_up")
+            pw = st.text_input("백업 비밀번호", type="password", key="ec_bk_pw_in")
+            if up is not None and st.button("파일 열기", use_container_width=True, key="ec_bk_open"):
+                try:
+                    st.session_state["ec_bk_loaded"] = B.read_backup_bytes(up.getvalue(), pw)
+                except B.BackupError as e:
+                    st.session_state.pop("ec_bk_loaded", None)
+                    st.error(str(e))
+            inner = st.session_state.get("ec_bk_loaded")
+            if inner:
+                st.info(f"**{inner.get('상호')} · {inner.get('tax_year')}년 귀속**  \n"
+                        f"저장 시각 {inner.get('saved_at')} · 사원 {inner.get('people_count', 0)}명")
+                st.warning("현재 작업 내용이 이 백업으로 모두 바뀝니다. 필요하면 먼저 지금 작업을 백업해 두세요.")
+                c1, c2 = st.columns(2)
+                if c1.button("이 백업으로 바꾸기", type="primary", use_container_width=True, key="ec_bk_apply"):
+                    _restore_from_backup(inner)
+                    st.session_state.pop("ec_bk_loaded", None)
+                    st.rerun()
+                if c2.button("취소", use_container_width=True, key="ec_bk_cancel"):
+                    st.session_state.pop("ec_bk_loaded", None)
+                    st.rerun()
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -1823,7 +1913,9 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
                 opts = [None] + list(all_labels.keys())
                 for name, f in list(s["files"].items()):
                     c1, c_wp, c2, c3 = st.columns([3.4, 1.8, 3.8, 0.9])
-                    c1.markdown(f"📄 **{name}**")
+                    c1.markdown(f"📄 **{name}**" + (" · <span style='color:#64748b;font-size:.8rem'>💾 백업 복원(원문 없음)</span>"
+                                                     if f.get("restored") and not f.get("text") else ""),
+                                unsafe_allow_html=True)
                     cur_wp = _sanitize_workplace_label(str(f.get("wp") or ""), _default_workplace_label(s))
                     new_wp = c_wp.text_input(
                         "사업장명",
@@ -1910,6 +2002,16 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
             sorted((n, f.get("key"), f.get("wp", "")) for n, f in s["files"].items()),
             ensure_ascii=False,
         )
+        restored_left = [n for n, f in s["files"].items() if f.get("restored") and not f.get("text")]
+        if s["ext_sig"] != sig and restored_left and s.get("ext"):
+            # 백업에서 복원한 파일은 원문이 없어 다시 읽을 수 없음 → 기존에 읽어둔 결과를 그대로 사용
+            st.warning(
+                "백업에서 복원한 파일(" + ", ".join(restored_left[:3]) + (" 외" if len(restored_left) > 3 else "") + ")은 "
+                "원문이 없어 다시 읽을 수 없습니다. 지금 읽어둔 사원정보를 그대로 쓰고 다음 단계로 넘어갑니다. "
+                "서류를 새로 읽게 하려면 복원 표시된 파일을 모두 삭제하고 원본 서류를 다시 올려주세요."
+            )
+            s["ext_sig"] = sig
+            s["built_sig"] = _current_build_sig(s)
         if s["ext_sig"] != sig:
             texts = _compose_doc_texts_with_wp(s, classified)
             if texts:
