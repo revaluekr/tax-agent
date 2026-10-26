@@ -2,19 +2,19 @@
 """
 통합고용세액공제 화면 — 1단계(자료 업로드) · 2단계(사원정보) · 3단계(공제액·사후관리 계산) · 4단계(보고서)
 
-[디자인 & 기능 업그레이드 및 클로드 크로스체크 + 귀속연도별 직관적 블록 명칭·자동 생략 완비]
+[디자인 & 기능 업그레이드 및 클로드 크로스체크 + 귀속연도별 직관적 블록·복수 사업장(본·지점/양도·양수) 완벽 지원]
 1. "자율 에이전트AI"(app.py)와 100% 동일한 Pretendard 폰트, 에메랄드 그린(#16a34a/#22c55e) & 다크 네이비(#1e293b) 테마,
    상단 슬림 미니 상태바(.top-mini-status-bar), 사이드바 카드 타이틀(.sb-card-title) 및 배지(.sb-badge-green) 완벽 통일.
-2. 1단계(자료 업로드) 레이아웃 개선:
-   - 『2025년 공제감면세액계산서 (기신고 상시근로자 명세서 포함)』 항목을 체크리스트에 추가하여 업로드 및 드롭다운 선택 시 즉시 초록불 `🟢` 점등.
-   - 하단: 파일 업로드 드롭존을 "자율 에이전트AI" 채팅 입력창과 동일한 위치(화면 맨 하단)·너비의 슬림 바 형태로 배치.
-3. 2단계(사원정보) 직관적 블록 헤더 및 자료 유무 기반 자동 표시·생략:
+2. 좌측 귀속사업연도(2024·2025·2026년 등) 전환 시 메인 화면 즉시 동기화:
+   - 좌측에서 `2025년 귀속` 선택 시 2026년 미래 데이터는 제외하고 **『2025년 귀속 상시근로자 명세』**부터 해당 연도 세법 기준(인별절사)으로 즉시 시작.
+   - 좌측에서 `2024년 귀속` 선택 시 2025·2026년 미래 데이터는 제외하고 **『2024년 귀속 상시근로자 명세』**부터 해당 연도 세법 기준(전체절사)으로 즉시 시작.
+3. 복수 사업장 합산(법인 본·지점 합산 / 개인 기중 양도·포괄양수 1·2번 사업장 합산) 완벽 지원:
+   - 좌측 사이드바 `🏢 사업자정보` 하단에 **『🏢 추가 합산 사업장 (제2사업장 등)』** 정보 카드가 자동/수동으로 표시됨.
+   - 2단계 사원정보 표 **맨 앞(첫 번째 열, `성명` 왼쪽)**에 **`사업장명`** 열을 배치하고, 동일 근로자가 기중에 사업장 간 이동(예: `1번사업장→2번사업장`, `본점→지점`)한 경우 월별 급여를 합산하여 계속근로자로 판정.
+4. 2단계(사원정보) 직관적 블록 헤더 및 자료 유무 기반 자동 표시·생략:
    - 2026년 귀속: `3. 26년 세액공제(인별절사)` · `4. 25년 1차 사후관리` · `5. 24년 2차 사후관리`
    - 2025년 귀속: `3. 25년 세액공제(인별절사)` · `4. 24년 1차 사후관리` · (`5. 23년 2차 사후관리`는 23년 자료 미업로드 시 자동 생략)
-   - 2024년 귀속: `3. 24년 세액공제(전체절사)` · (`4. 23년 1차 사후관리` · `5. 22년 2차 사후관리`는 23·22년 자료 미업로드 시 자동 생략, 24년 자료 자체가 없으면 24년 표도 생략)
-4. 3단계(공제액·사후관리 계산) & 4단계(보고서):
-   - 사후관리 총인원수(연인원)/평균인원수 비교표 및 사후관리세액(연속공제·추가납부) 상세 산출표 **오른쪽 위에 기준 선택기(`기신고 기준 (원칙)` vs `세법원칙 기준 (재계산)`)**를 배치하여,
-     기본값은 **『기신고 기준』**으로 표시하고 사용자가 클릭 한 번으로 **『세법원칙 기준』**과 비교·전환할 수 있도록 구현.
+   - 2024년 귀속: `3. 24년 세액공제(전체절사)` · (`4. 23년 1차 사후관리` · `5. 22년 2차 사후관리`는 23·22년 자료 미업로드 시 자동 생략)
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ from . import parsers as P
 
 STEPS = ["자료 업로드", "사원정보", "공제액 계산", "보고서"]
 MONTH_COLS = [f"M{m:02d}" for m in range(1, 13)]
-INFO_COLS = ["성명", "생년월일", "입사일", "퇴사일"]
+INFO_COLS = ["사업장명", "성명", "생년월일", "입사일", "퇴사일"]
 CLASS_COLS = ["고용유형", "제외사유", "청년등"]
 
 
@@ -46,13 +46,14 @@ def _S() -> dict:
         store[ws_id] = {
             "step": 1,
             "tax_year": R.DEFAULT_TAX_YEAR,
-            "files": {},            # 파일명 → {"key": 서류종류, "text": 본문}
+            "files": {},            # 파일명 → {"key": 서류종류, "text": 본문, "wp": 사업장명}
             "uploader_ver": 0,
             "ext": None,
             "ext_sig": None,
             "built_sig": None,
             "biz": {},
             "biz_confirmed": [],
+            "sub_biz_list": [],     # 제2사업장 등 추가 합산 사업장 리스트 (본·지점 합산 / 양도·양수 사업장)
             "people": {},
             "year_recs": {},
             "prev_summary": {},     # 기신고 명세서(공제감면세액계산서) 또는 수기 입력 과거연도 인원·공제액·2차공제·이월액·기추징액
@@ -74,22 +75,35 @@ def _S() -> dict:
             "industry_alert_for": "",
             "next_pid_seq": 1,
         }
+    store[ws_id].setdefault("sub_biz_list", [])
     st.session_state.ec = store[ws_id]
     return store[ws_id]
 
 
-def _uploaded_wht_years(s: dict) -> set[int]:
-    """실제로 원천징수부 파일이 업로드된 연도 집합을 반환합니다."""
+def _default_workplace_label(s: dict) -> str:
+    b = s.get("biz") or {}
+    nm = (b.get("상호") or "").strip()
+    if s.get("sub_biz_list"):
+        return nm or "본점(1사업장)"
+    return nm or R.DEFAULT_WORKPLACE_NAME
+
+
+def _uploaded_wht_years(s: dict, max_year: int | None = None) -> set[int]:
+    """실제로 원천징수부 파일이 업로드된 연도 집합을 반환합니다 (`max_year` 지정 시 해당 연도 이하만 반환)."""
     yrs = set()
     for f in (s.get("files") or {}).values():
         fk = str(f.get("key") or "")
         if fk.startswith("wht_"):
             ys = fk.replace("wht_", "").strip()
             if ys.isdigit():
-                yrs.add(int(ys))
+                yi = int(ys)
+                if max_year is None or yi <= int(max_year):
+                    yrs.add(yi)
     for y_str, rows in ((s.get("ext") or {}).get("wht") or {}).items():
         if str(y_str).isdigit() and rows:
-            yrs.add(int(y_str))
+            yi = int(y_str)
+            if max_year is None or yi <= int(max_year):
+                yrs.add(yi)
     return yrs
 
 
@@ -117,29 +131,44 @@ def _has_year_data(s: dict, year: int) -> bool:
 
 
 def _years(s: dict) -> list[int]:
+    """
+    선택된 귀속사업연도(`tax_year`)를 기준으로 표시할 연도 목록을 내림차순 반환합니다.
+    - 항상 선택된 `tax_year`(예: 2025년 귀속 선택 시 2025년, 2024년 귀속 선택 시 2024년)가 맨 위 첫 번째 표로 시작하며,
+      `tax_year`보다 미래 연도(예: 2025년 귀속 선택 시 2026년)는 절대 표시하지 않습니다.
+    """
     t = int(s["tax_year"])
-    comp = H.valid_comparison_years_for_new_credit(t)
-    active_years = {t, t - 1}
-    for k in ("A", "B", "C"):
-        if comp.get(k) is not None:
-            active_years.add(int(comp[k]))
+    active_years = {t}
 
-    active_years.update(_uploaded_wht_years(s))
+    # 직전연도(t-1)는 자료가 있거나 아직 아무 파일도 안 올렸을 때 포함
+    if _has_year_data(s, t - 1) or not _uploaded_wht_years(s):
+        if (t - 1) >= 2022:
+            active_years.add(t - 1)
+
+    # 비교·사후관리 대상 과거연도(y <= t) 중 실제 업로드된 원천징수부가 있는 연도 추가
+    for wy in _uploaded_wht_years(s, max_year=t):
+        if wy <= t:
+            active_years.add(wy)
+
     for p in (s.get("people") or {}).values():
         for y_str, pay_obj in (p.get("월급여") or {}).items():
             if str(y_str).isdigit() and H._has_any_pay_record(pay_obj):
-                active_years.add(int(y_str))
+                yi = int(y_str)
+                if yi <= t:
+                    active_years.add(yi)
+
     for my in (s.get("manual_extra_years") or []):
-        if isinstance(my, int):
+        if isinstance(my, int) and my <= t:
             active_years.add(my)
 
-    return sorted(active_years, reverse=True)
+    return sorted((y for y in active_years if y <= t), reverse=True)
 
 
 def _all_possible_years(s: dict) -> list[int]:
     t = int(s["tax_year"])
-    cands = {t - i for i in range(4)} | _uploaded_wht_years(s) | set(s.get("manual_extra_years") or [])
-    return sorted(cands, reverse=True)
+    cands = {t - i for i in range(4)} | _uploaded_wht_years(s, max_year=t) | {
+        int(my) for my in (s.get("manual_extra_years") or []) if isinstance(my, int) and int(my) <= t
+    }
+    return sorted((y for y in cands if y <= t), reverse=True)
 
 
 def _ctx(s: dict, year: int) -> dict:
@@ -160,7 +189,7 @@ def _ctx(s: dict, year: int) -> dict:
 
 
 def _cohort_youth_map(s: dict, cohort_year: int) -> dict[str, bool]:
-    """최초공제연도(cohort_year) 사원표 기준으로 그해 실제로 청년등이었던 사원 매핑 (클로드 크로스체크 장점 통합)."""
+    """최초공제연도(cohort_year) 사원표 기준으로 그해 실제로 청년등이었던 사원 매핑."""
     ctx = _ctx(s, cohort_year)
     recs = (s.get("year_recs") or {}).get(cohort_year, {})
     out: dict[str, bool] = {}
@@ -170,6 +199,75 @@ def _cohort_youth_map(s: dict, cohort_year: int) -> dict[str, bool]:
         c = H.compute_row(p, recs.get(pid) or P.new_year_rec(), cohort_year, ctx)
         out[pid] = c["상시"] == "O" and any(c["youth_flags"])
     return out
+
+
+def _compose_doc_texts_with_wp(s: dict, classified: dict[str, list[str]]) -> dict[str, str]:
+    """파일별로 지정된 사업장명(`wp`)을 `<<<FILE_WP:...>>>` 마커로 감싸서 파서에 전달합니다."""
+    texts: dict[str, str] = {}
+    default_wp = _default_workplace_label(s)
+    for k, names in classified.items():
+        chunks = []
+        for n in names:
+            f_obj = s["files"].get(n) or {}
+            wp = str(f_obj.get("wp") or "").strip() or P.infer_workplace_name(n, f_obj.get("text", "")) or default_wp
+            chunks.append(f"<<<FILE_WP:{wp}>>>\n{f_obj.get('text', '')}")
+        texts[k] = "\n\n".join(chunks)
+    return texts
+
+
+def _ensure_built_for_tax_year(s: dict):
+    """
+    2단계·3단계·4단계 진입 시 또는 좌측 사이드바에서 `귀속사업연도`를 변경했을 때,
+    선택된 `tax_year` 이하의 자료만으로 `biz`, `sub_biz_list`, `people`, `year_recs`, `prev_summary`를 즉시 재구축합니다.
+    """
+    wp_sig = json.dumps(
+        sorted((n, f.get("key"), f.get("wp", "")) for n, f in (s.get("files") or {}).items()),
+        ensure_ascii=False,
+    )
+    sig = f"{s.get('ext_sig')}|{s['tax_year']}|{wp_sig}"
+    if s.get("built_sig") != sig and (s.get("ext") is not None or s.get("files")):
+        if s.get("ext") is None and s.get("files"):
+            classified: dict[str, list[str]] = {}
+            for name, f in s["files"].items():
+                if f.get("key"):
+                    classified.setdefault(f["key"], []).append(name)
+            texts = _compose_doc_texts_with_wp(s, classified)
+            s["ext"] = P.extract_all(texts, None, "")
+            s["ext_sig"] = wp_sig
+
+        ext = s.get("ext") or {}
+        tax_yr = int(s["tax_year"])
+        s["biz"], s["biz_confirmed"] = P.build_biz_info(ext, tax_yr, existing_biz=s.get("biz"))
+        s["sub_biz_list"] = P.build_sub_biz_list(ext, s["biz"], existing_sub_biz=s.get("sub_biz_list"))
+
+        default_wp = (s["biz"].get("상호") or "").strip() or R.DEFAULT_WORKPLACE_NAME
+        s["people"], s["year_recs"] = P.build_people(
+            ext,
+            _all_possible_years(s),
+            max_tax_year=tax_yr,
+            default_workplace=default_wp,
+        )
+
+        parsed_prev = P.build_prev_summary(ext, tax_yr)
+        ps = s.setdefault("prev_summary", {})
+        for y_str, vals in parsed_prev.items():
+            if isinstance(vals, dict):
+                old = ps.get(str(y_str)) or {}
+                ps[str(y_str)] = {
+                    "상시_총인원": vals.get("상시_총인원") if vals.get("상시_총인원") is not None else old.get("상시_총인원"),
+                    "청년등_총인원": vals.get("청년등_총인원") if vals.get("청년등_총인원") is not None else old.get("청년등_총인원"),
+                    "상시": vals.get("상시") if vals.get("상시") is not None else old.get("상시"),
+                    "청년등": vals.get("청년등") if vals.get("청년등") is not None else old.get("청년등"),
+                    "청년등_증가": vals.get("청년등_증가") if vals.get("청년등_증가") is not None else old.get("청년등_증가"),
+                    "청년등외_증가": vals.get("청년등외_증가") if vals.get("청년등외_증가") is not None else old.get("청년등외_증가"),
+                    "공제세액": int(vals.get("공제세액") or 0) if vals.get("공제세액") is not None else int(old.get("공제세액") or 0),
+                    "2차_공제세액": int(vals.get("2차_공제세액") or 0) if vals.get("2차_공제세액") is not None else old.get("2차_공제세액"),
+                    "이월세액": int(vals.get("이월세액") or 0) if vals.get("이월세액") is not None else int(old.get("이월세액") or 0),
+                    "기추징세액": int(vals.get("기추징세액") or 0) if vals.get("기추징세액") is not None else int(old.get("기추징세액") or 0),
+                }
+
+        s["grid_ver"], s["last_sent"] = {}, {}
+        s["built_sig"] = sig
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -305,6 +403,21 @@ div[role="dialog"] p {
     -webkit-text-fill-color: #0f172a !important;
     background: #e2e8f0 !important;
     font-weight: 600 !important;
+}
+.ec-sub-biz-box {
+    background: #f8fafc;
+    border: 1px dashed #94a3b8;
+    border-left: 4px solid #2563eb;
+    border-radius: 8px;
+    padding: 8px 10px;
+    margin-top: 8px;
+    margin-bottom: 6px;
+}
+.ec-sub-biz-title {
+    font-size: 0.82rem;
+    font-weight: 800;
+    color: #1e3a8a;
+    margin-bottom: 4px;
 }
 
 /* 📋 1단계 서류 체크리스트 표 — 자율 에이전트 엔터프라이즈 네이비 테이블과 동일 */
@@ -582,6 +695,9 @@ def _top_status_bar(s: dict):
     """자율 에이전트AI 상단과 동일한 디자인의 미니 상태바(.top-mini-status-bar)를 렌더링합니다."""
     b = s.get("biz") or {}
     corp_nm = (b.get("상호") or "").strip() or "상호 미입력"
+    sub_cnt = len(s.get("sub_biz_list") or [])
+    if sub_cnt > 0:
+        corp_nm = f"{corp_nm} 외 {sub_cnt}개 사업장 합산"
     corp_sz = b.get("기업구분") or "중소기업"
     cap = H.is_capital_area(b.get("사업장소재지", ""))
     loc_str = "수도권" if cap is True else ("비수도권(수도권 외)" if cap is False else "소재지 미입력")
@@ -666,7 +782,7 @@ def _dlg_review(items: list[tuple[str, str]]):
 
 
 # ══════════════════════════════════════════════════════════════════
-# 3. 사이드바: 귀속사업연도(2024~2028) · 사업자정보 ("자율 에이전트AI" 카드 스타일 통일)
+# 3. 사이드바: 귀속사업연도(2024~2028) · 주사업장 정보 + 하단 추가 합산 사업장(본·지점 / 양도·양수)
 # ══════════════════════════════════════════════════════════════════
 def _int(v, default: int) -> int:
     try:
@@ -698,15 +814,18 @@ def render_credit_sidebar():
             index=R.SUPPORTED_TAX_YEARS.index(tax_yr),
             format_func=lambda y: f"{y}년 귀속 ({'인별절사' if y >= 2025 else '전체절사'} + {y-1}·{y-2} 사후관리)",
             label_visibility="collapsed",
+            key="ec_sb_tax_year_select",
         )
         if new_year != s["tax_year"]:
-            s["tax_year"] = new_year
+            s["tax_year"] = int(new_year)
             s["manual_extra_years"] = []
             s["built_sig"] = None
+            _ensure_built_for_tax_year(s)
             st.rerun()
 
     with st.container(border=True, key="ec_biz"):
         b, conf = s["biz"], set(s["biz_confirmed"])
+        sub_list = s.setdefault("sub_biz_list", [])
         cap = H.is_capital_area(b.get("사업장소재지", ""))
         if cap is True:
             loc_pill = "<span class='sb-badge-amber'>수도권 사업장</span>"
@@ -715,8 +834,9 @@ def render_credit_sidebar():
         else:
             loc_pill = "<span class='sb-badge-pro'>직접입력/자동추출</span>"
 
+        main_title_lbl = "🏢 주사업장(본점) 정보" if sub_list else "🏢 사업자정보"
         st.markdown(
-            f"<div class='sb-card-title'><span>🏢 사업자정보</span>{loc_pill}</div>",
+            f"<div class='sb-card-title'><span>{main_title_lbl}</span>{loc_pill}</div>",
             unsafe_allow_html=True,
         )
 
@@ -730,7 +850,7 @@ def render_credit_sidebar():
             )
             b[field] = v
 
-        txt("상호(법인명)", "상호", "예: 주식회사 세무에이전트")
+        txt("상호(법인명 · 주사업장명)", "상호", "예: (주)세무에이전트 본점 / 1번사업장")
         txt("설립일(개업일)", "설립일", "YYYY-MM-DD")
         txt("사업자등록번호", "사업자번호", "000-00-00000")
         c_u1, c_u2 = st.columns(2)
@@ -755,6 +875,85 @@ def render_credit_sidebar():
                 s["biz_confirmed"] = []
                 st.rerun()
 
+        # ── 하단: 제2사업장 등 추가 합산 사업장 표시 영역 (본·지점 합산 / 기중 양도·포괄양수) ──
+        if sub_list:
+            st.markdown(
+                f"<div style='margin-top:8px; padding-top:8px; border-top:1px dashed #cbd5e1; "
+                f"font-size:0.84rem; font-weight:800; color:#1e3a8a;'>"
+                f"🔗 합산 대상 추가 사업장 ({len(sub_list)}곳)</div>",
+                unsafe_allow_html=True,
+            )
+            remove_idx = None
+            for idx, sb in enumerate(sub_list):
+                with st.expander(
+                    f"🏢 제{idx+2}사업장: {sb.get('상호') or f'추가사업장{idx+2}'} ({sb.get('구분', '합산')[:4]})",
+                    expanded=True,
+                ):
+                    cur_t_opt = sb.get("구분") if sb.get("구분") in R.WORKPLACE_TYPES else R.WORKPLACE_TYPES[0]
+                    sb["구분"] = st.selectbox(
+                        "합산 사유 구분",
+                        options=R.WORKPLACE_TYPES,
+                        index=R.WORKPLACE_TYPES.index(cur_t_opt),
+                        key=f"ec_sub_type_{idx}",
+                    )
+                    sb["상호"] = st.text_input(
+                        f"제{idx+2}사업장명(상호)",
+                        value=str(sb.get("상호", "") or ""),
+                        placeholder="예: 강남지점 / 2번사업장(포괄양수)",
+                        key=f"ec_sub_nm_{idx}",
+                    )
+                    sb["사업자번호"] = st.text_input(
+                        "사업자등록번호",
+                        value=str(sb.get("사업자번호", "") or ""),
+                        placeholder="000-00-00000",
+                        key=f"ec_sub_no_{idx}",
+                    )
+                    sb["사업장소재지"] = st.text_input(
+                        "사업장 소재지",
+                        value=str(sb.get("사업장소재지", "") or ""),
+                        placeholder="예: 경기도 성남시...",
+                        key=f"ec_sub_addr_{idx}",
+                    )
+                    cs1, cs2 = st.columns(2)
+                    sb["개업일"] = cs1.text_input(
+                        "개업·양수일",
+                        value=str(sb.get("개업일", "") or ""),
+                        placeholder="YYYY-MM-DD",
+                        key=f"ec_sub_open_{idx}",
+                    )
+                    sb["폐업일"] = cs2.text_input(
+                        "폐업·양도일",
+                        value=str(sb.get("폐업일", "") or ""),
+                        placeholder="YYYY-MM-DD",
+                        key=f"ec_sub_close_{idx}",
+                    )
+                    if st.button(f"🗑️ 제{idx+2}사업장 삭제", key=f"btn_del_sub_biz_{idx}", use_container_width=True):
+                        remove_idx = idx
+            if remove_idx is not None:
+                sub_list.pop(remove_idx)
+                st.rerun()
+
+        if st.button(
+            "➕ 합산 사업장 추가 (지점 · 양도/양수)",
+            use_container_width=True,
+            key="btn_add_sub_biz",
+            help="법인 본·지점 합산 또는 개인사업자 기중 사업 양도·포괄양수 시 두 번째(추가) 사업장 정보를 하단에 추가합니다.",
+        ):
+            next_no = len(sub_list) + 2
+            sub_list.append(
+                {
+                    "구분": "지점(법인 본·지점 합산)",
+                    "상호": f"제{next_no}사업장",
+                    "사업자번호": "",
+                    "사업장소재지": "",
+                    "업태": "",
+                    "종목": "",
+                    "개업일": "",
+                    "폐업일": "",
+                }
+            )
+            st.rerun()
+
     ind = f"{b.get('업태', '')} {b.get('종목', '')}".strip()
     if ind and H.is_excluded_industry(ind) and s["industry_alert_for"] != ind:
         s["industry_alert_for"] = ind
@@ -762,7 +961,7 @@ def render_credit_sidebar():
 
 
 # ══════════════════════════════════════════════════════════════════
-# 4. 1단계: 자료 업로드 (2025년 공제감면세액계산서 포함 체크리스트 + 중단 파일목록 + 하단 슬림 업로드바)
+# 4. 1단계: 자료 업로드 (2025년 공제감면세액계산서 포함 체크리스트 + 파일별 사업장명 지정 + 하단 슬림 업로드바)
 # ══════════════════════════════════════════════════════════════════
 def _page_upload(extract_file_fn, log_tokens_fn, room_key):
     s = _S()
@@ -779,7 +978,7 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
             "💡 <b>[2026년 귀속 통합 계산 안내]</b> 2026년 귀속 신고 시에는 "
             "<b>① 26년 세액공제(인별절사)</b>, <b>② 25년 1차 사후관리(2차년도 연속공제·추징)</b>, "
             "<b>③ 24년 2차 사후관리(3차년도 연속공제·추징)</b>를 함께 검토합니다. "
-            "사후관리는 <b>『기신고 기준』(2025년 공제감면세액계산서 등)을 원칙</b>으로 하되, 3단계 표 우측 상단에서 <b>『세법원칙 기준(원천징수부 재계산)』</b>을 선택해 비교할 수 있습니다."
+            "본점·지점 또는 기중 양도(1번)·포괄양수(2번) 복수 사업장 원천징수부를 함께 올리면 자동 합산됩니다."
             "</div>",
             unsafe_allow_html=True,
         )
@@ -787,8 +986,8 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
         trunc_lbl = "인별절사" if tax_yr >= 2025 else "전체절사"
         st.markdown(
             f"<div class='ec-law-banner'>"
-            f"💡 <b>[{tax_yr}년 귀속 세액공제({trunc_lbl}) 및 사후관리 안내]</b> {tax_yr % 100:02d}년 당해 세액공제({trunc_lbl})와 함께, "
-            f"업로드된 자료 유무에 따라 <b>{(tax_yr-1)%100:02d}년 1차 사후관리</b> 및 <b>{(tax_yr-2)%100:02d}년 2차 사후관리</b>를 자동 구성합니다."
+            f"💡 <b>[{tax_yr}년 귀속 세액공제({trunc_lbl}) 및 사후관리 안내]</b> 2단계 진입 시 <b>『{tax_yr}년 귀속 상시근로자 명세』</b>가 맨 위에 표시되며, "
+            f"<b>{tax_yr % 100:02d}년 세액공제({trunc_lbl})</b>와 자료가 있는 <b>{(tax_yr-1)%100:02d}년 1차 사후관리</b>·<b>{(tax_yr-2)%100:02d}년 2차 사후관리</b>를 자동 구성합니다."
             f"</div>",
             unsafe_allow_html=True,
         )
@@ -813,8 +1012,8 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
 
     st.markdown(
         "<div class='ec-bottom-upload-label'>"
-        "<span>📥 <b>파일 추가 업로드</b> (PDF·엑셀·CSV·이미지 파일을 아래 바에 끌어다 놓거나 클릭하여 선택하세요)</span>"
-        f"<span style='color:#16a34a;font-size:0.80rem;'>{tax_yr-2}·{tax_yr-1}·{tax_yr}년 원천징수부(100% 자체 고속파싱) · {tax_yr-1}년 공제감면세액계산서 자동 인식</span>"
+        "<span>📥 <b>파일 추가 업로드</b> (본·지점 / 양도·양수 복수 사업장 파일도 한꺼번에 끌어다 놓으세요)</span>"
+        f"<span style='color:#16a34a;font-size:0.80rem;'>{tax_yr-2}·{tax_yr-1}·{tax_yr}년 원천징수부(100% 자체 고속파싱) · 복수 사업장 합산 지원</span>"
         "</div>",
         unsafe_allow_html=True,
     )
@@ -832,8 +1031,14 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
         with st.spinner(f"📄 {len(new)}개 파일에서 텍스트 및 표 데이터를 추출하고 있습니다..."):
             for u in new:
                 text = extract_file_fn(u, room_key) or ""
-                s["files"][u.name] = {"key": P.classify_file(u.name, text), "text": text}
+                auto_wp = P.infer_workplace_name(u.name, text) or _default_workplace_label(s)
+                s["files"][u.name] = {
+                    "key": P.classify_file(u.name, text),
+                    "text": text,
+                    "wp": auto_wp,
+                }
         s["uploader_ver"] += 1
+        s["built_sig"] = None
         st.rerun()
 
     with uploaded_list_slot:
@@ -842,7 +1047,7 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
                 c_h1, c_h2 = st.columns([4, 1])
                 with c_h1:
                     st.markdown(
-                        f"**📎 업로드된 파일 목록 ({len(s['files'])}건)** — *오른쪽 드롭다운에서 서류 종류를 선택하면 상단 표에 즉시 초록불(🟢)이 켜집니다.*"
+                        f"**📎 업로드된 파일 목록 ({len(s['files'])}건)** — *본·지점 또는 1·2번 사업장 합산 시 가운데 칸에서 『사업장명』을 구분해 주시면 2단계 표 맨 앞에 자동 기록됩니다.*"
                     )
                 with c_h2:
                     if st.button("🗑️ 전체 파일 비우기", use_container_width=True, key="ec_clear_all_files"):
@@ -855,10 +1060,23 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
 
                 opts = [None] + list(all_labels.keys())
                 for name, f in list(s["files"].items()):
-                    c1, c2, c3 = st.columns([4.5, 4.5, 1.0])
+                    c1, c_wp, c2, c3 = st.columns([3.4, 1.8, 3.8, 0.9])
                     c1.markdown(f"📄 **{name}**")
+                    cur_wp = str(f.get("wp") or _default_workplace_label(s))
+                    new_wp = c_wp.text_input(
+                        "사업장명",
+                        value=cur_wp,
+                        placeholder="예: 본점 / 지점 / 1사업장",
+                        key=f"ec_wp_{name}",
+                        label_visibility="collapsed",
+                        help="이 파일에 속한 근로자들의 소속 사업장명(예: 본점, 강남지점, 1번사업장, 2번사업장)",
+                    )
+                    if new_wp.strip() != cur_wp:
+                        f["wp"] = new_wp.strip()
+                        s["built_sig"] = None
+
                     cur_k = f.get("key") if f.get("key") in opts else None
-                    f["key"] = c2.selectbox(
+                    new_k = c2.selectbox(
                         "종류",
                         opts,
                         index=opts.index(cur_k),
@@ -868,14 +1086,21 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
                         else all_labels.get(k, str(k)),
                         label_visibility="collapsed",
                     )
+                    if new_k != f.get("key"):
+                        f["key"] = new_k
+                        s["built_sig"] = None
+
                     if c3.button("삭제", key=f"ec_del_{name}", use_container_width=True):
                         s["files"].pop(name, None)
+                        s["built_sig"] = None
                         st.rerun()
 
     have: dict[str, list[str]] = {}
     for name, f in s["files"].items():
         if f.get("key"):
-            have.setdefault(f["key"], []).append(name)
+            wp_tag = f.get("wp")
+            disp_nm = f"{name} [{wp_tag}]" if wp_tag and wp_tag != R.DEFAULT_WORKPLACE_NAME else name
+            have.setdefault(f["key"], []).append(disp_nm)
 
     trs = []
     for key, label, required, _ in doc_types:
@@ -916,11 +1141,14 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
         for name, f in s["files"].items():
             if f.get("key"):
                 classified.setdefault(f["key"], []).append(name)
-        sig = json.dumps(sorted((n, f.get("key")) for n, f in s["files"].items()), ensure_ascii=False)
+        sig = json.dumps(
+            sorted((n, f.get("key"), f.get("wp", "")) for n, f in s["files"].items()),
+            ensure_ascii=False,
+        )
         if s["ext_sig"] != sig:
-            texts = {k: "\n\n".join(s["files"][n]["text"] for n in names) for k, names in classified.items()}
+            texts = _compose_doc_texts_with_wp(s, classified)
             if texts:
-                with st.spinner("⚡ 자체 고속 파서(1순위) 및 보완 AI(2순위)로 사업자·사원·기신고 정보를 추출하고 있습니다..."):
+                with st.spinner("⚡ 자체 고속 파서(1순위) 및 보완 AI(2순위)로 사업자·복수사업장·사원 정보를 추출하고 있습니다..."):
                     s["ext"] = P.extract_all(texts, log_tokens_fn, room_key)
                     msgs = P.check_missing(classified, s["ext"], tax_yr)
             else:
@@ -939,40 +1167,15 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
 
 def _enter_step2():
     s = _S()
-    sig = f"{s['ext_sig']}|{s['tax_year']}"
-    if s["built_sig"] != sig:
-        ext = s["ext"] or {}
-        s["biz"], s["biz_confirmed"] = P.build_biz_info(ext, int(s["tax_year"]), existing_biz=s.get("biz"))
-        s["people"], s["year_recs"] = P.build_people(ext, _all_possible_years(s))
-
-        parsed_prev = P.build_prev_summary(ext, int(s["tax_year"]))
-        ps = s.setdefault("prev_summary", {})
-        for y_str, vals in parsed_prev.items():
-            if isinstance(vals, dict):
-                old = ps.get(str(y_str)) or {}
-                ps[str(y_str)] = {
-                    "상시_총인원": vals.get("상시_총인원") if vals.get("상시_총인원") is not None else old.get("상시_총인원"),
-                    "청년등_총인원": vals.get("청년등_총인원") if vals.get("청년등_총인원") is not None else old.get("청년등_총인원"),
-                    "상시": vals.get("상시") if vals.get("상시") is not None else old.get("상시"),
-                    "청년등": vals.get("청년등") if vals.get("청년등") is not None else old.get("청년등"),
-                    "청년등_증가": vals.get("청년등_증가") if vals.get("청년등_증가") is not None else old.get("청년등_증가"),
-                    "청년등외_증가": vals.get("청년등외_증가") if vals.get("청년등외_증가") is not None else old.get("청년등외_증가"),
-                    "공제세액": int(vals.get("공제세액") or 0) if vals.get("공제세액") is not None else int(old.get("공제세액") or 0),
-                    "2차_공제세액": int(vals.get("2차_공제세액") or 0) if vals.get("2차_공제세액") is not None else old.get("2차_공제세액"),
-                    "이월세액": int(vals.get("이월세액") or 0) if vals.get("이월세액") is not None else int(old.get("이월세액") or 0),
-                    "기추징세액": int(vals.get("기추징세액") or 0) if vals.get("기추징세액") is not None else int(old.get("기추징세액") or 0),
-                }
-
-        s["grid_ver"], s["last_sent"] = {}, {}
-        s["built_sig"] = sig
-        for k in list(st.session_state.keys()):
-            if str(k).startswith("ec_biz_"):
-                del st.session_state[k]
+    _ensure_built_for_tax_year(s)
+    for k in list(st.session_state.keys()):
+        if str(k).startswith("ec_biz_"):
+            del st.session_state[k]
     s["step"] = 2
 
 
 # ══════════════════════════════════════════════════════════════════
-# 5. 2단계: 사원정보 표 (엑셀 2단 그룹헤더 + 1~12월 완벽 표시 + 연도별 맞춤 3·4·5 블록)
+# 5. 2단계: 사원정보 표 (맨 앞 『사업장명』 열 + 엑셀 2단 그룹헤더 + 1~12월 + 연도별 맞춤 3·4·5 블록)
 # ══════════════════════════════════════════════════════════════════
 JS_LOCKED = JsCode("""
 function(p){
@@ -988,6 +1191,15 @@ function(p){
   const L = (p.data._lock || '').split(',');
   if (L.includes(p.colDef.field)) return Object.assign(baseFont, {backgroundColor:'#e2e8f0', color:'#0f172a', fontWeight:'600'});
   return Object.assign(baseFont, {backgroundColor:'#ffffff', color:'#1d4ed8', fontWeight:'600'});
+}""")
+
+JS_STYLE_WORKPLACE = JsCode("""
+function(p){
+  const baseFont = {fontFamily: 'Pretendard, Malgun Gothic, sans-serif', fontSize: '12.2px', textAlign: 'center', paddingLeft: '4px', paddingRight: '4px'};
+  if (p.node.rowPinned) return Object.assign(baseFont, {backgroundColor:'#dcfce7', color:'#14532d', fontWeight:'800'});
+  const v = String(p.value || '');
+  if (v.includes('→')) return Object.assign(baseFont, {backgroundColor:'#dbeafe', color:'#1e40af', fontWeight:'800'});
+  return Object.assign(baseFont, {backgroundColor:'#f8fafc', color:'#334155', fontWeight:'700'});
 }""")
 
 JS_STYLE_CENTER = JsCode("""
@@ -1084,6 +1296,7 @@ def _build_year_rows(s: dict, year: int) -> tuple[list[dict], dict, dict]:
         year - 1: _cohort_youth_map(s, year - 1),
         year - 2: _cohort_youth_map(s, year - 2),
     }
+    default_wp = _default_workplace_label(s)
     computed, rows = {}, []
     for pid, p in people.items():
         if not H.worked_in_year(p, year):
@@ -1095,7 +1308,7 @@ def _build_year_rows(s: dict, year: int) -> tuple[list[dict], dict, dict]:
         unlocked = yrec.get("_unlocked")
         lock = []
         if not unlocked:
-            lock += [f for f in INFO_COLS if f in (p.get("_confirmed") or [])]
+            lock += [f for f in ("성명", "생년월일", "입사일", "퇴사일") if f in (p.get("_confirmed") or [])]
             lock += [f for f in ("고용유형",) if f in (yrec.get("_confirmed") or [])]
             if p.get("주주관계") or p.get("외국인"):
                 lock.append("제외사유")
@@ -1108,13 +1321,23 @@ def _build_year_rows(s: dict, year: int) -> tuple[list[dict], dict, dict]:
 
         ovr = {int(k) for k in (yrec.get("월_override") or {})}
         yr_ret = (p.get("연도별_퇴사일") or {}).get(str(year))
-        disp_retire = yr_ret if yr_ret is not None else p.get("퇴사일", "")
+        raw_retire = yr_ret if yr_ret is not None else p.get("퇴사일", "")
+        ret_dt = H.parse_date(raw_retire)
+        # 해당 과세연도(year) 이후에 퇴사한 경우(단, 1년 미만 계약 제외자가 아닌 경우) 해당 연도 표에서는 재직 중이므로 빈칸 표시
+        if ret_dt and ret_dt.year > int(year) and c["제외사유"] != R.EXCL_UNDER_1Y:
+            disp_retire = ""
+        else:
+            disp_retire = raw_retire
+
+        yr_wp = (p.get("연도별_사업장명") or {}).get(str(year))
+        disp_wp = yr_wp or p.get("사업장명") or default_wp
 
         c_age = c.get("취업연령")
         age_str = f"{c_age}세" if c_age is not None else "-"
 
         row = {
             "pid": pid,
+            "사업장명": disp_wp,
             "성명": p.get("성명", ""),
             "생년월일": p.get("생년월일", ""),
             "입사일": p.get("입사일", ""),
@@ -1199,15 +1422,23 @@ def _grid_options(
     b3_title, b4_title, b5_title = _block_titles_for_year(year)
 
     grp1_children = [
-        {"field": "성명", "headerName": "성명", "pinned": "left", "width": 84, "editable": JS_LOCKED, "cellStyle": JS_STYLE},
-        {"field": "생년월일", "headerName": "생년월일", "width": 98, "editable": JS_LOCKED, "cellStyle": JS_STYLE_CENTER, "valueFormatter": JS_DATE_FMT},
-        {"field": "입사일", "headerName": "입사일", "width": 98, "editable": JS_LOCKED, "cellStyle": JS_STYLE_CENTER, "valueFormatter": JS_DATE_FMT},
-        {"field": "퇴사일", "headerName": "퇴사일", "width": 98, "editable": JS_LOCKED, "cellStyle": JS_STYLE_CENTER, "valueFormatter": JS_DATE_FMT},
-        {"field": "취업연령", "headerName": "취업연령", "width": 68, "editable": False, "cellStyle": _blk_style("#f8fafc", "#334155", bold=False)},
+        {
+            "field": "사업장명",
+            "headerName": "사업장명",
+            "pinned": "left",
+            "width": 94,
+            "editable": True,
+            "cellStyle": JS_STYLE_WORKPLACE,
+        },
+        {"field": "성명", "headerName": "성명", "pinned": "left", "width": 80, "editable": JS_LOCKED, "cellStyle": JS_STYLE},
+        {"field": "생년월일", "headerName": "생년월일", "width": 96, "editable": JS_LOCKED, "cellStyle": JS_STYLE_CENTER, "valueFormatter": JS_DATE_FMT},
+        {"field": "입사일", "headerName": "입사일", "width": 96, "editable": JS_LOCKED, "cellStyle": JS_STYLE_CENTER, "valueFormatter": JS_DATE_FMT},
+        {"field": "퇴사일", "headerName": "퇴사일", "width": 96, "editable": JS_LOCKED, "cellStyle": JS_STYLE_CENTER, "valueFormatter": JS_DATE_FMT},
+        {"field": "취업연령", "headerName": "취업연령", "width": 66, "editable": False, "cellStyle": _blk_style("#f8fafc", "#334155", bold=False)},
         {
             "field": "고용유형",
             "headerName": "고용유형",
-            "width": 135,
+            "width": 130,
             "editable": JS_LOCKED,
             "cellStyle": JS_STYLE,
             "cellEditor": "agSelectCellEditor",
@@ -1216,7 +1447,7 @@ def _grid_options(
         {
             "field": "제외사유",
             "headerName": "제외사유",
-            "width": 155,
+            "width": 150,
             "editable": JS_LOCKED,
             "cellStyle": JS_STYLE,
             "cellEditor": "agSelectCellEditor",
@@ -1225,7 +1456,7 @@ def _grid_options(
         {
             "field": "병역개월",
             "headerName": "병역(월)",
-            "width": 68,
+            "width": 66,
             "editable": JS_LOCKED,
             "cellStyle": JS_STYLE_CENTER,
             "cellEditor": "agNumberCellEditor",
@@ -1234,7 +1465,7 @@ def _grid_options(
         {
             "field": "청년등",
             "headerName": "청년등 구분",
-            "width": 135,
+            "width": 132,
             "editable": JS_LOCKED,
             "cellStyle": JS_STYLE,
             "cellEditor": "agSelectCellEditor",
@@ -1243,7 +1474,7 @@ def _grid_options(
         {
             "field": "상시",
             "headerName": "상시",
-            "width": 58,
+            "width": 56,
             "editable": True,
             "cellStyle": JS_STYLE_REGULAR,
             "cellEditor": "agSelectCellEditor",
@@ -1310,7 +1541,7 @@ def _grid_options(
     ]
 
     col_defs = [
-        {"headerName": "1. 사원 계산기 (기본정보 · 상시/청년 판정)", "children": grp1_children},
+        {"headerName": "1. 사원 계산기 (사업장 · 기본정보 · 상시/청년 판정)", "children": grp1_children},
         {"headerName": "2. 매월 말 현재 상시근로자 수 (1월 ~ 12월)", "children": grp2_children},
         {"headerName": b3_title, "children": grp3_children},
     ]
@@ -1325,6 +1556,7 @@ def _grid_options(
     trunc_mode = "인별절사" if int(year) >= 2025 else "전체절사"
     pinned = [
         {
+            "사업장명": "합산합계",
             "성명": "상시근로자",
             "생년월일": "",
             "고용유형": f"÷ {n}개월 ({trunc_mode})",
@@ -1344,6 +1576,7 @@ def _grid_options(
             "b4_reg": totals["b4_reg"],
         },
         {
+            "사업장명": "합산합계",
             "성명": "청년등",
             "생년월일": "",
             "고용유형": "각 코호트 기준",
@@ -1363,6 +1596,7 @@ def _grid_options(
             "b4_reg": None,
         },
         {
+            "사업장명": "합산합계",
             "성명": "청년등 외",
             "생년월일": "",
             "고용유형": "상시 - 청년등",
@@ -1410,7 +1644,13 @@ def _apply_changes(s: dict, year: int, sent: list[dict], back: pd.DataFrame) -> 
         p, yrec = s["people"][pid], s["year_recs"][year][pid]
         us = yrec.setdefault("_user_set", [])
 
-        for f in INFO_COLS:
+        nv_wp = _norm(nr.get("사업장명"))
+        if nv_wp != _norm(old.get("사업장명")):
+            p["사업장명"] = nv_wp
+            p.setdefault("연도별_사업장명", {})[str(year)] = nv_wp
+            changed = True
+
+        for f in ("성명", "생년월일", "입사일", "퇴사일"):
             nv = _norm(nr.get(f))
             if nv != _norm(old.get(f)):
                 d = H.parse_date(nv) if f != "성명" else None
@@ -1684,6 +1924,7 @@ def _render_prev_filing_summary_card(s: dict, shown_years: list[int]):
 
 def _page_employees(room_key: str):
     s = _S()
+    _ensure_built_for_tax_year(s)
     tax_yr = int(s["tax_year"])
     shown_years = _years(s)
 
@@ -1729,6 +1970,7 @@ def _page_employees(room_key: str):
         "<div class='ec-legend'>"
         "<span style='background:#e2e8f0;color:#0f172a;border:1px solid #cbd5e1'>🔒 서류 확인값 (상시 O/X 전환 시 잠금해제)</span>"
         "<span style='background:#ffffff;color:#1d4ed8;border:1px solid #93c5fd'>✏️ 입력·선택 가능</span>"
+        "<span style='background:#dbeafe;color:#1e40af;border:1px solid #93c5fd'>🏢 사업장 간 전출입·포괄승계 합산(A→B)</span>"
         "<span style='background:#dcfce7;color:#14532d;border:1px solid #86efac'>🌱 청년등 인정 월</span>"
         "<span style='background:#fef08a;color:#854d0e;border:1px solid #eab308'>⏩ 미도래 월 연말재직 가정(자동 1)</span>"
         "<span style='background:#fef9c3;color:#9a3412;border:1px solid #fde047'>⚠️ 급여 없는 달 (무급·육아휴직 확인)</span>"
@@ -1780,6 +2022,8 @@ def _page_employees(room_key: str):
         pid = f"manual_{seq}_{uuid.uuid4().hex[:6]}"
         s["people"][pid] = {
             "pid": pid,
+            "사업장명": _default_workplace_label(s),
+            "연도별_사업장명": {},
             "성명": f"신규사원{seq}",
             "생년월일": "",
             "입사일": "",
@@ -1814,6 +2058,7 @@ def _page_employees(room_key: str):
 #    - 표 오른쪽 위에 『기신고 기준 (원칙)』 vs 『세법원칙 기준 (재계산)』 선택기 배치!
 # ══════════════════════════════════════════════════════════════════
 def _ensure_totals_snapshot(s: dict) -> dict[int, dict]:
+    _ensure_built_for_tax_year(s)
     totals_all = {}
     for y in _all_possible_years(s):
         _, _, t = _build_year_rows(s, y)
@@ -1911,6 +2156,7 @@ def _render_pm_basis_selector_right(s: dict, widget_key: str) -> str:
 
 def _page_calculation():
     s = _S()
+    _ensure_built_for_tax_year(s)
     tax_yr = int(s["tax_year"])
     b = s["biz"]
     corp_size = b.get("기업구분", "중소기업")
@@ -2463,7 +2709,9 @@ def _page_calculation():
 # 7. 4단계: 최종 검토보고서 및 다운로드
 # ══════════════════════════════════════════════════════════════════
 def _build_report_markdown(s: dict) -> str:
+    _ensure_built_for_tax_year(s)
     b = s.get("biz") or {}
+    sub_list = s.get("sub_biz_list") or []
     tax_yr = int(s.get("tax_year") or R.DEFAULT_TAX_YEAR)
     corp_nm = (b.get("상호") or "").strip() or "미입력 법인(사업자)"
     corp_sz = b.get("기업구분", "중소기업")
@@ -2476,7 +2724,7 @@ def _build_report_markdown(s: dict) -> str:
     ps = s.get("prev_summary") or {}
     p1 = ps.get(str(tax_yr - 1)) or {}
     p2 = ps.get(str(tax_yr - 2)) or {}
-    if not pkg:
+    if not pkg or int(pkg.get("tax_year", 0)) != tax_yr:
         has_t2_data = bool(totals_all.get(tax_yr - 2, {}).get("has_data") or _has_year_data(s, tax_yr - 2))
         pkg = H.calculate_tax_year_package(
             tax_year=tax_yr,
@@ -2521,11 +2769,22 @@ def _build_report_markdown(s: dict) -> str:
         else ""
     )
 
+    sub_biz_lines = []
+    for idx, sb in enumerate(sub_list, start=2):
+        sb_nm = sb.get("상호") or f"제{idx}사업장"
+        sb_no = sb.get("사업자번호") or "-"
+        sb_addr = sb.get("사업장소재지") or "-"
+        sb_tp = sb.get("구분") or "합산사업장"
+        sub_biz_lines.append(
+            f"- **합산 제{idx}사업장 ({sb_tp})**: {sb_nm} (사업자번호: `{sb_no}` / 소재지: `{sb_addr}`)"
+        )
+
     lines = [
         f"# 📑 {tax_yr}년 귀속 통합고용세액공제 및 사후관리 검토보고서",
         est_line,
         "## 1. 사업자 기본사항",
-        f"- **상호(법인명)**: {corp_nm} (사업자등록번호: `{b.get('사업자번호') or '-'}`)",
+        f"- **주사업장 상호(법인명)**: {corp_nm} (사업자등록번호: `{b.get('사업자번호') or '-'}`)",
+        *sub_biz_lines,
         f"- **기업규모 / 소재지**: **{corp_sz}** / **{loc_label}** (`{b.get('사업장소재지') or '-'}`)",
         f"- **업태 · 종목**: {b.get('업태') or '-'} · {b.get('종목') or '-'} (설립·개업일: `{b.get('설립일') or '-'}`)",
         f"- **사업연도 월수**: 당해({tax_yr}년) {b.get('당해_월수', 12)}개월 / 직전({tax_yr-1}년) {b.get('전년_월수', 12)}개월",
@@ -2554,7 +2813,8 @@ def _build_report_markdown(s: dict) -> str:
         "## 4. 사후관리 판정 및 실무 체크포인트 해설",
         f"1. **{b4_title} [{basis_lbl}] ({pm1['case_code']} - {pm1['case_title']})**: {pm1['formula_note']}",
         f"2. **{b5_title} [{basis_lbl}] ({pm2['case_code']} - {pm2['case_title']})**: {pm2['formula_note']}",
-        "3. **4대 사후관리 추징 완화 특례 점검**:",
+        "3. **4대 사후관리 추징 완화 및 복수 사업장 합산 특례 점검**:",
+        "   - **본·지점 및 기중 사업 양도·포괄양수 합산(조특령 제26조의8 제10항)**: 동일 과세단위 내 본·지점 근로자 및 포괄양수·승계 사업장 근로자는 통산하여 상시근로자 수를 산정합니다.",
         "   - **이월공제 미공제액 차감 특례(조특법 제29조의8·제144조)**: 최저한세 등으로 실제 감면받지 못하고 이월된 세액이 있는 경우 현금 추가납부 대신 이월공제액을 우선 소멸시킵니다.",
         "   - **청년 연령경과 간주 특례(구 조특령 제26조의8 제5항)**: 최초 공제연도에 실제로 청년등이었던 근로자는 사후관리 기간 중 34세를 초과하더라도 청년등 상시근로자로 유지됩니다.",
         "   - **출산전후휴가자 대체인력 특례(조특령 제26조의8 제7항, 2024.2.29 신설)**: 추가공제 비감소 요건 판정 시 대체인력을 채용한 출산전후휴가자는 상시근로자 산정에서 보정할 수 있습니다.",
@@ -2564,11 +2824,12 @@ def _build_report_markdown(s: dict) -> str:
 
 
 def _build_csv_bytes(s: dict) -> bytes:
+    _ensure_built_for_tax_year(s)
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(
         [
-            "귀속연도", "성명", "생년월일", "입사일", "퇴사일", "취업연령", "고용유형", "제외사유", "병역(월)", "청년등구분", "상시여부",
+            "귀속연도", "사업장명", "성명", "생년월일", "입사일", "퇴사일", "취업연령", "고용유형", "제외사유", "병역(월)", "청년등구분", "상시여부",
             *[f"{m}월" for m in range(1, 13)], "월합계",
             "3.세액공제[청년등]", "3.세액공제[청년외]", "3.세액공제[상시]",
             "4.1차사후관리[청년등]", "4.1차사후관리[청년외]", "4.1차사후관리[상시]",
@@ -2583,7 +2844,7 @@ def _build_csv_bytes(s: dict) -> bytes:
         for r in rows:
             writer.writerow(
                 [
-                    y, r["성명"], r["생년월일"], r["입사일"], r["퇴사일"], r["취업연령"],
+                    y, r["사업장명"], r["성명"], r["생년월일"], r["입사일"], r["퇴사일"], r["취업연령"],
                     r["고용유형"], r["제외사유"], r["병역개월"], r["청년등"], r["상시"],
                     *[r[MONTH_COLS[i]] if r[MONTH_COLS[i]] is not None else "" for i in range(12)],
                     r["합계"],
@@ -2594,7 +2855,7 @@ def _build_csv_bytes(s: dict) -> bytes:
             )
         writer.writerow(
             [
-                f"{y}년 합계/평균", "전체 상시·청년 요약", "", "", "", "", f"÷{totals['months_in_year']}개월({trunc_mode})", "", "", "", "",
+                f"{y}년 합계/평균", "합산합계", "전체 상시·청년 요약", "", "", "", "", f"÷{totals['months_in_year']}개월({trunc_mode})", "", "", "", "",
                 *[totals["월별_상시"][i] if totals["월별_상시"][i] is not None else "" for i in range(12)],
                 totals["상시_합계"],
                 f"{totals['b1_yth']:.2f}", f"{totals['b1_gen']:.2f}", f"{totals['b1_reg']:.2f}",
@@ -2607,6 +2868,7 @@ def _build_csv_bytes(s: dict) -> bytes:
 
 def _page_report():
     s = _S()
+    _ensure_built_for_tax_year(s)
     tax_yr = int(s["tax_year"])
     md_text = _build_report_markdown(s)
     csv_bytes = _build_csv_bytes(s)
