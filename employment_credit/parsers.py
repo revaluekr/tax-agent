@@ -2,19 +2,19 @@
 """
 통합고용세액공제 서류 분류 · 100% 자체 결정론적 고속 파싱(1순위) + AI 병렬 보완 추출(2순위) + 복수 사업장(본·지점 / 양도·양수) 합산 엔진 (parsers.py)
 
-[핵심 아키텍처 — 100% 자체파싱 우선 + 보완적 AI 도움 + 복수 사업장 합산 지원]
+[핵심 아키텍처 — 100% 자체파싱 우선 + 보완적 AI 도움 + 복수 사업장 합산 + 클로드 크로스체크 완벽 통합]
 1. [1순위: 100% 자체 결정론적 파싱 (0.01초, 토큰 0원, API 키 불필요)]
    - 원천징수부/급여대장(`_try_fast_parse_wht_table`):
      * `app.py`의 `extract_file_content`가 출력하는 공백 구분 표(`df.head(1500).to_string(index=False)` — `Unnamed: 0` 헤더 및 빈 셀 `NaN` 포함),
      * 마크다운 파이프(`| ... |`) 표,
      * CSV(쉼표)/TSV(탭) 및 정형 텍스트 원천징수부를 정규식·열 매핑 파서로 0.01초 만에 100% 자체 추출합니다.
      * 사번(`사001`, `사002`, `EMP01` 등)을 사업장명으로 오인하지 않도록 정밀 필터(`_is_employee_id_token`)를 적용했습니다.
-   - 복수 사업장(법인 본점·지점 합산, 개인 기중 양도·포괄양수 1·2번 사업장 합산) 지원:
-     * 파일명·본문에서 `사업장명`(`본점`, `지점`, `1번사업장`, `2번사업장`, 상호 등)을 자동 추론하고,
-     * 동일 사원이 기중에 1번 사업장에서 2번 사업장으로 이동(전출입·포괄승계)한 경우 월별 급여를 합산하여 계속근로자로 통합 판정하며 `사업장명`에 `1번사업장→2번사업장`으로 자동 기록합니다.
-2. [2순위: 보완적 AI 병렬 추출 (`call_gemini_json` — `agent.get_live_gemini_key_pool()` + `thinking_budget=0` 통합)]
-   - 비정형 PDF·스캔본처럼 자체 파서만으로 읽히지 않거나 필수 필드가 비어 있는 서류에 한하여,
-     키 풀과 `ThreadPoolExecutor` 병렬 호출로 부족한 정보만 빠르게 보완(Merge)합니다.
+   - 본문 내 주민등록번호 개수(`_count_rrn_like`)와 자체 파서 추출 인원수를 자동 대조하여, 누락 의심 행이 있으면 즉시 AI 보완 추출 및 경고를 수행합니다.
+2. [동명이인 분리 + 복수 사업장 이동자 파일 순서 무관 정밀 병합 (`build_people`)]
+   - 생년월일이 다른 동명이인(예: 두 명의 "김민수")은 절대 합치지 않으며, 한쪽 연도에만 생년월일이 빠진 동일인은 안전하게 연결합니다.
+   - 복수 사업장 간 이동(예: 5월 본점 퇴사 → 6월 지점 전입) 시 파일 처리 순서와 무관하게 모든 사업장에서 퇴사했을 때(그리고 이후 월 급여가 없을 때)만 퇴사로 판정합니다.
+3. [공제감면세액계산서 오분류 원천 차단 (`classify_file`)]
+   - 법인세 신고서·공제감면세액계산서 본문의 "근로소득을 증대시킨 기업..." 문구 때문에 원천징수부(`wht_`)로 오분류되지 않도록 차단했습니다.
 """
 from __future__ import annotations
 
@@ -30,6 +30,7 @@ from .headcount import parse_date, default_months_for_year
 
 MAX_TEXT_CHARS = 120_000
 FILE_WP_MARKER_RE = re.compile(r"^<<<FILE_WP:(.*?)>>>$")
+_RRN_LIKE_RE = re.compile(r"(?<!\d)(\d{6})\s*-\s*([1-8])")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -47,10 +48,8 @@ def _is_employee_id_token(tok: str) -> bool:
         return True
     if re.match(r"^[A-Za-z0-9_\-.]+$", s):
         return True
-    # '사001', '사원01', '번호1', '제1호' 등 사번/일련번호 패턴
     if re.match(r"^(?:사번?|사원|번호|일련번호|no\.?|id|emp)?[-_.\s]*\d+호?$", s, flags=re.IGNORECASE):
         return True
-    # 끝에 2자리 이상 숫자가 붙은 코드형 토큰(예: 본사001, 직012 등)은 사번으로 간주
     if re.search(r"\d{2,}$", s):
         return True
     return False
@@ -106,10 +105,14 @@ def classify_file(name: str, text: str = "") -> str | None:
     if any(k in n for k in ("주주명부", "주주현황", "주식등변동", "주식이동", "shareholder")):
         return "shareholder"
 
-    # 2) 원천징수부 / 급여대장 판별 (4자리 연도 및 '24년·25년·26년' 2자리 연도 모두 인식)
-    wht_keywords = ("원천징수", "근로소득", "급여대장", "급여명세", "사원대장", "임직원", "wht")
+    # 2) 원천징수부 / 급여대장 판별 (공제감면세액계산서·세액공제신청서 문구가 있는 서식은 절대 wht로 분류하지 않음)
+    wht_keywords = ("원천징수", "급여대장", "급여명세", "사원대장", "임직원", "wht")
     is_wht_like = any(k in both for k in wht_keywords)
-    if is_wht_like and not any(k in n for k in ("공제감면", "공제세액계산", "상시근로자명세")):
+    credit_form_marks = (
+        "공제감면세액", "공제감면", "공제세액계산", "세액공제신청", "상시근로자명세", "세액조정계산", "최저한세조정"
+    )
+    is_credit_form = any(k in both for k in credit_form_marks)
+    if is_wht_like and not is_credit_form:
         for yr in range(2028, 2020, -1):
             if str(yr) in n:
                 return f"wht_{yr}"
@@ -282,8 +285,9 @@ PROMPT_PREV = """다음은 이미 신고한 통합고용세액공제(또는 고�
 {"연도별":{
   "2023":{"상시_총인원":null, "청년등_총인원":null, "상시":null, "청년등":null, "청년등_증가":null, "청년등외_증가":null, "공제세액":null, "이월세액":null},
   "2024":{"상시_총인원":null, "청년등_총인원":null, "상시":null, "청년등":null, "청년등_증가":null, "청년등외_증가":null, "공제세액":null, "2차_공제세액":null, "기추징세액":null, "이월세액":null},
-  "2025":{"상시_총인원":null, "청년등_총인원":null, "상시":null, "청년등":null, "청년등_증가":null, "청년등외_증가":null, "공제세액":null, "이월세액":null}
-}}"""
+  "2025":{"상시_총인원":null, "청년등_총인원":null, "상시":null, "청년등":null, "청년등_증가":null, "청년등외_증가":null, "공제세액":null, "2차_공제세액":null, "기추징세액":null, "이월세액":null}
+}}
+서식에 다른 귀속연도(예: 2026)가 있으면 같은 형식으로 그 연도를 추가하세요."""
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -838,6 +842,11 @@ def _normalize_wht_rows(raw_employees: list[dict]) -> list[dict]:
 # ══════════════════════════════════════════════════════════════════
 # 4. 100% 자체파싱(1순위) + 멀티스레드 AI 보완 추출(2순위) 통합 (extract_all)
 # ══════════════════════════════════════════════════════════════════
+def _count_rrn_like(text: str) -> int:
+    """본문에 보이는 주민등록번호(앞 7자리) 개수 — 직원 수 대조용."""
+    return len({a + b for a, b in _RRN_LIKE_RE.findall(text or "")})
+
+
 def extract_all(doc_texts: dict[str, str], log_tokens_fn=None, room_key: str = "") -> dict:
     out: dict = {
         "biz_reg": {},
@@ -857,10 +866,12 @@ def extract_all(doc_texts: dict[str, str], log_tokens_fn=None, room_key: str = "
         if key.startswith("wht_"):
             yr = key.replace("wht_", "").strip()
             fast_rows = _try_fast_parse_wht_table(text)
-            if fast_rows is not None and len(fast_rows) > 0:
+            expected = _count_rrn_like(text)
+            if fast_rows:
                 out["wht"][yr] = fast_rows
-            else:
+            if not fast_rows or (expected and len(fast_rows) < expected):
                 llm_tasks[key] = (PROMPT_WHT, text)
+                out.setdefault("_parse_expected", {})[yr] = expected
         elif key == "biz_reg":
             fast_biz = _try_fast_parse_biz_reg(text)
             out["biz_reg"] = fast_biz
@@ -923,7 +934,7 @@ def extract_all(doc_texts: dict[str, str], log_tokens_fn=None, room_key: str = "
                 elif k.startswith("wht_"):
                     yr = k.replace("wht_", "").strip()
                     norm_rows = _normalize_wht_rows(res.get("근로자") or [])
-                    if norm_rows:
+                    if norm_rows and len(norm_rows) > len(out["wht"].get(yr) or []):
                         out["wht"][yr] = norm_rows
 
     return out
@@ -1017,7 +1028,6 @@ def build_sub_biz_list(ext: dict, main_biz: dict, existing_sub_biz: list[dict] |
                 }
             )
 
-    # 원천징수부에서 2개 이상의 서로 다른 사업장명이 감지된 경우에도 추가 사업장 카드 자동 생성
     wht_wps: list[str] = []
     for rows in ((ext or {}).get("wht") or {}).values():
         for r in rows or []:
@@ -1112,6 +1122,9 @@ def build_people(
 ) -> tuple[dict, dict]:
     """
     선택된 귀속사업연도(`max_tax_year`) 이하의 원천징수부 데이터를 성명+생년월일 기준으로 병합합니다.
+    - 생년월일이 다른 동명이인은 별도 인원으로 분리하고, 한 해 자료에만 생년월일이 빠진 동일인은 정상 연결합니다.
+    - 동일 사원이 본·지점 또는 1번(양도)·2번(포괄양수) 사업장에 중복 등재된 경우,
+      파일 처리 순서와 무관하게 월별 급여를 합산하고 모든 사업장에서 퇴사했을 때(그리고 이후 월 급여가 없을 때)만 퇴사로 판정합니다.
     """
     wht_by_year = (ext or {}).get("wht") or {}
     corp_execs = ((ext or {}).get("corp_reg") or (ext or {}).get("corp") or {}).get("임원") or []
@@ -1131,6 +1144,7 @@ def build_people(
     people: dict[str, dict] = {}
     year_recs: dict[int, dict[str, dict]] = {int(y): {} for y in years}
     key_to_pid: dict[str, str] = {}
+    name_to_pids: dict[str, list[str]] = {}
     fallback_wp = (default_workplace or R.DEFAULT_WORKPLACE_NAME).strip() or R.DEFAULT_WORKPLACE_NAME
 
     for y_str in sorted(wht_by_year.keys()):
@@ -1150,11 +1164,21 @@ def build_people(
             raw_wp = str(row.get("사업장명") or "").strip()
             row_wp = raw_wp if (raw_wp and not _is_employee_id_token(raw_wp)) else fallback_wp
             dedup_key = f"{nm}|{b_str}" if b_str else nm
-            pid = key_to_pid.get(dedup_key) or key_to_pid.get(nm)
+            pid = key_to_pid.get(dedup_key)
+            if not pid:
+                # 같은 이름이 이미 있을 때: 생년월일이 확인되지 않은 쪽과 한 명씩만 연결 (동명이인 병합 원천 방지)
+                cands = name_to_pids.get(nm, [])
+                if b_str:
+                    no_birth = [c for c in cands if not people[c].get("생년월일")]
+                    if len(no_birth) == 1:
+                        pid = no_birth[0]
+                        key_to_pid[dedup_key] = pid
+                elif len(cands) == 1:
+                    pid = cands[0]
             if not pid:
                 pid = f"p_{len(people) + 1:03d}"
                 key_to_pid[dedup_key] = pid
-                key_to_pid.setdefault(nm, pid)
+                name_to_pids.setdefault(nm, []).append(pid)
                 people[pid] = {
                     "pid": pid,
                     "사업장명": row_wp,
@@ -1198,16 +1222,7 @@ def build_people(
                 p["월급여"][str(y_int)] = {str(m): float(incoming_pay.get(str(m), 0.0) or 0.0) for m in range(1, 13)}
 
             row_ret = str(row.get("퇴사일") or "").strip()
-            if row_ret:
-                p["연도별_퇴사일"][str(y_int)] = row_ret
-                p["퇴사일"] = row_ret
-            elif existing_pay and p["연도별_퇴사일"].get(str(y_int)):
-                old_ret_dt = parse_date(p["연도별_퇴사일"].get(str(y_int)))
-                if old_ret_dt and any(
-                    float(incoming_pay.get(str(m), 0.0) or 0.0) > 0 for m in range(old_ret_dt.month + 1, 13)
-                ):
-                    p["연도별_퇴사일"].pop(str(y_int), None)
-                    p["퇴사일"] = ""
+            p.setdefault("_ret_rows", {}).setdefault(str(y_int), []).append(row_ret)
 
             if row.get("병역개월") and not p.get("병역개월"):
                 p["병역개월"] = int(row["병역개월"])
@@ -1220,13 +1235,33 @@ def build_people(
                 conf.add("생년월일")
             if p["입사일"]:
                 conf.add("입사일")
-            if p["퇴사일"]:
-                conf.add("퇴사일")
             p["_confirmed"] = list(conf)
 
             emp_t = exec_role_by_name.get(nm) or row.get("고용유형") or R.EMP_REGULAR
             confirmed_emp = nm in exec_role_by_name or (row.get("고용유형") in R.EMP_TYPES)
             year_recs[y_int][pid] = new_year_rec(emp_t, confirmed_emp=confirmed_emp)
+
+    # 퇴사일 확정: 한 연도에 여러 사업장 기록이 있으면, 모든 기록에 퇴사일이 있고 합산 급여상 퇴사월 이후 급여가 없을 때만 가장 늦은 날을 퇴사일로 봄
+    for p in people.values():
+        rr = p.pop("_ret_rows", {}) or {}
+        yr_ret: dict[str, str] = {}
+        for ys, lst in rr.items():
+            if lst and all(lst):
+                cand_ret = max(lst, key=lambda d: parse_date(d) or date.min)
+                cand_dt = parse_date(cand_ret)
+                pay_y = (p.get("월급여") or {}).get(str(ys)) or {}
+                if cand_dt and any(float(pay_y.get(str(m), 0.0) or 0.0) > 0 for m in range(cand_dt.month + 1, 13)):
+                    continue
+                yr_ret[ys] = cand_ret
+        p["연도별_퇴사일"] = yr_ret
+        latest = max(rr.keys()) if rr else None
+        p["퇴사일"] = yr_ret.get(latest, "") if latest else ""
+        conf = set(p.get("_confirmed") or [])
+        if p["퇴사일"]:
+            conf.add("퇴사일")
+        else:
+            conf.discard("퇴사일")
+        p["_confirmed"] = list(conf)
 
     for y in years:
         y_int = int(y)
@@ -1244,6 +1279,13 @@ def ai_extra_warnings(ext: dict, log_tokens_fn=None, room_key: str = "") -> list
     if not ext:
         return []
     warnings: list[str] = []
+
+    for yr, exp in (ext.get("_parse_expected") or {}).items():
+        got = len((ext.get("wht") or {}).get(yr) or [])
+        if exp and got < exp:
+            warnings.append(
+                f"{yr}년 원천징수부: 본문에 보이는 주민등록번호는 {exp}건인데 읽은 직원은 {got}명입니다. 누락된 직원이 없는지 2단계에서 확인하세요."
+            )
 
     wht_map = ext.get("wht") or {}
     all_wht_names: set[str] = set()

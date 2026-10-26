@@ -303,34 +303,22 @@ def is_youth_month_for_cohort(
     was_youth_in_cohort: bool | None = None,
 ) -> bool:
     """
-    [사후관리 및 2·3년차 연속공제용 코호트별 청년등 판정 — 구 조특령 제26조의8 제5항 완벽 반영]
+    사후관리·연속공제용 청년등 판정 (구 조특령 제26조의8 제5항)
+    = 당해 판정상 청년등  OR  최초공제연도(cohort_year)에 청년등이었던 사람
+    ※ 나이가 지나 지금은 '해당없음(일반)'으로 표시되는 사람이 바로 간주 대상이므로, 현재 표시와 무관하게 판정합니다.
     """
-    if youth_label == R.YOUTH_NONE:
-        return False
     if youth_label in (R.YOUTH_SENIOR, R.YOUTH_DISABLED, R.YOUTH_CAREER):
         return True
     if youth_label == R.YOUTH_NK:
         return cohort_year >= 2025
-
-    birth = parse_date(person.get("생년월일"))
-    c_dt = contract_date(person)
-    if not birth or not c_dt:
+    if youth_label == R.YOUTH_YOUNG and parse_date(person.get("생년월일")) and \
+            is_youth_month(person, eval_year, month, corp_size):
         return True
-
-    mil = int(person.get("병역개월", 0) or 0)
-    c_age = full_age(birth, c_dt, mil)
-    if c_age is None or not (R.YOUTH_AGE_MIN <= c_age <= R.YOUTH_AGE_MAX):
-        return False
-
-    if is_youth_month(person, eval_year, month, corp_size):
-        return True
-
-    if eval_year > cohort_year and c_dt <= date(cohort_year, 12, 31):
-        if was_youth_in_cohort is not None:
-            return bool(was_youth_in_cohort)
-        return was_youth_in_year_by_age(person, cohort_year, corp_size)
-
-    return False
+    if was_youth_in_cohort is None:
+        if not parse_date(person.get("생년월일")):
+            return False                       # 생년월일을 모르면 청년으로 보지 않음
+        was_youth_in_cohort = was_youth_in_year_by_age(person, cohort_year, corp_size)
+    return bool(was_youth_in_cohort)
 
 
 def youth_options(emp_type: str) -> list[str]:
@@ -359,13 +347,9 @@ def suggest_youth(person: dict, yrec: dict, year: int, corp_size: str) -> str:
     if c_age is not None and c_age >= R.SENIOR_AGE:
         return R.YOUTH_SENIOR
     if emp_type not in R.EMP_NOT_YOUTH_REGULAR:
+        # 당해 청년 요건을 충족하는 달이 있을 때만 '취업시 청년'으로 제안
+        # (나이가 지난 사람의 사후관리 청년 간주는 이 표시와 무관하게 별도로 계산됨)
         if any(is_youth_month(person, year, m, corp_size) for m in range(1, 13)):
-            return R.YOUTH_YOUNG
-        if any(
-            is_youth_month(person, cy, m, corp_size)
-            for cy in (year - 1, year - 2)
-            for m in range(1, 13)
-        ):
             return R.YOUTH_YOUNG
     return R.YOUTH_NONE
 
@@ -402,7 +386,9 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
     corp_size = ctx.get("corp_size") or "중소기업"
     months_in_year = max(1, min(12, int(ctx.get("months_in_year") or 12)))
     assume_year_end = bool(ctx.get("assume_year_end", True))
+    include_unpaid_hire_month = bool(ctx.get("include_unpaid_hire_month", True))
     last_paid_month = int(ctx.get("last_paid_month") or 12)
+    close_month_map = ctx.get("workplace_close_month_map") or {}
     act_months = set(active_months(year, months_in_year))
 
     emp_type = yrec.get("고용유형") or R.EMP_REGULAR
@@ -444,6 +430,7 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
     youth_flags_b2: list[bool] = []
     youth_flags_b3: list[bool] = []
     no_pay_months: list[int] = []
+    hire_month_nopay: list[int] = []
     projected_months: list[int] = []
 
     for m in range(1, 13):
@@ -463,8 +450,12 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
             emp_ok = employed_at_month_end(hire, retire, year, m)
             m_pay = _get_month_pay(pay_obj, m)
             paid = (m_pay > 0) if m_pay is not None else None
+            yr_wp = (person.get("연도별_사업장명") or {}).get(str(year)) or person.get("사업장명") or ""
+            wp_close_m = close_month_map.get(yr_wp) if ("→" not in yr_wp) else None
 
             if not emp_ok:
+                val = 0.0
+            elif wp_close_m is not None and m > wp_close_m and not paid:
                 val = 0.0
             else:
                 if has_any_pay_data:
@@ -472,16 +463,18 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
                         val = weight
                     elif last_paid_month < 12 and m > last_paid_month:
                         hired_after_cut = bool(hire and hire > month_end(year, last_paid_month))
-                        close_map = ctx.get("workplace_close_month_map") or {}
-                        yr_wp = str((person.get("연도별_사업장명") or {}).get(str(year)) or person.get("사업장명") or "").strip()
-                        close_m = close_map.get(yr_wp) if ("→" not in yr_wp) else None
-                        if close_m is not None and m > int(close_m):
-                            val = 0.0
-                        elif assume_year_end and (paid_in_last_m or hired_after_cut):
+                        if assume_year_end and (paid_in_last_m or hired_after_cut):
                             val = weight
                             projected_months.append(m)
                         else:
                             val = 0.0
+                    elif hire and hire.year == year and hire.month == m:
+                        if include_unpaid_hire_month:
+                            val = weight                  # 입사월: 급여 익월 지급 가능 → 산입하고 표시만
+                            hire_month_nopay.append(m)
+                        else:
+                            val = 0.0
+                            no_pay_months.append(m)
                     else:
                         val = 0.0
                         no_pay_months.append(m)
@@ -495,7 +488,7 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
                 yf1 = False
             elif youth == R.YOUTH_YOUNG:
                 birth_ok = parse_date(person.get("생년월일")) is not None and contract_date(person) is not None
-                yf1 = is_youth_month(person, year, m, corp_size) if birth_ok else True
+                yf1 = is_youth_month(person, year, m, corp_size) if birth_ok else False
             elif youth == R.YOUTH_NK:
                 yf1 = year >= 2025
             else:
@@ -578,6 +571,7 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
         "youth_flags_b2": youth_flags_b2,
         "youth_flags_b3": youth_flags_b3,
         "no_pay_months": no_pay_months,
+        "hire_month_nopay": hire_month_nopay,
         "projected_months": projected_months,
         "row_sum": row_sum,
         "youth_sum": yth_sum_b1,
@@ -938,11 +932,10 @@ def calc_new_2026_credit_abc(
 
     rates_b = get_unit_rates(corp_size, is_capital, scheme="new_2026", retention_year=2)
     if comp.get("B") is not None and s_t2["has_data"]:
-        min_reg_b = min(s_t["reg"], s_t1["reg"])
-        min_yth_b = min(s_t["b2_yth"], s_t1["yth"])
-        tot_b = round(max(0.0, min_reg_b - s_t2["reg"]), 2)
-        yth_b = round(min(tot_b, max(0.0, min_yth_b - s_t2["yth"])), 2)
-        gen_b = round(max(0.0, tot_b - yth_b), 2)
+        gen = lambda d: max(0.0, d["reg"] - d["yth"])
+        tot_b = round(max(0.0, min(s_t["reg"], s_t1["reg"]) - s_t2["reg"]), 2)
+        yth_b = round(min(tot_b, max(0.0, min(s_t["yth"], s_t1["yth"]) - s_t2["yth"])), 2)
+        gen_b = round(min(tot_b, max(0.0, min(gen(s_t), gen(s_t1)) - gen(s_t2))), 2)
         hurdle_b = calc_minimum_hurdle_deduction_2026(corp_size, tot_b, yth_b, gen_b, retention_year=2)
         if hurdle_b["hurdle_met"]:
             b1_won = int(round(yth_b * rates_b["청년등"] * 10_000))
@@ -972,11 +965,10 @@ def calc_new_2026_credit_abc(
 
     rates_c = get_unit_rates(corp_size, is_capital, scheme="new_2026", retention_year=3)
     if comp.get("C") is not None and s_t3["has_data"] and (rates_c["청년등"] > 0 or rates_c["청년등외"] > 0):
-        min_reg_c = min(s_t["reg"], s_t1["reg"], s_t2["reg"])
-        min_yth_c = min(s_t["b3_yth"], s_t1["b2_yth"], s_t2["yth"])
-        tot_c = round(max(0.0, min_reg_c - s_t3["reg"]), 2)
-        yth_c = round(min(tot_c, max(0.0, min_yth_c - s_t3["yth"])), 2)
-        gen_c = round(max(0.0, tot_c - yth_c), 2)
+        gen = lambda d: max(0.0, d["reg"] - d["yth"])
+        tot_c = round(max(0.0, min(s_t["reg"], s_t1["reg"], s_t2["reg"]) - s_t3["reg"]), 2)
+        yth_c = round(min(tot_c, max(0.0, min(s_t["yth"], s_t1["yth"], s_t2["yth"]) - s_t3["yth"])), 2)
+        gen_c = round(min(tot_c, max(0.0, min(gen(s_t), gen(s_t1), gen(s_t2)) - gen(s_t3))), 2)
         hurdle_c = calc_minimum_hurdle_deduction_2026(corp_size, tot_c, yth_c, gen_c, retention_year=3)
         if hurdle_c["hurdle_met"]:
             c1_won = int(round(yth_c * rates_c["청년등"] * 10_000))
@@ -1110,7 +1102,7 @@ def calc_legacy_post_management(
         )
 
     elif reg_diff >= 0 and yth_diff < 0:
-        case_code = "Case 1 (청년→일반 대체감소)"
+        case_code = "Case 3 (전체 유지·청년등만 감소)"
         case_title = "전체 상시근로자 유지 · 청년등만 감소 (부분 연속공제 + 단가차액 추가납부)"
         capped_yth_dec = round(min(init_yth_inc, yth_dec), 2)
         ret_yth = round(max(0.0, init_yth_inc - capped_yth_dec), 2)
@@ -1126,7 +1118,7 @@ def calc_legacy_post_management(
         cont_man = (ret_yth * yth_rate + ret_gen * gen_rate) if can_receive_continued else 0.0
         raw_claw_man = capped_yth_dec * diff_rate * prior_years_claimed_count
         formula_note = (
-            f"[{cohort_year}년분 {elapsed+1}차년도 · Case 1] 전체 상시 유지({cur_pm_reg:.2f} ≥ {init_reg:.2f}), "
+            f"[{cohort_year}년분 {elapsed+1}차년도 · Case 3] 전체 상시 유지({cur_pm_reg:.2f} ≥ {init_reg:.2f}), "
             f"청년등 {capped_yth_dec:.2f}명 감소(일반 대체) → "
             f"추징(차액): {capped_yth_dec:.2f}명 × ({yth_rate:,}-{gen_rate:,})만원 × {prior_years_claimed_count}년 = {raw_claw_man:,.1f}만원 / "
             f"연속공제: 유지청년 {ret_yth:.2f}명×{yth_rate:,}만 + 대체포함일반 {ret_gen:.2f}명×{gen_rate:,}만 = {cont_man:,.1f}만원"
@@ -1140,7 +1132,7 @@ def calc_legacy_post_management(
         capped_reg_dec = round(min(total_init_inc, reg_dec), 2)
 
         if reg_dec <= yth_dec + 1e-9:
-            case_code = "Case 2-1 (전체 상시감소 ≤ 청년감소)"
+            case_code = "Case 1 (전체 감소·청년등 감소 ≥ 전체 감소)"
             case_title = "전체 상시근로자 감소 & 청년등 더 크게 감소 (연속공제 중단 + 청년이탈·대체분 추징)"
             pure_yth_lost = round(min(init_yth_inc, capped_reg_dec), 2)
             gen_also_lost = round(max(0.0, capped_reg_dec - pure_yth_lost), 2)
@@ -1153,24 +1145,23 @@ def calc_legacy_post_management(
                 + (sub_yth_to_gen * diff_rate)
             ) * prior_years_claimed_count
             formula_note = (
-                f"[{cohort_year}년분 {elapsed+1}차년도 · Case 2-1] 전체 상시 {capped_reg_dec:.2f}명 감소 ≤ 청년등 {yth_dec:.2f}명 감소 → "
+                f"[{cohort_year}년분 {elapsed+1}차년도 · Case 1] 전체 상시 {capped_reg_dec:.2f}명 감소 ≤ 청년등 {yth_dec:.2f}명 감소 → "
                 f"연속공제 중단(0원) / 추징: [청년이탈 {pure_yth_lost:.2f}명×{yth_rate:,}만 + "
                 f"청년→일반대체 {sub_yth_to_gen:.2f}명×{diff_rate:,}만"
                 + (f" + 일반이탈 {gen_also_lost:.2f}명×{gen_rate:,}만" if gen_also_lost > 0 else "")
                 + f"] × {prior_years_claimed_count}년 = {raw_claw_man:,.1f}만원"
             )
         else:
-            case_code = "Case 2-2 (전체 상시감소 > 청년감소)"
+            case_code = "Case 2 (전체 감소·그 밖의 경우)"
             case_title = "전체 상시근로자 감소 > 청년등 감소 (연속공제 중단 + 청년감소분·일반감소분 각각 추징)"
             yth_lost = round(min(init_yth_inc, yth_dec), 2)
             gen_lost_raw = round(max(0.0, capped_reg_dec - yth_lost), 2)
             gen_lost = round(min(init_gen_inc, gen_lost_raw), 2)
-            extra_yth_lost = round(max(0.0, gen_lost_raw - gen_lost), 2)
-            total_yth_lost = round(min(init_yth_inc, yth_lost + extra_yth_lost), 2)
+            total_yth_lost = yth_lost        # 청년등외 증가분을 넘는 감소는 공제받은 적이 없으므로 추징 대상 아님
 
             raw_claw_man = ((total_yth_lost * yth_rate) + (gen_lost * gen_rate)) * prior_years_claimed_count
             formula_note = (
-                f"[{cohort_year}년분 {elapsed+1}차년도 · Case 2-2] 전체 상시 {capped_reg_dec:.2f}명 감소 > 청년등 {yth_dec:.2f}명 감소 → "
+                f"[{cohort_year}년분 {elapsed+1}차년도 · Case 2] 전체 상시 {capped_reg_dec:.2f}명 감소 > 청년등 {yth_dec:.2f}명 감소 → "
                 f"연속공제 중단(0원) / 추징: [청년감소 {total_yth_lost:.2f}명×{yth_rate:,}만 + "
                 f"일반감소 {gen_lost:.2f}명×{gen_rate:,}만] × {prior_years_claimed_count}년 = {raw_claw_man:,.1f}만원"
             )
@@ -1259,6 +1250,7 @@ def calculate_tax_year_package(
         b4_y = float(d.get("b4_yth", yth) or 0.0)
         has_data = bool(d.get("has_data", reg > 0 or yth > 0))
         return {
+            "from_filed": bool(d.get("from_filed")),
             "months_in_year": n_m,
             "regular": reg,
             "youth": yth,
@@ -1309,198 +1301,80 @@ def calculate_tax_year_package(
     active_scheme = "new_2026" if (t >= 2026 and scheme_2026 == "new_2026") else "legacy"
     cur_base_credit_won = cur_new_total_won if active_scheme == "new_2026" else cur_legacy_total_won
 
-    # ── 2) 직전연도(T-1) 귀속분의 1차 사후관리 (기신고 기준 vs 세법원칙 재계산 기준 동시 산출) ──
-    pf_y1 = pf.get(t - 1) or pf.get(str(t - 1)) or {}
-    has_t2_data = bool(prev2_s["has_data"] or pf_y1.get("has_t2_data"))
-    if has_t2_data:
-        auto_y1_inc = calc_increase_with_cap(prev_s["regular"], prev_s["youth"], prev2_s["regular"], prev2_s["youth"])
-    else:
-        auto_y1_inc = {"total_inc": 0.0, "youth_inc": 0.0, "non_youth_inc": 0.0}
+    # ── 2)·3) 직전·전전연도 귀속분 사후관리 (기신고 기준 / 세법원칙 기준 동시 산출) ──
+    def _fv(d: dict, k: str):
+        v = d.get(k)
+        try:
+            return None if v is None or v == "" else float(v)
+        except (TypeError, ValueError):
+            return None
 
-    y1_filed_reg = float(pf_y1.get("init_reg", prev_s["regular"]) or 0.0)
-    y1_filed_yth = float(pf_y1.get("init_yth", prev_s["youth"]) or 0.0)
-    y1_filed_yth_inc = float(
-        pf_y1["init_yth_inc"] if pf_y1.get("init_yth_inc") is not None else auto_y1_inc["youth_inc"]
-    )
-    y1_filed_gen_inc = float(
-        pf_y1["init_gen_inc"] if pf_y1.get("init_gen_inc") is not None else auto_y1_inc["non_youth_inc"]
-    )
-    y1_filed_default_clm = int(
-        round((y1_filed_yth_inc * rates_legacy["청년등"] + y1_filed_gen_inc * rates_legacy["청년등외"]) * 10_000)
-    )
-    y1_filed_claimed_won = int(
-        pf_y1["claimed_won"] if pf_y1.get("claimed_won") is not None and int(pf_y1.get("claimed_won") or 0) > 0 else y1_filed_default_clm
-    )
-    y1_cf_won = int(pf_y1.get("carryforward_won", 0) or 0)
+    def _missing(cohort: int, note: str) -> dict:
+        r = calc_legacy_post_management(cohort, t, corp_size, is_capital, 0, 0, 0, 0, 0, 0)
+        r.update({"case_code": "기초값 없음", "case_title": "최초공제연도 인원·증가인원이 없어 계산하지 않음",
+                  "formula_note": note, "base_missing": True})
+        return r
 
-    y1_recalc_reg = prev_s["regular"]
-    y1_recalc_yth = prev_s["youth"]
-    y1_recalc_yth_inc = auto_y1_inc["youth_inc"] if has_t2_data else y1_filed_yth_inc
-    y1_recalc_gen_inc = auto_y1_inc["non_youth_inc"] if has_t2_data else y1_filed_gen_inc
-    y1_recalc_claimed_won = int(
-        round((y1_recalc_yth_inc * rates_legacy["청년등"] + y1_recalc_gen_inc * rates_legacy["청년등외"]) * 10_000)
-    )
+    def _new_law(cohort: int, tier: str, label: str) -> dict:
+        r = calc_legacy_post_management(cohort, t, corp_size, is_capital, 0, 0, 0, 0, 0, 0)
+        r.update({"case_code": f"신법 {tier} 통합", "case_title": f"{cohort}년 귀속분은 신법 점증형({tier})으로 계산",
+                  "retained_yth_inc": abc_res["tiers"][tier]["youth_inc"], "retained_gen_inc": abc_res["tiers"][tier]["non_youth_inc"],
+                  "formula_note": f"{cohort}년 귀속분은 구법 사후관리 대상이 아니며 신법 {label}(B·C) 유지분 공제로 반영됩니다."})
+        return r
+
+    def _cohort(cohort: int, elapsed: int, cur_reg: float, cur_yth: float, s_init: dict, s_before: dict) -> tuple[dict, dict, dict]:
+        f = pf.get(cohort) or pf.get(str(cohort)) or {}
+        filed = {k: _fv(f, k) for k in ("init_reg", "init_yth", "init_yth_inc", "init_gen_inc")}
+        claimed = int(_fv(f, "claimed_won") or 0)                     # 한도: 기신고 공제세액(사실값)
+        cf = int(_fv(f, "carryforward_won") or 0)
+        y1_cont = _fv(f, "y1_continued_won")
+        paid = int(_fv(f, "prior_clawback_paid_won") or 0)
+        extra = {}
+        if elapsed == 2:
+            extra = dict(prev_pm_reg=prev_s["b2_reg"] if prev_s["has_data"] else None,
+                         prev_pm_yth=prev_s["b2_yth"] if prev_s["has_data"] else None,
+                         prior_clawback_paid_won=paid,
+                         y1_continued_credit_won=int(y1_cont) if y1_cont is not None else None)
+
+        def _run(vals: dict, label: str, borrowed: list[str]) -> dict:
+            if any(v is None for v in vals.values()):
+                return _missing(cohort, f"[{label}] {cohort}년 최초공제연도의 상시·청년등 인원 또는 공제받은 증가인원이 없습니다. "
+                                        f"3단계 위쪽에 기신고 숫자를 입력하세요.")
+            r = calc_legacy_post_management(cohort, t, corp_size, is_capital,
+                                            vals["init_reg"], vals["init_yth"], vals["init_yth_inc"], vals["init_gen_inc"],
+                                            cur_reg, cur_yth, init_credit_claimed_won=claimed,
+                                            unclaimed_carryforward_won=cf, **extra)
+            r["base_label"] = label + (f" ({', '.join(borrowed)}은 기신고 숫자 사용)" if borrowed else "")
+            if claimed <= 0 and r.get("clawback_gross_won", 0) > 0:
+                r["formula_note"] += " ※ 기신고 공제세액이 없어 추가납부 한도를 적용하지 못했습니다."
+            return r
+
+        r_filed = _run(filed, "기신고 기준", [])
+        recalc, borrowed = dict(filed), []
+        law_ok = lambda d: d["has_data"] and not d.get("from_filed")
+        if law_ok(s_init):
+            recalc["init_reg"], recalc["init_yth"] = s_init["regular"], s_init["youth"]
+        else:
+            borrowed.append("최초연도 인원")
+        if law_ok(s_init) and law_ok(s_before):
+            inc = calc_increase_with_cap(s_init["regular"], s_init["youth"], s_before["regular"], s_before["youth"])
+            recalc["init_yth_inc"], recalc["init_gen_inc"] = inc["youth_inc"], inc["non_youth_inc"]
+        else:
+            borrowed.append("증가인원")
+        r_recalc = _run(recalc, "세법원칙 기준", borrowed)
+        return r_filed, r_recalc, {"filed": filed, "recalc": recalc, "borrowed": borrowed}
 
     if (t - 1) <= 2025:
-        pm_y1_filed = calc_legacy_post_management(
-            cohort_year=t - 1,
-            eval_year=t,
-            corp_size=corp_size,
-            is_capital=is_capital,
-            init_reg=y1_filed_reg,
-            init_yth=y1_filed_yth,
-            init_yth_inc=y1_filed_yth_inc,
-            init_gen_inc=y1_filed_gen_inc,
-            cur_pm_reg=cur_s["b2_reg"],
-            cur_pm_yth=cur_s["b2_yth"],
-            init_credit_claimed_won=y1_filed_claimed_won,
-            unclaimed_carryforward_won=y1_cf_won,
-        )
-        pm_y1_recalc = calc_legacy_post_management(
-            cohort_year=t - 1,
-            eval_year=t,
-            corp_size=corp_size,
-            is_capital=is_capital,
-            init_reg=y1_recalc_reg,
-            init_yth=y1_recalc_yth,
-            init_yth_inc=y1_recalc_yth_inc,
-            init_gen_inc=y1_recalc_gen_inc,
-            cur_pm_reg=cur_s["b2_reg"],
-            cur_pm_yth=cur_s["b2_yth"],
-            init_credit_claimed_won=y1_recalc_claimed_won,
-            unclaimed_carryforward_won=y1_cf_won,
-        )
+        pm_y1_filed, pm_y1_recalc, base_y1 = _cohort(t - 1, 1, cur_s["b2_reg"], cur_s["b2_yth"], prev_s, prev2_s)
     else:
-        pm_y1_filed = pm_y1_recalc = {
-            "cohort_year": t - 1,
-            "eval_year": t,
-            "elapsed_year": 1,
-            "active": False,
-            "case_code": "신법 B(전전 대비) 통합",
-            "case_title": f"{t-1}년 귀속분은 2026 신법(점증형 B)으로 통합 계산됨 (추징 규정 폐지)",
-            "continued_credit_won": 0,
-            "clawback_raw_cumulative_won": 0,
-            "prior_clawback_deducted_won": 0,
-            "clawback_gross_won": 0,
-            "carryforward_offset_won": 0,
-            "clawback_net_payable_won": 0,
-            "retained_yth_inc": abc_res["tiers"]["B"]["youth_inc"],
-            "retained_gen_inc": abc_res["tiers"]["B"]["non_youth_inc"],
-            "reg_decrease": 0.0,
-            "yth_decrease": 0.0,
-            "init_reg": y1_filed_reg,
-            "init_yth": y1_filed_yth,
-            "init_yth_inc": y1_filed_yth_inc,
-            "init_gen_inc": y1_filed_gen_inc,
-            "formula_note": f"{t-1}년 귀속분(2026년 이후 개시)은 구법 사후관리 추징 대상이 아니며, 신법 2년차(B) 유지분 공제로 반영됩니다.",
-        }
-
-    # ── 3) 전전연도(T-2) 귀속분의 2차 사후관리 (기신고 기준 vs 세법원칙 재계산 기준 동시 산출) ──
-    pf_y2 = pf.get(t - 2) or pf.get(str(t - 2)) or {}
-    has_t3_data = bool(prev3_s["has_data"])
-    if has_t3_data:
-        auto_y2_inc = calc_increase_with_cap(prev2_s["regular"], prev2_s["youth"], prev3_s["regular"], prev3_s["youth"])
-    else:
-        auto_y2_inc = {"total_inc": 0.0, "youth_inc": 0.0, "non_youth_inc": 0.0}
-
-    y2_filed_reg = float(pf_y2.get("init_reg", prev2_s["regular"]) or 0.0)
-    y2_filed_yth = float(pf_y2.get("init_yth", prev2_s["youth"]) or 0.0)
-    y2_filed_yth_inc = float(
-        pf_y2["init_yth_inc"] if pf_y2.get("init_yth_inc") is not None else auto_y2_inc["youth_inc"]
-    )
-    y2_filed_gen_inc = float(
-        pf_y2["init_gen_inc"] if pf_y2.get("init_gen_inc") is not None else auto_y2_inc["non_youth_inc"]
-    )
-    y2_y1_cont_won = pf_y2.get("y1_continued_won")
-    y2_1yr_credit_won = int(
-        round((y2_filed_yth_inc * rates_legacy["청년등"] + y2_filed_gen_inc * rates_legacy["청년등외"]) * 10_000)
-    )
-    if y2_y1_cont_won is not None and int(y2_y1_cont_won) > 0:
-        y2_default_claimed_won = y2_1yr_credit_won + int(y2_y1_cont_won)
-    else:
-        y2_prior_years_cnt = (
-            1
-            if (prev_s["b2_reg"] < y2_filed_reg and prev_s["has_data"])
-            else (1 if corp_size in ("일반기업", "대기업") else 2)
-        )
-        y2_default_claimed_won = y2_1yr_credit_won * y2_prior_years_cnt
-
-    y2_filed_claimed_won = int(
-        pf_y2["claimed_won"] if pf_y2.get("claimed_won") is not None and int(pf_y2.get("claimed_won") or 0) > 0 else y2_default_claimed_won
-    )
-    y2_cf_won = int(pf_y2.get("carryforward_won", 0) or 0)
-    y2_prior_clawback_paid_won = int(pf_y2.get("prior_clawback_paid_won", pf_y2.get("y1_paid_won", 0)) or 0)
-
-    y2_recalc_reg = prev2_s["regular"] if prev2_s["has_data"] else y2_filed_reg
-    y2_recalc_yth = prev2_s["youth"] if prev2_s["has_data"] else y2_filed_yth
-    y2_recalc_yth_inc = auto_y2_inc["youth_inc"] if has_t3_data else y2_filed_yth_inc
-    y2_recalc_gen_inc = auto_y2_inc["non_youth_inc"] if has_t3_data else y2_filed_gen_inc
-    y2_recalc_1yr_won = int(
-        round((y2_recalc_yth_inc * rates_legacy["청년등"] + y2_recalc_gen_inc * rates_legacy["청년등외"]) * 10_000)
-    )
-    y2_recalc_cnt = 1 if (prev_s["b2_reg"] < y2_recalc_reg and prev_s["has_data"]) else (1 if corp_size in ("일반기업", "대기업") else 2)
-    y2_recalc_claimed_won = y2_recalc_1yr_won * y2_recalc_cnt
-
+        pm_y1_filed = pm_y1_recalc = _new_law(t - 1, "B", "2년차")
+        base_y1 = {}
     if (t - 2) <= 2025:
-        pm_y2_filed = calc_legacy_post_management(
-            cohort_year=t - 2,
-            eval_year=t,
-            corp_size=corp_size,
-            is_capital=is_capital,
-            init_reg=y2_filed_reg,
-            init_yth=y2_filed_yth,
-            init_yth_inc=y2_filed_yth_inc,
-            init_gen_inc=y2_filed_gen_inc,
-            cur_pm_reg=cur_s["b3_reg"],
-            cur_pm_yth=cur_s["b3_yth"],
-            init_credit_claimed_won=y2_filed_claimed_won,
-            unclaimed_carryforward_won=y2_cf_won,
-            prev_pm_reg=prev_s["b2_reg"] if prev_s["has_data"] else None,
-            prev_pm_yth=prev_s["b2_yth"] if prev_s["has_data"] else None,
-            prior_clawback_paid_won=y2_prior_clawback_paid_won,
-            y1_continued_credit_won=int(y2_y1_cont_won) if (y2_y1_cont_won is not None and int(y2_y1_cont_won) > 0) else None,
-        )
-        pm_y2_recalc = calc_legacy_post_management(
-            cohort_year=t - 2,
-            eval_year=t,
-            corp_size=corp_size,
-            is_capital=is_capital,
-            init_reg=y2_recalc_reg,
-            init_yth=y2_recalc_yth,
-            init_yth_inc=y2_recalc_yth_inc,
-            init_gen_inc=y2_recalc_gen_inc,
-            cur_pm_reg=cur_s["b3_reg"],
-            cur_pm_yth=cur_s["b3_yth"],
-            init_credit_claimed_won=y2_recalc_claimed_won,
-            unclaimed_carryforward_won=y2_cf_won,
-            prev_pm_reg=prev_s["b2_reg"] if prev_s["has_data"] else None,
-            prev_pm_yth=prev_s["b2_yth"] if prev_s["has_data"] else None,
-            prior_clawback_paid_won=y2_prior_clawback_paid_won,
-        )
+        pm_y2_filed, pm_y2_recalc, base_y2 = _cohort(t - 2, 2, cur_s["b3_reg"], cur_s["b3_yth"], prev2_s, prev3_s)
     else:
-        pm_y2_filed = pm_y2_recalc = {
-            "cohort_year": t - 2,
-            "eval_year": t,
-            "elapsed_year": 2,
-            "active": False,
-            "case_code": "신법 C(전전전 대비) 통합",
-            "case_title": f"{t-2}년 귀속분은 2026 신법(점증형 C)으로 통합 계산됨 (추징 규정 폐지)",
-            "continued_credit_won": 0,
-            "clawback_raw_cumulative_won": 0,
-            "prior_clawback_deducted_won": 0,
-            "clawback_gross_won": 0,
-            "carryforward_offset_won": 0,
-            "clawback_net_payable_won": 0,
-            "retained_yth_inc": abc_res["tiers"]["C"]["youth_inc"],
-            "retained_gen_inc": abc_res["tiers"]["C"]["non_youth_inc"],
-            "reg_decrease": 0.0,
-            "yth_decrease": 0.0,
-            "init_reg": y2_filed_reg,
-            "init_yth": y2_filed_yth,
-            "init_yth_inc": y2_filed_yth_inc,
-            "init_gen_inc": y2_filed_gen_inc,
-            "formula_note": f"{t-2}년 귀속분(2026년 이후 개시)은 구법 사후관리 추징 대상이 아니며, 신법 3년차(C) 유지분 공제로 반영됩니다.",
-        }
+        pm_y2_filed = pm_y2_recalc = _new_law(t - 2, "C", "3년차")
+        base_y2 = {}
+    has_t2_data = bool(prev2_s["has_data"])
 
     pm_y1 = pm_y1_recalc if basis == R.PM_BASIS_RECALC else pm_y1_filed
     pm_y2 = pm_y2_recalc if basis == R.PM_BASIS_RECALC else pm_y2_filed
@@ -1510,9 +1384,10 @@ def calculate_tax_year_package(
     parental_ret_cnt = int(add_in.get("parental_return_count", 0) or 0) if t <= 2026 else 0
     reg_conv_cnt = int(add_in.get("regular_conversion_count", 0) or 0) if t <= 2024 else 0
     early_term_add_cnt = int(add_in.get("additional_clawback_count", 0) or 0)
-    maternity_rep_cnt = float(add_in.get("maternity_replacement_count", 0.0) or 0.0)
+    maternity_rep_cnt = float(add_in.get("maternity_replacement_count", 0.0) or 0.0)      # 당해 제외 인원(연평균)
+    maternity_prev_cnt = float(add_in.get("maternity_prev_count", 0.0) or 0.0)            # 직전 제외 인원(연평균)
 
-    non_decrease_ok = (cur_s["regular"] + maternity_rep_cnt + 1e-9) >= prev_s["regular"]
+    non_decrease_ok = (cur_s["regular"] - maternity_rep_cnt + 1e-9) >= (prev_s["regular"] - maternity_prev_cnt)
     additional_credit_won = (
         int((parental_ret_cnt + reg_conv_cnt) * add_unit_man * 10_000) if non_decrease_ok else 0
     )
@@ -1545,8 +1420,8 @@ def calculate_tax_year_package(
         "pm_basis": basis,
         "pm_basis_label": R.PM_BASIS_LABELS.get(basis, "기신고 기준"),
         "has_t2_data": has_t2_data,
-        "auto_y1_inc": auto_y1_inc,
-        "auto_y2_inc": auto_y2_inc,
+        "base_y1": base_y1,
+        "base_y2": base_y2,
         "cur_s": cur_s,
         "prev_s": prev_s,
         "prev2_s": prev2_s,
@@ -1572,10 +1447,11 @@ def calculate_tax_year_package(
         "pm_y1_recalc": pm_y1_recalc,
         "pm_y2_filed": pm_y2_filed,
         "pm_y2_recalc": pm_y2_recalc,
-        "y1_claimed_won": y1_filed_claimed_won if basis == R.PM_BASIS_FILED else y1_recalc_claimed_won,
-        "y2_claimed_won": y2_filed_claimed_won if basis == R.PM_BASIS_FILED else y2_recalc_claimed_won,
+        "y1_claimed_won": int(_fv(pf.get(t - 1) or pf.get(str(t - 1)) or {}, "claimed_won") or 0),
+        "y2_claimed_won": int(_fv(pf.get(t - 2) or pf.get(str(t - 2)) or {}, "claimed_won") or 0),
         "non_decrease_ok": non_decrease_ok,
         "maternity_rep_cnt": maternity_rep_cnt,
+        "maternity_prev_cnt": maternity_prev_cnt,
         "parental_ret_cnt": parental_ret_cnt,
         "reg_conv_cnt": reg_conv_cnt,
         "early_term_add_cnt": early_term_add_cnt,
@@ -1604,6 +1480,7 @@ def review(
     ctx_by_year: dict,
     computed: dict,
     prev_filing: dict | None = None,
+    sub_biz_list: list[dict] | None = None,
 ) -> list[tuple[str, str]]:
     items: list[tuple[str, str]] = []
 
@@ -1717,6 +1594,15 @@ def review(
                     )
                 )
 
+            if c.get("hire_month_nopay"):
+                m_str = ", ".join(f"{m}월" for m in c["hire_month_nopay"])
+                items.append(
+                    (
+                        "확인",
+                        f"[{y}년 · {nm_disp}] 입사월({m_str})에 급여 지급이 없지만, 급여를 다음 달에 지급하는 경우가 있어 재직(산입)으로 두고 노란색으로 표시했습니다. "
+                        f"실제로 근무하지 않았다면 해당 월을 0으로 바꾸세요.",
+                    )
+                )
             if c.get("no_pay_months"):
                 m_str = ", ".join(f"{m}월" for m in c["no_pay_months"])
                 items.append(
@@ -1771,5 +1657,26 @@ def review(
                             f"세법원칙 재계산 청년등 상시근로자 수({tot['청년등_평균']:.2f}명)가 다릅니다.",
                         )
                     )
+
+    for sb in (sub_biz_list or []):
+        if not isinstance(sb, dict):
+            continue
+        tp = str(sb.get("구분") or "")
+        nm = str(sb.get("상호") or "추가사업장")
+        if any(k in tp for k in ("포괄양수", "승계", "합병", "분할", "법인전환")):
+            if float(sb.get("승계_직전상시") or 0.0) <= 0.0:
+                items.append(
+                    (
+                        "확인",
+                        f"[복수 사업장 합산 · {nm}] 합산 사유가 '{tp}'로 선택되었습니다. 조특령 제26조의8 제10항에 따라 피승계(양도) 사업장의 직전 과세연도 상시근로자 수를 좌측 사이드바 하단에서 입력했는지 확인하세요.",
+                    )
+                )
+        elif "기중양도" in tp and not parse_date(sb.get("폐업일")):
+            items.append(
+                (
+                    "확인",
+                    f"[복수 사업장 합산 · {nm}] 합산 사유가 '{tp}'로 선택되었습니다. 기중 양도·폐업일을 좌측 사이드바에 입력하면 양도월 이후 미도래 월 자동 산입이 차단됩니다.",
+                )
+            )
 
     return items
