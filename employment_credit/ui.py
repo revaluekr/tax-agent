@@ -634,7 +634,7 @@ def _ensure_built_for_tax_year(s: dict):
         if len(s["people"]) >= 45 and not s.get("_tabs_user_touched"):
             s["use_year_tabs"] = True
 
-        parsed_prev = P.build_prev_summary(ext, tax_yr)
+        parsed_prev = P.build_prev_summary(ext, tax_yr, (s.get("biz") or {}).get("기업구분", "중소기업"))
         ps = s.setdefault("prev_summary", {})
         for y_str, vals in parsed_prev.items():
             if isinstance(vals, dict):
@@ -650,6 +650,9 @@ def _ensure_built_for_tax_year(s: dict):
                     "2차_공제세액": int(vals.get("2차_공제세액")) if vals.get("2차_공제세액") is not None else old.get("2차_공제세액"),
                     "이월세액": int(vals.get("이월세액")) if vals.get("이월세액") is not None else old.get("이월세액"),
                     "기추징세액": int(vals.get("기추징세액")) if vals.get("기추징세액") is not None else old.get("기추징세액"),
+                    "수도권": vals.get("수도권") if vals.get("수도권") is not None else old.get("수도권"),
+                    "_증가_역산": bool(vals.get("_증가_역산") or old.get("_증가_역산")),
+                    "_소재지_추정": bool(vals.get("_소재지_추정") or old.get("_소재지_추정")),
                 }
 
         s["grid_ver"], s["last_sent"] = {}, {}
@@ -700,6 +703,66 @@ def _ensure_korean_pdf_font() -> tuple[str, str]:
         return "HYGothic-Medium", "HYGothic-Medium"
     except Exception:
         return "Helvetica", "Helvetica-Bold"
+
+
+def _pdf_text(t: str) -> str:
+    """PDF 문단용: 특수문자 이스케이프 + 마크다운 굵게(**...**)만 살림"""
+    t = str(t or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", t)
+
+
+def _build_text_report_pdf_bytes(title: str, subtitle: str, sections: list[tuple[str, list[str]]]) -> bytes:
+    """제목 + (소제목, 문단 목록) 구성의 A4 세로 PDF"""
+    reg_font, bold_font = _ensure_korean_pdf_font()
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=36)
+    st_title = ParagraphStyle("RvTitle", fontName=bold_font, fontSize=14, leading=19, textColor=colors.HexColor("#0f172a"), spaceAfter=4)
+    st_sub = ParagraphStyle("RvSub", fontName=reg_font, fontSize=9, leading=13, textColor=colors.HexColor("#64748b"), spaceAfter=10)
+    st_h = ParagraphStyle("RvH", fontName=bold_font, fontSize=11, leading=15, textColor=colors.HexColor("#1e3a8a"), spaceBefore=8, spaceAfter=4)
+    st_p = ParagraphStyle("RvP", fontName=reg_font, fontSize=9.5, leading=14, leftIndent=10, spaceAfter=3)
+    story = [Paragraph(_pdf_text(title), st_title), Paragraph(_pdf_text(subtitle), st_sub)]
+    for head, lines in sections:
+        if not lines:
+            continue
+        story.append(Paragraph(_pdf_text(head), st_h))
+        for ln in lines:
+            ln = str(ln).strip()
+            if not ln:
+                story.append(Spacer(1, 4))
+                continue
+            if ln.startswith("#"):
+                story.append(Paragraph(_pdf_text(ln.lstrip("#").strip()), st_h))
+                continue
+            ln = re.sub(r"^[-*]\s+", "• ", ln)
+            story.append(Paragraph(_pdf_text(ln if ln.startswith("•") else "• " + ln), st_p))
+    doc.build(story)
+    return buf.getvalue()
+
+
+def _review_pdf_bytes(s: dict, items: list[tuple[str, str]]) -> bytes:
+    corp = (s.get("biz") or {}).get("상호") or "사업장"
+    secs = [
+        ("필수 수정 오류", [m for lv, m in items if lv == "오류"]),
+        ("절세누락 주의", [m for lv, m in items if lv == "절세누락"]),
+        ("실무·심판례 확인 사항", [m for lv, m in items if lv not in ("오류", "절세누락")]),
+    ]
+    if not items:
+        secs = [("검토 결과", ["발견된 오류가 없습니다."])]
+    return _build_text_report_pdf_bytes(
+        f"[{corp}] {s.get('tax_year')}년 귀속 통합고용세액공제 오류 검토",
+        f"법령·심판례·절세누락 정밀 오류 검토 결과 · 출력 {time.strftime('%Y-%m-%d %H:%M')}",
+        secs,
+    )
+
+
+def _pro_comment_pdf_bytes(s: dict, comment: str) -> bytes:
+    corp = (s.get("biz") or {}).get("상호") or "사업장"
+    body = [ln for ln in str(comment or "").splitlines() if not ln.strip().startswith(">")]
+    return _build_text_report_pdf_bytes(
+        f"[{corp}] {s.get('tax_year')}년 귀속 Pro/Argon AI 심층 세무진단",
+        f"AI가 작성한 참고 의견입니다. 계산 결과와 법령을 확인한 뒤 활용하세요 · 출력 {time.strftime('%Y-%m-%d %H:%M')}",
+        [("심층 진단 의견", body)],
+    )
 
 
 def _build_schedule_pdf_bytes(s: dict, target_years: list[int], include_summary: bool = False) -> bytes:
@@ -1892,10 +1955,35 @@ def _dlg_review(items: list[tuple[str, str]], audit_payload: dict | None = None,
         if st.button("닫기", type="primary", use_container_width=True, key="btn_close_dlg_review"):
             st.rerun()
 
+    corp_fn = re.sub(r'[\\/:*?"<>|\s]+', "_", str((s.get("biz") or {}).get("상호") or "사업장"))[:30]
+    try:
+        st.download_button(
+            "📄 오류 검토 결과 PDF 다운",
+            data=_review_pdf_bytes(s, items),
+            file_name=f"통합고용_오류검토_{corp_fn}_{s.get('tax_year')}귀속.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+            key="btn_dl_review_pdf",
+        )
+    except Exception as e:
+        st.caption(f"PDF를 만들지 못했습니다: {e}")
+
     if s.get("pro_audit_comment"):
         with st.container(border=True):
             st.markdown("##### 👑 Pro/Argon AI 심층 세무진단 의견")
             st.markdown(s["pro_audit_comment"])
+            if not str(s["pro_audit_comment"]).startswith("❌"):
+                try:
+                    st.download_button(
+                        "📄 심층 세무진단 의견 PDF 다운",
+                        data=_pro_comment_pdf_bytes(s, s["pro_audit_comment"]),
+                        file_name=f"통합고용_심층진단_{corp_fn}_{s.get('tax_year')}귀속.pdf",
+                        mime="application/pdf",
+                        use_container_width=True,
+                        key="btn_dl_pro_pdf",
+                    )
+                except Exception as e:
+                    st.caption(f"PDF를 만들지 못했습니다: {e}")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -2884,13 +2972,14 @@ def _grid_options(
         {
             "field": "고용유형",
             "headerName": "고용유형",
-            "width": 118,
-            "minWidth": 118,
+            "width": 178,          # '단시간(60시간 이상+요건충족)' 등 세 가지 단시간 유형이 구분되도록
+            "minWidth": 178,
             "suppressSizeToFit": True,
             "editable": JS_LOCKED,
             "cellStyle": JS_STYLE,
             "cellEditor": "agSelectCellEditor",
-            "cellEditorParams": {"values": R.EMP_TYPES},
+            "cellEditorPopup": True,
+            "cellEditorParams": {"values": R.EMP_TYPES, "valueListMaxWidth": 260},
         },
         {
             "field": "제외사유",
@@ -2944,15 +3033,16 @@ def _grid_options(
             {
                 "field": c,
                 "headerName": f"{i}월",
-                "width": 42,
-                "minWidth": 42,
+                "width": 50,       # '자동'·'0.75' 선택지가 잘리지 않도록
+                "minWidth": 50,
                 "suppressSizeToFit": True,
                 "suppressMenu": True,
                 "suppressHeaderMenuButton": True,
                 "editable": JS_MONTH_EDITABLE,
                 "cellStyle": JS_MONTH_STYLE,
                 "cellEditor": "agSelectCellEditor",
-                "cellEditorParams": {"values": R.MONTH_CHOICES},
+                "cellEditorPopup": True,
+                "cellEditorParams": {"values": R.MONTH_CHOICES, "valueListMaxWidth": 90},
                 "valueFormatter": JS_NUM_FMT,
             }
         )
@@ -3797,9 +3887,15 @@ def _compute_historical_matrix_columns(
       * 3차: Y-2년 귀속분의 Y년 2차 사후관리 (3차년도 연속공제액 또는 (-)추가납부세액)
       * 합계: 1차 + 2차 + 3차 순합계 (음수 시 붉은색 -금액)
     """
-    rates_leg = H.get_unit_rates(corp_size, is_capital, scheme="legacy", retention_year=1)
-    yth_r = rates_leg["청년등"]
-    gen_r = rates_leg["청년등외"]
+    def _cap(y: int) -> bool:
+        """y년 귀속분의 최초공제연도 사업장 소재지(수도권 여부). 3단계에서 지정하지 않았으면 현재 소재지."""
+        v = (ps.get(str(y)) or {}).get("수도권")
+        return is_capital if v is None else bool(v)
+
+    def _rates(y: int) -> tuple[int, int]:
+        r = H.get_unit_rates(corp_size, _cap(y), scheme="legacy", retention_year=1)
+        return r["청년등"], r["청년등외"]
+
     is_large = corp_size in ("일반기업", "대기업")
 
     def _s_yr(y: int) -> dict:
@@ -3826,6 +3922,7 @@ def _compute_historical_matrix_columns(
     def _cohort_1st_info(y_cohort: int) -> dict[str, Any]:
         """y_cohort 귀속분의 최초(1차년도) 상시·청년등·증가인원·1차공제세액 추정"""
         f_d = ps.get(str(y_cohort)) or {}
+        yth_r, gen_r = _rates(y_cohort)
         sy = _s_yr(y_cohort)
         sy_prev = _s_yr(y_cohort - 1)
         use_recalc = (active_pm_basis == R.PM_BASIS_RECALC)
@@ -3921,7 +4018,7 @@ def _compute_historical_matrix_columns(
             cohort_year=y_m3,
             eval_year=y_m2,
             corp_size=corp_size,
-            is_capital=is_capital,
+            is_capital=_cap(y_m3),
             init_reg=info_m3["reg"],
             init_yth=info_m3["yth"],
             init_yth_inc=info_m3["yth_inc"],
@@ -3955,7 +4052,7 @@ def _compute_historical_matrix_columns(
             cohort_year=y_m2,
             eval_year=y_m1,
             corp_size=corp_size,
-            is_capital=is_capital,
+            is_capital=_cap(y_m2),
             init_reg=info_m2["reg"],
             init_yth=info_m2["yth"],
             init_yth_inc=info_m2["yth_inc"],
@@ -3973,7 +4070,7 @@ def _compute_historical_matrix_columns(
             cohort_year=y_m3,
             eval_year=y_m1,
             corp_size=corp_size,
-            is_capital=is_capital,
+            is_capital=_cap(y_m3),
             init_reg=info_m3["reg"],
             init_yth=info_m3["yth"],
             init_yth_inc=info_m3["yth_inc"],
@@ -4019,7 +4116,27 @@ def _compute_historical_matrix_columns(
         "r3_credit": c_0_3_cr, "r3_claw": c_0_3_cl,
         "net_total": (c_0_1 + c_0_2_cr + c_0_3_cr) - (c_0_2_cl + c_0_3_cl),
     }
+    # 기신고 기준: 과거 연도 열은 세액공제조정명세서(코드 18S)에 실제 신고된 1차·2차·3차 금액을 그대로 표시
+    #   (추정치 대신 신고 사실값 사용. 추가납부액은 18S에 없으므로 계산값 유지)
+    if active_pm_basis == R.PM_BASIS_FILED:
+        cs = {int(k): v for k, v in (((s.get("ext") or {}).get("credit_stmt")) or {}).items()}
+        for y, col in cols.items():
+            filed = cs.get(int(y))
+            if not filed or int(y) >= int(y_0):
+                continue
+            col["r1_credit"] = int(filed.get("1차") or 0)
+            col["r2_credit"] = int(filed.get("2차") or 0)
+            col["r3_credit"] = int(filed.get("3차") or 0)
+            col["net_total"] = (col["r1_credit"] + col["r2_credit"] + col["r3_credit"]) - (
+                int(col.get("r2_claw") or 0) + int(col.get("r3_claw") or 0)
+            )
+            col["from_filed_stmt"] = True
     return cols
+
+
+def _cohort_capital(s: dict, cohort: int, default: bool) -> bool:
+    v = ((s.get("prev_summary") or {}).get(str(cohort)) or {}).get("수도권")
+    return default if v is None else bool(v)
 
 
 def _build_pm_formula_lines(
@@ -4234,6 +4351,7 @@ def _page_calculation():
             "carryforward_won": f.get("이월세액"),
             "y1_continued_won": f.get("2차_공제세액") if cohort == tax_yr - 2 else None,
             "prior_clawback_paid_won": f.get("기추징세액") if cohort == tax_yr - 2 else None,
+            "is_capital": f.get("수도권"),
         }
         for cohort, f in ((tax_yr - 1, p1), (tax_yr - 2, p2))
     }
@@ -4272,8 +4390,11 @@ def _page_calculation():
         else f"<span class='ec-basis-pill-filed'>📋 적용 기준: 기신고 서식 숫자 기준</span>"
     )
 
+    filed_tag = "<br><span style='font-size:10px;font-weight:500;opacity:.75'>기신고 금액</span>"
     th_years_html = "".join(
-        f"<th class='{'active-yr' if y == tax_yr else ''}'>{y}년{' (당해 귀속)' if y == tax_yr else ''}</th>"
+        f"<th class='{'active-yr' if y == tax_yr else ''}'>{y}년{' (당해 귀속)' if y == tax_yr else ''}"
+        + (filed_tag if matrix_cols.get(y, {}).get("from_filed_stmt") else "")
+        + "</th>"
         for y in yr_list
     )
     r1_cells = "".join(
@@ -4558,7 +4679,7 @@ def _page_calculation():
         elapsed=1,
         cur_pm_reg=cur_s["b2_reg"],
         cur_pm_yth=cur_s["b2_yth"],
-        rates_legacy=pkg["rates_legacy"],
+        rates_legacy=H.get_unit_rates(corp_size, _cohort_capital(s, tax_yr - 1, is_capital), scheme="legacy", retention_year=1),
     )
     pm1_lines_html = "".join(f"<div class='f-line'>{ln}</div>" for ln in pm1_lines)
     pm1_val_str = f"-{abs(pm1_val):,}원" if pm1_val < 0 else f"{pm1_val:,}원"
@@ -4604,7 +4725,7 @@ def _page_calculation():
         elapsed=2,
         cur_pm_reg=cur_s["b3_reg"],
         cur_pm_yth=cur_s["b3_yth"],
-        rates_legacy=pkg["rates_legacy"],
+        rates_legacy=H.get_unit_rates(corp_size, _cohort_capital(s, tax_yr - 2, is_capital), scheme="legacy", retention_year=1),
     )
     pm2_lines_html = "".join(f"<div class='f-line'>{ln}</div>" for ln in pm2_lines)
     pm2_val_str = f"-{abs(pm2_val):,}원" if pm2_val < 0 else f"{pm2_val:,}원"
@@ -4717,9 +4838,10 @@ def _page_calculation():
                             f_d["청년등_증가"] = float(inc_c["youth_inc"])
                         if f_d.get("청년등외_증가") is None:
                             f_d["청년등외_증가"] = float(inc_c["non_youth_inc"])
+                        r_coh = H.get_unit_rates(corp_size, _cohort_capital(s, cohort, is_capital), scheme="legacy", retention_year=1)
                         c1_est = int(
                             round(
-                                (inc_c["youth_inc"] * rates_legacy["청년등"] + inc_c["non_youth_inc"] * rates_legacy["청년등외"])
+                                (inc_c["youth_inc"] * r_coh["청년등"] + inc_c["non_youth_inc"] * r_coh["청년등외"])
                                 * 10_000
                             )
                         )
@@ -4807,6 +4929,28 @@ def _page_calculation():
                         f"pf_{cohort}_paid_{kver}",
                         is_won=True,
                     )
+                # 최초공제연도 당시 사업장 소재지: 연속공제·추가납부 단가는 공제받을 당시 소재지 기준
+                loc_opts = ["사이드바 소재지와 같음", "수도권", "수도권 밖"]
+                cur_loc = f.get("수도권")
+                sel = st.selectbox(
+                    f"{cohort}년 공제 당시 사업장 소재지",
+                    loc_opts,
+                    index=0 if cur_loc is None else (1 if cur_loc else 2),
+                    key=f"pf_{cohort}_loc_{kver}",
+                    help="2·3차년도 연속공제와 추가납부는 최초로 공제받은 해의 단가(수도권 1,450만/850만, 수도권 밖 1,550만/950만)를 씁니다. "
+                         "본점을 옮겼다면 공제받을 당시 소재지를 고르세요.",
+                )
+                new_loc = None if sel == loc_opts[0] else (sel == "수도권")
+                if new_loc != cur_loc:
+                    f["_소재지_추정"] = False
+                f["수도권"] = new_loc
+                notes = []
+                if f.get("_증가_역산"):
+                    notes.append("증가인원은 기신고 공제세액에서 역산한 값입니다")
+                if f.get("_소재지_추정") and new_loc is not None:
+                    notes.append(f"소재지는 기신고 공제세액이 {'수도권' if new_loc else '수도권 밖'} 단가와 맞아 자동 선택했습니다")
+                if notes:
+                    st.caption("ℹ️ " + " · ".join(notes) + ". 다르면 고쳐주세요.")
 
     with st.expander("➕ 추가공제(육아휴직복귀·정규직전환·출산휴가대체인력) 및 미공제 이월세액 입력", expanded=False):
         ca1, ca2, ca3 = st.columns(3)
@@ -4843,7 +4987,7 @@ def _page_calculation():
             float(add_in.get("maternity_replacement_count") or 0.0),
             0.01,
             format="%.2f",
-            help="추가공제 요건(상시근로자 미감소) 판정 시 당해 상시근로자 수에서 뺄 출산전후휴가 대체인력(조특령 §26의8⑤)입니다.",
+            help="대체인력을 채용한 출산전후휴가자는 추가공제 요건(상시근로자 미감소) 판정 시 당해 상시근로자 수에서 뺍니다. 휴가자의 연평균 인원을 넣으세요.",
         )
         add_in["maternity_prev_count"] = cb2.number_input(
             f"{tax_yr-1}년 출산전후휴가 대체인력 연평균 제외인원 (명)",
@@ -4852,7 +4996,7 @@ def _page_calculation():
             float(add_in.get("maternity_prev_count") or 0.0),
             0.01,
             format="%.2f",
-            help="직전연도 상시근로자 수에서 뺄 출산전후휴가 대체인력입니다.",
+            help="직전연도에 대체인력을 채용한 출산전후휴가자의 연평균 인원입니다.",
         )
         add_in["current_unclaimed_carryforward_won"] = cb3.number_input(
             f"{tax_yr}년 발생 공제세액 중 최저한세 등으로 당해 미공제 이월된 세액 (원)",
@@ -4984,6 +5128,7 @@ def _build_report_markdown(s: dict) -> str:
                     "carryforward_won": f.get("이월세액"),
                     "y1_continued_won": f.get("2차_공제세액") if cohort == tax_yr - 2 else None,
                     "prior_clawback_paid_won": f.get("기추징세액") if cohort == tax_yr - 2 else None,
+                    "is_capital": f.get("수도권"),
                 }
                 for cohort, f in ((tax_yr - 1, p1), (tax_yr - 2, p2))
             },

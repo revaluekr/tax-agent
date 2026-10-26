@@ -25,7 +25,7 @@ from datetime import date
 from typing import Any
 
 from . import rules as R
-from .headcount import parse_date, default_months_for_year
+from .headcount import parse_date, default_months_for_year, get_unit_rates
 
 MAX_TEXT_CHARS = 120_000
 FILE_WP_MARKER_RE = re.compile(r"^<<<FILE_WP:(.*?)>>>$")
@@ -329,6 +329,8 @@ def call_pro_argon_audit_commentary(summary_context: str, log_tokens_fn=None, ro
     except Exception:
         return "❌ google-genai 라이브러리를 불러올 수 없습니다."
 
+    if not isinstance(summary_context, str):
+        summary_context = json.dumps(summary_context, ensure_ascii=False, default=str, indent=1)
     models = _get_gemini_models(prefer_pro=True)
     prompt = (
         "당신은 대한민국 조세특례제한법 제29조의8(통합고용세액공제) 및 사후관리 전문 세무사·감사관입니다.\n"
@@ -392,7 +394,10 @@ def birth_from_rrn7(rrn7: str) -> tuple[date | None, bool]:
     if len(s) < 6:
         return None, False
     yy, mm, dd = int(s[0:2]), int(s[2:4]), int(s[4:6])
-    g = int(s[6]) if len(s) >= 7 else 1
+    if len(s) < 7:
+        # 주민번호 뒷자리가 모두 가려진 경우(예: 001125-*******): 만 15세 이상이 되는 세기로 추정
+        return _infer_birth(s[:6], ""), False
+    g = int(s[6])
     century_map = {1: 1900, 2: 1900, 5: 1900, 6: 1900, 3: 2000, 4: 2000, 7: 2000, 8: 2000, 9: 1800, 0: 1800}
     century = century_map.get(g, 1900)
     is_foreign = g in (5, 6, 7, 8)
@@ -965,8 +970,14 @@ def extract_all(doc_texts: dict[str, str], log_tokens_fn=None, room_key: str = "
             continue
         if key.startswith("wht_"):
             yr = key.replace("wht_", "").strip()
+            nts_n = _nts_wht_people_count(text)
+            if nts_n:
+                nts_rows = _parse_nts_wht_form(text)
+                if len(nts_rows) == nts_n:
+                    out["wht"][yr] = nts_rows          # 국세청 서식 전원 판독 → AI 호출 없음
+                    continue
             fast_rows = _try_fast_parse_wht_table(text)
-            expected = _count_rrn_like(text)
+            expected = max(_count_rrn_like(text), nts_n)
             if fast_rows:
                 out["wht"][yr] = fast_rows
             if not fast_rows or (expected and len(fast_rows) < expected):
@@ -989,6 +1000,7 @@ def extract_all(doc_texts: dict[str, str], log_tokens_fn=None, room_key: str = "
             if not fast_sh:
                 llm_tasks[key] = (PROMPT_SH, text, False)
         elif key in ("prev_filing", "prev_credit_calc") or key.startswith("credit_calc_"):
+            out.setdefault("credit_stmt", {}).update(_parse_credit_adjust_stmt(text))
             fast_pf = _try_fast_parse_prev_filing(text)
             if fast_pf.get("연도별"):
                 for y_s, y_v in fast_pf["연도별"].items():
@@ -1042,14 +1054,14 @@ def extract_all(doc_texts: dict[str, str], log_tokens_fn=None, room_key: str = "
     return out
 
 
-def build_prev_summary(ext: dict, tax_year: int) -> dict[str, dict]:
+def build_prev_summary(ext: dict, tax_year: int, corp_size: str = "중소기업") -> dict[str, dict]:
     """
     기신고 서식(상시근로자 명세서·공제감면세액계산서)에서 읽은 값을 코호트(최초공제연도)별로 정리합니다.
     """
     ty = int(tax_year or R.DEFAULT_TAX_YEAR)
     keys = (
         "상시_총인원", "청년등_총인원", "상시", "청년등",
-        "청년등_증가", "청년등외_증가", "공제세액", "2차_공제세액", "기추징세액", "이월세액"
+        "청년등_증가", "청년등외_증가", "공제세액", "2차_공제세액", "기추징세액", "이월세액", "수도권"
     )
     out = {str(y): {k: None for k in keys} for y in (ty - 1, ty - 2)}
 
@@ -1063,7 +1075,71 @@ def build_prev_summary(ext: dict, tax_year: int) -> dict[str, dict]:
                     o[k] = v
             if o.get("기추징세액") is None and _opt_num(vals.get("1년차_추징액")) is not None:
                 o["기추징세액"] = _opt_num(vals.get("1년차_추징액"))
+
+    # ① 세액공제조정명세서 계산명세(18S): F년 신고의 1차 = F년분 공제세액, 2차 = F-1년분의 2차 공제세액
+    cs = {int(k): v for k, v in ((ext or {}).get("credit_stmt") or {}).items()}
+    for y_str, o in out.items():
+        y = int(y_str)
+        if y in cs:
+            o["공제세액"] = float(cs[y]["1차"])
+        # AI가 읽은 '2차 공제세액'은 귀속연도 대응이 자주 틀려, 다음 해 계산명세로 확인될 때만 사용
+        o["2차_공제세액"] = float(cs[y + 1]["2차"]) if (y + 1) in cs else None
+        # ② 이월세액이 공제세액 이상이면 소계·공제세액을 잘못 읽은 것 → 비움 (직접 입력)
+        cf, cr = o.get("이월세액"), o.get("공제세액")
+        if cf is not None and (cr is None or cf >= cr):
+            o["이월세액"] = None
+        # ③ 증가인원·최초공제연도 소재지 역산
+        _infer_increase_and_location(o, corp_size)
     return out
+
+
+def _infer_increase_and_location(o: dict, corp_size: str = "중소기업") -> None:
+    """
+    기신고 공제세액과 인원으로 (a) 최초공제연도 수도권 여부, (b) 비어 있는 증가인원을 역산합니다.
+    - 증가인원이 있으면: 어느 단가표(수도권/수도권 밖)로 공제세액이 맞는지 확인해 소재지를 추정
+    - 증가인원이 없으면: 청년등·청년등외 증가인원 조합 중 공제세액과 정확히 맞는 조합이 하나뿐일 때만 채움
+    """
+    credit = o.get("공제세액")
+    if not credit:
+        return
+    cents = int(round(float(credit)))
+
+    def _won(cap: bool, y: float, g: float) -> int:
+        r = get_unit_rates(corp_size, cap, scheme="legacy")
+        return int(round((round(y * 100) * r["청년등"] + round(g * 100) * r["청년등외"]) * 100))
+
+    yi, gi = o.get("청년등_증가"), o.get("청년등외_증가")
+    if yi is not None and gi is not None:
+        hits = [cap for cap in (True, False) if _won(cap, yi, gi) == cents]
+        if len(hits) == 1 and o.get("수도권") is None:
+            o["수도권"] = hits[0]
+            o["_소재지_추정"] = True
+        return
+    reg, yth = o.get("상시"), o.get("청년등")
+    if reg is None or yth is None:
+        return
+    gen_cap = max(0.0, float(reg) - float(yth))
+    sols = []
+    for cap in (True, False):
+        r = get_unit_rates(corp_size, cap, scheme="legacy")
+        ry, rg = r["청년등"], r["청년등외"]
+        for yc in range(0, int(round(float(yth) * 100)) + 1):
+            rest = cents - yc * ry * 100
+            if rest < 0:
+                break
+            if rg == 0:
+                if rest == 0:
+                    sols.append((cap, yc / 100, 0.0))
+                continue
+            if rest % (rg * 100) == 0 and rest // (rg * 100) <= round(gen_cap * 100):
+                sols.append((cap, yc / 100, rest / (rg * 100) / 100))
+    if len(sols) == 1:
+        cap, y, g = sols[0]
+        o["청년등_증가"], o["청년등외_증가"] = y, g
+        o["_증가_역산"] = True
+        if o.get("수도권") is None:
+            o["수도권"] = cap
+            o["_소재지_추정"] = True
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -1480,3 +1556,90 @@ def check_missing(classified: dict[str, list[str]], ext: dict | None, tax_year: 
             if w not in msgs:
                 msgs.append(w)
     return msgs
+
+# ══════════════════════════════════════════════════════════════════
+# 국세청 표준 서식 전용 판독기 (AI 없이 확정적으로 읽음)
+# - pypdf가 글자마다 줄을 바꾸는 PDF도 공백을 모두 지운 뒤 서식 구조로 읽음
+# ══════════════════════════════════════════════════════════════════
+_NUM = r"(?:0(?![,\d])|[1-9]\d{0,2}(?:,\d{3})*|0)"
+
+
+def _squash(text: str) -> str:
+    return re.sub(r"\s+", "", str(text or ""))
+
+
+def _infer_birth(yymmdd: str, gender_digit: str = "") -> date | None:
+    """주민번호 앞 6자리 + (있으면) 성별 숫자로 생년월일. 성별 숫자가 가려져 있으면 나이가 15세 이상이 되는 세기로 추정."""
+    try:
+        yy, mm, dd = int(yymmdd[0:2]), int(yymmdd[2:4]), int(yymmdd[4:6])
+    except (ValueError, IndexError):
+        return None
+    if gender_digit and gender_digit.isdigit():
+        century = {1: 1900, 2: 1900, 5: 1900, 6: 1900, 3: 2000, 4: 2000, 7: 2000, 8: 2000, 9: 1800, 0: 1800}.get(int(gender_digit), 1900)
+    else:
+        century = 2000 if (2000 + yy) <= date.today().year - 15 else 1900
+    try:
+        return date(century + yy, mm, dd)
+    except ValueError:
+        return None
+
+
+def _parse_nts_wht_form(text: str) -> list[dict]:
+    """
+    소득자별 근로소득원천징수부(소득세법 시행규칙 별지 제25호서식(1)) 판독.
+    사원마다 1쪽(근로소득지급명세)의 '월 + 지급연월(YYYY/MM) + 급여'가 있는 달을 급여 지급 월로 봄.
+    """
+    s = _squash(text)
+    chunks = re.split(r"①귀속연도", s)
+    out: list[dict] = []
+    for ch in chunks:
+        # 변환 방식에 따라 항목 순서가 달라지므로 각각 따로 찾음
+        m = re.search(r"⑤성명([가-힣A-Za-z·]{1,20}?)⑥주민등록번호(\d{6})-?([\d\*]?)", ch)
+        if not m:
+            continue
+        name = m.group(1)
+        birth = _infer_birth(m.group(2), m.group(3) if m.group(3) not in ("*", "") else "")
+        mh = re.search(r"⑦입사일(\d{4})년(\d{1,2})월(\d{1,2})일", ch)
+        mr = re.search(r"⑦퇴사일(\d{4})년(\d{1,2})월(\d{1,2})일", ch)
+        try:
+            hire = date(int(mh.group(1)), int(mh.group(2)), int(mh.group(3))) if mh else None
+            retire = date(int(mr.group(1)), int(mr.group(2)), int(mr.group(3))) if mr else None
+        except ValueError:
+            hire = retire = None
+        page1 = ch.split("Ⅱ.비과세소득")[0]
+        pay = {str(k): 0.0 for k in range(1, 13)}
+        for mm in re.finditer(r"(\d{1,2})월(\d{4})/(\d{2})(" + _NUM + ")", page1):
+            mon = int(mm.group(1))
+            if 1 <= mon <= 12 and int(mm.group(3)) == mon:
+                pay[str(mon)] = float(mm.group(4).replace(",", "") or 0) or 1.0
+        foreign = "⑧내외국인구분외국인" in ch
+        out.append({
+            "사업장명": "", "성명": name, "생년월일": birth.isoformat() if birth else "",
+            "외국인": foreign, "입사일": hire.isoformat() if hire else "", "퇴사일": retire.isoformat() if retire else "",
+            "고용유형": R.EMP_REGULAR, "병역개월": 0, "월급여": pay,
+        })
+    return out
+
+
+def _nts_wht_people_count(text: str) -> int:
+    return len(re.findall(r"⑤성명", _squash(text)))
+
+
+def _parse_credit_adjust_stmt(text: str) -> dict[int, dict]:
+    """
+    세액공제조정명세서(3)의 통합고용세액공제(코드 18S) 계산명세 'A + B + C  합계' 판독.
+    신고 사업연도 F 기준: A = F년 귀속분(1차), B = F-1년 귀속분 2차, C = F-2년 귀속분 3차.
+    세 금액의 합이 합계와 맞을 때만 채택.
+    """
+    s = _squash(text)
+    out: dict[int, dict] = {}
+    for m in re.finditer(r"18S(" + _NUM + r")\+(" + _NUM + r")\+(" + _NUM + r")(" + _NUM + ")", s):
+        vals = [int(m.group(i).replace(",", "")) for i in range(1, 5)]
+        if vals[0] + vals[1] + vals[2] != vals[3]:
+            continue
+        yrs = re.findall(r"(\d{4})\.01\.01", s[: m.start()])
+        if not yrs:
+            continue
+        f = int(yrs[-1])
+        out[f] = {"1차": vals[0], "2차": vals[1], "3차": vals[2], "합계": vals[3]}
+    return out

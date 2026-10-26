@@ -363,8 +363,9 @@ def suggest_exclusion(person: dict, yrec: dict, year: int | None = None) -> str:
     sh_rel = str(person.get("주주관계") or "").strip()
     if sh_rel in R.EXCL_REASONS:
         return sh_rel
-    if person.get("외국인"):
-        return R.EXCL_FOREIGN
+    # ※ 외국인 표시만으로 자동 제외하지 않음: 상시근로자의 '내국인'은 국적과 무관하게
+    #   국내에 주소를 두거나 183일 이상 거소를 둔 개인(통합고용세액공제 상시근로자 명세서 작성방법 10).
+    #   비거주자인 경우에만 사용자가 제외사유 '외국인 근로자'를 직접 선택 → 오류 검토에서 확인 안내.
     if tenure_under_1y(person, year):
         return R.EXCL_UNDER_1Y
     return R.EXCL_NONE
@@ -1398,6 +1399,9 @@ def calculate_tax_year_package(
 
     def _cohort(cohort: int, elapsed: int, cur_reg: float, cur_yth: float, s_init: dict, s_before: dict) -> tuple[dict, dict, dict]:
         f = pf.get(cohort) or pf.get(str(cohort)) or {}
+        # 최초공제연도 사업장 소재지(수도권 여부): 연속공제·추가납부 단가는 최초공제연도 기준. 없으면 현재 소재지.
+        coh_cap = is_capital if f.get("is_capital") is None else bool(f.get("is_capital"))
+        coh_rates = get_unit_rates(corp_size, coh_cap, scheme="legacy", retention_year=1)
         filed = {k: _fv(f, k) for k in ("init_reg", "init_yth", "init_yth_inc", "init_gen_inc")}
         claimed = int(_fv(f, "claimed_won") or 0)                     # 한도: 기신고 공제세액(사실값)
         cf = int(_fv(f, "carryforward_won") or 0)
@@ -1414,7 +1418,7 @@ def calculate_tax_year_package(
             if any(v is None for v in vals.values()):
                 return _missing(cohort, f"[{label}] {cohort}년 최초공제연도의 상시·청년등 인원 또는 공제받은 증가인원이 없습니다. "
                                         f"3단계 위쪽에 기신고 숫자를 입력하세요.")
-            r = calc_legacy_post_management(cohort, t, corp_size, is_capital,
+            r = calc_legacy_post_management(cohort, t, corp_size, coh_cap,
                                             vals["init_reg"], vals["init_yth"], vals["init_yth_inc"], vals["init_gen_inc"],
                                             cur_reg, cur_yth, init_credit_claimed_won=claimed,
                                             unclaimed_carryforward_won=cf, **extra)
@@ -1440,8 +1444,8 @@ def calculate_tax_year_package(
         # 세법원칙 기준인데 기신고 공제세액이 없으면, 재계산한 증가인원 × 구법 단가로 추가납부 한도를 추정
         recalc_claimed, cap_note = claimed, ""
         if claimed <= 0 and recalc.get("init_yth_inc") is not None and recalc.get("init_gen_inc") is not None:
-            recalc_claimed = int(round((float(recalc["init_yth_inc"]) * rates_legacy["청년등"]
-                                        + float(recalc["init_gen_inc"]) * rates_legacy["청년등외"]) * 10_000))
+            recalc_claimed = int(round((float(recalc["init_yth_inc"]) * coh_rates["청년등"]
+                                        + float(recalc["init_gen_inc"]) * coh_rates["청년등외"]) * 10_000))
             if elapsed == 2 and y1_cont is None and corp_size not in ("일반기업", "대기업") and not (
                 prev_s["has_data"] and prev_s["b2_reg"] < float(recalc.get("init_reg") or 0.0)
             ):
@@ -1831,6 +1835,10 @@ def review(
                 transferred_out_names.append(nm_disp)
             if c.get("absent_in_wht"):
                 absent_wht_names.append(nm_disp)
+
+            if p.get("외국인") and c.get("상시") == "O":
+                items.append(("확인", f"[{y}년 · {nm_disp}] 원천징수부에 '외국인'으로 표시되어 있습니다. 상시근로자의 내국인은 국적과 무관하게 "
+                                     f"국내에 주소를 두거나 183일 이상 거소를 둔 사람이므로 포함했습니다. 비거주자라면 제외사유를 '외국인 근로자'로 바꾸세요."))
 
             # 12) 수동 오버라이드 감사 추적
             if yrec.get("상시_override"):
