@@ -1496,7 +1496,7 @@ div[class*="st-key-ec_step_nav_wait_"] button p {
     border: 1.5px solid #cbd5e1;
     border-top: 5px solid #1e3a8a;
     border-radius: 14px;
-    padding: 28px 32px;
+    padding: 30px 34px;
     margin: 10px 0 20px 0;
     box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06);
     font-family: 'Pretendard', 'Malgun Gothic', sans-serif !important;
@@ -1510,41 +1510,43 @@ div[class*="st-key-ec_step_nav_wait_"] button p {
     font-weight: 900 !important;
     color: #0f172a !important;
     letter-spacing: -0.4px !important;
-    padding-bottom: 12px !important;
+    padding-bottom: 14px !important;
     margin-top: 0 !important;
-    margin-bottom: 14px !important;
+    margin-bottom: 18px !important;
     border-bottom: 2.5px solid #1e293b !important;
 }
 /* 중제목 (H2: Ⅰ. Ⅱ. Ⅲ. Ⅳ.) */
 .ec-agent-report-wrap h2 {
-    font-size: 1.34rem !important;
+    font-size: 1.35rem !important;
     font-weight: 900 !important;
     color: #1e3a8a !important;
-    margin-top: 28px !important;
-    margin-bottom: 14px !important;
-    padding: 10px 16px !important;
+    margin-top: 32px !important;
+    margin-bottom: 16px !important;
+    padding: 11px 18px !important;
     background: linear-gradient(90deg, #eff6ff 0%, #f8fafc 70%, #ffffff 100%) !important;
-    border-left: 5px solid #1d4ed8 !important;
-    border-radius: 7px !important;
+    border-left: 6px solid #1d4ed8 !important;
+    border-radius: 8px !important;
     letter-spacing: -0.3px !important;
 }
-/* 소제목 (H3: 1. 2. 3. 4. / (1) (2) (3)) */
+/* 소제목 (H3: (1) (2) (3) (4)) */
 .ec-agent-report-wrap h3,
 .ec-agent-report-wrap h4 {
     font-size: 1.18rem !important;
     font-weight: 800 !important;
     color: #0f172a !important;
-    margin-top: 18px !important;
-    margin-bottom: 8px !important;
-    padding-left: 10px !important;
-    border-left: 3.5px solid #3b82f6 !important;
+    margin-top: 22px !important;
+    margin-bottom: 10px !important;
+    padding: 6px 12px !important;
+    background: #f8fafc !important;
+    border-left: 4px solid #2563eb !important;
+    border-radius: 0 6px 6px 0 !important;
     line-height: 1.45 !important;
 }
 /* 본문 내용 (p, li, blockquote) */
 .ec-agent-report-wrap p,
 .ec-agent-report-wrap li {
     font-size: 1.12rem !important;
-    line-height: 1.78 !important;
+    line-height: 1.80 !important;
     color: #1e293b !important;
     font-weight: 500 !important;
     word-break: keep-all !important;
@@ -1552,48 +1554,34 @@ div[class*="st-key-ec_step_nav_wait_"] button p {
 .ec-agent-report-wrap ul,
 .ec-agent-report-wrap ol {
     margin-top: 6px !important;
-    margin-bottom: 14px !important;
+    margin-bottom: 16px !important;
     padding-left: 22px !important;
 }
 .ec-agent-report-wrap li {
-    margin-bottom: 6px !important;
+    margin-bottom: 8px !important;
 }
 .ec-agent-report-wrap strong,
 .ec-agent-report-wrap b {
     font-weight: 800 !important;
     color: #0f172a !important;
 }
-.ec-agent-report-wrap blockquote {
-    background: #f8fafc !important;
-    border-left: 4px solid #16a34a !important;
-    border-top: 1px solid #e2e8f0 !important;
-    border-right: 1px solid #e2e8f0 !important;
-    border-bottom: 1px solid #e2e8f0 !important;
-    padding: 14px 18px !important;
-    margin: 10px 0 18px 0 !important;
-    border-radius: 8px !important;
-}
-.ec-agent-report-wrap blockquote p {
-    font-size: 1.12rem !important;
-    line-height: 1.75 !important;
-    color: #0f172a !important;
-    margin-bottom: 4px !important;
-}
-/* 보고서 내 표 (자율 에이전트AI 1.10rem~1.12rem 표 규격과 동기화) */
+/* 보고서 내 표 (th 내부 strong이 검은색으로 덮이지 않도록 #ffffff 강제 고정) */
 .ec-agent-report-wrap table {
     width: 100% !important;
     border-collapse: collapse !important;
-    margin: 10px 0 18px 0 !important;
+    margin: 10px 0 20px 0 !important;
     font-size: 1.08rem !important;
     border-top: 2px solid #1e293b !important;
     border-bottom: 2px solid #1e293b !important;
 }
-.ec-agent-report-wrap th {
+.ec-agent-report-wrap th,
+.ec-agent-report-wrap th strong,
+.ec-agent-report-wrap th b {
     background: #1e293b !important;
     color: #ffffff !important;
     font-weight: 800 !important;
     font-size: 1.08rem !important;
-    padding: 11px 14px !important;
+    padding: 12px 14px !important;
     border: 1px solid #334155 !important;
     text-align: center !important;
 }
@@ -1607,6 +1595,46 @@ div[class*="st-key-ec_step_nav_wait_"] button p {
 }
 .ec-agent-report-wrap tr:nth-child(even) td {
     background: #f8fafc !important;
+}
+/* 보고서 내 산식/요약 카드 박스 */
+.ec-rep-card {
+    background: #f8fafc;
+    border: 1px solid #cbd5e1;
+    border-left: 4px solid #1e3a8a;
+    border-radius: 10px;
+    padding: 14px 18px;
+    margin: 8px 0 16px 0;
+}
+.ec-rep-card.green {
+    background: #f0fdf4;
+    border-color: #bbf7d0;
+    border-left: 4px solid #16a34a;
+}
+.ec-rep-fn-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 8px 0 16px 0;
+}
+.ec-rep-fn-item {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-left: 4px solid #475569;
+    border-radius: 8px;
+    padding: 11px 16px;
+    font-size: 1.06rem !important;
+    line-height: 1.72 !important;
+    color: #1e293b;
+}
+.ec-rep-fn-badge {
+    display: inline-block;
+    background: #1e293b;
+    color: #ffffff !important;
+    font-size: 0.92rem;
+    font-weight: 800;
+    padding: 2px 8px;
+    border-radius: 5px;
+    margin-right: 6px;
 }
 .ec-model-footer-bar {
     background: #f8fafc;
@@ -5971,7 +5999,8 @@ def _parse_and_clean_pro_audit(raw_comment: str) -> tuple[str, str]:
     저장된 `pro_audit_comment`에서:
     1) 적용 모델명(`model_id`)을 분리해 반환하고,
     2) 본문 내 이모지(왕관·돋보기·방패·문서 등)와 상단 `[Pro/Argon 심층 진단 완료 — 적용 모델: ...]` 배너 줄을 제거하며,
-    3) 구버전 번호 목록(`1. **추가 절세...**`)도 `### (1) 추가 절세...` 소제목 위계로 자동 정규화합니다.
+    3) `- **추가 절세 가능성 발굴**`, `1. **추가 절세...**`, `#### (1) ...` 등 모든 변형 패턴을
+       깔끔한 `### (1) 제목` 소제목 + 1단 불릿(`- **핵심키워드**: 설명`)으로 정규화합니다.
     반환: (clean_body_markdown, model_name)
     """
     if not raw_comment or not str(raw_comment).strip():
@@ -5984,6 +6013,7 @@ def _parse_and_clean_pro_audit(raw_comment: str) -> tuple[str, str]:
         model_name = m_mod.group(1).strip()
 
     cleaned_lines: list[str] = []
+    sub_idx = 0
     for raw_ln in txt.splitlines():
         s_ln = raw_ln.strip()
         if "적용 모델:" in s_ln or "적용모델:" in s_ln or "심층 진단 완료" in s_ln:
@@ -5993,20 +6023,46 @@ def _parse_and_clean_pro_audit(raw_comment: str) -> tuple[str, str]:
         if not s_no_icon:
             cleaned_lines.append("")
             continue
-        # "1. **추가 절세 가능성 발굴**" 또는 "#### (1) ..." 형태를 "### (1) ..." 소제목으로 통일
+
+        # 패턴 A: 이미 ### 또는 #### 소제목인 경우
+        if s_no_icon.startswith("### ") or s_no_icon.startswith("#### "):
+            hdr_t = re.sub(r"^#{3,4}\s*", "", s_no_icon).strip()
+            hdr_t = re.sub(r"^\*\*(.+?)\*\*$", r"\1", hdr_t).strip()
+            if not re.match(r"^\(\d+\)", hdr_t):
+                sub_idx += 1
+                hdr_t = f"({sub_idx}) {hdr_t}"
+            cleaned_lines.append("")
+            cleaned_lines.append(f"### {hdr_t}")
+            continue
+
+        # 패턴 B: 번호형 소제목 (`1. **추가 절세...**` 또는 `(1) **추가 절세...**`)
         m_num_hdr = re.match(r"^(?:[-*•]\s*)?(?:(\d)\.|\((\d)\))\s*\*\*([^*]+)\*\*\s*(.*)$", s_no_icon)
         if m_num_hdr:
             num_d = m_num_hdr.group(1) or m_num_hdr.group(2)
+            sub_idx = int(num_d)
             title_part = m_num_hdr.group(3).strip()
             rest_part = m_num_hdr.group(4).strip()
+            cleaned_lines.append("")
             cleaned_lines.append(f"### ({num_d}) {title_part}")
             if rest_part:
                 cleaned_lines.append(f"- {rest_part.lstrip(':- ')}")
             continue
-        if s_no_icon.startswith("#### "):
-            cleaned_lines.append("### " + s_no_icon[5:].strip())
+
+        # 패턴 C: 불릿 단독 볼드 소제목 (`- **추가 절세 가능성 발굴**` — 뒤에 콜론 설명이 없는 줄)
+        m_bullet_hdr = re.match(r"^(?:[-*•])\s*\*\*([^*:：]{3,40})\*\*\s*$", s_no_icon)
+        if m_bullet_hdr:
+            sub_idx += 1
+            title_part = m_bullet_hdr.group(1).strip()
+            cleaned_lines.append("")
+            cleaned_lines.append(f"### ({sub_idx}) {title_part}")
             continue
-        cleaned_lines.append(no_icon)
+
+        # 패턴 D: 들여쓰기된 2단 불릿(`  - ...` 또는 `  * ...`)을 깔끔한 1단 불릿(`- ...`)으로 평탄화
+        if re.match(r"^\s+[-*•]\s+", no_icon):
+            cleaned_lines.append("- " + re.sub(r"^\s+[-*•]\s+", "", no_icon).strip())
+            continue
+
+        cleaned_lines.append(s_no_icon)
 
     body = "\n".join(cleaned_lines).strip()
     return body, model_name
@@ -6015,8 +6071,6 @@ def _parse_and_clean_pro_audit(raw_comment: str) -> tuple[str, str]:
 def _ensure_auto_pro_audit_comment(s: dict, log_tokens_fn=None, room_key: str = "") -> tuple[str, str]:
     """
     4단계 진입 시 버튼 클릭 없이도 『Ⅳ. 심층 세무진단 의견』이 항상 자동으로 생성·표시되도록 보장합니다.
-    - 이미 생성된 코멘트가 있으면 이모지를 제거하고 적용 모델명을 추출해 재사용합니다.
-    - 코멘트가 없거나 사원표/사업장 서명이 바뀐 경우 자동으로 생성합니다.
     """
     _ensure_built_for_tax_year(s)
     tax_yr = int(s["tax_year"])
@@ -6032,7 +6086,6 @@ def _ensure_auto_pro_audit_comment(s: dict, log_tokens_fn=None, room_key: str = 
             s["pro_audit_model"] = mod_nm
             return body, mod_nm
 
-    # 기존 백업에 저장된 유효한 코멘트가 있으면 서명만 동기화하여 즉시 활용 (불필요한 재호출 방지)
     if existing_raw and not existing_raw.startswith("❌") and not s.get("pro_audit_sig"):
         body, mod_nm = _parse_and_clean_pro_audit(existing_raw)
         if body:
@@ -6090,21 +6143,23 @@ def _ensure_auto_pro_audit_comment(s: dict, log_tokens_fn=None, room_key: str = 
 
 def _build_report_markdown(s: dict, log_tokens_fn=None, room_key: str = "") -> str:
     """
-    [4단계 보고서 마크다운 생성 — 무아이콘 · 대제목/중제목/소제목/내용 명확 구분 · Ⅳ. 심층 세무진단 의견 상시 포함]
-    - 대제목 (`#`) : 귀속연도 통합고용세액공제 세무검토 보고서
-    - 중제목 (`##`): Ⅰ. 사업자 기본사항 및 결론 요약 / Ⅱ. 4개 과세연도 세액공제 및 사후관리 상세 산출근거 / Ⅲ. 계산근거 관련 법령 주석 / Ⅳ. 심층 세무진단 의견
-    - 소제목 (`###`): 각 장 하위 (1), (2), (3), (4) 세부 항목
-    - 내용 (`-`, 표, 인용구): 모든 아이콘(느낌표·왕관·돋보기 등)을 배제한 정돈된 세무 보고문
+    [4단계 보고서 마크다운 생성 — 고가독성 표·목록 위계 · 무아이콘 · Ⅳ. 심층 세무진단 의견 상시 포함]
+    - 마크다운 표 앞에는 반드시 빈 줄(`""`)을 두어 표가 텍스트로 깨지지 않고 100% 정식 표로 렌더링되게 합니다.
+    - Ⅰ-(1) 사업자 기본사항도 한눈에 들어오는 4열 요약표로 구성합니다.
     """
     _ensure_built_for_tax_year(s)
     b = s.get("biz") or {}
     sub_list = s.get("sub_biz_list") or []
     tax_yr = int(s.get("tax_year") or R.DEFAULT_TAX_YEAR)
     corp_nm = (b.get("상호") or "").strip() or "미입력 법인(사업자)"
+    biz_no = (b.get("사업자번호") or "").strip() or "-"
     corp_sz = b.get("기업구분", "중소기업")
     cap_bool = H.is_capital_area(b.get("사업장소재지", ""))
     is_capital = True if cap_bool is None else bool(cap_bool)
     loc_label = "수도권" if is_capital else "수도권 외(비수도권)"
+    addr_str = (b.get("사업장소재지") or "").strip() or "소재지 미입력"
+    uptae_str = f"{b.get('업태') or '-'} · {b.get('종목') or '-'}"
+    open_dt_str = (b.get("설립일") or "").strip() or "-"
 
     totals_all = _ensure_totals_snapshot(s)
     ps = s.get("prev_summary") or {}
@@ -6156,15 +6211,6 @@ def _build_report_markdown(s: dict, log_tokens_fn=None, room_key: str = "") -> s
     basis_lbl = pkg.get("pm_basis_label", "기신고 기준")
     b3_title, b4_title, b5_title = _block_titles_for_year(tax_yr, two_line=False)
 
-    last_m_cur = H.detect_last_paid_month(s.get("people") or {}, tax_yr)
-    est_line = (
-        f"> **[기중 가결산 추정치 안내]** 본 보고서는 {tax_yr}년 {last_m_cur}월 가결산 원천징수부를 기준으로 "
-        f"미도래 월({last_m_cur+1}~12월)을 연말까지 재직 가정(1 자동 채움)하여 산출한 시뮬레이션 추정치입니다. "
-        f"확정신고 시에는 12월 최종 원천징수부를 반영하여 재산출하시기 바랍니다.\n"
-        if (s.get("assume_year_end", True) and last_m_cur < 12)
-        else ""
-    )
-
     sub_biz_lines = []
     for idx, sb in enumerate(sub_list, start=2):
         sb_nm = sb.get("상호") or f"제{idx}사업장"
@@ -6208,29 +6254,33 @@ def _build_report_markdown(s: dict, log_tokens_fn=None, room_key: str = "") -> s
 
     lines = [
         f"# {tax_yr}년 귀속 통합고용세액공제 및 사후관리 검토보고서",
-        est_line,
+        "",
         "## Ⅰ. 사업자 기본사항 및 최종 세액 요약",
         "### (1) 사업자 기본사항",
-        f"- **주사업장 상호(법인명)**: {corp_nm} (사업자등록번호: {b.get('사업자번호') or '-'})",
+        "",
+        "| 항목 | 내용 | 항목 | 내용 |",
+        "| :--- | :--- | :--- | :--- |",
+        f"| **상호(법인명)** | **{corp_nm}** ({biz_no}) | **기업규모 · 소재지** | **{corp_sz} · {loc_label}** ({addr_str}) |",
+        f"| **업태 · 종목** | {uptae_str} (설립·개업일: {open_dt_str}) | **과세기간 월수** | 당해({tax_yr}년) {b.get('당해_월수', 12)}개월 / 직전({tax_yr-1}년) {b.get('전년_월수', 12)}개월 |",
+        f"| **사후관리 산정 기준** | **{basis_lbl}** | **적용 공제단가 체계** | {scheme_desc} |",
+        "",
         *sub_biz_lines,
-        f"- **기업규모 및 소재지**: **{corp_sz}** / **{loc_label}** ({b.get('사업장소재지') or '-'})",
-        f"- **업태 및 종목**: {b.get('업태') or '-'} · {b.get('종목') or '-'} (설립·개업일: {b.get('설립일') or '-'})",
-        f"- **사업연도 개월 수**: 당해({tax_yr}년) {b.get('당해_월수', 12)}개월 / 직전({tax_yr-1}년) {b.get('전년_월수', 12)}개월",
-        f"- **사후관리 산정 기준**: **{basis_lbl}** ({'공제감면세액계산서 등 기신고 서식 수치 기준 적용' if pkg.get('pm_basis') == R.PM_BASIS_FILED else '2단계 사원표 세법원칙 재계산 수치 기준 적용'})",
         "",
         f"### (2) {tax_yr}년 귀속 최종 공제세액 및 추가납부세액 요약 [{basis_lbl}]",
+        "",
         "| 구분 | 금액 (원) | 산출 내역 및 법령 근거 |",
         "| :--- | ---: | :--- |",
         f"| **1. 당해({tax_yr}년) 1차년도 신규 고용증가 세액공제** | **{pkg['cur_base_credit_won']:,}원** | 청년등 +{pkg['cur_inc']['youth_inc']:.2f}명, 청년등 외 +{pkg['cur_inc']['non_youth_inc']:.2f}명 (조특법 제29조의8 제1항 [각주 1]) |",
         f"| **2. 직전·전전연도({tax_yr-1}·{tax_yr-2}년) 기공제분 연속공제액** | **{pkg['total_continued_credit_won']:,}원** | 2차년도 {pm1['continued_credit_won']:,}원 + 3차년도 {pm2['continued_credit_won']:,}원 (조특법 제29조의8 제3항 [각주 3]) |",
         f"| **3. 육아휴직 복귀 및 정규직 전환 추가공제액** | **{pkg['additional_credit_won']:,}원** | 복귀 {pkg['parental_ret_cnt']}명 / 전환 {pkg['reg_conv_cnt']}명 (조특법 제29조의8 제2항) |",
-        f"| **합계: 당해 총 공제세액 (1+2+3)** | **{pkg['total_credit_gross_won']:,}원** | 공제감면세액계산서 및 세액공제신청서 반영 금액 |",
+        f"| **합계: 당해 총 공제세액 (1+2+3)** | **{pkg['total_credit_gross_won']:,}원** | **공제감면세액계산서 및 세액공제신청서 반영 금액** |",
         f"| **4. 사후관리 추가납부세액 (이월공제 차감 후)** | **{pkg['total_clawback_net_payable_won']:,}원** | 차감전 추징액 {pkg['total_clawback_gross_won']:,}원 − 미공제 이월세액 소멸 {pkg['total_carryforward_offset_won']:,}원 [각주 4, 5] |",
         f"| **5. 농어촌특별세 (실공제세액의 20%)** | **{pkg['rural_special_tax_won']:,}원** | 실공제 {pkg['actual_deducted_credit_won']:,}원 기준 (농어촌특별세법 제5조 제1항 [각주 7]) |",
-        f"| **최종 실질 순절세액 (합계 − 4 − 5)** | **{pkg['net_after_rural_tax_won']:,}원** | 당해 최저한세 등 미공제 이월액 {pkg['cur_unclaimed_cf_won']:,}원 반영 |",
+        f"| **최종 실질 순절세액 (합계 − 4 − 5)** | **{pkg['net_after_rural_tax_won']:,}원** | **당해 최저한세 등 미공제 이월액 {pkg['cur_unclaimed_cf_won']:,}원 반영** |",
         "",
         f"### (3) 4개 과세연도({tax_yr-3}~{tax_yr}년) 세액공제 및 추가납부세액 총괄표",
-        f"| 구분 | 차수 | {yr_list[0]}년 | {yr_list[1]}년 | {yr_list[2]}년 | **{yr_list[3]}년 (당해 귀속)** | 근거 법령 |",
+        "",
+        f"| 구분 | 차수 | {yr_list[0]}년 | {yr_list[1]}년 | {yr_list[2]}년 | {yr_list[3]}년 (당해 귀속) | 근거 법령 |",
         "| :---: | :---: | ---: | ---: | ---: | ---: | :--- |",
         f"| **세액공제액 (추가납부액)** | **1차** | {_m_txt(matrix_cols[yr_list[0]]['r1_credit'], matrix_cols[yr_list[0]]['r1_claw'])} | {_m_txt(matrix_cols[yr_list[1]]['r1_credit'], matrix_cols[yr_list[1]]['r1_claw'])} | {_m_txt(matrix_cols[yr_list[2]]['r1_credit'], matrix_cols[yr_list[2]]['r1_claw'])} | **{_m_txt(matrix_cols[yr_list[3]]['r1_credit'], matrix_cols[yr_list[3]]['r1_claw'])}** | 조특법 제29조의8 제1항 [각주 1] |",
         f"| **세액공제액 (추가납부액)** | **2차** | {_m_txt(matrix_cols[yr_list[0]]['r2_credit'], matrix_cols[yr_list[0]]['r2_claw'])} | {_m_txt(matrix_cols[yr_list[1]]['r2_credit'], matrix_cols[yr_list[1]]['r2_claw'])} | {_m_txt(matrix_cols[yr_list[2]]['r2_credit'], matrix_cols[yr_list[2]]['r2_claw'])} | **{_m_txt(matrix_cols[yr_list[3]]['r2_credit'], matrix_cols[yr_list[3]]['r2_claw'])}** | 조특법 제29조의8 제3항 [각주 3, 4] |",
@@ -6241,13 +6291,14 @@ def _build_report_markdown(s: dict, log_tokens_fn=None, room_key: str = "") -> s
         f"### (1) 평균 상시근로자 증가 인원 및 코호트별 상시근로자 현황 [각주 2, 3]",
         f"- **산정 방법**: 매월 말 현재 상시근로자 수의 연간 합계(연인원)를 해당 과세연도 개월 수({cur_s['months_in_year']}개월)로 나눈 뒤 소수점 셋째 자리에서 버림(100분의 1 미만 절사, 조특령 제26조의8 제9항)하여 산정하였습니다.",
         f"- **청년등 증가인원 한도(Cap)**: 청년등 상시근로자 증가인원(+{cur_inc['youth_inc']:.2f}명)은 전체 상시근로자 증가인원(+{cur_inc['total_inc']:.2f}명)을 한도로 적용하였습니다(조특령 제26조의8 제3항).",
+        "",
         "| 구분 | 전체 상시 [총인원 / 평균] | 청년등 [총인원 / 평균] | 청년등 외 [총인원 / 평균] | 산정 기준 및 법령 근거 |",
         "| :--- | ---: | ---: | ---: | :--- |",
-        f"| **{tax_yr}년 귀속 [{b3_title}]** | {cur_s['reg_total']:g}명 / {cur_s['regular']:.2f}명 | {cur_s['yth_total']:g}명 / {cur_s['youth']:.2f}명 | {cur_s['non_youth_total']:g}명 / {cur_s['non_youth']:.2f}명 | 근로계약 체결일 현재 연령 기준 (합산 후 절사) [각주 2] |",
-        f"| **{tax_yr}년 귀속 [{b4_title}]** | {cur_s['reg_total']:g}명 / {cur_s['b2_reg']:.2f}명 | {cur_s['b2_yth_total']:g}명 / {cur_s['b2_yth']:.2f}명 | {round(max(0.0, cur_s['reg_total']-cur_s['b2_yth_total']),2):g}명 / {round(max(0.0, cur_s['b2_reg']-cur_s['b2_yth']),2):.2f}명 | {tax_yr-1}년 입사 청년 연령경과 간주 특례 [각주 3] |",
-        f"| **{tax_yr}년 귀속 [{b5_title}]** | {cur_s['reg_total']:g}명 / {cur_s['b3_reg']:.2f}명 | {cur_s['b3_yth_total']:g}명 / {cur_s['b3_yth']:.2f}명 | {round(max(0.0, cur_s['reg_total']-cur_s['b3_yth_total']),2):g}명 / {round(max(0.0, cur_s['b3_reg']-cur_s['b3_yth']),2):.2f}명 | {tax_yr-2}년 입사 청년 연령경과 간주 특례 [각주 3] |",
-        f"| **{tax_yr-1}년 사후관리 기초 ({basis_lbl})** | - / {pm1['init_reg']:.2f}명 | - / {pm1['init_yth']:.2f}명 | - / {round(max(0.0, pm1['init_reg']-pm1['init_yth']),2):.2f}명 | 1차 사후관리 비교 기준 (증가 청년 {pm1['init_yth_inc']:.2f}명 · 일반 {pm1['init_gen_inc']:.2f}명) |",
-        f"| **{tax_yr-2}년 사후관리 기초 ({basis_lbl})** | - / {pm2['init_reg']:.2f}명 | - / {pm2['init_yth']:.2f}명 | - / {round(max(0.0, pm2['init_reg']-pm2['init_yth']),2):.2f}명 | 2차 사후관리 비교 기준 (증가 청년 {pm2['init_yth_inc']:.2f}명 · 일반 {pm2['init_gen_inc']:.2f}명) |",
+        f"| **{tax_yr}년 귀속 [{b3_title}]** | {cur_s['reg_total']:g}명 / **{cur_s['regular']:.2f}명** | {cur_s['yth_total']:g}명 / **{cur_s['youth']:.2f}명** | {cur_s['non_youth_total']:g}명 / **{cur_s['non_youth']:.2f}명** | 근로계약 체결일 현재 연령 기준 (합산 후 절사) [각주 2] |",
+        f"| **{tax_yr}년 귀속 [{b4_title}]** | {cur_s['reg_total']:g}명 / **{cur_s['b2_reg']:.2f}명** | {cur_s['b2_yth_total']:g}명 / **{cur_s['b2_yth']:.2f}명** | {round(max(0.0, cur_s['reg_total']-cur_s['b2_yth_total']),2):g}명 / **{round(max(0.0, cur_s['b2_reg']-cur_s['b2_yth']),2):.2f}명** | {tax_yr-1}년 입사 청년 연령경과 간주 특례 [각주 3] |",
+        f"| **{tax_yr}년 귀속 [{b5_title}]** | {cur_s['reg_total']:g}명 / **{cur_s['b3_reg']:.2f}명** | {cur_s['b3_yth_total']:g}명 / **{cur_s['b3_yth']:.2f}명** | {round(max(0.0, cur_s['reg_total']-cur_s['b3_yth_total']),2):g}명 / **{round(max(0.0, cur_s['b3_reg']-cur_s['b3_yth']),2):.2f}명** | {tax_yr-2}년 입사 청년 연령경과 간주 특례 [각주 3] |",
+        f"| **{tax_yr-1}년 사후관리 기초 ({basis_lbl})** | - / **{pm1['init_reg']:.2f}명** | - / **{pm1['init_yth']:.2f}명** | - / **{round(max(0.0, pm1['init_reg']-pm1['init_yth']),2):.2f}명** | 1차 사후관리 비교 기준 (증가 청년 {pm1['init_yth_inc']:.2f}명 · 일반 {pm1['init_gen_inc']:.2f}명) |",
+        f"| **{tax_yr-2}년 사후관리 기초 ({basis_lbl})** | - / **{pm2['init_reg']:.2f}명** | - / **{pm2['init_yth']:.2f}명** | - / **{round(max(0.0, pm2['init_reg']-pm2['init_yth']),2):.2f}명** | 2차 사후관리 비교 기준 (증가 청년 {pm2['init_yth_inc']:.2f}명 · 일반 {pm2['init_gen_inc']:.2f}명) |",
         "",
         f"### (2) 1차년도({tax_yr}년 귀속) 세액공제액 계산 ({corp_sz}, {loc_label}) [각주 1]",
         f"- **적용 단가 근거**: {scheme_desc} — 청년등 1인당 **{yu:,}원**, 청년등 외 1인당 **{gu:,}원**",
@@ -6410,6 +6461,8 @@ def _build_report_pdf_bytes(s: dict, log_tokens_fn=None, room_key: str = "") -> 
                 n_cols = len(parsed_rows[0])
                 if n_cols == 3:
                     col_w = [avail_w * 0.36, avail_w * 0.20, avail_w * 0.44]
+                elif n_cols == 4:
+                    col_w = [avail_w * 0.18, avail_w * 0.32, avail_w * 0.18, avail_w * 0.32]
                 elif n_cols == 5:
                     col_w = [avail_w * 0.23, avail_w * 0.17, avail_w * 0.17, avail_w * 0.17, avail_w * 0.26]
                 elif n_cols == 7:
@@ -6547,12 +6600,14 @@ def _page_report(room_key: str = "", log_tokens_fn=None):
     corp_nm = (s.get("biz", {}).get("상호") or "통합고용세액공제").strip()
     corp_fn = re.sub(r'[\\/:*?"<>|\s]+', "_", corp_nm)[:30]
 
+    # 기중 가결산 안내는 상단 배너 1곳에만 깔끔하게 표시 (보고서 본문 내 중복 제거)
     last_m_cur = H.detect_last_paid_month(s.get("people") or {}, tax_yr)
     if s.get("assume_year_end", True) and last_m_cur < 12:
         st.markdown(
             f"<div class='ec-warn-banner'>"
             f"<b>[기중 가결산 추정치 안내]</b> 본 보고서는 {tax_yr}년 <b>{last_m_cur}월 가결산</b> 기준으로 "
-            f"{last_m_cur+1}~12월을 '연말까지 재직 가정(1 자동 채움)'하여 산출된 추정 보고서입니다."
+            f"{last_m_cur+1}~12월을 '연말까지 재직 가정(1 자동 채움)'하여 산출된 추정 보고서입니다. "
+            f"확정신고 시에는 12월 최종 원천징수부를 반영하여 확정하시기 바랍니다."
             f"</div>",
             unsafe_allow_html=True,
         )
