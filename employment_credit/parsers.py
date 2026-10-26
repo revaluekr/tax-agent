@@ -1,20 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-통합고용세액공제 서류 분류 · 100% 자체 결정론적 고속 파싱(1순위) + AI 병렬 보완 추출(2순위) + 복수 사업장(본·지점 / 양도·양수) 합산 엔진 (parsers.py)
+통합고용세액공제 서류 분류 · 100% 자체 결정론적 고속 파싱(1순위) + 하이브리드 Flash/Pro(Argon) AI 보완 추출(2순위) + 복수 사업장 합산 엔진 (parsers.py)
 
-[핵심 아키텍처 — 100% 자체파싱 우선 + 보완적 AI 도움 + 복수 사업장 합산 + 클로드 크로스체크 완벽 통합]
+[핵심 아키텍처 — 100% 자체파싱 우선 + 부분적 Pro/Argon 정밀 보완 + 복수 사업장 합산]
 1. [1순위: 100% 자체 결정론적 파싱 (0.01초, 토큰 0원, API 키 불필요)]
    - 원천징수부/급여대장(`_try_fast_parse_wht_table`):
-     * `app.py`의 `extract_file_content`가 출력하는 공백 구분 표(`df.head(1500).to_string(index=False)` — `Unnamed: 0` 헤더 및 빈 셀 `NaN` 포함),
-     * 마크다운 파이프(`| ... |`) 표,
-     * CSV(쉼표)/TSV(탭) 및 정형 텍스트 원천징수부를 정규식·열 매핑 파서로 0.01초 만에 100% 자체 추출합니다.
-     * 사번(`사001`, `사002`, `EMP01` 등)을 사업장명으로 오인하지 않도록 정밀 필터(`_is_employee_id_token`)를 적용했습니다.
-   - 본문 내 주민등록번호 개수(`_count_rrn_like`)와 자체 파서 추출 인원수를 자동 대조하여, 누락 의심 행이 있으면 즉시 AI 보완 추출 및 경고를 수행합니다.
-2. [동명이인 분리 + 복수 사업장 이동자 파일 순서 무관 정밀 병합 (`build_people`)]
-   - 생년월일이 다른 동명이인(예: 두 명의 "김민수")은 절대 합치지 않으며, 한쪽 연도에만 생년월일이 빠진 동일인은 안전하게 연결합니다.
-   - 복수 사업장 간 이동(예: 5월 본점 퇴사 → 6월 지점 전입) 시 파일 처리 순서와 무관하게 모든 사업장에서 퇴사했을 때(그리고 이후 월 급여가 없을 때)만 퇴사로 판정합니다.
-3. [공제감면세액계산서 오분류 원천 차단 (`classify_file`)]
-   - 법인세 신고서·공제감면세액계산서 본문의 "근로소득을 증대시킨 기업..." 문구 때문에 원천징수부(`wht_`)로 오분류되지 않도록 차단했습니다.
+     * `app.py`의 `extract_file_content`가 출력하는 공백 구분 표(`df.head(1500).to_string(index=False)`),
+     * 마크다운 파이프(`| ... |`) 표, CSV/TSV 표를 0.01초 만에 100% 자체 추출합니다.
+     * 사번(`사001`, `EMP01` 등) 및 파일 헤더 문구(`첨부 엑셀 명: 년` 등)가 사업장명으로 오인되지 않도록 정밀 필터(`_is_employee_id_token`)로 원천 차단했습니다.
+   - 본문 내 주민등록번호 개수(`_count_rrn_like`)와 자체 파서 추출 인원수를 자동 대조하여, 누락 의심 행이 있으면 즉시 AI(Pro/Argon 우선) 보완 추출 및 경고를 수행합니다.
+2. [2순위: 부분적 Pro/Argon 하이브리드 AI 보완 추출]
+   - 비정형 서식인 『공제감면세액계산서 · 기신고 상시근로자 명세서』 추출이나 원천징수부 누락 행 복구 시, 또는 좌측 사이드바 `Pro 심층 모드(Argon 직결)`가 켜져 있을 때는
+     고성능 Pro/Argon 모델을 우선 가동하여 총인원수(연인원)·평균인원수·기공제세액·이월세액 인식률을 극대화합니다.
+3. [동명이인 분리 + 복수 사업장 이동자 파일 순서 무관 정밀 병합 (`build_people`)]
+   - 생년월일이 다른 동명이인은 절대 합치지 않으며, 복수 사업장 간 전출입자는 모든 사업장에서 퇴사하고 이후 급여가 없을 때만 퇴사로 판정합니다.
 """
 from __future__ import annotations
 
@@ -38,11 +37,14 @@ _RRN_LIKE_RE = re.compile(r"(?<!\d)(\d{6})\s*-\s*([1-8])")
 # ══════════════════════════════════════════════════════════════════
 def _is_employee_id_token(tok: str) -> bool:
     """
-    원천징수부 성명 앞 열에 위치한 '사001', '사002', 'EMP01', '1001' 등의 사원번호(사번) 토큰이
+    원천징수부 성명 앞 열에 위치한 '사001', 'EMP01', '1001' 등의 사원번호(사번) 토큰이나
+    '[첨부 엑셀 파일명: ...]'에서 파생된 '첨부 엑셀 명: 년' 같은 시스템 헤더 노이즈가
     사업장명으로 잘못 인식되지 않도록 판별합니다.
     """
     s = (tok or "").strip()
-    if not s or s.lower() in ("nan", "none", "-", "사번", "번호", "no"):
+    if not s or s.lower() in ("nan", "none", "-", "사번", "번호", "no", "년", "월", "일"):
+        return True
+    if any(noise in s for noise in ("첨부", "파일명", "엑셀", "시트명", "페이지", "Unnamed", "명:")):
         return True
     if s.isdigit():
         return True
@@ -58,8 +60,15 @@ def _is_employee_id_token(tok: str) -> bool:
 def infer_workplace_name(name: str, text: str = "") -> str:
     """
     업로드된 파일명이나 본문에서 사업장명(예: 본점, 강남지점, 1번사업장, 2번사업장 등)을 자동 추론합니다.
+    - '[첨부 엑셀 파일명: ...]' 형태의 문자열이 들어오더라도 내부 실제 파일명만 추출하며,
+      별도 지점·사업장 표기가 없는 일반 파일명(예: '2026년_원천징수부.xlsx')이면 빈 문자열('')을 반환해 기본 사업장명('본점')이 쓰이도록 합니다.
     """
-    stem = os.path.splitext(os.path.basename(name or ""))[0]
+    raw_name = str(name or "").strip()
+    m_att = re.search(r"파일명\s*:\s*([^\n\r\]()]+)", raw_name)
+    if m_att:
+        raw_name = m_att.group(1).strip()
+
+    stem = os.path.splitext(os.path.basename(raw_name))[0]
     head = (text or "")[:2000]
 
     # 1) 명시적 사업장 패턴 (1번사업장, 제2사업장, OO지점, 본점 등)
@@ -68,7 +77,9 @@ def infer_workplace_name(name: str, text: str = "") -> str:
         stem,
     )
     if m_num_wp:
-        return re.sub(r"\s+", "", m_num_wp.group(1))
+        cand_wp = re.sub(r"\s+", "", m_num_wp.group(1))
+        if not _is_employee_id_token(cand_wp):
+            return cand_wp
 
     # 2) 본문 내 사업장명/상호 표기 확인
     m_body_wp = re.search(r"(?:사업장명|사업장|지점명|상\s*호|법인명)\s*[:：]\s*([^\n\r|,]{2,20})", head)
@@ -78,15 +89,16 @@ def infer_workplace_name(name: str, text: str = "") -> str:
         if cand and cand.lower() not in ("nan", "none") and not _is_employee_id_token(cand):
             return cand[:16]
 
-    # 3) 파일명에서 연도·서류종류 키워드를 제거한 나머지 토큰이 있으면 사업장명으로 활용
+    # 3) 파일명에서 연도·서류종류·시스템 키워드를 제거한 나머지 토큰 확인
     cleaned = re.sub(
-        r"(202[0-9]|2[0-9]년|귀속|소득자별|근로소득|원천징수부|원천징수|급여대장|급여명세서|사원대장|사업자등록증|공제감면세액계산서|상시근로자명세서|임의|샘플|업로드용|자료|파일|wht|biz_reg)",
+        r"(첨부|엑셀|워드|이미지|PDF|CSV|파일명|파일|총\s*\d+\s*행|총\s*\d+\s*페이지|202[0-9]\s*년?|2[0-9]\s*년|귀속|소득자별|근로소득|원천징수부|원천징수|급여대장|급여명세서|사원대장|사업자등록증|공제감면세액계산서|상시근로자명세서|임의|샘플|업로드용|자료|명|년|월|wht|biz_reg)",
         " ",
         stem,
         flags=re.IGNORECASE,
     )
-    cleaned = re.sub(r"[_\-()\[\].]+", " ", cleaned).strip()
-    if cleaned and len(cleaned) <= 14 and not _is_employee_id_token(cleaned):
+    cleaned = re.sub(r"[:：_\-()\[\].]+", " ", cleaned).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if cleaned and 2 <= len(cleaned) <= 14 and not _is_employee_id_token(cleaned):
         return cleaned
 
     return ""
@@ -161,7 +173,7 @@ def classify_file(name: str, text: str = "") -> str | None:
 
 
 # ══════════════════════════════════════════════════════════════════
-# 2. 보완적 AI JSON 추출 호출 (비정형 PDF·누락 필드 보완 전용)
+# 2. 하이브리드 Flash / Pro(Argon) AI 추출 및 심층 진단 호출기
 # ══════════════════════════════════════════════════════════════════
 def _get_gemini_api_keys() -> list[str]:
     keys: list[str] = []
@@ -193,23 +205,58 @@ def _get_gemini_api_keys() -> list[str]:
     return keys
 
 
-def _get_gemini_models() -> list[str]:
-    models: list[str] = []
+def _is_pro_mode_enabled() -> bool:
+    try:
+        import streamlit as st
+        return bool(st.session_state.get("pro_toggle_state", False))
+    except Exception:
+        return False
+
+
+def _get_gemini_models(prefer_pro: bool = False) -> list[str]:
+    """
+    - 일반 정형 보완 추출 시: 고속 Flash 모델 우선
+    - `prefer_pro=True`(공제감면세액계산서 등 복합 서식 추출, 원천징수부 누락 행 정밀 복구, Pro 심층 진단) 또는
+      사이드바 `Pro 심층 모드(Argon 직결)`가 켜져 있을 때: Pro / Argon 모델을 1순위로 배치합니다.
+    """
+    use_pro_first = prefer_pro or _is_pro_mode_enabled()
+    pro_models: list[str] = []
+    flash_models: list[str] = []
     try:
         import agent
+        for attr in ("ARGON_MODEL_ID", "PRO_MODEL_ID", "PRO_BACKUP_ID", "PRO_FALLBACK_ID"):
+            m = getattr(agent, attr, None)
+            if m and str(m) not in pro_models:
+                pro_models.append(str(m))
         for attr in ("FLASH_MODEL_ID", "FLASH_BACKUP_ID", "FLASH_FALLBACK_ID", "FLASH_LITE_ID"):
             m = getattr(agent, attr, None)
-            if m and m not in models:
-                models.append(str(m))
+            if m and str(m) not in flash_models:
+                flash_models.append(str(m))
     except Exception:
         pass
-    for m in ("gemini-2.5-flash", "gemini-2.5-pro"):
-        if m not in models:
-            models.append(m)
-    return models
+
+    for m in ("gemini-2.5-pro",):
+        if m not in pro_models:
+            pro_models.append(m)
+    for m in ("gemini-2.5-flash",):
+        if m not in flash_models:
+            flash_models.append(m)
+
+    ordered = (pro_models + flash_models) if use_pro_first else (flash_models + pro_models)
+    dedup: list[str] = []
+    for m in ordered:
+        if m not in dedup:
+            dedup.append(m)
+    return dedup
 
 
-def call_gemini_json(instruction: str, text: str, log_tokens_fn=None, room_key: str = "") -> dict:
+def call_gemini_json(
+    instruction: str,
+    text: str,
+    log_tokens_fn=None,
+    room_key: str = "",
+    prefer_pro: bool = False,
+) -> dict:
     keys = _get_gemini_api_keys()
     if not keys:
         return {}
@@ -219,7 +266,7 @@ def call_gemini_json(instruction: str, text: str, log_tokens_fn=None, room_key: 
     except Exception:
         return {}
 
-    models = _get_gemini_models()
+    models = _get_gemini_models(prefer_pro=prefer_pro)
     prompt = (
         instruction
         + "\n\n규칙: JSON만 출력하고 설명·마크다운은 쓰지 마세요. "
@@ -267,6 +314,53 @@ def call_gemini_json(instruction: str, text: str, log_tokens_fn=None, room_key: 
     return {}
 
 
+def call_pro_argon_audit_commentary(summary_context: str, log_tokens_fn=None, room_key: str = "") -> str:
+    """
+    [부분적 Pro/Argon 심층 활용 기능]
+    2단계 『오류 검토』 모달 또는 4단계 『보고서』에서 사용자가 요청할 때만 Pro/Argon 모델을 호출하여,
+    파이썬 결정론적 엔진이 계산한 사원별·연도별 상시근로자 명세와 사후관리 데이터를 바탕으로
+    놓치기 쉬운 특례(병역차감·경력단절·출산휴가 대체인력·이월결손/최저한세 이월공제 소멸 등) 및 세무조사 소명 포인트를 진단합니다.
+    """
+    keys = _get_gemini_api_keys()
+    if not keys:
+        return "❌ 설정된 Gemini API 키가 없어 Pro/Argon 심층 진단을 실행할 수 없습니다."
+    try:
+        from google import genai
+    except Exception:
+        return "❌ google-genai 라이브러리를 불러올 수 없습니다."
+
+    models = _get_gemini_models(prefer_pro=True)
+    prompt = (
+        "당신은 대한민국 조세특례제한법 제29조의8(통합고용세액공제) 및 사후관리 전문 세무사·감사관입니다.\n"
+        "아래는 파이썬 정밀 계산 엔진이 산출한 해당 사업장의 연도별 상시근로자 명세 및 사후관리 요약 데이터입니다.\n"
+        "이미 확정된 파이썬 수리 계산 숫자를 임의로 바꾸지 말고, 아래 3가지를 각 2~3줄씩 핵심만 간결하고 날카롭게 마크다운 불릿으로 브리핑하세요:\n"
+        "1. **🔍 추가 절세 가능성 발굴** (병역이행기간 최대 72개월 차감 시 청년 편입 가능자, 60세 이상·장애인·경력단절·북한이탈주민 특례, 출산전후휴가 대체인력 비감소 특례 등)\n"
+        "2. **🛡️ 1·2차 사후관리(추징) 리스크 및 방어 전략** (청년 연령경과 간주 규정 적용 여부, 최저한세 미공제 이월세액 우선 소멸 여부, 본·지점 및 포괄양수 합산 적정성)\n"
+        "3. **📋 세무신고 전 최종 구비서류 및 소명 체크포인트**\n\n"
+        f"[사업장 및 사원 판정 요약 데이터]\n{summary_context[:30000]}"
+    )
+
+    for api_key in keys:
+        client = genai.Client(api_key=api_key)
+        for model_id in models:
+            try:
+                resp = client.models.generate_content(model=model_id, contents=prompt)
+                um = getattr(resp, "usage_metadata", None)
+                if log_tokens_fn and um:
+                    in_tok = int(getattr(um, "prompt_token_count", 0) or 0)
+                    out_tok = int(getattr(um, "candidates_token_count", 0) or 0)
+                    try:
+                        log_tokens_fn(model_id, in_tok, out_tok, True, room_key)
+                    except Exception:
+                        pass
+                txt = (resp.text or "").strip()
+                if txt:
+                    return f"> 👑 **[Pro/Argon 심층 진단 완료 — 적용 모델: `{model_id}`]**\n\n{txt}"
+            except Exception:
+                continue
+    return "❌ Pro/Argon 심층 진단 호출 중 일시적인 오류가 발생했습니다."
+
+
 PROMPT_BIZ = """다음은 사업자등록증입니다(본점·지점 또는 양도·양수 사업장 등 복수일 수 있음). 아래 JSON 형식으로 정확히 읽어주세요.
 {"상호":"", "사업자번호":"000-00-00000", "대표자":"", "개업일":"YYYY-MM-DD", "법인등록번호앞6자리":"", "사업장소재지":"", "업태":"", "종목":"", "추가사업장":[{"구분":"지점(법인 본·지점 합산)/포괄양수 사업장(기중 양수)/기중양도 사업장(종전 사업장)", "상호":"", "사업자번호":"", "사업장소재지":"", "업태":"", "종목":"", "개업일":""}]}"""
 
@@ -277,7 +371,7 @@ PROMPT_SH = """다음은 주주명부입니다. 아래 JSON 형식으로 읽어�
 {"주주":[{"성명":"", "주민앞6자리":"", "지분율":0.0, "관계":""}]}"""
 
 PROMPT_WHT = """다음은 소득자별 근로소득원천징수부입니다. 모든 근로자를 빠짐없이 아래 JSON 형식으로 읽어주세요.
-주민등록번호는 앞 6자리와 뒷자리 첫 1자리만 '000000-0' 형태로 적고, 각 월(1~12)의 급여총액(과세급여)을 숫자로 넣으세요. 사업장명(본점/지점/1번사업장 등, 사번 제외)이 있으면 함께 적으세요.
+주민등록번호는 앞 6자리와 뒷자리 첫 1자리만 '000000-0' 형태로 적고, 각 월(1~12)의 급여총액(과세급여)을 숫자로 넣으세요. 사업장명(본점/지점/1번사업장 등, 사번·파일명 제외)이 있으면 함께 적으세요.
 {"근로자":[{"사업장명":"", "성명":"", "주민번호앞7자리":"000000-0", "입사일":"YYYY-MM-DD", "퇴사일":"YYYY-MM-DD", "고용유형":"정규직/계약직(기간제)/단시간(60시간 이상)/대표이사/임원", "병역개월":0, "월급여":{"1":0,"2":0,"3":0,"4":0,"5":0,"6":0,"7":0,"8":0,"9":0,"10":0,"11":0,"12":0}}]}"""
 
 PROMPT_PREV = """다음은 이미 신고한 통합고용세액공제(또는 고용증대세액공제) 관련 서식(공제감면세액계산서·상시근로자 명세서·공제세액계산서·세액공제조정명세서)입니다.
@@ -382,15 +476,16 @@ def _parse_whitespace_wht_rows(text: str, default_wp: str = "") -> list[dict] | 
         return None
 
     employees: list[dict] = []
-    cur_wp = default_wp
+    cur_wp = default_wp if not _is_employee_id_token(default_wp) else ""
     for ln in lines:
         m_wp_mark = FILE_WP_MARKER_RE.match(ln)
         if m_wp_mark:
-            cur_wp = m_wp_mark.group(1).strip() or default_wp
+            cand_m = m_wp_mark.group(1).strip()
+            cur_wp = cand_m if not _is_employee_id_token(cand_m) else ""
             continue
         if ln.startswith("[첨부") and "파일명:" in ln:
             inferred = infer_workplace_name(ln, "")
-            if inferred:
+            if inferred and not _is_employee_id_token(inferred):
                 cur_wp = inferred
             continue
         if ln.startswith("--- 시트명:"):
@@ -435,7 +530,6 @@ def _parse_whitespace_wht_rows(text: str, default_wp: str = "") -> list[dict] | 
         if not name_tok or name_tok.lower() in ("nan", "none", "성명", "이름", "합계", "총계"):
             continue
 
-        # 성명 왼쪽에 사번('사001' 등)이 아닌 실제 사업장명 토큰(예: 본점, 강남지점, 1번사업장)이 있는 경우에만 추출
         row_wp = cur_wp
         if rrn_idx >= 2:
             for prev_i in range(rrn_idx - 2, -1, -1):
@@ -529,9 +623,11 @@ def _try_fast_parse_wht_table(text: str, default_wp: str = "") -> list[dict] | N
     if not text:
         return None
 
+    clean_def_wp = "" if _is_employee_id_token(default_wp) else default_wp
+
     if "<<<FILE_WP:" in text:
         chunks: list[tuple[str, list[str]]] = []
-        cur_w = default_wp
+        cur_w = clean_def_wp
         cur_lines: list[str] = []
         for raw_ln in text.splitlines():
             m_mk = FILE_WP_MARKER_RE.match(raw_ln.strip())
@@ -539,7 +635,8 @@ def _try_fast_parse_wht_table(text: str, default_wp: str = "") -> list[dict] | N
                 if cur_lines:
                     chunks.append((cur_w, cur_lines))
                     cur_lines = []
-                cur_w = m_mk.group(1).strip() or default_wp
+                cand_w = m_mk.group(1).strip()
+                cur_w = cand_w if not _is_employee_id_token(cand_w) else clean_def_wp
             else:
                 cur_lines.append(raw_ln)
         if cur_lines:
@@ -610,10 +707,10 @@ def _try_fast_parse_wht_table(text: str, default_wp: str = "") -> list[dict] | N
                         wp_val = (
                             cols[col_map["사업장명"]].strip()
                             if "사업장명" in col_map and col_map["사업장명"] < len(cols)
-                            else default_wp
+                            else clean_def_wp
                         )
                         if _is_employee_id_token(wp_val):
-                            wp_val = default_wp
+                            wp_val = clean_def_wp
 
                         rrn7 = cols[col_map["주민"]].strip() if "주민" in col_map and col_map["주민"] < len(cols) else ""
                         birth_str = cols[col_map["생년월일"]].strip() if "생년월일" in col_map and col_map["생년월일"] < len(cols) else ""
@@ -643,7 +740,7 @@ def _try_fast_parse_wht_table(text: str, default_wp: str = "") -> list[dict] | N
                     if employees:
                         return _normalize_wht_rows(employees)
 
-    return _parse_whitespace_wht_rows(text, default_wp=default_wp)
+    return _parse_whitespace_wht_rows(text, default_wp=clean_def_wp)
 
 
 def _try_fast_parse_single_biz_reg(text: str) -> dict:
@@ -689,7 +786,9 @@ def _try_fast_parse_biz_reg(text: str) -> dict:
         wp_hint = ""
         m_mk = re.search(r"<<<FILE_WP:(.*?)>>>", pt)
         if m_mk:
-            wp_hint = m_mk.group(1).strip()
+            cand_h = m_mk.group(1).strip()
+            if not _is_employee_id_token(cand_h):
+                wp_hint = cand_h
         d = _try_fast_parse_single_biz_reg(pt)
         if d.get("사업자번호") or d.get("상호") or d.get("사업장소재지"):
             if wp_hint and not d.get("상호"):
@@ -840,7 +939,7 @@ def _normalize_wht_rows(raw_employees: list[dict]) -> list[dict]:
 
 
 # ══════════════════════════════════════════════════════════════════
-# 4. 100% 자체파싱(1순위) + 멀티스레드 AI 보완 추출(2순위) 통합 (extract_all)
+# 4. 100% 자체파싱(1순위) + 멀티스레드 Flash/Pro(Argon) 보완 추출(2순위) 통합 (extract_all)
 # ══════════════════════════════════════════════════════════════════
 def _count_rrn_like(text: str) -> int:
     """본문에 보이는 주민등록번호(앞 7자리) 개수 — 직원 수 대조용."""
@@ -858,7 +957,8 @@ def extract_all(doc_texts: dict[str, str], log_tokens_fn=None, room_key: str = "
     if not doc_texts:
         return out
 
-    llm_tasks: dict[str, tuple[str, str]] = {}
+    # (prompt, text, prefer_pro)
+    llm_tasks: dict[str, tuple[str, str, bool]] = {}
 
     for key, text in doc_texts.items():
         if not text or not text.strip():
@@ -870,36 +970,38 @@ def extract_all(doc_texts: dict[str, str], log_tokens_fn=None, room_key: str = "
             if fast_rows:
                 out["wht"][yr] = fast_rows
             if not fast_rows or (expected and len(fast_rows) < expected):
-                llm_tasks[key] = (PROMPT_WHT, text)
+                # 자체 파서가 놓친 비정형 원천징수부 행 복구 시 Pro/Argon 우선 활용
+                llm_tasks[key] = (PROMPT_WHT, text, True)
                 out.setdefault("_parse_expected", {})[yr] = expected
         elif key == "biz_reg":
             fast_biz = _try_fast_parse_biz_reg(text)
             out["biz_reg"] = fast_biz
             if not all(fast_biz.get(k) for k in ("상호", "사업자번호", "사업장소재지", "업태")):
-                llm_tasks[key] = (PROMPT_BIZ, text)
+                llm_tasks[key] = (PROMPT_BIZ, text, False)
         elif key == "corp_reg":
             fast_corp = _try_fast_parse_corp_reg(text)
             out["corp_reg"] = fast_corp
             if not (fast_corp.get("설립일") and fast_corp.get("임원")):
-                llm_tasks[key] = (PROMPT_CORP, text)
+                llm_tasks[key] = (PROMPT_CORP, text, False)
         elif key == "shareholder":
             fast_sh = _try_fast_parse_shareholder(text)
             out["shareholder"] = fast_sh
             if not fast_sh:
-                llm_tasks[key] = (PROMPT_SH, text)
+                llm_tasks[key] = (PROMPT_SH, text, False)
         elif key in ("prev_filing", "prev_credit_calc") or key.startswith("credit_calc_"):
             fast_pf = _try_fast_parse_prev_filing(text)
             if fast_pf.get("연도별"):
                 for y_s, y_v in fast_pf["연도별"].items():
                     out["prev_filing"]["연도별"].setdefault(y_s, {}).update(y_v)
-            llm_tasks[key] = (PROMPT_PREV, text)
+            # 복합 표 구조인 공제감면세액계산서·기신고 명세서는 Pro/Argon 모델을 우선 가동하여 정확도 극대화
+            llm_tasks[key] = (PROMPT_PREV, text, True)
 
     if llm_tasks:
         max_workers = min(6, len(llm_tasks))
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             fut_map = {
-                pool.submit(call_gemini_json, prompt, txt, log_tokens_fn, room_key): k
-                for k, (prompt, txt) in llm_tasks.items()
+                pool.submit(call_gemini_json, prompt, txt, log_tokens_fn, room_key, prefer_pro): k
+                for k, (prompt, txt, prefer_pro) in llm_tasks.items()
             }
             for fut in as_completed(fut_map):
                 k = fut_map[fut]
@@ -1102,13 +1204,13 @@ def new_year_rec(emp_type: str = R.EMP_REGULAR, confirmed_emp: bool = False) -> 
 
 
 def _combine_workplace_labels(old_wp: str, new_wp: str) -> str:
-    o = (old_wp or "").strip()
-    n = (new_wp or "").strip()
+    o = "" if _is_employee_id_token(old_wp) else (old_wp or "").strip()
+    n = "" if _is_employee_id_token(new_wp) else (new_wp or "").strip()
     if not o:
         return n
     if not n or o == n:
         return o
-    parts = [p.strip() for p in o.split("→") if p.strip()]
+    parts = [p.strip() for p in o.split("→") if p.strip() and not _is_employee_id_token(p.strip())]
     if n not in parts:
         parts.append(n)
     return "→".join(parts)
@@ -1145,7 +1247,11 @@ def build_people(
     year_recs: dict[int, dict[str, dict]] = {int(y): {} for y in years}
     key_to_pid: dict[str, str] = {}
     name_to_pids: dict[str, list[str]] = {}
-    fallback_wp = (default_workplace or R.DEFAULT_WORKPLACE_NAME).strip() or R.DEFAULT_WORKPLACE_NAME
+    clean_fallback_wp = (
+        R.DEFAULT_WORKPLACE_NAME
+        if _is_employee_id_token(default_workplace)
+        else ((default_workplace or R.DEFAULT_WORKPLACE_NAME).strip() or R.DEFAULT_WORKPLACE_NAME)
+    )
 
     for y_str in sorted(wht_by_year.keys()):
         try:
@@ -1162,11 +1268,10 @@ def build_people(
                 continue
             b_str = str(row.get("생년월일") or "").strip()
             raw_wp = str(row.get("사업장명") or "").strip()
-            row_wp = raw_wp if (raw_wp and not _is_employee_id_token(raw_wp)) else fallback_wp
+            row_wp = raw_wp if (raw_wp and not _is_employee_id_token(raw_wp)) else clean_fallback_wp
             dedup_key = f"{nm}|{b_str}" if b_str else nm
             pid = key_to_pid.get(dedup_key)
             if not pid:
-                # 같은 이름이 이미 있을 때: 생년월일이 확인되지 않은 쪽과 한 명씩만 연결 (동명이인 병합 원천 방지)
                 cands = name_to_pids.get(nm, [])
                 if b_str:
                     no_birth = [c for c in cands if not people[c].get("생년월일")]
@@ -1201,9 +1306,9 @@ def build_people(
                 p["생년월일"] = b_str
 
             prev_yr_wp = p["연도별_사업장명"].get(str(y_int), "")
-            combined_yr_wp = _combine_workplace_labels(prev_yr_wp, row_wp)
+            combined_yr_wp = _combine_workplace_labels(prev_yr_wp, row_wp) or clean_fallback_wp
             p["연도별_사업장명"][str(y_int)] = combined_yr_wp
-            p["사업장명"] = _combine_workplace_labels(p.get("사업장명", ""), row_wp)
+            p["사업장명"] = _combine_workplace_labels(p.get("사업장명", ""), row_wp) or clean_fallback_wp
 
             if row.get("입사일"):
                 if not p["입사일"] or row["입사일"] < p["입사일"]:
@@ -1241,7 +1346,6 @@ def build_people(
             confirmed_emp = nm in exec_role_by_name or (row.get("고용유형") in R.EMP_TYPES)
             year_recs[y_int][pid] = new_year_rec(emp_t, confirmed_emp=confirmed_emp)
 
-    # 퇴사일 확정: 한 연도에 여러 사업장 기록이 있으면, 모든 기록에 퇴사일이 있고 합산 급여상 퇴사월 이후 급여가 없을 때만 가장 늦은 날을 퇴사일로 봄
     for p in people.values():
         rr = p.pop("_ret_rows", {}) or {}
         yr_ret: dict[str, str] = {}
