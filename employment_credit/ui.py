@@ -346,7 +346,9 @@ def _succession_map(s: dict, year: int) -> dict[str, dict]:
         if d is None:
             first = []
             for p in (s.get("people") or {}).values():
-                if ((p.get("연도별_사업장명") or {}).get(str(year)) or p.get("사업장명")) != wp:
+                p_wp = str((p.get("연도별_사업장명") or {}).get(str(year)) or p.get("사업장명") or "").strip()
+                p_wp_last = p_wp.split("→")[-1].strip() if "→" in p_wp else p_wp
+                if p_wp != wp and p_wp_last != wp:
                     continue
                 pay = (p.get("월급여") or {}).get(str(year))
                 ms = [m for m in range(1, 13) if (H._get_month_pay(pay, m) or 0) > 0]
@@ -476,7 +478,7 @@ def _compose_doc_texts_with_wp(s: dict, classified: dict[str, list[str]]) -> dic
         for n in names:
             f_obj = s["files"].get(n) or {}
             raw_wp = str(f_obj.get("wp") or "").strip()
-            clean_wp = _sanitize_workplace_label(raw_wp, "") or P.infer_workplace_name(n, f_obj.get("text", "")) or default_wp
+            clean_wp = _sanitize_workplace_label(raw_wp, "") or getattr(P, "infer_workplace_name", lambda nm, tx="": "")(n, f_obj.get("text", "")) or default_wp
             chunks.append(f"<<<FILE_WP:{clean_wp}>>>\n{f_obj.get('text', '')}")
         texts[k] = "\n\n".join(chunks)
     return texts
@@ -864,18 +866,77 @@ div[data-testid="stDialog"] {
 }
 div[data-testid="stDialog"] > div[role="dialog"],
 div[role="dialog"] {
-    width: 660px !important;
-    max-width: 94vw !important;
+    width: min(1160px, 92vw) !important;
+    max-width: 92vw !important;
     margin: auto !important;
-    border-radius: 12px !important;
+    border-radius: 14px !important;
 }
 div[role="dialog"] li,
 div[role="dialog"] p {
     font-family: 'Pretendard', 'Malgun Gothic', sans-serif !important;
-    font-size: 0.93rem !important;
-    line-height: 1.58 !important;
+    font-size: 0.98rem !important;
+    line-height: 1.62 !important;
     color: #1e293b !important;
     word-break: keep-all !important;
+}
+.ec-rev-scroll-wrap {
+    max-height: 62vh;
+    overflow-y: auto;
+    padding-right: 6px;
+}
+.ec-rev-sec-hdr {
+    font-size: 1.05rem;
+    font-weight: 800;
+    padding: 8px 14px;
+    border-radius: 8px;
+    margin: 10px 0 8px 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+.ec-rev-sec-hdr.err {
+    background: #fef2f2;
+    color: #991b1b;
+    border: 1px solid #fecaca;
+}
+.ec-rev-sec-hdr.sav {
+    background: #f0fdf4;
+    color: #166534;
+    border: 1px solid #bbf7d0;
+}
+.ec-rev-sec-hdr.chk {
+    background: #eff6ff;
+    color: #1e40af;
+    border: 1px solid #bfdbfe;
+}
+.ec-rev-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(460px, 1fr));
+    gap: 8px;
+    margin-bottom: 10px;
+}
+.ec-rev-card {
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 9px 14px;
+    font-size: 0.95rem;
+    line-height: 1.56;
+    color: #1e293b;
+    word-break: keep-all;
+    box-shadow: 0 1px 2px rgba(15,23,42,0.03);
+}
+.ec-rev-card.err {
+    border-left: 4px solid #dc2626;
+    background: #fffafa;
+}
+.ec-rev-card.sav {
+    border-left: 4px solid #16a34a;
+    background: #f7fee7;
+}
+.ec-rev-card.chk {
+    border-left: 4px solid #2563eb;
+    background: #f8fafc;
 }
 
 /* 📕 붉은색 PDF 다운로드 버튼 전용 스타일 (연도별 우측 상단 & 하단 전체 PDF 다운) */
@@ -1350,106 +1411,161 @@ div[class*="st-key-ec_btn_pdf_"] button p {
     margin-top: 4px;
 }
 
-/* ── 3단계 연도별 세액공제 요약 매트릭스 및 계산 구조 전용 스타일 ── */
+/* ── 3단계 연도별 세액공제 요약 매트릭스 및 계산 구조 전용 스타일 (자율 에이전트AI 폰트·시각 규격 동기화) ── */
 .ec-matrix-wrap {
-  background:#ffffff; border:1px solid #cbd5e1; border-radius:10px;
-  padding:14px 16px; margin:8px 0 18px 0; box-shadow:0 2px 6px rgba(15,23,42,.04);
+  background:#ffffff; border:1.5px solid #cbd5e1; border-radius:14px;
+  padding:20px 22px; margin:10px 0 22px 0;
+  box-shadow:0 4px 14px rgba(15,23,42,.05);
 }
 .ec-matrix-title {
-  font-size:.95rem; font-weight:800; color:#0f172a; margin-bottom:10px;
-  display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;
+  font-size:1.18rem; font-weight:900; color:#0f172a; margin-bottom:14px;
+  display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;
 }
 .ec-matrix-tbl {
-  width:100%; border-collapse:collapse; font-size:.88rem; text-align:right;
+  width:100%; border-collapse:collapse; font-size:1.05rem; text-align:right;
   border-top:2px solid #1e293b; border-bottom:2px solid #1e293b;
+  border-radius:8px; overflow:hidden;
 }
 .ec-matrix-tbl th {
-  background:#f1f5f9; color:#1e293b; font-weight:800; padding:9px 12px;
-  border:1px solid #cbd5e1; text-align:center; white-space:nowrap;
+  background:#1e293b; color:#ffffff; font-weight:800; font-size:1.04rem;
+  padding:12px 16px; border:1px solid #334155; text-align:center; white-space:nowrap;
 }
 .ec-matrix-tbl th.active-yr {
-  background:#eff6ff; color:#1d4ed8; border-bottom:2px solid #2563eb;
+  background:#1d4ed8 !important; color:#ffffff !important;
+  box-shadow:inset 0 -3px 0 #93c5fd;
 }
 .ec-matrix-tbl td {
-  padding:8px 12px; border:1px solid #cbd5e1; color:#1e293b; font-weight:600;
-  font-variant-numeric:tabular-nums; white-space:nowrap;
+  padding:11px 16px; border:1px solid #cbd5e1; color:#1e293b; font-weight:700;
+  font-size:1.05rem; font-variant-numeric:tabular-nums; white-space:nowrap;
+  vertical-align:middle;
 }
 .ec-matrix-tbl td.lbl-col {
-  background:#f8fafc; text-align:center; font-weight:800; color:#334155;
+  background:#f8fafc; text-align:center; font-weight:800; color:#1e293b; font-size:1.04rem;
 }
 .ec-matrix-tbl td.active-yr-cell {
-  background:#f8fbff;
+  background:#f0f7ff;
 }
 .ec-matrix-tbl tr.ec-tot-row td {
-  background:#f8fafc; font-weight:900; font-size:.92rem; border-top:1.5px solid #64748b;
+  background:#f1f5f9; font-weight:900; font-size:1.14rem;
+  border-top:2px solid #475569; padding:13px 16px;
 }
 .ec-matrix-tbl tr.ec-tot-row td.active-yr-cell {
-  background:#eff6ff;
+  background:#dbeafe;
 }
 .ec-neg-val {
-  color:#dc2626 !important; font-weight:800 !important;
+  color:#dc2626 !important; font-weight:900 !important;
 }
 .ec-pos-val {
-  color:#0f172a; font-weight:700;
+  color:#0f172a; font-weight:800;
+}
+.ec-tot-row .ec-pos-val {
+  color:#1d4ed8; font-weight:900;
 }
 .ec-zero-val {
-  color:#94a3b8; font-weight:500;
+  color:#94a3b8; font-weight:600;
+}
+.ec-mat-dual {
+  display:flex; align-items:center; justify-content:flex-end; gap:6px;
+  line-height:1.45;
+}
+.ec-cell-tag {
+  display:inline-block; font-size:0.78rem; font-weight:800;
+  padding:1px 6px; border-radius:4px; line-height:1.3;
+}
+.ec-cell-tag.pos {
+  background:#dcfce7; color:#15803d; border:1px solid #86efac;
+}
+.ec-cell-tag.neg {
+  background:#fee2e2; color:#b91c1c; border:1px solid #fca5a5;
+}
+.ec-ctrl-bar {
+  background:#f8fafc; border:1px solid #cbd5e1; border-radius:12px;
+  padding:12px 18px; margin:6px 0 22px 0;
 }
 .ec-sec-header {
-  font-size:1.18rem; font-weight:900; color:#0f172a;
-  margin:20px 0 10px 0; padding:8px 12px;
-  background:linear-gradient(90deg, #eff6ff 0%, #ffffff 100%);
-  border-left:5px solid #1d4ed8; border-radius:4px;
+  font-size:1.30rem !important; font-weight:900; color:#1e3a8a;
+  margin:24px 0 14px 0; padding:12px 18px;
+  background:linear-gradient(90deg, #eff6ff 0%, #f8fafc 65%, #ffffff 100%);
+  border-left:6px solid #1d4ed8; border-radius:8px;
+  box-shadow:0 1px 3px rgba(15,23,42,.04);
 }
 .ec-sub-header {
-  font-size:.98rem; font-weight:800; color:#1e293b;
-  margin:16px 0 8px 0; padding-left:4px;
+  font-size:1.15rem !important; font-weight:800; color:#1e3a8a;
+  margin:22px 0 10px 0; padding-left:2px;
+  display:flex; align-items:center; gap:8px;
+}
+.ec-sub-num {
+  display:inline-flex; align-items:center; justify-content:center;
+  background:#1e3a8a; color:#ffffff; font-size:0.92rem; font-weight:800;
+  padding:2px 9px; border-radius:6px;
 }
 .ec-inc-tbl {
-  width:100%; border-collapse:collapse; font-size:.88rem; margin:6px 0 14px 0;
-  border-top:2px solid #334155; border-bottom:1.5px solid #334155;
+  width:100%; border-collapse:collapse; font-size:1.05rem; margin:8px 0 18px 0;
+  border-top:2px solid #1e293b; border-bottom:2px solid #1e293b;
+  background:#ffffff;
 }
 .ec-inc-tbl th {
-  background:#f8fafc; color:#1e293b; font-weight:800; padding:8px 14px;
-  border:1px solid #cbd5e1; text-align:center;
+  background:#1e293b; color:#ffffff; font-weight:800; font-size:1.04rem;
+  padding:12px 18px; border:1px solid #334155; text-align:center;
 }
 .ec-inc-tbl td {
-  padding:8px 14px; border:1px solid #cbd5e1; text-align:right;
-  font-weight:600; font-variant-numeric:tabular-nums;
+  padding:11px 18px; border:1px solid #cbd5e1; text-align:right;
+  font-weight:700; font-size:1.05rem; color:#1e293b; font-variant-numeric:tabular-nums;
 }
 .ec-inc-tbl td.inc-lbl {
-  text-align:center; font-weight:800; color:#1e293b; background:#fcfcfd; width:34%;
+  text-align:center; font-weight:800; color:#0f172a; background:#f8fafc; width:34%;
+  font-size:1.05rem;
 }
 .ec-inc-tbl td.inc-hi {
-  font-weight:800; color:#1d4ed8; background:#f8fbff;
+  font-weight:900; font-size:1.08rem; color:#1d4ed8; background:#f0f7ff;
 }
 .ec-calc-box {
-  background:#ffffff; border:1px solid #cbd5e1; border-radius:8px;
-  padding:12px 16px; margin:6px 0 14px 0;
-  display:flex; align-items:center; justify-content:space-between; gap:16px;
+  background:#ffffff; border:1px solid #cbd5e1; border-left:5px solid #2563eb;
+  border-radius:12px; padding:18px 22px; margin:8px 0 18px 0;
+  display:flex; align-items:center; justify-content:space-between; gap:20px;
+  box-shadow:0 2px 8px rgba(15,23,42,.04);
+}
+.ec-calc-box.pos-box {
+  border-left:5px solid #16a34a;
+}
+.ec-calc-box.neg-box {
+  border-left:5px solid #dc2626;
+  background:#fffdfd;
+}
+.ec-calc-box.zero-box {
+  border-left:5px solid #94a3b8;
 }
 .ec-calc-formula {
-  flex:1; font-size:.88rem; color:#1e293b; line-height:1.65;
+  flex:1; font-size:1.06rem; color:#1e293b; line-height:1.75;
 }
 .ec-calc-formula .f-title {
-  font-weight:800; color:#0f172a; margin-bottom:2px;
+  font-size:1.12rem; font-weight:800; color:#0f172a; margin-bottom:6px;
 }
 .ec-calc-formula .f-line {
   font-family:'Pretendard', -apple-system, BlinkMacSystemFont, sans-serif;
-  color:#334155; padding-left:6px;
+  font-size:1.05rem; color:#1e293b; padding-left:6px; line-height:1.74;
 }
 .ec-calc-formula .f-sub {
-  font-size:.8rem; color:#64748b; padding-left:6px; margin-top:2px;
+  font-size:1.03rem; font-weight:700; color:#0f172a;
+  background:#f8fafc; border:1px solid #e2e8f0; border-left:4px solid #2563eb;
+  padding:8px 14px; margin-top:8px; border-radius:6px;
 }
 .ec-calc-amount {
-  min-width:210px; text-align:right; padding:8px 14px;
-  background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px;
+  min-width:275px; text-align:right; padding:14px 20px;
+  background:#f8fafc; border:1.5px solid #e2e8f0; border-radius:10px;
+}
+.ec-calc-amount.pos-amt {
+  background:#f0fdf4; border-color:#bbf7d0;
+}
+.ec-calc-amount.neg-amt {
+  background:#fef2f2; border-color:#fecaca;
 }
 .ec-calc-amount .a-lbl {
-  font-size:.76rem; font-weight:700; color:#64748b; margin-bottom:2px;
+  font-size:0.94rem; font-weight:800; color:#475569; margin-bottom:4px;
 }
 .ec-calc-amount .a-val {
-  font-size:1.12rem; font-weight:900; color:#0f172a; font-variant-numeric:tabular-nums;
+  font-size:1.42rem; font-weight:900; color:#0f172a; font-variant-numeric:tabular-nums;
+  line-height:1.25;
 }
 .ec-calc-amount .a-val.neg {
   color:#dc2626 !important;
@@ -1457,12 +1573,17 @@ div[class*="st-key-ec_btn_pdf_"] button p {
 .ec-calc-amount .a-val.pos {
   color:#15803d;
 }
+.ec-calc-amount .a-sub-split {
+  font-size:0.88rem; font-weight:700; color:#475569;
+  margin-top:6px; padding-top:6px; border-top:1px dashed #cbd5e1;
+}
 .ec-law-ref-box {
-  background:#f8fafc; border:1px solid #cbd5e1; border-radius:10px;
-  padding:14px 18px; margin:20px 0 12px 0; font-size:.84rem; color:#334155; line-height:1.65;
+  background:#f8fafc; border:1.5px solid #cbd5e1; border-left:5px solid #1e3a8a;
+  border-radius:12px; padding:18px 22px; margin:24px 0 14px 0;
+  font-size:1.02rem; color:#1e293b; line-height:1.78;
 }
 .ec-law-ref-box a {
-  color:#1d4ed8; font-weight:700; text-decoration:none;
+  color:#1d4ed8; font-weight:800; text-decoration:none;
 }
 .ec-law-ref-box a:hover {
   text-decoration:underline;
@@ -1485,8 +1606,6 @@ def _top_status_bar(s: dict):
     pm_lbl = R.PM_BASIS_LABELS.get(s.get("pm_basis", R.PM_BASIS_FILED), "기신고 기준")
     law_ver = (
         f"{tax_yr}귀속 (합산 후 절사 · 사후관리: {pm_lbl})"
-        if tax_yr >= 2025
-        else f"{tax_yr}귀속 (합산 후 절사 · 사후관리: {pm_lbl})"
     )
     step_nm = STEPS[max(0, min(len(STEPS) - 1, int(s.get("step", 1)) - 1))]
 
@@ -1545,7 +1664,7 @@ def _dlg_industry(text: str):
         st.rerun()
 
 
-@st.dialog("🔍 법령·심판례·절세누락 12대 정밀 오류 검토")
+@st.dialog("🔍 법령·심판례·절세누락 12대 정밀 오류 검토", width="large")
 def _dlg_review(items: list[tuple[str, str]], audit_payload: dict | None = None, log_tokens_fn=None, room_key: str = ""):
     s = _S()
     errs = [m for lv, m in items if lv == "오류"]
@@ -1553,44 +1672,75 @@ def _dlg_review(items: list[tuple[str, str]], audit_payload: dict | None = None,
     chks = [m for lv, m in items if lv == "확인"]
 
     st.markdown(
-        f"<div style='display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;'>"
-        f"<span style='background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;padding:4px 11px;border-radius:999px;font-weight:800;font-size:0.84rem;'>🚨 필수 수정 오류 {len(errs)}건</span>"
-        f"<span style='background:#f0fdf4;color:#15803d;border:1px solid #86efac;padding:4px 11px;border-radius:999px;font-weight:800;font-size:0.84rem;'>💰 절세누락 주의 {len(savs)}건</span>"
-        f"<span style='background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;padding:4px 11px;border-radius:999px;font-weight:800;font-size:0.84rem;'>💡 실무·심판례 확인 {len(chks)}건</span>"
+        f"<div style='display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;flex-wrap:wrap;'>"
+        f"<div style='display:flex;gap:8px;flex-wrap:wrap;'>"
+        f"<span style='background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;padding:5px 13px;border-radius:999px;font-weight:800;font-size:0.92rem;'>🚨 필수 수정 오류 {len(errs)}건</span>"
+        f"<span style='background:#f0fdf4;color:#15803d;border:1px solid #86efac;padding:5px 13px;border-radius:999px;font-weight:800;font-size:0.92rem;'>💰 절세누락 주의 {len(savs)}건</span>"
+        f"<span style='background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;padding:5px 13px;border-radius:999px;font-weight:800;font-size:0.92rem;'>💡 실무·심판례 확인 {len(chks)}건</span>"
+        f"</div>"
+        f"<span style='font-size:0.86rem;color:#64748b;font-weight:600;'>※ 반복 안내 항목은 연도별로 자동 묶음 요약됩니다.</span>"
         f"</div>",
         unsafe_allow_html=True,
     )
 
     if not items:
         st.success("✅ 법령 및 최신 조세심판례 12대 항목 검토 결과, 발견된 오류나 절세누락 사항이 없습니다.")
-    if errs:
-        st.markdown(f"#### 🚨 필수 수정 오류 ({len(errs)}건) — 수정해야 정확한 상시근로자 수가 계산됩니다.")
-        for m in errs:
-            st.markdown(f"- :red[**{m}**]")
-    if savs:
-        st.markdown(f"#### 💰 절세누락 주의 ({len(savs)}건) — 청년·고령자 우대공제 추가 적용이 가능한 대상입니다.")
-        for m in savs:
-            st.markdown(f"- :green[**{m}**]")
-    if chks:
-        st.markdown(f"#### 💡 실무·심판례 확인 사항 ({len(chks)}건) — 사실관계가 맞다면 그대로 진행하셔도 됩니다.")
-        for m in chks:
-            st.markdown(f"- {m}")
+    else:
+        sections_html = ["<div class='ec-rev-scroll-wrap'>"]
+        if errs:
+            sections_html.append(
+                f"<div class='ec-rev-sec-hdr err'>"
+                f"<span>🚨 필수 수정 오류 ({len(errs)}건) — 수정해야 정확한 상시근로자 수가 계산됩니다</span>"
+                f"</div>"
+                f"<div class='ec-rev-grid'>"
+            )
+            for m in errs:
+                sections_html.append(f"<div class='ec-rev-card err'>• <b>{m}</b></div>")
+            sections_html.append("</div>")
 
-    st.markdown("<div class='ec-nav-divider'></div>", unsafe_allow_html=True)
-    if audit_payload:
-        if st.button("👑 Pro/Argon AI 심층 세무진단 코멘트 생성 (특수사례·판례 정밀점검)", use_container_width=True, key="btn_run_pro_audit"):
-            with st.spinner("👑 Pro/Argon 모델이 사원표·특례·사후관리 리스크를 심층 분석하고 있습니다..."):
-                s["pro_audit_comment"] = P.call_pro_argon_audit_commentary(
-                    audit_payload, log_tokens_fn=log_tokens_fn, room_key=room_key
-                )
-                _save_ec_to_disk(s)
-        if s.get("pro_audit_comment"):
-            with st.container(border=True):
-                st.markdown("##### 👑 Pro/Argon AI 심층 세무진단 의견")
-                st.markdown(s["pro_audit_comment"])
+        if savs:
+            sections_html.append(
+                f"<div class='ec-rev-sec-hdr sav'>"
+                f"<span>💰 절세누락 주의 ({len(savs)}건) — 청년·고령자·장애인 우대공제 추가 적용 가능 대상</span>"
+                f"</div>"
+                f"<div class='ec-rev-grid'>"
+            )
+            for m in savs:
+                sections_html.append(f"<div class='ec-rev-card sav'>• <b>{m}</b></div>")
+            sections_html.append("</div>")
 
-    if st.button("닫기", type="primary", use_container_width=True):
-        st.rerun()
+        if chks:
+            sections_html.append(
+                f"<div class='ec-rev-sec-hdr chk'>"
+                f"<span>💡 실무·심판례 확인 사항 ({len(chks)}건) — 사실관계가 맞다면 그대로 진행하셔도 됩니다</span>"
+                f"</div>"
+                f"<div class='ec-rev-grid'>"
+            )
+            for m in chks:
+                sections_html.append(f"<div class='ec-rev-card chk'>• {m}</div>")
+            sections_html.append("</div>")
+
+        sections_html.append("</div>")
+        st.markdown("".join(sections_html), unsafe_allow_html=True)
+
+    st.markdown("<div class='ec-nav-divider' style='margin:10px 0;'></div>", unsafe_allow_html=True)
+    c_ai, c_close = st.columns([2.2, 1.0])
+    with c_ai:
+        if audit_payload:
+            if st.button("👑 Pro/Argon AI 심층 세무진단 코멘트 생성 (특수사례·판례 정밀점검)", use_container_width=True, key="btn_run_pro_audit"):
+                with st.spinner("👑 Pro/Argon 모델이 사원표·특례·사후관리 리스크를 심층 분석하고 있습니다..."):
+                    s["pro_audit_comment"] = getattr(P, "call_pro_argon_audit_commentary", lambda *a, **kw: "Pro/Argon 심층 진단 함수를 찾을 수 없습니다. parsers.py를 최신 버전으로 업데이트해 주세요.")(
+                        audit_payload, log_tokens_fn=log_tokens_fn, room_key=room_key
+                    )
+                    _save_ec_to_disk(s)
+    with c_close:
+        if st.button("닫기", type="primary", use_container_width=True, key="btn_close_dlg_review"):
+            st.rerun()
+
+    if s.get("pro_audit_comment"):
+        with st.container(border=True):
+            st.markdown("##### 👑 Pro/Argon AI 심층 세무진단 의견")
+            st.markdown(s["pro_audit_comment"])
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -2007,7 +2157,7 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
         with st.spinner(f"📄 {len(new)}개 파일에서 텍스트 및 표 데이터를 추출하고 있습니다..."):
             for u in new:
                 text = extract_file_fn(u, room_key) or ""
-                auto_wp = _sanitize_workplace_label(P.infer_workplace_name(u.name, text), _default_workplace_label(s))
+                auto_wp = _sanitize_workplace_label(getattr(P, "infer_workplace_name", lambda nm, tx="": "")(u.name, text), _default_workplace_label(s))
                 s["files"][u.name] = {
                     "key": P.classify_file(u.name, text),
                     "text": text,
@@ -2306,6 +2456,30 @@ def _block_titles_for_year(year: int, two_line: bool = False) -> tuple[str, str,
     )
 
 
+def _is_emp_id_token_safe(tok: str) -> bool:
+    """parsers._is_employee_id_token이 없는 구버전 parsers.py와 함께 실행되더라도 AttributeError가 절대 나지 않도록 자체 내장한 안전 판별기."""
+    fn = getattr(P, "_is_employee_id_token", None)
+    if callable(fn):
+        try:
+            return bool(fn(tok))
+        except Exception:
+            pass
+    s = (tok or "").strip()
+    if not s or s.lower() in ("nan", "none", "-", "사번", "번호", "no", "년", "월", "일"):
+        return True
+    if any(noise in s for noise in ("첨부", "파일명", "엑셀", "시트명", "페이지", "Unnamed", "명:")):
+        return True
+    if s.isdigit():
+        return True
+    if re.match(r"^[A-Za-z0-9_\-.]+$", s):
+        return True
+    if re.match(r"^(?:사번?|사원|번호|일련번호|no\.?|id|emp)?[-_.\s]*\d+호?$", s, flags=re.IGNORECASE):
+        return True
+    if re.search(r"\d{2,}$", s):
+        return True
+    return False
+
+
 def _sanitize_workplace_label(raw_wp: str, default_wp: str) -> str:
     """
     사번('사001' 등)이나 파일 헤더 노이즈('첨부 엑셀 명: 년' 등)가 이전 세션에 남아 있는 경우
@@ -2321,12 +2495,12 @@ def _sanitize_workplace_label(raw_wp: str, default_wp: str) -> str:
             pt_c = pt.strip()
             if not pt_c:
                 continue
-            if P._is_employee_id_token(pt_c) or any(k in pt_c for k in noise_marks) or pt_c in ("년", "월"):
+            if _is_emp_id_token_safe(pt_c) or any(k in pt_c for k in noise_marks) or pt_c in ("년", "월"):
                 pt_c = default_wp
             if pt_c and pt_c not in parts:
                 parts.append(pt_c)
         return "→".join(parts) if parts else default_wp
-    if P._is_employee_id_token(s) or any(k in s for k in noise_marks) or s in ("년", "월", "귀속"):
+    if _is_emp_id_token_safe(s) or any(k in s for k in noise_marks) or s in ("년", "월", "귀속"):
         return default_wp
     return s
 
@@ -3406,13 +3580,15 @@ def _fmt_matrix_won(credit_won: int | float | None, clawback_won: int | float | 
     """
     상단 4개년 요약 매트릭스 셀 포맷터:
     - 공제세액(양수)과 추가납부세액(음수, 붉은 글씨 '-')을 구분하여 HTML 문자열로 반환
+    - 동일 차수에 연속공제와 추가납부가 동시에 발생하는 경우(예: 청년 감소 단가차액 추징 + 부분 연속공제)
+      [공제] / [추징] 미니 배지를 함께 표시하여 시인성을 높입니다.
     """
     cr = int(round(float(credit_won or 0)))
     cl = int(round(float(clawback_won or 0)))
     if cr > 0 and cl > 0:
         return (
-            f"<span class='ec-pos-val'>{cr:,}</span>"
-            f"<br><span class='ec-neg-val'>-{cl:,}</span>"
+            f"<div class='ec-mat-dual'><span class='ec-cell-tag pos'>공제</span><span class='ec-pos-val'>{cr:,}</span></div>"
+            f"<div class='ec-mat-dual'><span class='ec-cell-tag neg'>추징</span><span class='ec-neg-val'>-{cl:,}</span></div>"
         )
     if cl > 0:
         return f"<span class='ec-neg-val'>-{cl:,}</span>"
@@ -3705,6 +3881,33 @@ def _build_pm_formula_lines(
             False,
         )
 
+    if str(pm.get("case_code") or "").startswith("신법") and isinstance(pm.get("new_tier_info"), dict):
+        ti = pm["new_tier_info"]
+        t_rates = ti.get("rates") or {"청년등": 0, "청년등외": 0}
+        y_u = int(t_rates.get("청년등", 0)) * 10_000
+        g_u = int(t_rates.get("청년등외", 0)) * 10_000
+        y_inc = float(ti.get("youth_inc") or 0.0)
+        g_inc = float(ti.get("non_youth_inc") or 0.0)
+        y_w = int(ti.get("item1_youth_won") or 0)
+        g_w = int(ti.get("item2_non_youth_won") or 0)
+        d_w = int(ti.get("item3_deduction_won") or 0)
+        cr_w = int(ti.get("credit_won") or 0)
+        new_lines = [
+            f"• {cohort_year}년 이후 귀속분은 구법 사후관리(추징) 대상이 아니며, 2026 신법 {nth_label} 유지분 점증형 공제단가가 적용됩니다.",
+            f"• 청년 등 유지 인원: <b>{y_inc:.2f}명</b> × {y_u:,}원 = <b>{y_w:,}원</b> / 청년 등 외 유지 인원: <b>{g_inc:.2f}명</b> × {g_u:,}원 = <b>{g_w:,}원</b>"
+            + (f" (최소고용증가인원 차감 -{d_w:,}원)" if d_w > 0 else ""),
+            f"• 산식 합계: ({y_inc:.2f} × {y_u:,}원) + ({g_inc:.2f} × {g_u:,}원)"
+            + (f" - {d_w:,}원" if d_w > 0 else "")
+            + f" = <b>{cr_w:,}원</b>",
+        ]
+        return (
+            f"{cohort_year}년 귀속분 {nth_label} 유지 세액공제 — {pm.get('case_code')}",
+            new_lines,
+            f"{nth_label} 유지 세액공제액",
+            cr_w,
+            False,
+        )
+
     if not pm.get("active"):
         return (
             f"{cohort_year}년 귀속분 — {pm.get('case_title', '사후관리 대상 아님')}",
@@ -3927,7 +4130,7 @@ def _page_calculation():
         f"<div class='ec-matrix-wrap'>"
         f"<div class='ec-matrix-title'>"
         f"<span>📊 연도별 통합고용세액공제 요약표 ({corp_size} · {loc_label})</span>"
-        f"<span style='font-size:.8rem;font-weight:600;color:#475569;'>"
+        f"<span style='font-size:.95rem;font-weight:700;color:#475569;'>"
         f"{basis_badge_html} &nbsp;·&nbsp; 단위: 원 (추가납부세액은 <span class='ec-neg-val'>-붉은색</span> 표시)"
         f"</span>"
         f"</div>"
@@ -3936,7 +4139,7 @@ def _page_calculation():
         f"<tr><th colspan='2' style='width:22%;'>구분</th>{th_years_html}</tr>"
         f"</thead>"
         f"<tbody>"
-        f"<tr><td rowspan='4' class='lbl-col' style='width:12%;'>세액공제액<br><span style='font-size:.74rem;font-weight:600;color:#64748b;'>(추가납부세액)</span></td>"
+        f"<tr><td rowspan='4' class='lbl-col' style='width:12%;'>세액공제액<br><span style='font-size:.86rem;font-weight:700;color:#dc2626;'>(추가납부세액)</span></td>"
         f"<td class='lbl-col' style='width:10%;'>1차</td>{r1_cells}</tr>"
         f"<tr><td class='lbl-col'>2차</td>{r2_cells}</tr>"
         f"<tr><td class='lbl-col'>3차</td>{r3_cells}</tr>"
@@ -3948,33 +4151,34 @@ def _page_calculation():
     )
 
     # ── 계산 기준 선택 바 (2단계 사원표 기준 vs 기신고 서식 기준) ──
-    c_sel_lbl, c_sel_wg, c_scheme_wg = st.columns([2.2, 2.6, 1.8])
-    with c_sel_lbl:
-        st.markdown(
-            "<div style='padding-top:6px;font-size:.86rem;font-weight:800;color:#1e293b;'>"
-            "🔘 세액공제·사후관리 계산 기준 선택"
-            "</div>"
-            "<div style='font-size:.76rem;color:#64748b;'>"
-            "2단계 사원표 재계산 값과 기신고 서식 숫자 중 원하는 기준을 선택하세요."
-            "</div>",
-            unsafe_allow_html=True,
-        )
-    with c_sel_wg:
-        _render_pm_basis_selector_right(s, widget_key=f"pm_basis_top_step3_{tax_yr}")
-    with c_scheme_wg:
-        if tax_yr >= 2026:
-            scheme_opt = st.selectbox(
-                f"{tax_yr}년 신규공제 단가 체계",
-                options=["new_2026", "legacy"],
-                index=0 if s.get("scheme_2026", "new_2026") == "new_2026" else 1,
-                format_func=lambda x: "2026 신법 (연차별 차등 A+B+C)" if x == "new_2026" else "구법 단가 시뮬레이션 (균등단가)",
-                label_visibility="collapsed",
-                key=f"scheme_2026_top_sel_{tax_yr}",
+    with st.container(border=True):
+        c_sel_lbl, c_sel_wg, c_scheme_wg = st.columns([2.3, 2.5, 1.8])
+        with c_sel_lbl:
+            st.markdown(
+                "<div style='padding-top:2px;font-size:1.04rem;font-weight:800;color:#0f172a;'>"
+                "🔘 세액공제·사후관리 계산 기준 선택"
+                "</div>"
+                "<div style='font-size:.90rem;color:#475569;margin-top:2px;'>"
+                "2단계 사원표 재계산 값과 기신고 서식 숫자 중 적용할 기준을 선택하세요."
+                "</div>",
+                unsafe_allow_html=True,
             )
-            if scheme_opt != s.get("scheme_2026", "new_2026"):
-                s["scheme_2026"] = scheme_opt
-                _save_ec_to_disk(s)
-                st.rerun()
+        with c_sel_wg:
+            _render_pm_basis_selector_right(s, widget_key=f"pm_basis_top_step3_{tax_yr}")
+        with c_scheme_wg:
+            if tax_yr >= 2026:
+                scheme_opt = st.selectbox(
+                    f"{tax_yr}년 신규공제 단가 체계",
+                    options=["new_2026", "legacy"],
+                    index=0 if s.get("scheme_2026", "new_2026") == "new_2026" else 1,
+                    format_func=lambda x: "2026 신법 (연차별 차등 A+B+C)" if x == "new_2026" else "구법 단가 시뮬레이션 (균등단가)",
+                    label_visibility="collapsed",
+                    key=f"scheme_2026_top_sel_{tax_yr}",
+                )
+                if scheme_opt != s.get("scheme_2026", "new_2026"):
+                    s["scheme_2026"] = scheme_opt
+                    _save_ec_to_disk(s)
+                    st.rerun()
 
     # ══════════════════════════════════════════════════════════════
     # [본문] 선택된 당해 귀속연도(tax_yr) 세액공제 상세 내역 (단독 표시)
@@ -4004,13 +4208,16 @@ def _page_calculation():
     cap_notice_html = ""
     if inc_disp.get("raw_youth_inc", 0) > inc_disp["youth_inc"]:
         cap_notice_html = (
-            f"<div style='font-size:.79rem;color:#b45309;margin-top:-6px;margin-bottom:10px;'>"
+            f"<div style='font-size:.95rem;font-weight:700;color:#b45309;margin-top:-6px;margin-bottom:12px;'>"
             f"※ 청년 등 순증가 인원({inc_disp['raw_youth_inc']:.2f}명)이 전체 상시근로자 증가 한도({inc_disp['total_inc']:.2f}명)를 초과하여 "
             f"한도({inc_disp['youth_inc']:.2f}명)가 적용되었습니다 (조특령 제26조의8 제3항)."
             f"</div>"
         )
 
-    st.markdown("<div class='ec-sub-header'>(1) 평균 상시근로자 증가 인원</div>", unsafe_allow_html=True)
+    st.markdown(
+        "<div class='ec-sub-header'><span class='ec-sub-num'>(1)</span><span>평균 상시근로자 증가 인원</span></div>",
+        unsafe_allow_html=True,
+    )
     st.markdown(
         f"<table class='ec-inc-tbl'>"
         f"<thead>"
@@ -4027,7 +4234,7 @@ def _page_calculation():
         f"<td>{cur_s['regular']:.2f}명</td>"
         f"<td>{prv_reg_disp:.2f}명</td>"
         f"<td class='inc-hi'>{inc_disp['total_inc']:.2f}명 "
-        f"<span style='font-size:.76rem;color:#64748b;font-weight:500;'>(증감 {inc_disp['total_diff']:+.2f})</span></td>"
+        f"<span style='font-size:.90rem;color:#475569;font-weight:700;'>(증감 {inc_disp['total_diff']:+.2f})</span></td>"
         f"</tr>"
         f"<tr>"
         f"<td class='inc-lbl'>청년 등 상시근로자 증가</td>"
@@ -4049,7 +4256,7 @@ def _page_calculation():
 
     # ── (2) 1차년도 세액공제액 계산 (기업구분, 수도권/비수도권) ──
     st.markdown(
-        f"<div class='ec-sub-header'>(2) 1차년도 세액공제액 계산 ({corp_size}, {loc_label})</div>",
+        f"<div class='ec-sub-header'><span class='ec-sub-num'>(2)</span><span>1차년도 세액공제액 계산 ({corp_size}, {loc_label})</span></div>",
         unsafe_allow_html=True,
     )
     if pkg["active_scheme"] == "new_2026":
@@ -4061,7 +4268,7 @@ def _page_calculation():
         ded_won = int(pkg["cur_new_ded_won"] or 0)
         first_yr_credit_won = max(0, y_amt_won + g_amt_won - ded_won)
         ded_line_html = (
-            f"<div class='f-line' style='color:#b45309;'>"
+            f"<div class='f-line' style='color:#b45309;font-weight:700;'>"
             f"• 최소고용증가인원({pkg['hurdle_res']['hurdle']:g}명) 차감액: -{ded_won:,}원 ({pkg['hurdle_res']['note']})"
             f"</div>"
             if ded_won > 0 or not pkg["hurdle_res"]["hurdle_met"]
@@ -4069,8 +4276,8 @@ def _page_calculation():
         )
         formula_y1_html = (
             f"<div class='f-title'>{tax_yr}년 귀속 1차년도 신규 고용증가 세액공제 (2026 신법 1년차 단가)</div>"
-            f"<div class='f-line'>• 청년 등 상시근로자 증가: {inc_disp['youth_inc']:.2f}명 × {y_unit_won:,}원 = {y_amt_won:,}원</div>"
-            f"<div class='f-line'>• 청년 등 외 상시근로자 증가: {inc_disp['non_youth_inc']:.2f}명 × {g_unit_won:,}원 = {g_amt_won:,}원</div>"
+            f"<div class='f-line'>• 청년 등 상시근로자 증가: <b>{inc_disp['youth_inc']:.2f}명</b> × {y_unit_won:,}원 = <b>{y_amt_won:,}원</b></div>"
+            f"<div class='f-line'>• 청년 등 외 상시근로자 증가: <b>{inc_disp['non_youth_inc']:.2f}명</b> × {g_unit_won:,}원 = <b>{g_amt_won:,}원</b></div>"
             f"{ded_line_html}"
             f"<div class='f-sub'>산식 합계: ({inc_disp['youth_inc']:.2f} × {y_unit_won:,}원) + ({inc_disp['non_youth_inc']:.2f} × {g_unit_won:,}원)"
             f"{f' - {ded_won:,}원' if ded_won > 0 else ''} = <b>{first_yr_credit_won:,}원</b></div>"
@@ -4084,15 +4291,17 @@ def _page_calculation():
         first_yr_credit_won = y_amt_won + g_amt_won
         formula_y1_html = (
             f"<div class='f-title'>{tax_yr}년 귀속 1차년도 고용증가 세액공제 (조특법 제29조의8 제1항 단가)</div>"
-            f"<div class='f-line'>• 청년 등 상시근로자 증가: {inc_disp['youth_inc']:.2f}명 × {y_unit_won:,}원 = {y_amt_won:,}원</div>"
-            f"<div class='f-line'>• 청년 등 외 상시근로자 증가: {inc_disp['non_youth_inc']:.2f}명 × {g_unit_won:,}원 = {g_amt_won:,}원</div>"
+            f"<div class='f-line'>• 청년 등 상시근로자 증가: <b>{inc_disp['youth_inc']:.2f}명</b> × {y_unit_won:,}원 = <b>{y_amt_won:,}원</b></div>"
+            f"<div class='f-line'>• 청년 등 외 상시근로자 증가: <b>{inc_disp['non_youth_inc']:.2f}명</b> × {g_unit_won:,}원 = <b>{g_amt_won:,}원</b></div>"
             f"<div class='f-sub'>산식 합계: ({inc_disp['youth_inc']:.2f} × {y_unit_won:,}원) + ({inc_disp['non_youth_inc']:.2f} × {g_unit_won:,}원) = <b>{first_yr_credit_won:,}원</b></div>"
         )
 
+    y1_box_cls = "pos-box" if first_yr_credit_won > 0 else "zero-box"
+    y1_amt_cls = "pos-amt" if first_yr_credit_won > 0 else ""
     st.markdown(
-        f"<div class='ec-calc-box'>"
+        f"<div class='ec-calc-box {y1_box_cls}'>"
         f"<div class='ec-calc-formula'>{formula_y1_html}</div>"
-        f"<div class='ec-calc-amount'>"
+        f"<div class='ec-calc-amount {y1_amt_cls}'>"
         f"<div class='a-lbl'>1차년도 세액공제액</div>"
         f"<div class='a-val {'pos' if first_yr_credit_won > 0 else ''}'>{first_yr_credit_won:,}원</div>"
         f"</div>"
@@ -4102,7 +4311,7 @@ def _page_calculation():
 
     # ── (3) 2차년도 사후관리 계산 (직전 과세연도 귀속분의 당해 사후관리) ──
     st.markdown(
-        f"<div class='ec-sub-header'>(3) 2차년도 사후관리 계산 ({tax_yr - 1}년 귀속분 → {tax_yr}년 1차 사후관리)</div>",
+        f"<div class='ec-sub-header'><span class='ec-sub-num'>(3)</span><span>2차년도 사후관리 계산 ({tax_yr - 1}년 귀속분 → {tax_yr}년 1차 사후관리)</span></div>",
         unsafe_allow_html=True,
     )
     pm1_title, pm1_lines, pm1_amt_lbl, pm1_val, pm1_is_neg = _build_pm_formula_lines(
@@ -4117,16 +4326,26 @@ def _page_calculation():
     pm1_lines_html = "".join(f"<div class='f-line'>{ln}</div>" for ln in pm1_lines)
     pm1_val_str = f"-{abs(pm1_val):,}원" if pm1_val < 0 else f"{pm1_val:,}원"
     pm1_cls = "neg" if pm1_is_neg else ("pos" if pm1_val > 0 else "")
+    pm1_box_cls = "neg-box" if pm1_is_neg else ("pos-box" if pm1_val > 0 else "zero-box")
+    pm1_amt_cls = "neg-amt" if pm1_is_neg else ("pos-amt" if pm1_val > 0 else "")
+    pm1_cr = int(pkg["pm_y1"].get("continued_credit_won") or 0)
+    pm1_cl = int(pkg["pm_y1"].get("clawback_net_payable_won") or 0)
+    pm1_split_html = (
+        f"<div class='a-sub-split'>공제 +{pm1_cr:,}원 &nbsp;|&nbsp; <span class='ec-neg-val'>추징 -{pm1_cl:,}원</span></div>"
+        if (pm1_cr > 0 and pm1_cl > 0)
+        else ""
+    )
 
     st.markdown(
-        f"<div class='ec-calc-box'>"
+        f"<div class='ec-calc-box {pm1_box_cls}'>"
         f"<div class='ec-calc-formula'>"
         f"<div class='f-title'>{pm1_title}</div>"
         f"{pm1_lines_html}"
         f"</div>"
-        f"<div class='ec-calc-amount'>"
+        f"<div class='ec-calc-amount {pm1_amt_cls}'>"
         f"<div class='a-lbl'>{pm1_amt_lbl}</div>"
         f"<div class='a-val {pm1_cls}'>{pm1_val_str}</div>"
+        f"{pm1_split_html}"
         f"</div>"
         f"</div>",
         unsafe_allow_html=True,
@@ -4134,7 +4353,7 @@ def _page_calculation():
 
     # ── (4) 3차년도 사후관리 계산 (전전 과세연도 귀속분의 당해 사후관리) ──
     st.markdown(
-        f"<div class='ec-sub-header'>(4) 3차년도 사후관리 계산 ({tax_yr - 2}년 귀속분 → {tax_yr}년 2차 사후관리)</div>",
+        f"<div class='ec-sub-header'><span class='ec-sub-num'>(4)</span><span>3차년도 사후관리 계산 ({tax_yr - 2}년 귀속분 → {tax_yr}년 2차 사후관리)</span></div>",
         unsafe_allow_html=True,
     )
     pm2_title, pm2_lines, pm2_amt_lbl, pm2_val, pm2_is_neg = _build_pm_formula_lines(
@@ -4149,16 +4368,26 @@ def _page_calculation():
     pm2_lines_html = "".join(f"<div class='f-line'>{ln}</div>" for ln in pm2_lines)
     pm2_val_str = f"-{abs(pm2_val):,}원" if pm2_val < 0 else f"{pm2_val:,}원"
     pm2_cls = "neg" if pm2_is_neg else ("pos" if pm2_val > 0 else "")
+    pm2_box_cls = "neg-box" if pm2_is_neg else ("pos-box" if pm2_val > 0 else "zero-box")
+    pm2_amt_cls = "neg-amt" if pm2_is_neg else ("pos-amt" if pm2_val > 0 else "")
+    pm2_cr = int(pkg["pm_y2"].get("continued_credit_won") or 0)
+    pm2_cl = int(pkg["pm_y2"].get("clawback_net_payable_won") or 0)
+    pm2_split_html = (
+        f"<div class='a-sub-split'>공제 +{pm2_cr:,}원 &nbsp;|&nbsp; <span class='ec-neg-val'>추징 -{pm2_cl:,}원</span></div>"
+        if (pm2_cr > 0 and pm2_cl > 0)
+        else ""
+    )
 
     st.markdown(
-        f"<div class='ec-calc-box'>"
+        f"<div class='ec-calc-box {pm2_box_cls}'>"
         f"<div class='ec-calc-formula'>"
         f"<div class='f-title'>{pm2_title}</div>"
         f"{pm2_lines_html}"
         f"</div>"
-        f"<div class='ec-calc-amount'>"
+        f"<div class='ec-calc-amount {pm2_amt_cls}'>"
         f"<div class='a-lbl'>{pm2_amt_lbl}</div>"
         f"<div class='a-val {pm2_cls}'>{pm2_val_str}</div>"
+        f"{pm2_split_html}"
         f"</div>"
         f"</div>",
         unsafe_allow_html=True,
@@ -4167,17 +4396,19 @@ def _page_calculation():
     # 추가공제(육아휴직복귀/정규직전환) 또는 농특세가 있는 경우 요약 안내
     if pkg["additional_credit_won"] > 0 or pkg["additional_clawback_won"] > 0 or pkg["rural_special_tax_won"] > 0:
         add_net = pkg["additional_credit_won"] - pkg["additional_clawback_won"]
+        add_box_cls = "neg-box" if add_net < 0 else ("pos-box" if add_net > 0 else "zero-box")
+        add_amt_cls = "neg-amt" if add_net < 0 else ("pos-amt" if add_net > 0 else "")
         st.markdown(
-            f"<div class='ec-sub-header'>(5) 추가공제(육아휴직 복귀·정규직 전환) 및 농어촌특별세(20%) 요약</div>"
-            f"<div class='ec-calc-box'>"
+            f"<div class='ec-sub-header'><span class='ec-sub-num'>(5)</span><span>추가공제(육아휴직 복귀·정규직 전환) 및 농어촌특별세(20%) 요약</span></div>"
+            f"<div class='ec-calc-box {add_box_cls}'>"
             f"<div class='ec-calc-formula'>"
-            f"<div class='f-line'>• 육아휴직 복귀·정규직 전환 추가공제: +{pkg['additional_credit_won']:,}원 / "
+            f"<div class='f-line'>• 육아휴직 복귀·정규직 전환 추가공제: <b>+{pkg['additional_credit_won']:,}원</b> / "
             f"2년 내 퇴직 추가납부: <span class='ec-neg-val'>-{pkg['additional_clawback_won']:,}원</span></div>"
             f"<div class='f-line'>• 농어촌특별세(실공제세액 {pkg['actual_deducted_credit_won']:,}원의 20%): "
             f"<span class='ec-neg-val'>-{pkg['rural_special_tax_won']:,}원</span> "
             f"(농특세 차감 후 실질 세후 혜택: <b>{pkg['net_after_rural_tax_won']:+,}원</b>)</div>"
             f"</div>"
-            f"<div class='ec-calc-amount'>"
+            f"<div class='ec-calc-amount {add_amt_cls}'>"
             f"<div class='a-lbl'>추가공제 순세액</div>"
             f"<div class='a-val {'neg' if add_net < 0 else 'pos'}'>"
             f"{f'-{abs(add_net):,}원' if add_net < 0 else f'{add_net:,}원'}</div>"
@@ -4402,21 +4633,21 @@ def _page_calculation():
                 "전체 상시 [총인원 / 평균]": f"{pkg['cur_s']['reg_total']:g}명 / {pkg['cur_s']['regular']:.2f}명",
                 "청년등 [총인원 / 평균]": f"{pkg['cur_s']['yth_total']:g}명 / {pkg['cur_s']['youth']:.2f}명",
                 "청년등 외 [총인원 / 평균]": f"{pkg['cur_s']['non_youth_total']:g}명 / {pkg['cur_s']['non_youth']:.2f}명",
-                "적용 기준 및 비교 안내": f"당해({tax_yr}년) 원천징수부 기준 (÷{pkg['cur_s']['months_in_year']}개월 · {'합산 후 절사'})",
+                "적용 기준 및 비교 안내": f"당해({tax_yr}년) 원천징수부 기준 (÷{pkg['cur_s']['months_in_year']}개월 · 합산 후 절사)",
             },
             {
                 "연도 · 블록 구분": f"② {tax_yr}년 귀속 [{b4_title}]",
                 "전체 상시 [총인원 / 평균]": f"{pkg['cur_s']['reg_total']:g}명 / {pkg['cur_s']['b2_reg']:.2f}명",
                 "청년등 [총인원 / 평균]": f"{pkg['cur_s']['b2_yth_total']:g}명 / {pkg['cur_s']['b2_yth']:.2f}명",
                 "청년등 외 [총인원 / 평균]": f"{cur_b2_gtot:g}명 / {cur_b2_gen:.2f}명",
-                "적용 기준 및 비교 안내": f"{tax_yr-1}년 입사 청년 연령경과(34세 초과) 간주 특례 반영 ({'합산 후 절사'})",
+                "적용 기준 및 비교 안내": f"{tax_yr-1}년 입사 청년 연령경과(34세 초과) 간주 특례 반영 (합산 후 절사)",
             },
             {
                 "연도 · 블록 구분": f"③ {tax_yr}년 귀속 [{b5_title}]",
                 "전체 상시 [총인원 / 평균]": f"{pkg['cur_s']['reg_total']:g}명 / {pkg['cur_s']['b3_reg']:.2f}명",
                 "청년등 [총인원 / 평균]": f"{pkg['cur_s']['b3_yth_total']:g}명 / {pkg['cur_s']['b3_yth']:.2f}명",
                 "청년등 외 [총인원 / 평균]": f"{cur_b3_gtot:g}명 / {cur_b3_gen:.2f}명",
-                "적용 기준 및 비교 안내": f"{tax_yr-2}년 입사 청년 연령경과(34세 초과) 간주 특례 반영 ({'합산 후 절사'})",
+                "적용 기준 및 비교 안내": f"{tax_yr-2}년 입사 청년 연령경과(34세 초과) 간주 특례 반영 (합산 후 절사)",
             },
         ]
         st.dataframe(pd.DataFrame(cmp_rows), use_container_width=True, hide_index=True)
@@ -4444,7 +4675,7 @@ def _page_calculation():
     # ══════════════════════════════════════════════════════════════
     st.markdown(
         "<div class='ec-law-ref-box'>"
-        "<div style='font-weight:900;font-size:.92rem;color:#0f172a;margin-bottom:6px;'>"
+        "<div style='font-weight:900;font-size:1.12rem;color:#1e3a8a;margin-bottom:8px;'>"
         "📚 계산근거 관련 법령조문 (국가법령정보센터 바로가기)"
         "</div>"
         "• <a href='https://www.law.go.kr/법령/조세특례제한법/제29조의8' target='_blank'>"
@@ -4569,7 +4800,7 @@ def _build_report_markdown(s: dict) -> str:
         "## 3. 연도별·사후관리 코호트별 상시근로자 수 상세 (총인원수 / 평균인원수)",
         "| 구분 | 전체 상시 [총인원 / 평균] | 청년등 [총인원 / 평균] | 청년등 외 [총인원 / 평균] | 적용 기준 |",
         "| :--- | ---: | ---: | ---: | :--- |",
-        f"| **{tax_yr}년 귀속 [{b3_title}]** | {pkg['cur_s']['reg_total']:g}명 / {pkg['cur_s']['regular']:.2f}명 | {pkg['cur_s']['yth_total']:g}명 / {pkg['cur_s']['youth']:.2f}명 | {pkg['cur_s']['non_youth_total']:g}명 / {pkg['cur_s']['non_youth']:.2f}명 | 근로계약 체결일 현재 연령 기준 ({'합산 후 절사'}) |",
+        f"| **{tax_yr}년 귀속 [{b3_title}]** | {pkg['cur_s']['reg_total']:g}명 / {pkg['cur_s']['regular']:.2f}명 | {pkg['cur_s']['yth_total']:g}명 / {pkg['cur_s']['youth']:.2f}명 | {pkg['cur_s']['non_youth_total']:g}명 / {pkg['cur_s']['non_youth']:.2f}명 | 근로계약 체결일 현재 연령 기준 (합산 후 절사) |",
         f"| **{tax_yr}년 귀속 [{b4_title}]** | {pkg['cur_s']['reg_total']:g}명 / {pkg['cur_s']['b2_reg']:.2f}명 | {pkg['cur_s']['b2_yth_total']:g}명 / {pkg['cur_s']['b2_yth']:.2f}명 | {round(max(0.0, pkg['cur_s']['reg_total']-pkg['cur_s']['b2_yth_total']),2):g}명 / {round(max(0.0, pkg['cur_s']['b2_reg']-pkg['cur_s']['b2_yth']),2):.2f}명 | 구 조특령 제26조의8 제5항 연령경과 간주 특례 |",
         f"| **{tax_yr}년 귀속 [{b5_title}]** | {pkg['cur_s']['reg_total']:g}명 / {pkg['cur_s']['b3_reg']:.2f}명 | {pkg['cur_s']['b3_yth_total']:g}명 / {pkg['cur_s']['b3_yth']:.2f}명 | {round(max(0.0, pkg['cur_s']['reg_total']-pkg['cur_s']['b3_yth_total']),2):g}명 / {round(max(0.0, pkg['cur_s']['b3_reg']-pkg['cur_s']['b3_yth']),2):.2f}명 | 구 조특령 제26조의8 제5항 연령경과 간주 특례 |",
         f"| **{tax_yr-1}년 사후관리 기초 ({basis_lbl})** | - / {pm1['init_reg']:.2f}명 | - / {pm1['init_yth']:.2f}명 | - / {round(max(0.0, pm1['init_reg']-pm1['init_yth']),2):.2f}명 | 1차 사후관리 비교 기준 (증가 청년 {pm1['init_yth_inc']:.2f}명 / 일반 {pm1['init_gen_inc']:.2f}명) |",

@@ -405,10 +405,12 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
     # 기중양도·폐업 사업장인 경우 해당 양도월 이후에는 미도래 월 연말재직 가정(1 자동 채움) 차단
     wp_close_map = ctx.get("workplace_close_month_map") or {}
     person_wp = str((person.get("연도별_사업장명") or {}).get(str(year)) or person.get("사업장명") or "").strip()
-    wp_close_month = wp_close_map.get(person_wp)
+    wp_primary = person_wp.split("→")[-1].strip() if "→" in person_wp else person_wp
+    wp_close_month = wp_close_map.get(person_wp) if "→" not in person_wp else wp_close_map.get(wp_primary)
 
     # 포괄양수·승계 사업장(조특령 제23조 제13항 준용): 해당 과세연도 개시일에 승계한 것으로 보아 승계월 이전 달도 산입
-    succ = (ctx.get("succession_map") or {}).get(person_wp) or {}
+    succ_map = ctx.get("succession_map") or {}
+    succ = succ_map.get(person_wp) or succ_map.get(wp_primary) or {}
     succ_month = succ.get("month")
     succ_date = succ.get("date")
     if succ and not succ.get("keep_hire", True) and succ_date:
@@ -447,8 +449,9 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
     absent_in_wht = int(year) in wht_years and not has_any_pay_data and other_year_pay
 
     # 기중양도(고용승계 포함, 조특령 제23조 제13항 준용): 양도일 현재 근무자는 개시일에 승계시킨 것으로 보아 그해 0
-    tr_date = (ctx.get("transfer_out_map") or {}).get(person_wp)
-    transferred_out = bool(tr_date) and (retire is None or retire >= tr_date)
+    tr_out_map = ctx.get("transfer_out_map") or {}
+    tr_date = tr_out_map.get(person_wp) if "→" not in person_wp else tr_out_map.get(wp_primary)
+    transferred_out = bool(tr_date) and (hire is None or hire <= tr_date) and (retire is None or retire >= tr_date)
     m_ovr = yrec.get("월_override") or {}
 
     paid_in_last_m = False
@@ -1368,8 +1371,10 @@ def calculate_tax_year_package(
 
     def _new_law(cohort: int, tier: str, label: str) -> dict:
         r = calc_legacy_post_management(cohort, t, corp_size, is_capital, 0, 0, 0, 0, 0, 0)
+        t_info = abc_res["tiers"].get(tier) or {}
         r.update({"case_code": f"신법 {tier} 통합", "case_title": f"{cohort}년 귀속분은 신법 점증형({tier})으로 계산",
-                  "retained_yth_inc": abc_res["tiers"][tier]["youth_inc"], "retained_gen_inc": abc_res["tiers"][tier]["non_youth_inc"],
+                  "retained_yth_inc": t_info.get("youth_inc", 0.0), "retained_gen_inc": t_info.get("non_youth_inc", 0.0),
+                  "new_tier_info": t_info,
                   "formula_note": f"{cohort}년 귀속분은 구법 사후관리 대상이 아니며 신법 {label}(B·C) 유지분 공제로 반영됩니다."})
         return r
 
@@ -1608,6 +1613,11 @@ def review(
 
         cohort_preserved_names: list[str] = []
         projected_names: list[str] = []
+        hire_nopay_names: list[str] = []
+        nopay_names: list[str] = []
+        succession_names: list[str] = []
+        transferred_out_names: list[str] = []
+        absent_wht_names: list[str] = []
 
         for pid, c in c_map.items():
             p = people.get(pid) or {}
@@ -1775,25 +1785,17 @@ def review(
                     )
                 )
 
-            # 10) 입사월 무급(익월지급) vs 기중 무급휴직 구분 안내
+            # 10) 입사월 무급(익월지급) vs 기중 무급휴직 연도별 그룹화 수집 (오류검토 창이 한 화면에 들어오도록 요약)
             if c.get("hire_month_nopay"):
-                m_str = ", ".join(f"{m}월" for m in c["hire_month_nopay"])
-                items.append(
-                    (
-                        "확인",
-                        f"[{y}년 · {nm_disp}] 입사월({m_str}) 원천징수부상 급여가 0원이나, 익월 지급 관행을 고려해 재직(산입)으로 두고 살구색으로 표시했습니다. "
-                        f"실제 미근무 월이라면 표에서 해당 월을 0으로 수정하거나 상단 '입사월 무급 시 익월지급 산입' 체크를 해제하세요.",
-                    )
-                )
+                raw_ms = c["hire_month_nopay"]
+                ms = [raw_ms] if isinstance(raw_ms, int) else list(raw_ms)
+                m_str = f"{ms[0]}월" if len(ms) == 1 else f"{min(ms)}~{max(ms)}월"
+                hire_nopay_names.append(f"{nm_disp}({m_str})")
             if c.get("no_pay_months"):
-                m_str = ", ".join(f"{m}월" for m in c["no_pay_months"])
-                items.append(
-                    (
-                        "확인",
-                        f"[{y}년 · {nm_disp}] 재직기간 중 급여가 없는 달({m_str} · 살구색 표시)이 있어 상시근로자에서 자동 제외(0)되었습니다. "
-                        f"육아휴직·무급휴직·산재기간 등이 맞는지 확인하세요.",
-                    )
-                )
+                raw_ms = c["no_pay_months"]
+                ms = [raw_ms] if isinstance(raw_ms, int) else list(raw_ms)
+                m_str = f"{ms[0]}월" if len(ms) == 1 else (f"{min(ms)}~{max(ms)}월" if ms == list(range(min(ms), max(ms) + 1)) else ",".join(f"{m}월" for m in ms))
+                nopay_names.append(f"{nm_disp}({m_str})")
 
             if c.get("projected_months"):
                 projected_names.append(f"{nm_disp}({min(c['projected_months'])}~{max(c['projected_months'])}월)")
@@ -1804,16 +1806,13 @@ def review(
                     f"{nm_disp}(당해 청년 {c['b1_yth']:.2f} → 1차사후 {c['b2_yth']:.2f} / 2차사후 {c['b3_yth']:.2f})"
                 )
 
-            # 승계·양도·미등재 처리 안내
+            # 승계·양도·미등재 처리 안내 (연도별 그룹화 수집)
             if c.get("succession_months"):
-                items.append(("확인", f"[{y}년 · {nm_disp}] 포괄양수·승계 근로자로 승계일 이전 {len(c['succession_months'])}개월을 "
-                                     f"과세연도 개시일 승계 의제로 산입했습니다 (조특령 제23조 제13항 준용)."))
+                succession_names.append(f"{nm_disp}({len(c['succession_months'])}개월)")
             if c.get("transferred_out"):
-                items.append(("확인", f"[{y}년 · {nm_disp}] 기중양도(고용승계) 사업장 근로자로, 개시일에 승계시킨 것으로 보아 {y}년 인원에서 제외하고 "
-                                     f"직전연도 인원에서도 차감했습니다 (조특령 제23조 제13항 준용)."))
+                transferred_out_names.append(nm_disp)
             if c.get("absent_in_wht"):
-                items.append(("확인", f"[{y}년 · {nm_disp}] {y}년 원천징수부에 없는 사람이라 {y}년에는 근무하지 않은 것으로 보아 0으로 처리했습니다. "
-                                     f"실제 근무했다면 월별 칸을 직접 입력하세요."))
+                absent_wht_names.append(nm_disp)
 
             # 12) 수동 오버라이드 감사 추적
             if yrec.get("상시_override"):
@@ -1843,11 +1842,56 @@ def review(
                 )
             )
 
+        if hire_nopay_names:
+            items.append(
+                (
+                    "확인",
+                    f"[{y}년 · 입사월 급여 0원 익월지급 산입({len(hire_nopay_names)}명)] {', '.join(hire_nopay_names[:8])}{' 외 ' + str(len(hire_nopay_names) - 8) + '명' if len(hire_nopay_names) > 8 else ''}: "
+                    f"입사월 급여가 0원이나 익월 지급 관행을 고려해 재직(산입)으로 두고 살구색으로 표시했습니다 (미근무 시 0으로 수정하거나 상단 체크 해제).",
+                )
+            )
+
+        if nopay_names:
+            items.append(
+                (
+                    "확인",
+                    f"[{y}년 · 재직 중 급여 0원 월 자동 제외({len(nopay_names)}명)] {', '.join(nopay_names[:8])}{' 외 ' + str(len(nopay_names) - 8) + '명' if len(nopay_names) > 8 else ''}: "
+                    f"재직기간 중 급여가 없는 달(살구색 표시)은 상시근로자에서 자동 제외(0)되었습니다 (육아휴직·무급휴직 여부 확인).",
+                )
+            )
+
+        if succession_names:
+            items.append(
+                (
+                    "확인",
+                    f"[{y}년 · 포괄양수·승계 개시일 산입({len(succession_names)}명)] {', '.join(succession_names[:8])}{' 외 ' + str(len(succession_names) - 8) + '명' if len(succession_names) > 8 else ''}: "
+                    f"포괄양수·승계 근로자로 승계일 이전 기간을 과세연도 개시일 승계 의제로 산입했습니다 (조특령 제23조 제13항 준용).",
+                )
+            )
+
+        if transferred_out_names:
+            items.append(
+                (
+                    "확인",
+                    f"[{y}년 · 기중양도(고용승계) 제외·직전연도 차감({len(transferred_out_names)}명)] {', '.join(transferred_out_names[:8])}{' 외 ' + str(len(transferred_out_names) - 8) + '명' if len(transferred_out_names) > 8 else ''}: "
+                    f"기중양도 사업장 근로자로 개시일에 승계시킨 것으로 보아 {y}년 인원에서 제외하고 직전연도 인원에서도 차감했습니다 (조특령 제23조 제13항 준용).",
+                )
+            )
+
+        if absent_wht_names:
+            items.append(
+                (
+                    "확인",
+                    f"[{y}년 · 원천징수부 미등재 0 처리({len(absent_wht_names)}명)] {', '.join(absent_wht_names[:8])}{' 외 ' + str(len(absent_wht_names) - 8) + '명' if len(absent_wht_names) > 8 else ''}: "
+                    f"{y}년 원천징수부에 없는 사람이라 {y}년에는 근무하지 않은 것으로 보아 0으로 처리했습니다 (실제 근무 시 월별 칸 직접 입력).",
+                )
+            )
+
         if projected_names:
             items.append(
                 (
                     "확인",
-                    f"[{y}년 · 기중 가결산 연말재직 가정] 총 {len(projected_names)}명({', '.join(projected_names[:5])}{' 외' if len(projected_names) > 5 else ''})의 "
+                    f"[{y}년 · 기중 가결산 연말재직 가정({len(projected_names)}명)] {', '.join(projected_names[:6])}{' 외 ' + str(len(projected_names) - 6) + '명' if len(projected_names) > 6 else ''}의 "
                     f"미도래 월이 하늘색 셀('연말까지 재직 가정')로 자동 산입되었습니다.",
                 )
             )
