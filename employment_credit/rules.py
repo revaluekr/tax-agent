@@ -16,7 +16,7 @@
 """
 from __future__ import annotations
 
-# ── 지원 귀속연도 ──
+# ── 지원 귀속연도 (2024~2028년 A·B·C 점증형 산식 및 구법 사후관리 전면 지원) ──
 SUPPORTED_TAX_YEARS = [2024, 2025, 2026, 2027, 2028]
 TAX_YEARS = SUPPORTED_TAX_YEARS
 DEFAULT_TAX_YEAR = 2026
@@ -154,7 +154,6 @@ MONTH_CHOICES = [MONTH_AUTO, "1", "0.75", "0.5", "0"]
 # ══════════════════════════════════════════════════════════════════
 
 # 1. [구법: 2023~2025년 귀속 최초공제분 & 2025·2026년 중 해당 코호트의 2·3년차 연속공제/추징 단가]
-#    - 중소기업 3년, 중견기업 3년, 대기업(일반기업) 2년간 매년 동일 단가 적용
 CREDIT_RATES_LEGACY_2023_2025 = {
     "중소기업": {
         "수도권": {"청년등": 1450, "청년등외": 850},
@@ -176,7 +175,6 @@ CREDIT_RATES_LEGACY_2023_2025 = {
 
 # 2. [신법: 2026년 이후 개시 과세연도 고용증가분 — 점증형(유지연차별 차등) 인센티브 구조]
 #    - 1년차(A, 직전연도 대비 증가), 2년차(B, 전전연도 대비 유지), 3년차(C, 전전전연도 대비 유지)
-#    - 출처: 통합고용세액공제1. 전체summury.pdf (p.3) 및 통합고용세액공제3-2. 계산구조.pdf (p.2~3)
 CREDIT_RATES_NEW_2026 = {
     "중소기업": {
         "수도권": {
@@ -246,14 +244,8 @@ RURAL_SPECIAL_TAX_RATE = 0.20
 def get_doc_types(tax_year: int = DEFAULT_TAX_YEAR) -> list[tuple[str, str, bool, list[str]]]:
     """
     선택된 귀속사업연도(tax_year)에 맞춰 1단계 업로드 필수/선택 서류 목록을 동적으로 반환합니다.
-    - 2026년 귀속 기준:
-      * 2026년 원천징수부 (당해, 필수)
-      * 2025년 원천징수부 (직전·1차 사후관리 기준, 필수)
-      * 2025년 공제감면세액계산서 (상시근로자 명세서 포함 — 1차 사후관리 '기신고 기준' 원칙 적용용)
-      * 2024년 원천징수부 (전전·2차 사후관리 기준, 선택 — 기신고서로 대체 가능)
-      * 2024년(과거) 기신고 상시근로자 명세서·공제감면세액계산서 (2차 사후관리 '기신고 기준' 원칙 적용용)
     """
-    t = int(tax_year)
+    t = int(tax_year or DEFAULT_TAX_YEAR)
     t1 = t - 1
     t2 = t - 2
     return [
@@ -279,25 +271,31 @@ def get_doc_types(tax_year: int = DEFAULT_TAX_YEAR) -> list[tuple[str, str, bool
 
 
 def get_doc_help(tax_year: int = DEFAULT_TAX_YEAR) -> dict[str, str]:
-    t = int(tax_year)
+    t = int(tax_year or DEFAULT_TAX_YEAR)
     t1 = t - 1
     t2 = t - 2
-    return {
+    help_map = {
         "biz_reg": "상호·업종(소비성서비스업 제외 여부)·소재지(수도권/지방 공제단가) 확인용 (없으면 사이드바 직접 입력)",
         "corp_reg": "설립일·등기임원(대표이사·이사·감사 자동 제외) 확인용 (개인사업자 불필요)",
         "shareholder": "최대주주 및 특수관계인(배우자·직계존비속·친족) 상시근로자 제외 판정용",
         f"wht_{t}": f"{t}년 당해 과세연도 상시·청년등 인원 산정 및 {t1}·{t2}년분 사후관리(유지·감소) 판정 필수 서류",
         f"wht_{t1}": f"{t1}년 직전 과세연도 상시·청년등 인원 산정 및 {t1}년 귀속분 '세법원칙 기준' 재계산 필수 서류",
-        f"credit_calc_{t1}": f"{t1}년 귀속분 1차 사후관리의 원칙인 『기신고 기준』 총인원수/평균인원수·증가인원·기공제세액·이월세액 자동 반영용",
+        f"credit_calc_{t1}": f"{t1}년 귀속분 1차 사후관리의 원칙인 『기신고 기준』 총인원수/평균인원수·증가인원·기공제세액·2차공제·1년차추징·이월세액 자동 반영용",
+        "prev_credit_calc": f"{t1}년 공제감면세액계산서 (기신고 공제세액·2차공제·1년차 추가납부액·미공제 이월액 확인용)",
         f"wht_{t2}": f"{t2}년 귀속분 2차 사후관리(3차년도 연속공제·추징)의 『세법원칙 기준』 인별 재계산용 (기신고서가 있으면 생략 가능)",
         "prev_filing": f"{t2}년 귀속분 2차 사후관리의 원칙인 『기신고 기준』 총인원수/평균인원수·기공제세액·기추징액·이월세액 자동 대조용",
     }
+    for y in range(2021, 2029):
+        wk = f"wht_{y}"
+        if wk not in help_map:
+            help_map[wk] = f"{y}년 귀속 소득자별 근로소득원천징수부 (과거연도 비교·사후관리 검증용)"
+    return help_map
 
 
 def get_all_selectable_doc_labels(tax_year: int = DEFAULT_TAX_YEAR) -> dict[str, str]:
     """드롭다운에서 선택 가능한 모든 서류 종류 라벨 사전."""
     base = {k: lbl for k, lbl, *_ in get_doc_types(tax_year)}
-    for y in range(2022, 2029):
+    for y in range(2028, 2020, -1):
         wk = f"wht_{y}"
         if wk not in base:
             base[wk] = f"{y}년 소득자별 근로소득원천징수부 (추가 비교·사후관리용)"
