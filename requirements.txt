@@ -9,3 +9,4 @@ pypdf
 python-docx
 reportlab
 streamlit-aggrid
+cryptography
