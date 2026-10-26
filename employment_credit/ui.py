@@ -26,6 +26,7 @@ import csv
 import json
 import uuid
 import hashlib
+import time
 import urllib.request
 import pandas as pd
 import streamlit as st
@@ -84,9 +85,32 @@ _PERSIST_KEYS = (
 _RRN_FULL_RE = re.compile(r"(?<!\d)(\d{6})\s*-\s*([1-8])\d{6}(?!\d)")
 
 
+_ANON_WS_PREFIX = "__anon_session__:"      # app.py의 익명(코드 미입력) 작업공간 ID 접두어와 동일
+_ANON_MAX_AGE_SEC = 86400                    # 익명 작업공간 계산기 파일 보관 기간: 24시간
+
+
 def _ec_disk_path(ws_id: str) -> str:
-    safe_hash = hashlib.md5(str(ws_id or "default_ec").encode("utf-8")).hexdigest()[:16]
-    return os.path.join(STORAGE_DIR, f"ec_state_{safe_hash}.json")
+    """작업공간 코드를 넣은 경우 ec_state_*.json, 코드 없이 쓴 임시 작업공간은 ec_anon_*.json으로 구분 저장"""
+    ws = str(ws_id or "default_ec")
+    safe_hash = hashlib.md5(ws.encode("utf-8")).hexdigest()[:16]
+    prefix = "ec_anon_" if ws.startswith(_ANON_WS_PREFIX) else "ec_state_"
+    return os.path.join(STORAGE_DIR, f"{prefix}{safe_hash}.json")
+
+
+def _cleanup_stale_anon_ec_files(max_age_sec: int = _ANON_MAX_AGE_SEC) -> None:
+    """
+    코드 없이 쓴 임시 작업공간의 계산기 저장 파일(ec_anon_*.json) 중 마지막 저장 후 24시간이 지난 파일을 지웁니다.
+    작업공간 코드를 넣은 파일(ec_state_*.json)은 건드리지 않습니다. (에이전트 대화방의 익명 파일 정리와 같은 방식)
+    """
+    now_ts = time.time()
+    try:
+        for fname in os.listdir(STORAGE_DIR):
+            if fname.startswith("ec_anon_") and fname.endswith(".json"):
+                fpath = os.path.join(STORAGE_DIR, fname)
+                if (now_ts - os.path.getmtime(fpath)) > max_age_sec:
+                    os.remove(fpath)
+    except Exception:
+        pass
 
 
 def _load_ec_from_disk(ws_id: str) -> dict | None:
@@ -175,6 +199,9 @@ def _default_state_dict() -> dict:
 
 def _S() -> dict:
     ws_id = st.session_state.get("loaded_workspace_id") or "default_ec"
+    if not st.session_state.get("_ec_anon_cleanup_done"):
+        st.session_state["_ec_anon_cleanup_done"] = True     # 접속(세션)당 한 번만 정리
+        _cleanup_stale_anon_ec_files()
     store = st.session_state.setdefault("ec_by_ws", {})
     if ws_id not in store:
         base = _default_state_dict()
