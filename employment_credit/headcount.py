@@ -517,23 +517,48 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
     gen_sum_b2 = round(max(0.0, row_sum - yth_sum_b2), 4)
     gen_sum_b3 = round(max(0.0, row_sum - yth_sum_b3), 4)
 
-    b1_reg_indiv = round(row_sum / months_in_year, 2)
-    b1_yth_indiv = round(yth_sum_b1 / months_in_year, 2)
-    b1_gen_indiv = round(gen_sum_b1 / months_in_year, 2)
+    # 2025·2026년 이후 귀속은 인별절사(trunc2) 원칙, 2024년 이전 귀속은 전체절사 원칙 적용
+    use_indiv_b1 = int(year) >= 2025
+    use_indiv_b2 = int(year - 1) >= 2025
+    use_indiv_b3 = int(year - 2) >= 2025
 
-    b2_reg_indiv = round(row_sum / months_in_year, 2)
-    b2_yth_indiv = round(yth_sum_b2 / months_in_year, 2)
-    b2_gen_indiv = round(gen_sum_b2 / months_in_year, 2)
+    b1_reg_trunc = trunc2(row_sum_frac / months_in_year)
+    b1_yth_trunc = trunc2(yth_b1_frac / months_in_year)
+    b1_gen_trunc = round(max(0.0, b1_reg_trunc - b1_yth_trunc), 2)
 
-    b3_reg_indiv = round(row_sum / months_in_year, 2)
-    b3_yth_indiv = round(yth_sum_b3 / months_in_year, 2)
-    b3_gen_indiv = round(gen_sum_b3 / months_in_year, 2)
+    b1_reg_round = round(row_sum / months_in_year, 2)
+    b1_yth_round = round(yth_sum_b1 / months_in_year, 2)
+    b1_gen_round = round(gen_sum_b1 / months_in_year, 2)
 
-    b4_reg_trunc = trunc2(row_sum_frac / months_in_year)
-    b4_yth_trunc = trunc2(yth_b1_frac / months_in_year)
-    b4_gen_trunc = round(max(0.0, b4_reg_trunc - b4_yth_trunc), 2)
+    if use_indiv_b1:
+        b1_reg_indiv, b1_yth_indiv, b1_gen_indiv = b1_reg_trunc, b1_yth_trunc, b1_gen_trunc
+        # b4는 반대 방식(비교 참고용: 전체절사 표시)
+        b4_reg_trunc, b4_yth_trunc, b4_gen_trunc = b1_reg_round, b1_yth_round, b1_gen_round
+    else:
+        b1_reg_indiv, b1_yth_indiv, b1_gen_indiv = b1_reg_round, b1_yth_round, b1_gen_round
+        # 2024년 이하에서 b4는 인별절사 비교용
+        b4_reg_trunc, b4_yth_trunc, b4_gen_trunc = b1_reg_trunc, b1_yth_trunc, b1_gen_trunc
+
+    if use_indiv_b2:
+        b2_reg_indiv = trunc2(row_sum_frac / months_in_year)
+        b2_yth_indiv = trunc2(yth_b2_frac / months_in_year)
+        b2_gen_indiv = round(max(0.0, b2_reg_indiv - b2_yth_indiv), 2)
+    else:
+        b2_reg_indiv = round(row_sum / months_in_year, 2)
+        b2_yth_indiv = round(yth_sum_b2 / months_in_year, 2)
+        b2_gen_indiv = round(gen_sum_b2 / months_in_year, 2)
+
+    if use_indiv_b3:
+        b3_reg_indiv = trunc2(row_sum_frac / months_in_year)
+        b3_yth_indiv = trunc2(yth_b3_frac / months_in_year)
+        b3_gen_indiv = round(max(0.0, b3_reg_indiv - b3_yth_indiv), 2)
+    else:
+        b3_reg_indiv = round(row_sum / months_in_year, 2)
+        b3_yth_indiv = round(yth_sum_b3 / months_in_year, 2)
+        b3_gen_indiv = round(gen_sum_b3 / months_in_year, 2)
 
     return {
+        "_eval_year": int(year),
         "고용유형": emp_type,
         "제외사유": excl,
         "excl_locked": excl_locked,
@@ -571,7 +596,7 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
     }
 
 
-def year_totals(computed_rows: list[dict], months_in_year: int) -> dict:
+def year_totals(computed_rows: list[dict], months_in_year: int, year: int | None = None) -> dict:
     """
     과세연도 전체 상시근로자 수 및 4대 우측 블록 집계 (Fraction 정밀 합산 후 1회 절사):
     """
@@ -615,21 +640,43 @@ def year_totals(computed_rows: list[dict], months_in_year: int) -> dict:
     yth_total_b3 = float(yth_b3_f)
     non_total_b3 = round(max(0.0, reg_total - yth_total_b3), 4)
 
-    b1_reg = trunc2(reg_total_f / n)
-    b1_yth = trunc2(yth_b1_f / n)
-    b1_gen = round(max(0.0, b1_reg - b1_yth), 2)
+    eval_yr = int(year) if year is not None else int((computed_rows[0].get("_eval_year") if computed_rows else 2026) or 2026)
+    use_indiv_b1 = eval_yr >= 2025
+    use_indiv_b2 = (eval_yr - 1) >= 2025
+    use_indiv_b3 = (eval_yr - 2) >= 2025
 
-    b2_reg = b1_reg
-    b2_yth = trunc2(yth_b2_f / n)
-    b2_gen = round(max(0.0, b2_reg - b2_yth), 2)
+    tot_trunc_reg = trunc2(reg_total_f / n)
+    tot_trunc_yth_b1 = trunc2(yth_b1_f / n)
+    tot_trunc_gen_b1 = round(max(0.0, tot_trunc_reg - tot_trunc_yth_b1), 2)
 
-    b3_reg = b1_reg
-    b3_yth = trunc2(yth_b3_f / n)
-    b3_gen = round(max(0.0, b3_reg - b3_yth), 2)
+    indiv_sum_reg = round(sum(trunc2(Fraction(str(r["row_sum"])) / n) for r in computed_rows), 2)
+    indiv_sum_yth_b1 = round(sum(trunc2(Fraction(str(r["youth_sum"])) / n) for r in computed_rows), 2)
+    indiv_sum_gen_b1 = round(max(0.0, indiv_sum_reg - indiv_sum_yth_b1), 2)
 
-    b4_reg = round(sum(float(r.get("b4_reg", 0.0)) for r in computed_rows), 2)
-    b4_yth = round(sum(float(r.get("b4_yth", 0.0)) for r in computed_rows), 2)
-    b4_gen = round(max(0.0, b4_reg - b4_yth), 2)
+    if use_indiv_b1:
+        b1_reg, b1_yth, b1_gen = indiv_sum_reg, indiv_sum_yth_b1, indiv_sum_gen_b1
+        b4_reg, b4_yth, b4_gen = tot_trunc_reg, tot_trunc_yth_b1, tot_trunc_gen_b1
+    else:
+        b1_reg, b1_yth, b1_gen = tot_trunc_reg, tot_trunc_yth_b1, tot_trunc_gen_b1
+        b4_reg, b4_yth, b4_gen = indiv_sum_reg, indiv_sum_yth_b1, indiv_sum_gen_b1
+
+    if use_indiv_b2:
+        b2_reg = indiv_sum_reg
+        b2_yth = round(sum(trunc2(Fraction(str(r.get("youth_sum_b2", r["youth_sum"]))) / n) for r in computed_rows), 2)
+        b2_gen = round(max(0.0, b2_reg - b2_yth), 2)
+    else:
+        b2_reg = tot_trunc_reg
+        b2_yth = trunc2(yth_b2_f / n)
+        b2_gen = round(max(0.0, b2_reg - b2_yth), 2)
+
+    if use_indiv_b3:
+        b3_reg = indiv_sum_reg
+        b3_yth = round(sum(trunc2(Fraction(str(r.get("youth_sum_b3", r["youth_sum"]))) / n) for r in computed_rows), 2)
+        b3_gen = round(max(0.0, b3_reg - b3_yth), 2)
+    else:
+        b3_reg = tot_trunc_reg
+        b3_yth = trunc2(yth_b3_f / n)
+        b3_gen = round(max(0.0, b3_reg - b3_yth), 2)
 
     return {
         "months_in_year": n,
