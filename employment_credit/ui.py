@@ -2,13 +2,13 @@
 """
 통합고용세액공제 화면 — 1단계(자료 업로드) · 2단계(사원정보) · 3단계(공제액·사후관리 계산) · 4단계(보고서)
 
-[디자인 & 기능 업그레이드 및 클로드 크로스체크 14개 항목 + 사후관리 '기신고 기준' vs '세법원칙 기준' 선택 기능 완비]
+[디자인 & 기능 업그레이드 및 클로드 크로스체크 + 사후관리 '기신고 기준' vs '세법원칙 기준' 선택 기능 완비]
 1. "자율 에이전트AI"(app.py)와 100% 동일한 Pretendard 폰트, 에메랄드 그린(#16a34a/#22c55e) & 다크 네이비(#1e293b) 테마,
    상단 슬림 미니 상태바(.top-mini-status-bar), 사이드바 카드 타이틀(.sb-card-title) 및 배지(.sb-badge-green) 완벽 통일.
 2. 1단계(자료 업로드) 레이아웃 개선:
    - 『2025년 공제감면세액계산서 (기신고 상시근로자 명세서 포함)』 항목을 체크리스트에 추가하여 업로드 및 드롭다운 선택 시 즉시 초록불 `🟢` 점등.
    - 하단: 파일 업로드 드롭존을 "자율 에이전트AI" 채팅 입력창과 동일한 위치(화면 맨 하단)·너비의 슬림 바 형태로 배치.
-3. 2단계(사원정보) 시인성 대폭 개선 및 첨부 엑셀 디자인(2단 그룹 헤더 & 4대 우측 블록) 탑재.
+3. 2단계(사원정보) 시인성 대폭 개선 및 첨부 엑셀 디자인(2단 그룹 헤더 & 4대 우측 블록 + 코호트 사원표 청년등 판정 연동) 탑재.
 4. 3단계(공제액·사후관리 계산) & 4단계(보고서):
    - 사후관리 총인원수(연인원)/평균인원수 비교표 및 사후관리세액(연속공제·추가납부) 상세 산출표 **오른쪽 위에 기준 선택기(`기신고 기준 (원칙)` vs `세법원칙 기준 (재계산)`)**를 배치하여,
      기본값은 **『기신고 기준』**으로 표시하고 사용자가 클릭 한 번으로 **『세법원칙 기준』**과 비교·전환할 수 있도록 구현.
@@ -52,7 +52,7 @@ def _S() -> dict:
             "biz_confirmed": [],
             "people": {},
             "year_recs": {},
-            "prev_summary": {},     # 기신고 명세서(공제감면세액계산서) 또는 수기 입력 과거연도 인원·공제액·이월액·기추징액
+            "prev_summary": {},     # 기신고 명세서(공제감면세액계산서) 또는 수기 입력 과거연도 인원·공제액·2차공제·이월액·기추징액
             "additional_inputs": {  # 육아휴직 복귀·정규직 전환·출산전후휴가 대체인력·당해 이월공제액
                 "parental_return_count": 0,
                 "regular_conversion_count": 0,
@@ -138,6 +138,19 @@ def _ctx(s: dict, year: int) -> dict:
         "assume_year_end": bool(s.get("assume_year_end", True)),
         "last_paid_month": last_m,
     }
+
+
+def _cohort_youth_map(s: dict, cohort_year: int) -> dict[str, bool]:
+    """최초공제연도(cohort_year) 사원표 기준으로 그해 실제로 청년등이었던 사원 매핑 (클로드 크로스체크 장점 통합)."""
+    ctx = _ctx(s, cohort_year)
+    recs = (s.get("year_recs") or {}).get(cohort_year, {})
+    out: dict[str, bool] = {}
+    for pid, p in (s.get("people") or {}).items():
+        if not H.worked_in_year(p, cohort_year):
+            continue
+        c = H.compute_row(p, recs.get(pid) or P.new_year_rec(), cohort_year, ctx)
+        out[pid] = c["상시"] == "O" and any(c["youth_flags"])
+    return out
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -650,7 +663,6 @@ def render_credit_sidebar():
         tax_yr = R.DEFAULT_TAX_YEAR
         s["tax_year"] = tax_yr
 
-    # 📦 [사이드바 카드 A] 귀속사업연도 (2024 ~ 2028 전체 지원)
     with st.container(border=True):
         yr_badge = (
             f"<span class='sb-badge-green'>{tax_yr}년 (신법+사후관리)</span>"
@@ -674,7 +686,6 @@ def render_credit_sidebar():
             s["built_sig"] = None
             st.rerun()
 
-    # 📦 [사이드바 카드 B] 사업자정보
     with st.container(border=True, key="ec_biz"):
         b, conf = s["biz"], set(s["biz_confirmed"])
         cap = H.is_capital_area(b.get("사업장소재지", ""))
@@ -777,15 +788,13 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
     all_labels = R.get_all_selectable_doc_labels(tax_yr)
     base_keys = {k for k, *_ in doc_types}
 
-    # 🎯 [초록불 즉시 점등 핵심 구조]
     docs_table_slot = st.empty()
     uploaded_list_slot = st.container()
 
-    # 💬 [맨 하단 슬림 파일 업로드 바 — 자율 에이전트AI 채팅창과 동일한 위치·크기]
     st.markdown(
         "<div class='ec-bottom-upload-label'>"
         "<span>📥 <b>파일 추가 업로드</b> (PDF·엑셀·CSV·이미지 파일을 아래 바에 끌어다 놓거나 클릭하여 선택하세요)</span>"
-        f"<span style='color:#16a34a;font-size:0.80rem;'>{tax_yr-2}·{tax_yr-1}·{tax_yr}년 원천징수부 · {tax_yr-1}년 공제감면세액계산서 자동 인식</span>"
+        f"<span style='color:#16a34a;font-size:0.80rem;'>{tax_yr-2}·{tax_yr-1}·{tax_yr}년 원천징수부(100% 자체 고속파싱) · {tax_yr-1}년 공제감면세액계산서 자동 인식</span>"
         "</div>",
         unsafe_allow_html=True,
     )
@@ -880,7 +889,6 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
         unsafe_allow_html=True,
     )
 
-    # ── 하단 네비게이션: 2단계의 [다음(3단계)] 버튼과 100% 동일한 가로 비율([5.8, 1.3]) 적용 ──
     st.markdown("<div class='ec-nav-divider'></div>", unsafe_allow_html=True)
     _, right = st.columns([5.8, 1.3])
     if right.button("다음(2단계)", type="primary", use_container_width=True):
@@ -892,7 +900,7 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
         if s["ext_sig"] != sig:
             texts = {k: "\n\n".join(s["files"][n]["text"] for n in names) for k, names in classified.items()}
             if texts:
-                with st.spinner("⚡ 서류에서 사업자·주주·임원·연도별 근로자·기신고 세액공제 정보를 병렬 고속 추출하고 있습니다..."):
+                with st.spinner("⚡ 자체 고속 파서(1순위) 및 보완 AI(2순위)로 사업자·사원·기신고 정보를 추출하고 있습니다..."):
                     s["ext"] = P.extract_all(texts, log_tokens_fn, room_key)
                     msgs = P.check_missing(classified, s["ext"], tax_yr)
             else:
@@ -917,20 +925,22 @@ def _enter_step2():
         s["biz"], s["biz_confirmed"] = P.build_biz_info(ext, int(s["tax_year"]), existing_biz=s.get("biz"))
         s["people"], s["year_recs"] = P.build_people(ext, _all_possible_years(s))
 
-        prev_from_doc = ((ext.get("prev_filing") or {}).get("연도별") or {})
+        parsed_prev = P.build_prev_summary(ext, int(s["tax_year"]))
         ps = s.setdefault("prev_summary", {})
-        for y_str, vals in prev_from_doc.items():
+        for y_str, vals in parsed_prev.items():
             if isinstance(vals, dict):
+                old = ps.get(str(y_str)) or {}
                 ps[str(y_str)] = {
-                    "상시_총인원": float(vals.get("상시_총인원") or 0.0) if vals.get("상시_총인원") is not None else None,
-                    "청년등_총인원": float(vals.get("청년등_총인원") or 0.0) if vals.get("청년등_총인원") is not None else None,
-                    "상시": float(vals.get("상시") or 0.0) if vals.get("상시") is not None else None,
-                    "청년등": float(vals.get("청년등") or 0.0) if vals.get("청년등") is not None else None,
-                    "청년등_증가": float(vals.get("청년등_증가") or 0.0) if vals.get("청년등_증가") is not None else None,
-                    "청년등외_증가": float(vals.get("청년등외_증가") or 0.0) if vals.get("청년등외_증가") is not None else None,
-                    "공제세액": int(vals.get("공제세액") or 0) if vals.get("공제세액") is not None else 0,
-                    "이월세액": int(vals.get("이월세액") or 0) if vals.get("이월세액") is not None else 0,
-                    "기추징세액": int(vals.get("기추징세액") or 0) if vals.get("기추징세액") is not None else 0,
+                    "상시_총인원": vals.get("상시_총인원") if vals.get("상시_총인원") is not None else old.get("상시_총인원"),
+                    "청년등_총인원": vals.get("청년등_총인원") if vals.get("청년등_총인원") is not None else old.get("청년등_총인원"),
+                    "상시": vals.get("상시") if vals.get("상시") is not None else old.get("상시"),
+                    "청년등": vals.get("청년등") if vals.get("청년등") is not None else old.get("청년등"),
+                    "청년등_증가": vals.get("청년등_증가") if vals.get("청년등_증가") is not None else old.get("청년등_증가"),
+                    "청년등외_증가": vals.get("청년등외_증가") if vals.get("청년등외_증가") is not None else old.get("청년등외_증가"),
+                    "공제세액": int(vals.get("공제세액") or 0) if vals.get("공제세액") is not None else int(old.get("공제세액") or 0),
+                    "2차_공제세액": int(vals.get("2차_공제세액") or 0) if vals.get("2차_공제세액") is not None else old.get("2차_공제세액"),
+                    "이월세액": int(vals.get("이월세액") or 0) if vals.get("이월세액") is not None else int(old.get("이월세액") or 0),
+                    "기추징세액": int(vals.get("기추징세액") or 0) if vals.get("기추징세액") is not None else int(old.get("기추징세액") or 0),
                 }
 
         s["grid_ver"], s["last_sent"] = {}, {}
@@ -1032,6 +1042,10 @@ function(p){
 def _build_year_rows(s: dict, year: int) -> tuple[list[dict], dict, dict]:
     people, recs = s["people"], s["year_recs"].setdefault(year, {})
     ctx = _ctx(s, year)
+    ctx["cohort_youth_map"] = {
+        year - 1: _cohort_youth_map(s, year - 1),
+        year - 2: _cohort_youth_map(s, year - 2),
+    }
     computed, rows = {}, []
     for pid, p in people.items():
         if not H.worked_in_year(p, year):
@@ -1551,6 +1565,7 @@ def _render_prev_filing_summary_card(s: dict, shown_years: list[int]):
             "청년등_증가": None,
             "청년등외_증가": None,
             "공제세액": 0,
+            "2차_공제세액": None,
             "이월세액": 0,
             "기추징세액": 0,
         },
@@ -1770,7 +1785,6 @@ def _ensure_totals_snapshot(s: dict) -> dict[int, dict]:
 def _render_pm_basis_selector_right(s: dict, widget_key: str) -> str:
     """
     표 오른쪽 위에 배치되는 『기신고 기준』(기본/원칙) vs 『세법원칙 기준』(원천징수부 재계산) 선택기.
-    어느 쪽 표에서 변경하더라도 세션 상태 `s["pm_basis"]`가 즉시 동기화됩니다.
     """
     cur_basis = s.get("pm_basis", R.PM_BASIS_FILED)
     if cur_basis not in (R.PM_BASIS_FILED, R.PM_BASIS_RECALC):
@@ -1841,6 +1855,9 @@ def _page_calculation():
         f"</div>",
         unsafe_allow_html=True,
     )
+
+    if cap_bool is None:
+        st.warning("사업장 소재지가 입력되지 않아 수도권 단가로 임시 계산되었습니다. 좌측 사이드바에서 사업장 소재지를 입력해 주세요.")
 
     last_m_cur = H.detect_last_paid_month(s.get("people") or {}, tax_yr)
     if s.get("assume_year_end", True) and last_m_cur < 12:
@@ -2122,6 +2139,7 @@ def _page_calculation():
             "init_yth_inc": p2["청년등_증가"],
             "init_gen_inc": p2["청년등외_증가"],
             "claimed_won": p2["공제세액"],
+            "y1_continued_won": p2.get("2차_공제세액"),
             "prior_clawback_paid_won": p2["기추징세액"],
             "carryforward_won": p2["이월세액"],
         },
@@ -2197,7 +2215,6 @@ def _page_calculation():
     with c_th2:
         _render_pm_basis_selector_right(s, widget_key=f"pm_basis_sel_hc_{tax_yr}")
 
-    # 선택된 기준(기신고 기준 vs 세법원칙 기준)에 따른 과거연도(T-1, T-2) 총인원수 및 평균인원수 결정
     is_recalc = pkg["pm_basis"] == R.PM_BASIS_RECALC
     y1_disp_reg = pkg["prev_s"]["regular"] if is_recalc else p1["상시"]
     y1_disp_yth = pkg["prev_s"]["youth"] if is_recalc else p1["청년등"]
@@ -2400,6 +2417,7 @@ def _build_report_markdown(s: dict) -> str:
                     "init_yth_inc": p2.get("청년등_증가", 0.0),
                     "init_gen_inc": p2.get("청년등외_증가", 0.0),
                     "claimed_won": p2.get("공제세액", 0),
+                    "y1_continued_won": p2.get("2차_공제세액"),
                     "prior_clawback_paid_won": p2.get("기추징세액", 0),
                     "carryforward_won": p2.get("이월세액", 0),
                 },
@@ -2443,7 +2461,7 @@ def _build_report_markdown(s: dict) -> str:
         "",
         "## 3. 연도별·사후관리 코호트별 상시근로자 수 상세 (총인원수 / 평균인원수)",
         "| 구분 | 전체 상시 [총인원 / 평균] | 청년등 [총인원 / 평균] | 청년등 외 [총인원 / 평균] | 적용 기준 |",
-        "| :--- | ---: | ---: | ---: | :--- |",
+        "| :--- | ---: | ---: | :--- | :--- |",
         f"| **{tax_yr}년 (당해 신규공제 기준)** | {pkg['cur_s']['reg_total']:g}명 / {pkg['cur_s']['regular']:.2f}명 | {pkg['cur_s']['yth_total']:g}명 / {pkg['cur_s']['youth']:.2f}명 | {pkg['cur_s']['non_youth_total']:g}명 / {pkg['cur_s']['non_youth']:.2f}명 | 근로계약 체결일 현재 연령 기준 |",
         f"| **{tax_yr}년 ({tax_yr-1}년분 1차 사후관리 기준)** | {pkg['cur_s']['reg_total']:g}명 / {pkg['cur_s']['b2_reg']:.2f}명 | {pkg['cur_s']['b2_yth_total']:g}명 / {pkg['cur_s']['b2_yth']:.2f}명 | {round(max(0.0, pkg['cur_s']['reg_total']-pkg['cur_s']['b2_yth_total']),2):g}명 / {round(max(0.0, pkg['cur_s']['b2_reg']-pkg['cur_s']['b2_yth']),2):.2f}명 | 구 조특령 제26조의8 제5항 연령경과 간주 특례 |",
         f"| **{tax_yr}년 ({tax_yr-2}년분 2차 사후관리 기준)** | {pkg['cur_s']['reg_total']:g}명 / {pkg['cur_s']['b3_reg']:.2f}명 | {pkg['cur_s']['b3_yth_total']:g}명 / {pkg['cur_s']['b3_yth']:.2f}명 | {round(max(0.0, pkg['cur_s']['reg_total']-pkg['cur_s']['b3_yth_total']),2):g}명 / {round(max(0.0, pkg['cur_s']['b3_reg']-pkg['cur_s']['b3_yth']),2):.2f}명 | 구 조특령 제26조의8 제5항 연령경과 간주 특례 |",
