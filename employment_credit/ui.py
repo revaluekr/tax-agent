@@ -771,18 +771,31 @@ def _build_schedule_pdf_bytes(s: dict, target_years: list[int], include_summary:
         )
     )
 
+    # 전체 연도 출력 시 모든 연도의 열 위치·간격이 수직으로 100% 일치하도록 동일한 우측 블록 구성을 유지합니다.
+    multi_yr_mode = len(target_years) > 1
+    any_has_y1 = any(
+        (_has_year_data(s, yy - 1) or bool(s.get("show_empty_pm_blocks", False)))
+        for yy in target_years
+    )
+    any_has_y2 = any(
+        (_has_year_data(s, yy - 2) or bool(s.get("show_empty_pm_blocks", False)))
+        for yy in target_years
+    )
+
     totals_by_yr: dict[int, dict] = {}
     for idx_y, y in enumerate(target_years):
         if idx_y > 0:
-            story.append(Spacer(1, 10))
+            story.append(Spacer(1, 16))
         rows, _, totals = _build_year_rows(s, y)
         totals_by_yr[y] = totals
         role_desc = _year_role_description(s, tax_yr, y)
         trunc_mode = "합산 후 절사"
         b3_t, b4_t, b5_t = _block_titles_for_year(y, two_line=False)
 
-        has_y1 = _has_year_data(s, y - 1) or bool(s.get("show_empty_pm_blocks", False))
-        has_y2 = _has_year_data(s, y - 2) or bool(s.get("show_empty_pm_blocks", False))
+        yr_has_y1 = _has_year_data(s, y - 1) or bool(s.get("show_empty_pm_blocks", False))
+        yr_has_y2 = _has_year_data(s, y - 2) or bool(s.get("show_empty_pm_blocks", False))
+        col_has_y1 = any_has_y1 if multi_yr_mode else yr_has_y1
+        col_has_y2 = any_has_y2 if multi_yr_mode else yr_has_y2
 
         story.append(
             Paragraph(
@@ -792,8 +805,8 @@ def _build_schedule_pdf_bytes(s: dict, target_years: list[int], include_summary:
         )
         kpi_line = (
             f"[{b3_t}] 상시 {totals['b1_reg']:.2f}명 (청년등 {totals['b1_yth']:.2f} · 청년외 {totals['b1_gen']:.2f})"
-            + (f"   |   [{b4_t}] 상시 {totals['b2_reg']:.2f}명 (청년등 {totals['b2_yth']:.2f} · 청년외 {totals['b2_gen']:.2f})" if has_y1 else "")
-            + (f"   |   [{b5_t}] 상시 {totals['b3_reg']:.2f}명 (청년등 {totals['b3_yth']:.2f} · 청년외 {totals['b3_gen']:.2f})" if has_y2 else "")
+            + (f"   |   [{b4_t}] 상시 {totals['b2_reg']:.2f}명 (청년등 {totals['b2_yth']:.2f} · 청년외 {totals['b2_gen']:.2f})" if yr_has_y1 else "")
+            + (f"   |   [{b5_t}] 상시 {totals['b3_reg']:.2f}명 (청년등 {totals['b3_yth']:.2f} · 청년외 {totals['b3_gen']:.2f})" if yr_has_y2 else "")
             + f"   |   총인원(연인원) {totals['상시_합계']:g}명 ÷ {totals['months_in_year']}개월 ({trunc_mode})"
         )
         story.append(Paragraph(kpi_line, st_sub))
@@ -804,16 +817,16 @@ def _build_schedule_pdf_bytes(s: dict, target_years: list[int], include_summary:
             f"{y%100:02d}공제\n청년", f"{y%100:02d}공제\n일반", f"{y%100:02d}공제\n상시",
         ]
         col_widths = [
-            34, 36, 42, 42, 42, 22, 44, 52, 54, 18,
-            *[16.5 for _ in range(12)], 22,
-            24, 24, 24,
+            32, 34, 41, 41, 41, 21, 42, 60, 62, 18,
+            *[16.0 for _ in range(12)], 21,
+            23.5, 23.5, 23.5,
         ]
-        if has_y1:
+        if col_has_y1:
             headers.extend([f"{(y-1)%100:02d}사후\n청년", f"{(y-1)%100:02d}사후\n일반", f"{(y-1)%100:02d}사후\n상시"])
-            col_widths.extend([24, 24, 24])
-        if has_y2:
+            col_widths.extend([23.5, 23.5, 23.5])
+        if col_has_y2:
             headers.extend([f"{(y-2)%100:02d}사후\n청년", f"{(y-2)%100:02d}사후\n일반", f"{(y-2)%100:02d}사후\n상시"])
-            col_widths.extend([24, 24, 24])
+            col_widths.extend([23.5, 23.5, 23.5])
 
         # 폭 비율 자동 맞춤 (A4 가로 가용 폭 806pt)
         avail_w = landscape(A4)[0] - 36
@@ -830,58 +843,64 @@ def _build_schedule_pdf_bytes(s: dict, target_years: list[int], include_summary:
                 else:
                     m_cells.append(f"{mv:g}")
             row_cells = [
-                str(r["사업장명"])[:6],
-                str(r["성명"])[:6],
+                str(r["사업장명"])[:7],
+                str(r["성명"])[:7],
                 str(r["생년월일"]).replace("-", "."),
                 str(r["입사일"]).replace("-", "."),
                 str(r["퇴사일"]).replace("-", "."),
                 str(r["취업연령"]),
                 str(r["고용유형"]).replace("근로자", ""),
-                str(r["제외사유"])[:8],
-                str(r["청년등"])[:8],
+                str(r["제외사유"])[:11],
+                str(r["청년등"])[:11],
                 str(r["상시"]),
                 *m_cells,
                 f"{r['합계']:g}",
                 f"{r['b1_yth']:.2f}", f"{r['b1_gen']:.2f}", f"{r['b1_reg']:.2f}",
             ]
-            if has_y1:
-                row_cells.extend([f"{r['b2_yth']:.2f}", f"{r['b2_gen']:.2f}", f"{r['b2_reg']:.2f}"])
-            if has_y2:
-                row_cells.extend([f"{r['b3_yth']:.2f}", f"{r['b3_gen']:.2f}", f"{r['b3_reg']:.2f}"])
+            if col_has_y1:
+                if yr_has_y1:
+                    row_cells.extend([f"{r['b2_yth']:.2f}", f"{r['b2_gen']:.2f}", f"{r['b2_reg']:.2f}"])
+                else:
+                    row_cells.extend(["-", "-", "-"])
+            if col_has_y2:
+                if yr_has_y2:
+                    row_cells.extend([f"{r['b3_yth']:.2f}", f"{r['b3_gen']:.2f}", f"{r['b3_reg']:.2f}"])
+                else:
+                    row_cells.extend(["-", "-", "-"])
             tbl_data.append(row_cells)
 
-        # 하단 요약 3행 추가
+        # 하단 요약 3행 추가 (2~9열 SPAN 병합으로 안내 문구가 이웃 열과 겹치지 않도록 정렬)
         sum_rows = [
             (
-                "합산합계", "상시근로자", f"÷{totals['months_in_year']}개월({trunc_mode})",
+                "합산합계", "상시근로자", f"÷ {totals['months_in_year']}개월 ({trunc_mode})",
                 [f"{v:g}" if v is not None else "-" for v in totals["월별_상시"]],
                 f"{totals['상시_합계']:g}",
                 [f"{totals['b1_yth']:.2f}", f"{totals['b1_gen']:.2f}", f"{totals['b1_reg']:.2f}"],
-                [f"{totals['b2_yth']:.2f}", f"{totals['b2_gen']:.2f}", f"{totals['b2_reg']:.2f}"],
-                [f"{totals['b3_yth']:.2f}", f"{totals['b3_gen']:.2f}", f"{totals['b3_reg']:.2f}"],
+                [f"{totals['b2_yth']:.2f}", f"{totals['b2_gen']:.2f}", f"{totals['b2_reg']:.2f}"] if yr_has_y1 else ["-", "-", "-"],
+                [f"{totals['b3_yth']:.2f}", f"{totals['b3_gen']:.2f}", f"{totals['b3_reg']:.2f}"] if yr_has_y2 else ["-", "-", "-"],
             ),
             (
-                "합산합계", "청년등", "코호트 기준",
+                "합산합계", "청년등", "각 코호트 기준",
                 [f"{v:g}" if v is not None else "-" for v in totals["월별_청년등"]],
                 f"{totals['청년등_합계']:g}",
                 [f"{totals['b1_yth']:.2f}", "-", "-"],
-                [f"{totals['b2_yth']:.2f}", "-", "-"],
-                [f"{totals['b3_yth']:.2f}", "-", "-"],
+                [f"{totals['b2_yth']:.2f}", "-", "-"] if yr_has_y1 else ["-", "-", "-"],
+                [f"{totals['b3_yth']:.2f}", "-", "-"] if yr_has_y2 else ["-", "-", "-"],
             ),
             (
                 "합산합계", "청년등 외", "상시 - 청년등",
                 [f"{v:g}" if v is not None else "-" for v in totals["월별_청년외"]],
                 f"{totals['청년외_합계']:g}",
                 ["-", f"{totals['b1_gen']:.2f}", "-"],
-                ["-", f"{totals['b2_gen']:.2f}", "-"],
-                ["-", f"{totals['b3_gen']:.2f}", "-"],
+                ["-", f"{totals['b2_gen']:.2f}", "-"] if yr_has_y1 else ["-", "-", "-"],
+                ["-", f"{totals['b3_gen']:.2f}", "-"] if yr_has_y2 else ["-", "-", "-"],
             ),
         ]
         for wp_l, nm_l, et_l, m_list, tot_s, b1_l, b2_l, b3_l in sum_rows:
-            s_row = [wp_l, nm_l, "", "", "", "", et_l, "", "", "", *m_list, tot_s, *b1_l]
-            if has_y1:
+            s_row = [wp_l, nm_l, et_l, "", "", "", "", "", "", "", *m_list, tot_s, *b1_l]
+            if col_has_y1:
                 s_row.extend(b2_l)
-            if has_y2:
+            if col_has_y2:
                 s_row.extend(b3_l)
             tbl_data.append(s_row)
 
@@ -891,8 +910,8 @@ def _build_schedule_pdf_bytes(s: dict, target_years: list[int], include_summary:
             ("FONTNAME", (0, 0), (-1, 0), bold_font),
             ("FONTNAME", (0, 1), (-1, -1), reg_font),
             ("FONTNAME", (0, n_data_end), (-1, -1), bold_font),
-            ("FONTSIZE", (0, 0), (-1, -1), 6.3),
-            ("LEADING", (0, 0), (-1, -1), 8.0),
+            ("FONTSIZE", (0, 0), (-1, -1), 6.4),
+            ("LEADING", (0, 0), (-1, -1), 8.2),
             ("ALIGN", (0, 0), (-1, -1), "CENTER"),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1e293b")),
@@ -900,11 +919,15 @@ def _build_schedule_pdf_bytes(s: dict, target_years: list[int], include_summary:
             ("BACKGROUND", (0, n_data_end), (-1, -1), colors.HexColor("#dcfce7")),
             ("TEXTCOLOR", (0, n_data_end), (-1, -1), colors.HexColor("#14532d")),
             ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#cbd5e1")),
-            ("TOPPADDING", (0, 0), (-1, -1), 2.5),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+            ("LINEABOVE", (0, n_data_end), (-1, n_data_end), 0.8, colors.HexColor("#15803d")),
+            ("LINEBELOW", (0, -1), (-1, -1), 0.9, colors.HexColor("#14532d")),
+            ("TOPPADDING", (0, 0), (-1, -1), 2.8),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2.8),
             ("LEFTPADDING", (0, 0), (-1, -1), 1.5),
             ("RIGHTPADDING", (0, 0), (-1, -1), 1.5),
         ]
+        for sum_r in range(n_data_end, len(tbl_data)):
+            t_style.append(("SPAN", (2, sum_r), (9, sum_r)))
         for r_i in range(1, n_data_end):
             if r_i % 2 == 0:
                 t_style.append(("BACKGROUND", (0, r_i), (-1, r_i), colors.HexColor("#f8fafc")))
@@ -1495,46 +1518,54 @@ div[class*="st-key-ec_btn_pdf_"] button p {
     margin-top: 4px;
 }
 
-/* ── 3단계 연도별 세액공제 요약 매트릭스 및 계산 구조 전용 스타일 (자율 에이전트AI 폰트·시각 규격 동기화) ── */
+/* ── 3단계 연도별 세액공제 요약 매트릭스 및 계산 구조 전용 스타일 (자율 에이전트AI 1.12rem=15.5px 폰트·시각 규격 100% 동기화) ── */
 .ec-matrix-wrap {
   background:#ffffff; border:1.5px solid #cbd5e1; border-radius:14px;
-  padding:20px 22px; margin:10px 0 22px 0;
+  padding:20px 22px 22px 22px; margin:10px 0 22px 0;
   box-shadow:0 4px 14px rgba(15,23,42,.05);
 }
 .ec-matrix-title {
-  font-size:1.18rem; font-weight:900; color:#0f172a; margin-bottom:14px;
+  font-size:1.30rem !important; font-weight:900; color:#0f172a; margin-bottom:14px;
   display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;
 }
 .ec-matrix-tbl {
-  width:100%; border-collapse:collapse; font-size:1.05rem; text-align:right;
-  border-top:2px solid #1e293b; border-bottom:2px solid #1e293b;
-  border-radius:8px; overflow:hidden;
+  width:100% !important; table-layout:fixed !important; border-collapse:collapse !important;
+  font-size:1.12rem !important; text-align:right;
+  border-top:2px solid #1e293b !important; border-bottom:2.5px solid #1e293b !important;
+  border-left:1px solid #cbd5e1 !important; border-right:1px solid #cbd5e1 !important;
+  margin-bottom:2px !important;
 }
 .ec-matrix-tbl th {
-  background:#1e293b; color:#ffffff; font-weight:800; font-size:1.04rem;
-  padding:12px 16px; border:1px solid #334155; text-align:center; white-space:nowrap;
+  background:#1e293b !important; color:#ffffff !important; font-weight:800 !important;
+  font-size:1.12rem !important; padding:12px 14px !important;
+  border:1px solid #334155 !important; text-align:center !important; white-space:nowrap;
 }
 .ec-matrix-tbl th.active-yr {
   background:#1d4ed8 !important; color:#ffffff !important;
   box-shadow:inset 0 -3px 0 #93c5fd;
 }
 .ec-matrix-tbl td {
-  padding:11px 16px; border:1px solid #cbd5e1; color:#1e293b; font-weight:700;
-  font-size:1.05rem; font-variant-numeric:tabular-nums; white-space:nowrap;
-  vertical-align:middle;
+  padding:12px 16px !important; border:1px solid #cbd5e1 !important; color:#1e293b; font-weight:700;
+  font-size:1.12rem !important; font-variant-numeric:tabular-nums; white-space:nowrap;
+  vertical-align:middle !important;
 }
 .ec-matrix-tbl td.lbl-col {
-  background:#f8fafc; text-align:center; font-weight:800; color:#1e293b; font-size:1.04rem;
+  background:#f8fafc !important; text-align:center !important; font-weight:800 !important;
+  color:#1e293b !important; font-size:1.12rem !important;
+}
+.ec-matrix-tbl td.lbl-col[rowspan] {
+  border-bottom:2.5px solid #1e293b !important;
 }
 .ec-matrix-tbl td.active-yr-cell {
-  background:#f0f7ff;
+  background:#f0f7ff !important;
 }
 .ec-matrix-tbl tr.ec-tot-row td {
-  background:#f1f5f9; font-weight:900; font-size:1.14rem;
-  border-top:2px solid #475569; padding:13px 16px;
+  background:#f1f5f9 !important; font-weight:900 !important; font-size:1.20rem !important;
+  border-top:2px solid #475569 !important; border-bottom:2.5px solid #1e293b !important;
+  padding:13px 16px !important;
 }
 .ec-matrix-tbl tr.ec-tot-row td.active-yr-cell {
-  background:#dbeafe;
+  background:#dbeafe !important;
 }
 .ec-neg-val {
   color:#dc2626 !important; font-weight:900 !important;
@@ -1553,7 +1584,7 @@ div[class*="st-key-ec_btn_pdf_"] button p {
   line-height:1.45;
 }
 .ec-cell-tag {
-  display:inline-block; font-size:0.78rem; font-weight:800;
+  display:inline-block; font-size:0.84rem; font-weight:800;
   padding:1px 6px; border-radius:4px; line-height:1.3;
 }
 .ec-cell-tag.pos {
@@ -1567,41 +1598,81 @@ div[class*="st-key-ec_btn_pdf_"] button p {
   padding:12px 18px; margin:6px 0 22px 0;
 }
 .ec-sec-header {
-  font-size:1.30rem !important; font-weight:900; color:#1e3a8a;
+  font-size:1.32rem !important; font-weight:900; color:#1e3a8a;
   margin:24px 0 14px 0; padding:12px 18px;
   background:linear-gradient(90deg, #eff6ff 0%, #f8fafc 65%, #ffffff 100%);
   border-left:6px solid #1d4ed8; border-radius:8px;
   box-shadow:0 1px 3px rgba(15,23,42,.04);
 }
 .ec-sub-header {
-  font-size:1.15rem !important; font-weight:800; color:#1e3a8a;
+  font-size:1.22rem !important; font-weight:800; color:#1e3a8a;
   margin:22px 0 10px 0; padding-left:2px;
   display:flex; align-items:center; gap:8px;
 }
 .ec-sub-num {
   display:inline-flex; align-items:center; justify-content:center;
-  background:#1e3a8a; color:#ffffff; font-size:0.92rem; font-weight:800;
-  padding:2px 9px; border-radius:6px;
+  background:#1e3a8a; color:#ffffff; font-size:1.00rem; font-weight:800;
+  padding:2px 10px; border-radius:6px;
 }
 .ec-inc-tbl {
-  width:100%; border-collapse:collapse; font-size:1.05rem; margin:8px 0 18px 0;
-  border-top:2px solid #1e293b; border-bottom:2px solid #1e293b;
+  width:100%; border-collapse:collapse; font-size:1.12rem !important; margin:8px 0 18px 0;
+  border-top:2px solid #1e293b !important; border-bottom:2.5px solid #1e293b !important;
   background:#ffffff;
 }
 .ec-inc-tbl th {
-  background:#1e293b; color:#ffffff; font-weight:800; font-size:1.04rem;
-  padding:12px 18px; border:1px solid #334155; text-align:center;
+  background:#1e293b !important; color:#ffffff !important; font-weight:800 !important;
+  font-size:1.12rem !important; padding:12px 18px !important;
+  border:1px solid #334155 !important; text-align:center !important;
 }
 .ec-inc-tbl td {
-  padding:11px 18px; border:1px solid #cbd5e1; text-align:right;
-  font-weight:700; font-size:1.05rem; color:#1e293b; font-variant-numeric:tabular-nums;
+  padding:12px 18px !important; border:1px solid #cbd5e1 !important; text-align:right;
+  font-weight:700; font-size:1.12rem !important; color:#1e293b; font-variant-numeric:tabular-nums;
 }
 .ec-inc-tbl td.inc-lbl {
-  text-align:center; font-weight:800; color:#0f172a; background:#f8fafc; width:34%;
-  font-size:1.05rem;
+  text-align:center !important; font-weight:800; color:#0f172a; background:#f8fafc; width:34%;
+  font-size:1.12rem !important;
 }
 .ec-inc-tbl td.inc-hi {
-  font-weight:900; font-size:1.08rem; color:#1d4ed8; background:#f0f7ff;
+  font-weight:900; font-size:1.16rem !important; color:#1d4ed8; background:#f0f7ff;
+}
+/* 사후관리 요건 검토 (1차년도 대비 상시·청년 감소여부 여/부) 표시 바 */
+.ec-pm-req-bar {
+  display:grid; grid-template-columns:repeat(auto-fit, minmax(360px, 1fr)); gap:10px;
+  background:#f8fafc; border:1.5px solid #cbd5e1; border-radius:10px;
+  padding:12px 16px; margin:6px 0 10px 0;
+}
+.ec-pm-req-item {
+  display:flex; align-items:center; justify-content:space-between; gap:10px;
+  background:#ffffff; border:1px solid #e2e8f0; border-radius:8px;
+  padding:9px 14px; font-size:1.10rem !important; color:#0f172a; font-weight:700;
+}
+.ec-pm-req-lbl {
+  display:flex; flex-direction:column; gap:2px;
+}
+.ec-pm-req-title {
+  font-size:1.10rem !important; font-weight:800; color:#0f172a;
+}
+.ec-pm-req-sub {
+  font-size:0.96rem !important; font-weight:600; color:#475569;
+}
+.ec-yn-group {
+  display:inline-flex; align-items:center; gap:6px; white-space:nowrap;
+}
+.ec-yn-pill {
+  display:inline-flex; align-items:center; justify-content:center;
+  padding:4px 12px; border-radius:999px; font-size:1.04rem !important; font-weight:800;
+  border:1.5px solid #cbd5e1; background:#f1f5f9; color:#94a3b8;
+}
+.ec-yn-pill.active-no {
+  background:#dcfce7 !important; color:#15803d !important; border-color:#22c55e !important;
+  box-shadow:0 1px 4px rgba(22,163,74,.18);
+}
+.ec-yn-pill.active-yes {
+  background:#fee2e2 !important; color:#dc2626 !important; border-color:#ef4444 !important;
+  box-shadow:0 1px 4px rgba(220,38,38,.20);
+}
+.ec-yn-pill.active-na {
+  background:#e2e8f0 !important; color:#475569 !important; border-color:#94a3b8 !important;
 }
 .ec-calc-box {
   background:#ffffff; border:1px solid #cbd5e1; border-left:5px solid #2563eb;
@@ -1620,22 +1691,22 @@ div[class*="st-key-ec_btn_pdf_"] button p {
   border-left:5px solid #94a3b8;
 }
 .ec-calc-formula {
-  flex:1; font-size:1.06rem; color:#1e293b; line-height:1.75;
+  flex:1; font-size:1.12rem !important; color:#1e293b; line-height:1.75;
 }
 .ec-calc-formula .f-title {
-  font-size:1.12rem; font-weight:800; color:#0f172a; margin-bottom:6px;
+  font-size:1.20rem !important; font-weight:800; color:#0f172a; margin-bottom:6px;
 }
 .ec-calc-formula .f-line {
   font-family:'Pretendard', -apple-system, BlinkMacSystemFont, sans-serif;
-  font-size:1.05rem; color:#1e293b; padding-left:6px; line-height:1.74;
+  font-size:1.12rem !important; color:#1e293b; padding-left:6px; line-height:1.74;
 }
 .ec-calc-formula .f-sub {
-  font-size:1.03rem; font-weight:700; color:#0f172a;
+  font-size:1.12rem !important; font-weight:700; color:#0f172a;
   background:#f8fafc; border:1px solid #e2e8f0; border-left:4px solid #2563eb;
   padding:8px 14px; margin-top:8px; border-radius:6px;
 }
 .ec-calc-amount {
-  min-width:275px; text-align:right; padding:14px 20px;
+  min-width:285px; text-align:right; padding:14px 20px;
   background:#f8fafc; border:1.5px solid #e2e8f0; border-radius:10px;
 }
 .ec-calc-amount.pos-amt {
@@ -1645,10 +1716,10 @@ div[class*="st-key-ec_btn_pdf_"] button p {
   background:#fef2f2; border-color:#fecaca;
 }
 .ec-calc-amount .a-lbl {
-  font-size:0.94rem; font-weight:800; color:#475569; margin-bottom:4px;
+  font-size:1.02rem !important; font-weight:800; color:#475569; margin-bottom:4px;
 }
 .ec-calc-amount .a-val {
-  font-size:1.42rem; font-weight:900; color:#0f172a; font-variant-numeric:tabular-nums;
+  font-size:1.52rem !important; font-weight:900; color:#0f172a; font-variant-numeric:tabular-nums;
   line-height:1.25;
 }
 .ec-calc-amount .a-val.neg {
@@ -1658,13 +1729,13 @@ div[class*="st-key-ec_btn_pdf_"] button p {
   color:#15803d;
 }
 .ec-calc-amount .a-sub-split {
-  font-size:0.88rem; font-weight:700; color:#475569;
+  font-size:0.96rem !important; font-weight:700; color:#475569;
   margin-top:6px; padding-top:6px; border-top:1px dashed #cbd5e1;
 }
 .ec-law-ref-box {
   background:#f8fafc; border:1.5px solid #cbd5e1; border-left:5px solid #1e3a8a;
   border-radius:12px; padding:18px 22px; margin:24px 0 14px 0;
-  font-size:1.02rem; color:#1e293b; line-height:1.78;
+  font-size:1.10rem !important; color:#1e293b; line-height:1.78;
 }
 .ec-law-ref-box a {
   color:#1d4ed8; font-weight:800; text-decoration:none;
@@ -4230,17 +4301,21 @@ def _page_calculation():
         f"<div class='ec-matrix-wrap'>"
         f"<div class='ec-matrix-title'>"
         f"<span>📊 연도별 통합고용세액공제 요약표 ({corp_size} · {loc_label})</span>"
-        f"<span style='font-size:.95rem;font-weight:700;color:#475569;'>"
+        f"<span style='font-size:1.04rem;font-weight:700;color:#475569;'>"
         f"{basis_badge_html} &nbsp;·&nbsp; 단위: 원 (추가납부세액은 <span class='ec-neg-val'>-붉은색</span> 표시)"
         f"</span>"
         f"</div>"
         f"<table class='ec-matrix-tbl'>"
+        f"<colgroup>"
+        f"<col style='width:12%;'><col style='width:8%;'>"
+        f"<col style='width:20%;'><col style='width:20%;'><col style='width:20%;'><col style='width:20%;'>"
+        f"</colgroup>"
         f"<thead>"
-        f"<tr><th colspan='2' style='width:22%;'>구분</th>{th_years_html}</tr>"
+        f"<tr><th colspan='2' style='width:20%;'>구분</th>{th_years_html}</tr>"
         f"</thead>"
         f"<tbody>"
-        f"<tr><td rowspan='4' class='lbl-col' style='width:12%;'>세액공제액<br><span style='font-size:.86rem;font-weight:700;color:#dc2626;'>(추가납부세액)</span></td>"
-        f"<td class='lbl-col' style='width:10%;'>1차</td>{r1_cells}</tr>"
+        f"<tr><td rowspan='4' class='lbl-col' style='width:12%;'>세액공제액<br><span style='font-size:.94rem;font-weight:700;color:#dc2626;'>(추가납부세액)</span></td>"
+        f"<td class='lbl-col' style='width:8%;'>1차</td>{r1_cells}</tr>"
         f"<tr><td class='lbl-col'>2차</td>{r2_cells}</tr>"
         f"<tr><td class='lbl-col'>3차</td>{r3_cells}</tr>"
         f"<tr class='ec-tot-row'><td class='lbl-col'>합계</td>{tot_cells}</tr>"
@@ -4409,10 +4484,72 @@ def _page_calculation():
         unsafe_allow_html=True,
     )
 
+    def _build_pm_req_check_bar_html(pm_obj: dict, cohort_yr: int, eval_yr: int, cur_reg_v: float, cur_yth_v: float) -> str:
+        init_r = float(pm_obj.get("init_reg") or 0.0)
+        init_y = float(pm_obj.get("init_yth") or 0.0)
+        is_active = bool(pm_obj.get("active")) and not bool(pm_obj.get("base_missing"))
+        is_new_law = str(pm_obj.get("case_code") or "").startswith("신법")
+
+        if is_new_law and isinstance(pm_obj.get("new_tier_info"), dict):
+            ti = pm_obj["new_tier_info"]
+            tot_inc = float(ti.get("total_inc") or 0.0)
+            yth_inc = float(ti.get("youth_inc") or 0.0)
+            reg_dec_yes = tot_inc <= 0
+            yth_dec_yes = yth_inc <= 0
+            r_sub = f"유지 증가인원: 전체 {tot_inc:.2f}명 ({cohort_yr}년 대비)"
+            y_sub = f"유지 증가인원: 청년등 {yth_inc:.2f}명 ({cohort_yr}년 대비)"
+            r_yes_cls = "active-yes" if reg_dec_yes else ""
+            r_no_cls = "active-no" if not reg_dec_yes else ""
+            y_yes_cls = "active-yes" if yth_dec_yes else ""
+            y_no_cls = "active-no" if not yth_dec_yes else ""
+        elif not is_active:
+            r_sub = f"1차년도({cohort_yr}년) 공제이력 또는 기초자료 없음"
+            y_sub = f"1차년도({cohort_yr}년) 공제이력 또는 기초자료 없음"
+            r_yes_cls = r_no_cls = y_yes_cls = y_no_cls = ""
+        else:
+            reg_diff_v = round(cur_reg_v - init_r, 2)
+            yth_diff_v = round(cur_yth_v - init_y, 2)
+            reg_dec_yes = reg_diff_v < 0
+            yth_dec_yes = yth_diff_v < 0
+            r_sub = f"1차년도({cohort_yr}년) {init_r:.2f}명 → 당해({eval_yr}년) {cur_reg_v:.2f}명 ({reg_diff_v:+.2f}명)"
+            y_sub = f"1차년도({cohort_yr}년) {init_y:.2f}명 → 당해({eval_yr}년) {cur_yth_v:.2f}명 ({yth_diff_v:+.2f}명)"
+            r_yes_cls = "active-yes" if reg_dec_yes else ""
+            r_no_cls = "active-no" if not reg_dec_yes else ""
+            y_yes_cls = "active-yes" if yth_dec_yes else ""
+            y_no_cls = "active-no" if not yth_dec_yes else ""
+
+        return (
+            f"<div class='ec-pm-req-bar'>"
+            f"<div class='ec-pm-req-item'>"
+            f"<div class='ec-pm-req-lbl'>"
+            f"<span class='ec-pm-req-title'>1. 1차년도({cohort_yr}년) 대비 상시근로자 감소여부</span>"
+            f"<span class='ec-pm-req-sub'>{r_sub}</span>"
+            f"</div>"
+            f"<div class='ec-yn-group'>"
+            f"<span class='ec-yn-pill {r_yes_cls}'>여 (감소)</span>"
+            f"<span class='ec-yn-pill {r_no_cls}'>부 (유지·증가)</span>"
+            f"</div>"
+            f"</div>"
+            f"<div class='ec-pm-req-item'>"
+            f"<div class='ec-pm-req-lbl'>"
+            f"<span class='ec-pm-req-title'>2. 1차년도({cohort_yr}년) 대비 청년 상시근로자 감소여부</span>"
+            f"<span class='ec-pm-req-sub'>{y_sub}</span>"
+            f"</div>"
+            f"<div class='ec-yn-group'>"
+            f"<span class='ec-yn-pill {y_yes_cls}'>여 (감소)</span>"
+            f"<span class='ec-yn-pill {y_no_cls}'>부 (유지·증가)</span>"
+            f"</div>"
+            f"</div>"
+            f"</div>"
+        )
+
     # ── (3) 2차년도 사후관리 계산 (직전 과세연도 귀속분의 당해 사후관리) ──
     st.markdown(
         f"<div class='ec-sub-header'><span class='ec-sub-num'>(3)</span><span>2차년도 사후관리 계산 ({tax_yr - 1}년 귀속분 → {tax_yr}년 1차 사후관리)</span></div>",
         unsafe_allow_html=True,
+    )
+    pm1_req_bar_html = _build_pm_req_check_bar_html(
+        pkg["pm_y1"], tax_yr - 1, tax_yr, cur_s["b2_reg"], cur_s["b2_yth"]
     )
     pm1_title, pm1_lines, pm1_amt_lbl, pm1_val, pm1_is_neg = _build_pm_formula_lines(
         pm=pkg["pm_y1"],
@@ -4437,6 +4574,7 @@ def _page_calculation():
     )
 
     st.markdown(
+        f"{pm1_req_bar_html}"
         f"<div class='ec-calc-box {pm1_box_cls}'>"
         f"<div class='ec-calc-formula'>"
         f"<div class='f-title'>{pm1_title}</div>"
@@ -4455,6 +4593,9 @@ def _page_calculation():
     st.markdown(
         f"<div class='ec-sub-header'><span class='ec-sub-num'>(4)</span><span>3차년도 사후관리 계산 ({tax_yr - 2}년 귀속분 → {tax_yr}년 2차 사후관리)</span></div>",
         unsafe_allow_html=True,
+    )
+    pm2_req_bar_html = _build_pm_req_check_bar_html(
+        pkg["pm_y2"], tax_yr - 2, tax_yr, cur_s["b3_reg"], cur_s["b3_yth"]
     )
     pm2_title, pm2_lines, pm2_amt_lbl, pm2_val, pm2_is_neg = _build_pm_formula_lines(
         pm=pkg["pm_y2"],
@@ -4479,6 +4620,7 @@ def _page_calculation():
     )
 
     st.markdown(
+        f"{pm2_req_bar_html}"
         f"<div class='ec-calc-box {pm2_box_cls}'>"
         f"<div class='ec-calc-formula'>"
         f"<div class='f-title'>{pm2_title}</div>"
