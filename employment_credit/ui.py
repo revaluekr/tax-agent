@@ -2276,6 +2276,16 @@ div[class*="st-key-ec_step_nav_wait_"] button p {
 .ec-law-ref-box a:hover {
   text-decoration:underline;
 }
+/* 스크롤 제어용 0px iframe 컨테이너 여백 완전 제거 */
+div[data-testid="stHtml"],
+iframe[height="0"] {
+    height: 0px !important;
+    min-height: 0px !important;
+    margin: 0px !important;
+    padding: 0px !important;
+    border: none !important;
+    display: block !important;
+}
 </style>
 """
 
@@ -2302,12 +2312,90 @@ def _top_status_bar(s: dict):
     step_nm = STEPS[max(0, min(len(STEPS) - 1, int(s.get("step", 1)) - 1))]
 
     st.markdown(
+        f"<div id='ec-page-top-anchor'></div>"
         f"<div class='top-mini-status-bar'>"
         f"<span>🧮 <b>통합고용세액공제 ({tax_yr}년 귀속)</b> &nbsp;|&nbsp; {biz_disp}</span>"
         f"<span>📌 현재 단계: <b>{s.get('step', 1)}단계 [{step_nm}]</b> &nbsp;·&nbsp; <span class='sb-badge-green'>💾 자동보관 ON · {law_ver}</span></span>"
         f"</div>",
         unsafe_allow_html=True,
     )
+
+
+
+
+def _trigger_scroll_to_top(s: dict) -> None:
+    """단계 이동(다음/이전/처음으로/상단 스텝바) 시 화면 최상단 스크롤 예약"""
+    s["_force_scroll_top"] = True
+    s["_scroll_top_seq"] = int(s.get("_scroll_top_seq") or 0) + 1
+
+
+def _render_scroll_to_top_if_needed(s: dict) -> None:
+    """
+    단계(step)가 변경되었거나 하단 [다음]/[이전]/[처음으로] 버튼을 눌러 페이지가 전환된 경우,
+    브라우저의 모든 Streamlit 메인 스크롤 컨테이너를 최상단(top: 0)으로 즉시 이동시킵니다.
+    (AG Grid 등 대용량 컴포넌트 마운트 직후에도 최상단을 유지하도록 다중 타이밍 보정 적용)
+    """
+    cur_step = int(s.get("step") or 1)
+    last_step = s.get("_last_rendered_step")
+    force_flag = bool(s.pop("_force_scroll_top", False))
+
+    if last_step != cur_step or force_flag:
+        s["_last_rendered_step"] = cur_step
+        seq = int(s.get("_scroll_top_seq") or 0) + 1
+        s["_scroll_top_seq"] = seq
+        import streamlit.components.v1 as components
+        components.html(
+            f"""<!-- ec_scroll_top_{cur_step}_{seq} -->
+            <script>
+            (function() {{
+                function scrollAllToTop() {{
+                    try {{
+                        var doc = window.parent.document;
+                        var win = window.parent;
+                        win.scrollTo({{top: 0, left: 0, behavior: 'instant'}});
+                        var anchor = doc.getElementById('ec-page-top-anchor');
+                        if (anchor && anchor.scrollIntoView) {{
+                            anchor.scrollIntoView({{block: 'start', inline: 'nearest', behavior: 'instant'}});
+                        }}
+                        var selectors = [
+                            '[data-testid="stAppViewContainer"]',
+                            '[data-testid="stMain"]',
+                            '[data-testid="stMainBlockContainer"]',
+                            'section.main',
+                            '.main',
+                            'html',
+                            'body'
+                        ];
+                        for (var i = 0; i < selectors.length; i++) {{
+                            var nodes = doc.querySelectorAll(selectors[i]);
+                            for (var j = 0; j < nodes.length; j++) {{
+                                nodes[j].scrollTop = 0;
+                                if (nodes[j].scrollTo) {{
+                                    nodes[j].scrollTo({{top: 0, left: 0, behavior: 'instant'}});
+                                }}
+                            }}
+                        }}
+                        var allNodes = doc.querySelectorAll('div, section, main');
+                        for (var k = 0; k < allNodes.length; k++) {{
+                            var el = allNodes[k];
+                            if (el.scrollTop > 0) {{
+                                if (el.closest && (el.closest('[data-testid="stSidebar"]') || el.closest('.ag-root-wrapper'))) {{
+                                    continue;
+                                }}
+                                el.scrollTop = 0;
+                            }}
+                        }}
+                    }} catch (e) {{}}
+                }}
+                scrollAllToTop();
+                setTimeout(scrollAllToTop, 25);
+                setTimeout(scrollAllToTop, 90);
+                setTimeout(scrollAllToTop, 200);
+            }})();
+            </script>
+            """,
+            height=0,
+        )
 
 
 def _progress(step: int):
@@ -2351,6 +2439,7 @@ def _progress(step: int):
                             s["totals_snapshot"] = _ensure_totals_snapshot(s)
                         s["step"] = i
                         s["max_step_reached"] = max(int(s.get("max_step_reached") or 1), i)
+                        _trigger_scroll_to_top(s)
                         _save_ec_to_disk(s)
                         st.rerun()
 
@@ -3079,6 +3168,7 @@ def _enter_step2():
             del st.session_state[k]
     s["step"] = 2
     s["max_step_reached"] = max(int(s.get("max_step_reached") or 1), 2)
+    _trigger_scroll_to_top(s)
     _save_ec_to_disk(s)
 
 
@@ -4205,6 +4295,7 @@ def _page_employees(room_key: str, log_tokens_fn=None):
     c_prev, _, c_all_pdf, c_rev, c_next = st.columns([1.2, 2.3, 1.25, 1.15, 1.3])
     if c_prev.button("< 이전", use_container_width=True):
         s["step"] = 1
+        _trigger_scroll_to_top(s)
         _save_ec_to_disk(s)
         st.rerun()
 
@@ -4252,6 +4343,7 @@ def _page_employees(room_key: str, log_tokens_fn=None):
         s["totals_snapshot"] = totals_all
         s["step"] = 3
         s["max_step_reached"] = max(int(s.get("max_step_reached") or 1), 3)
+        _trigger_scroll_to_top(s)
         _save_ec_to_disk(s)
         st.rerun()
 
@@ -5977,6 +6069,7 @@ def _page_calculation():
     c_prev, _, c_pdf3, c_next = st.columns([1.2, 3.45, 1.25, 1.3])
     if c_prev.button("< 이전", use_container_width=True, key="btn_step3_prev"):
         s["step"] = 2
+        _trigger_scroll_to_top(s)
         _save_ec_to_disk(s)
         st.rerun()
     with c_pdf3:
@@ -5993,6 +6086,7 @@ def _page_calculation():
     if c_next.button("다음(4단계)", type="primary", use_container_width=True, key="btn_step3_next"):
         s["step"] = 4
         s["max_step_reached"] = max(int(s.get("max_step_reached") or 1), 4)
+        _trigger_scroll_to_top(s)
         _save_ec_to_disk(s)
         st.rerun()
 
@@ -6706,6 +6800,7 @@ def _page_report(room_key: str = "", log_tokens_fn=None):
     c_prev, _, c_pdf_bot, c_reset = st.columns([1.2, 3.45, 1.25, 1.3])
     if c_prev.button("< 이전(3단계)", use_container_width=True):
         s["step"] = 3
+        _trigger_scroll_to_top(s)
         _save_ec_to_disk(s)
         st.rerun()
     with c_pdf_bot:
@@ -6721,6 +6816,7 @@ def _page_report(room_key: str = "", log_tokens_fn=None):
             )
     if c_reset.button("처음으로(1단계)", use_container_width=True):
         s["step"] = 1
+        _trigger_scroll_to_top(s)
         _save_ec_to_disk(s)
         st.rerun()
 
@@ -6734,6 +6830,7 @@ def render_credit_wizard(extract_file_fn, log_tokens_fn=None, active_room_key: s
         st.markdown(CSS, unsafe_allow_html=True)
         _top_status_bar(s)
         _progress(s["step"])
+        _render_scroll_to_top_if_needed(s)
 
         if s["step"] == 1:
             _page_upload(extract_file_fn, log_tokens_fn, active_room_key)
