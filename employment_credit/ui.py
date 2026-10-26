@@ -25,6 +25,7 @@ import re
 import csv
 import json
 import uuid
+import copy
 import hashlib
 import time
 import urllib.request
@@ -138,7 +139,25 @@ def _load_ec_from_disk(ws_id: str) -> dict | None:
         return None
 
 
+_SAVE_PENDING_KEY = "_ec_save_pending"
+_SAVED_HASH_KEY = "_ec_saved_hash"
+
+
 def _save_ec_to_disk(s: dict | None = None) -> None:
+    """
+    저장 요청만 기록합니다. 실제 쓰기는 화면을 다 그린 뒤 _flush_ec_save()에서 한 번만,
+    그리고 저장할 내용이 직전 저장과 다를 때만 합니다.
+    """
+    st.session_state[_SAVE_PENDING_KEY] = True
+
+
+def _flush_ec_save(force: bool = False) -> None:
+    if not (force or st.session_state.pop(_SAVE_PENDING_KEY, False)):
+        return
+    _write_ec_to_disk()
+
+
+def _write_ec_to_disk(s: dict | None = None) -> None:
     try:
         ws_id = st.session_state.get("loaded_workspace_id") or "default_ec"
         if s is None:
@@ -157,8 +176,15 @@ def _save_ec_to_disk(s: dict | None = None) -> None:
                 if isinstance(f, dict) else f
                 for n, f in payload["files"].items()
             }
-        with open(_ec_disk_path(ws_id), "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False)
+        text = json.dumps(payload, ensure_ascii=False, default=str)
+        digest = hashlib.md5(text.encode("utf-8")).hexdigest()
+        saved = st.session_state.setdefault(_SAVED_HASH_KEY, {})
+        path = _ec_disk_path(ws_id)
+        if saved.get(ws_id) == digest and os.path.exists(path):
+            return                                   # 바뀐 내용이 없으면 쓰지 않음
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        saved[ws_id] = digest
     except Exception:
         pass
 
@@ -456,7 +482,65 @@ def _ctx(s: dict, year: int) -> dict:
     }
 
 
+# ══════════════════════════════════════════════════════════════════
+# 계산 결과 재사용 (속도 개선)
+# - 사원표 계산에 쓰이는 입력 전체로 '지문(fingerprint)'을 만들고, 지문이 같을 때만 이전 결과를 재사용합니다.
+# - 사원·월별값·고용유형·사업자정보·추가 사업장·설정 중 하나라도 바뀌면 지문이 달라져 처음부터 다시 계산합니다.
+# - 계산식은 그대로이며, 재사용할 때는 복사본을 돌려주어 화면 쪽에서 값을 고쳐도 원본이 오염되지 않습니다.
+# ══════════════════════════════════════════════════════════════════
+_CALC_CACHE_KEY = "_ec_calc_cache"
+
+
+def _calc_fingerprint(s: dict) -> str | None:
+    try:
+        files_meta = sorted(
+            (str(n), (f or {}).get("key"), (f or {}).get("wp", ""))
+            for n, f in (s.get("files") or {}).items()
+        )
+        wht_years = sorted(str(k) for k, v in (((s.get("ext") or {}).get("wht")) or {}).items() if v)
+        blob = json.dumps(
+            {
+                "people": s.get("people"),
+                "year_recs": {str(k): v for k, v in (s.get("year_recs") or {}).items()},
+                "biz": s.get("biz"),
+                "sub_biz_list": s.get("sub_biz_list"),
+                "tax_year": s.get("tax_year"),
+                "assume_year_end": s.get("assume_year_end"),
+                "include_unpaid_hire_month": s.get("include_unpaid_hire_month"),
+                "manual_extra_years": s.get("manual_extra_years"),
+                "files": files_meta,
+                "wht_years": wht_years,
+            },
+            sort_keys=True, default=str, ensure_ascii=False,
+        )
+        return hashlib.md5(blob.encode("utf-8")).hexdigest()
+    except Exception:
+        return None          # 지문을 못 만들면 재사용하지 않고 항상 새로 계산
+
+
+def _calc_cache(s: dict) -> tuple[dict | None, str | None]:
+    fp = _calc_fingerprint(s)
+    if fp is None:
+        return None, None
+    cache = st.session_state.get(_CALC_CACHE_KEY)
+    if not isinstance(cache, dict) or cache.get("fp") != fp:
+        cache = {"fp": fp, "rows": {}, "cohort": {}}
+        st.session_state[_CALC_CACHE_KEY] = cache
+    return cache, fp
+
+
 def _cohort_youth_map(s: dict, cohort_year: int) -> dict[str, bool]:
+    cache, _ = _calc_cache(s)
+    if cache is not None and cohort_year in cache["cohort"]:
+        return dict(cache["cohort"][cohort_year])
+    out = _cohort_youth_map_uncached(s, cohort_year)
+    cache, _ = _calc_cache(s)                      # 계산 중 상태가 바뀌었을 수 있으므로 다시 확인
+    if cache is not None:
+        cache["cohort"][cohort_year] = dict(out)
+    return out
+
+
+def _cohort_youth_map_uncached(s: dict, cohort_year: int) -> dict[str, bool]:
     """최초공제연도(cohort_year) 사원표 기준으로 그해 실제로 청년등이었던 사원 매핑."""
     ctx = _ctx(s, cohort_year)
     recs = (s.get("year_recs") or {}).get(cohort_year, {})
@@ -2506,6 +2590,22 @@ def _sanitize_workplace_label(raw_wp: str, default_wp: str) -> str:
 
 
 def _build_year_rows(s: dict, year: int) -> tuple[list[dict], dict, dict]:
+    """연도별 사원표 계산 (같은 입력이면 이전 결과의 복사본을 돌려줌)"""
+    s["year_recs"].setdefault(year, {})
+    for pid in (s.get("people") or {}):          # 계산 전에 연도별 입력칸을 먼저 만들어 지문이 흔들리지 않게 함
+        if H.worked_in_year(s["people"][pid], year):
+            s["year_recs"][year].setdefault(pid, P.new_year_rec())
+    cache, _ = _calc_cache(s)
+    if cache is not None and year in cache["rows"]:
+        return copy.deepcopy(cache["rows"][year])
+    result = _build_year_rows_uncached(s, year)
+    cache, _ = _calc_cache(s)
+    if cache is not None:
+        cache["rows"][year] = copy.deepcopy(result)
+    return result
+
+
+def _build_year_rows_uncached(s: dict, year: int) -> tuple[list[dict], dict, dict]:
     people, recs = s["people"], s["year_recs"].setdefault(year, {})
     ctx = _ctx(s, year)
     ctx["cohort_youth_map"] = {
@@ -4933,16 +5033,19 @@ def _page_report():
 # ══════════════════════════════════════════════════════════════════
 def render_credit_wizard(extract_file_fn, log_tokens_fn=None, active_room_key: str = "", **_):
     s = _S()
-    st.markdown(CSS, unsafe_allow_html=True)
-    _top_status_bar(s)
-    _progress(s["step"])
+    try:
+        st.markdown(CSS, unsafe_allow_html=True)
+        _top_status_bar(s)
+        _progress(s["step"])
 
-    if s["step"] == 1:
-        _page_upload(extract_file_fn, log_tokens_fn, active_room_key)
-    elif s["step"] == 2:
-        _page_employees(active_room_key, log_tokens_fn=log_tokens_fn)
-    elif s["step"] == 3:
-        _page_calculation()
-    else:
-        _page_report()
-    _save_ec_to_disk(s)
+        if s["step"] == 1:
+            _page_upload(extract_file_fn, log_tokens_fn, active_room_key)
+        elif s["step"] == 2:
+            _page_employees(active_room_key, log_tokens_fn=log_tokens_fn)
+        elif s["step"] == 3:
+            _page_calculation()
+        else:
+            _page_report()
+    finally:
+        # 화면 이동(st.rerun)으로 중간에 끝나도 이 시점에 한 번 저장 (내용이 바뀌었을 때만 실제로 씀)
+        _flush_ec_save(force=True)

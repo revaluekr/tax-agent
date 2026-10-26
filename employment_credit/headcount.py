@@ -37,6 +37,7 @@ from calendar import monthrange
 from fractions import Fraction
 from decimal import Decimal, ROUND_DOWN
 import re
+from functools import lru_cache
 from typing import Any
 
 from . import rules as R
@@ -50,7 +51,13 @@ def parse_date(val) -> date | None:
         return val
     if isinstance(val, datetime):
         return val.date()
-    s = str(val or "").strip()
+    return _parse_date_str(str(val or ""))
+
+
+@lru_cache(maxsize=65536)
+def _parse_date_str(raw: str) -> date | None:
+    """문자열 → 날짜 (같은 문자열은 한 번만 해석해 재사용, date는 바뀌지 않는 값이라 안전)"""
+    s = raw.strip()
     if not s or s.lower() in ("none", "null", "nan", "nat", "-"):
         return None
     s = re.sub(r"[년월/.]", "-", s)
@@ -87,6 +94,15 @@ def add_years(d: date, n: int) -> date:
 
 
 def full_age(birth: date | None, ref: date | None, military_months: int = 0) -> int | None:
+    try:
+        mil = int(military_months or 0)
+    except (TypeError, ValueError):
+        mil = 0
+    return _full_age_cached(birth, ref, mil)
+
+
+@lru_cache(maxsize=131072)
+def _full_age_cached(birth: date | None, ref: date | None, military_months: int = 0) -> int | None:
     """
     기준일(ref) 현재 만 나이 (병역이행기간 최대 72개월 차감 반영).
     - 조특령 제26조의8 제3항 제1호 가목: 병역을 이행한 후 취업한 경우 병역기간(6년 한도)을 빼고 연령 계산.
@@ -110,6 +126,7 @@ def full_age(birth: date | None, ref: date | None, military_months: int = 0) -> 
     return max(0, years)
 
 
+@lru_cache(maxsize=4096)
 def month_end(year: int, month: int) -> date:
     return date(year, month, monthrange(year, month)[1])
 
@@ -461,8 +478,9 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
 
     cmap = ctx.get("cohort_youth_map") or {}
     pid = person.get("pid")
-    c1_was_youth = (cmap.get(year - 1) or {}).get(pid) if (year - 1) in cmap else None
-    c2_was_youth = (cmap.get(year - 2) or {}).get(pid) if (year - 2) in cmap else None
+    # 최초공제연도 사원표가 있으면 거기 없는 사람은 그해 근무하지 않은 것이므로 청년 간주 대상 아님(False)
+    c1_was_youth = bool((cmap.get(year - 1) or {}).get(pid, False)) if (year - 1) in cmap else None
+    c2_was_youth = bool((cmap.get(year - 2) or {}).get(pid, False)) if (year - 2) in cmap else None
 
     months: list[float | None] = []
     youth_flags_b1: list[bool] = []
