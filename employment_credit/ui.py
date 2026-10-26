@@ -77,6 +77,10 @@ _PERSIST_KEYS = (
     "show_empty_pm_blocks",
     "manual_extra_years",
     "next_pid_seq",
+    "_pm_basis_user_touched",
+    "_tabs_user_touched",
+    "fill_ver",
+    "pro_audit_comment",
 )
 
 
@@ -688,7 +692,7 @@ def _build_schedule_pdf_bytes(s: dict, target_years: list[int], include_summary:
         rows, _, totals = _build_year_rows(s, y)
         totals_by_yr[y] = totals
         role_desc = _year_role_description(s, tax_yr, y)
-        trunc_mode = "합산 후 절사"
+        trunc_mode = "인별절사" if int(y) >= 2025 else "전체절사"
         b3_t, b4_t, b5_t = _block_titles_for_year(y, two_line=False)
 
         has_y1 = _has_year_data(s, y - 1) or bool(s.get("show_empty_pm_blocks", False))
@@ -1345,6 +1349,124 @@ div[class*="st-key-ec_btn_pdf_"] button p {
     color: #64748b;
     margin-top: 4px;
 }
+
+/* ── 3단계 연도별 세액공제 요약 매트릭스 및 계산 구조 전용 스타일 ── */
+.ec-matrix-wrap {
+  background:#ffffff; border:1px solid #cbd5e1; border-radius:10px;
+  padding:14px 16px; margin:8px 0 18px 0; box-shadow:0 2px 6px rgba(15,23,42,.04);
+}
+.ec-matrix-title {
+  font-size:.95rem; font-weight:800; color:#0f172a; margin-bottom:10px;
+  display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;
+}
+.ec-matrix-tbl {
+  width:100%; border-collapse:collapse; font-size:.88rem; text-align:right;
+  border-top:2px solid #1e293b; border-bottom:2px solid #1e293b;
+}
+.ec-matrix-tbl th {
+  background:#f1f5f9; color:#1e293b; font-weight:800; padding:9px 12px;
+  border:1px solid #cbd5e1; text-align:center; white-space:nowrap;
+}
+.ec-matrix-tbl th.active-yr {
+  background:#eff6ff; color:#1d4ed8; border-bottom:2px solid #2563eb;
+}
+.ec-matrix-tbl td {
+  padding:8px 12px; border:1px solid #cbd5e1; color:#1e293b; font-weight:600;
+  font-variant-numeric:tabular-nums; white-space:nowrap;
+}
+.ec-matrix-tbl td.lbl-col {
+  background:#f8fafc; text-align:center; font-weight:800; color:#334155;
+}
+.ec-matrix-tbl td.active-yr-cell {
+  background:#f8fbff;
+}
+.ec-matrix-tbl tr.ec-tot-row td {
+  background:#f8fafc; font-weight:900; font-size:.92rem; border-top:1.5px solid #64748b;
+}
+.ec-matrix-tbl tr.ec-tot-row td.active-yr-cell {
+  background:#eff6ff;
+}
+.ec-neg-val {
+  color:#dc2626 !important; font-weight:800 !important;
+}
+.ec-pos-val {
+  color:#0f172a; font-weight:700;
+}
+.ec-zero-val {
+  color:#94a3b8; font-weight:500;
+}
+.ec-sec-header {
+  font-size:1.18rem; font-weight:900; color:#0f172a;
+  margin:20px 0 10px 0; padding:8px 12px;
+  background:linear-gradient(90deg, #eff6ff 0%, #ffffff 100%);
+  border-left:5px solid #1d4ed8; border-radius:4px;
+}
+.ec-sub-header {
+  font-size:.98rem; font-weight:800; color:#1e293b;
+  margin:16px 0 8px 0; padding-left:4px;
+}
+.ec-inc-tbl {
+  width:100%; border-collapse:collapse; font-size:.88rem; margin:6px 0 14px 0;
+  border-top:2px solid #334155; border-bottom:1.5px solid #334155;
+}
+.ec-inc-tbl th {
+  background:#f8fafc; color:#1e293b; font-weight:800; padding:8px 14px;
+  border:1px solid #cbd5e1; text-align:center;
+}
+.ec-inc-tbl td {
+  padding:8px 14px; border:1px solid #cbd5e1; text-align:right;
+  font-weight:600; font-variant-numeric:tabular-nums;
+}
+.ec-inc-tbl td.inc-lbl {
+  text-align:center; font-weight:800; color:#1e293b; background:#fcfcfd; width:34%;
+}
+.ec-inc-tbl td.inc-hi {
+  font-weight:800; color:#1d4ed8; background:#f8fbff;
+}
+.ec-calc-box {
+  background:#ffffff; border:1px solid #cbd5e1; border-radius:8px;
+  padding:12px 16px; margin:6px 0 14px 0;
+  display:flex; align-items:center; justify-content:space-between; gap:16px;
+}
+.ec-calc-formula {
+  flex:1; font-size:.88rem; color:#1e293b; line-height:1.65;
+}
+.ec-calc-formula .f-title {
+  font-weight:800; color:#0f172a; margin-bottom:2px;
+}
+.ec-calc-formula .f-line {
+  font-family:'Pretendard', -apple-system, BlinkMacSystemFont, sans-serif;
+  color:#334155; padding-left:6px;
+}
+.ec-calc-formula .f-sub {
+  font-size:.8rem; color:#64748b; padding-left:6px; margin-top:2px;
+}
+.ec-calc-amount {
+  min-width:210px; text-align:right; padding:8px 14px;
+  background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px;
+}
+.ec-calc-amount .a-lbl {
+  font-size:.76rem; font-weight:700; color:#64748b; margin-bottom:2px;
+}
+.ec-calc-amount .a-val {
+  font-size:1.12rem; font-weight:900; color:#0f172a; font-variant-numeric:tabular-nums;
+}
+.ec-calc-amount .a-val.neg {
+  color:#dc2626 !important;
+}
+.ec-calc-amount .a-val.pos {
+  color:#15803d;
+}
+.ec-law-ref-box {
+  background:#f8fafc; border:1px solid #cbd5e1; border-radius:10px;
+  padding:14px 18px; margin:20px 0 12px 0; font-size:.84rem; color:#334155; line-height:1.65;
+}
+.ec-law-ref-box a {
+  color:#1d4ed8; font-weight:700; text-decoration:none;
+}
+.ec-law-ref-box a:hover {
+  text-decoration:underline;
+}
 </style>
 """
 
@@ -1362,9 +1484,9 @@ def _top_status_bar(s: dict):
     tax_yr = int(s.get("tax_year") or R.DEFAULT_TAX_YEAR)
     pm_lbl = R.PM_BASIS_LABELS.get(s.get("pm_basis", R.PM_BASIS_FILED), "기신고 기준")
     law_ver = (
-        f"{tax_yr}귀속 (합산 후 절사 · 사후관리: {pm_lbl})"
+        f"{tax_yr}귀속 (인별절사 · 사후관리: {pm_lbl})"
         if tax_yr >= 2025
-        else f"{tax_yr}귀속 (합산 후 절사 · 사후관리: {pm_lbl})"
+        else f"{tax_yr}귀속 (전체절사 · 사후관리: {pm_lbl})"
     )
     step_nm = STEPS[max(0, min(len(STEPS) - 1, int(s.get("step", 1)) - 1))]
 
@@ -1490,9 +1612,9 @@ def render_credit_sidebar():
 
     with st.container(border=True):
         yr_badge = (
-            f"<span class='sb-badge-green'>{tax_yr}년 (합산 후 절사)</span>"
+            f"<span class='sb-badge-green'>{tax_yr}년 (인별절사)</span>"
             if tax_yr >= 2025
-            else f"<span class='sb-badge-amber'>{tax_yr}년 (합산 후 절사)</span>"
+            else f"<span class='sb-badge-amber'>{tax_yr}년 (전체절사)</span>"
         )
         st.markdown(
             f"<div class='sb-card-title'><span>📅 귀속사업연도</span>{yr_badge}</div>",
@@ -1502,7 +1624,7 @@ def render_credit_sidebar():
             "통합고용세액공제 계산 기준 사업연도",
             options=R.SUPPORTED_TAX_YEARS,
             index=R.SUPPORTED_TAX_YEARS.index(tax_yr),
-            format_func=lambda y: f"{y}년 귀속 ({'합산 후 절사'} · {(y-1)%100:02d}·{(y-2)%100:02d} 사후관리)",
+            format_func=lambda y: f"{y}년 귀속 ({'인별절사' if y >= 2025 else '전체절사'} · {(y-1)%100:02d}·{(y-2)%100:02d} 사후관리)",
             label_visibility="collapsed",
             key="ec_sb_tax_year_select",
         )
@@ -1826,14 +1948,14 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
         st.markdown(
             "<div class='ec-law-banner'>"
             "💡 <b>[2026년 귀속 통합 계산 안내]</b> 2026년 귀속 신고 시에는 "
-            "<b>① 26년 세액공제(합산 후 절사)</b>, <b>② 25년 1차 사후관리(2차년도 연속공제·추징)</b>, "
+            "<b>① 26년 세액공제(인별절사)</b>, <b>② 25년 1차 사후관리(2차년도 연속공제·추징)</b>, "
             "<b>③ 24년 2차 사후관리(3차년도 연속공제·추징)</b>를 함께 검토합니다. "
             "본점·지점 또는 기중 양도(1번)·포괄양수(2번) 복수 사업장 원천징수부를 함께 올리면 자동 합산됩니다."
             "</div>",
             unsafe_allow_html=True,
         )
     elif tax_yr in (2024, 2025):
-        trunc_lbl = "합산 후 절사"
+        trunc_lbl = "인별절사" if tax_yr >= 2025 else "전체절사"
         st.markdown(
             f"<div class='ec-law-banner'>"
             f"💡 <b>[{tax_yr}년 귀속 세액공제({trunc_lbl}) 및 사후관리 안내]</b> 2단계 진입 시 <b>『{tax_yr}년 귀속 상시근로자 명세』</b>가 맨 위에 표시되며, "
@@ -2166,7 +2288,7 @@ def _block_titles_for_year(year: int, two_line: bool = False) -> tuple[str, str,
     y0 = int(year)
     y1 = y0 - 1
     y2 = y0 - 2
-    trunc_mode = "합산 후 절사"
+    trunc_mode = "인별절사" if y0 >= 2025 else "전체절사"
     if two_line:
         return (
             f"3. {y0}년\n세액공제({trunc_mode})",
@@ -2542,7 +2664,7 @@ def _grid_options(
     go["columnDefs"] = col_defs
 
     n = totals["months_in_year"]
-    trunc_mode = "합산 후 절사"
+    trunc_mode = "인별절사" if int(year) >= 2025 else "전체절사"
     pinned = [
         {
             "사업장명": "합산합계",
@@ -2886,7 +3008,7 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
             f"<span class='kpi-sub'>(청년등 <b>{totals['b3_yth']:.2f}</b> · 청년외 <b>{totals['b3_gen']:.2f}</b>)</span>"
             f"</div>"
         )
-    trunc_mode = "합산 후 절사"
+    trunc_mode = "인별절사" if int(year) >= 2025 else "전체절사"
     st.markdown(
         f"<div class='ec-kpi-bar'>"
         f"<div class='ec-kpi-items'>{''.join(kpi_chips)}</div>"
@@ -2954,7 +3076,7 @@ def _render_prev_filing_summary_card(s: dict, shown_years: list[int]):
             y_entry["청년등"] = yth_val
         with c3:
             st.write("")
-            if st.button(f"➕ {t2_year}년 사원정보 표 직접 열어서 계산하기", use_container_width=True, key=f"btn_open_yr_{t2_year}"):
+            if st.button(f"➕ {t2_year}년 사원정보 표 직접 열어서 전체절사 계산하기", use_container_width=True, key=f"btn_open_yr_{t2_year}"):
                 extra = s.setdefault("manual_extra_years", [])
                 if t2_year not in extra:
                     extra.append(t2_year)
@@ -3233,17 +3355,17 @@ def _render_pm_basis_selector_right(s: dict, widget_key: str) -> str:
         cur_basis = R.PM_BASIS_FILED
         s["pm_basis"] = cur_basis
 
-    opts = [R.PM_BASIS_FILED, R.PM_BASIS_RECALC]
+    opts = [R.PM_BASIS_RECALC, R.PM_BASIS_FILED]
     fmt_map = {
-        R.PM_BASIS_FILED: "📋 기신고 기준 (원칙)",
-        R.PM_BASIS_RECALC: "⚖️ 세법원칙 기준 (재계산)",
+        R.PM_BASIS_RECALC: "⚖️ 2단계 사원표(세법원칙) 기준 계산",
+        R.PM_BASIS_FILED: "📋 기신고 서식 숫자 기준 계산",
     }
 
     seg_fn = getattr(st, "segmented_control", None)
     if callable(seg_fn):
         try:
             chosen = seg_fn(
-                "사후관리 계산 기준",
+                "사후관리 및 공제액 계산 기준 선택",
                 options=opts,
                 default=cur_basis,
                 format_func=lambda k: fmt_map.get(k, k),
@@ -3252,6 +3374,7 @@ def _render_pm_basis_selector_right(s: dict, widget_key: str) -> str:
             )
             if chosen in opts and chosen != cur_basis:
                 s["pm_basis"] = chosen
+                s["_pm_basis_user_touched"] = True
                 _save_ec_to_disk(s)
                 st.rerun()
             return s["pm_basis"]
@@ -3259,7 +3382,7 @@ def _render_pm_basis_selector_right(s: dict, widget_key: str) -> str:
             pass
 
     chosen_r = st.radio(
-        "사후관리 계산 기준",
+        "사후관리 및 공제액 계산 기준 선택",
         options=opts,
         index=opts.index(cur_basis),
         format_func=lambda k: fmt_map.get(k, k),
@@ -3269,9 +3392,399 @@ def _render_pm_basis_selector_right(s: dict, widget_key: str) -> str:
     )
     if chosen_r != cur_basis:
         s["pm_basis"] = chosen_r
+        s["_pm_basis_user_touched"] = True
         _save_ec_to_disk(s)
         st.rerun()
     return s["pm_basis"]
+
+
+def _fmt_matrix_won(credit_won: int | float | None, clawback_won: int | float | None = 0) -> str:
+    """
+    상단 4개년 요약 매트릭스 셀 포맷터:
+    - 공제세액(양수)과 추가납부세액(음수, 붉은 글씨 '-')을 구분하여 HTML 문자열로 반환
+    """
+    cr = int(round(float(credit_won or 0)))
+    cl = int(round(float(clawback_won or 0)))
+    if cr > 0 and cl > 0:
+        return (
+            f"<span class='ec-pos-val'>{cr:,}</span>"
+            f"<br><span class='ec-neg-val'>-{cl:,}</span>"
+        )
+    if cl > 0:
+        return f"<span class='ec-neg-val'>-{cl:,}</span>"
+    if cr < 0:
+        return f"<span class='ec-neg-val'>-{abs(cr):,}</span>"
+    if cr > 0:
+        return f"<span class='ec-pos-val'>{cr:,}</span>"
+    return "<span class='ec-zero-val'>0</span>"
+
+
+def _fmt_signed_total_won(net_won: int | float | None) -> str:
+    v = int(round(float(net_won or 0)))
+    if v < 0:
+        return f"<span class='ec-neg-val'>-{abs(v):,}</span>"
+    if v > 0:
+        return f"<span class='ec-pos-val'>{v:,}</span>"
+    return "<span class='ec-zero-val'>0</span>"
+
+
+def _compute_historical_matrix_columns(
+    s: dict,
+    tax_yr: int,
+    corp_size: str,
+    is_capital: bool,
+    totals_all: dict[int, dict],
+    ps: dict,
+    pkg_cur: dict,
+    active_pm_basis: str,
+) -> dict[int, dict[str, Any]]:
+    """
+    상단 요약표 [구분: 세액공제액 | 1차 / 2차 / 3차 / 합계] × [tax_yr-3, tax_yr-2, tax_yr-1, tax_yr] 4개 연도 열 산출.
+    - 각 열(column Y)은 해당 과세연도(Y년 귀속) 신고 시점의:
+      * 1차: Y년 귀속 신규 고용증가 세액공제액 (1차년도분)
+      * 2차: Y-1년 귀속분의 Y년 1차 사후관리 (2차년도 연속공제액 또는 (-)추가납부세액)
+      * 3차: Y-2년 귀속분의 Y년 2차 사후관리 (3차년도 연속공제액 또는 (-)추가납부세액)
+      * 합계: 1차 + 2차 + 3차 순합계 (음수 시 붉은색 -금액)
+    """
+    rates_leg = H.get_unit_rates(corp_size, is_capital, scheme="legacy", retention_year=1)
+    yth_r = rates_leg["청년등"]
+    gen_r = rates_leg["청년등외"]
+    is_large = corp_size in ("일반기업", "대기업")
+
+    def _s_yr(y: int) -> dict:
+        d = totals_all.get(y) or {}
+        reg = float(d.get("상시_평균", d.get("regular", 0.0)) or 0.0)
+        yth = float(d.get("청년등_평균", d.get("youth", 0.0)) or 0.0)
+        b2_r = float(d.get("b2_reg", reg) or 0.0)
+        b2_y = float(d.get("b2_yth", yth) or 0.0)
+        b3_r = float(d.get("b3_reg", reg) or 0.0)
+        b3_y = float(d.get("b3_yth", yth) or 0.0)
+        has_d = bool(d.get("has_data", reg > 0 or yth > 0))
+        return {
+            "reg": round(reg, 2),
+            "yth": round(yth, 2),
+            "gen": round(max(0.0, reg - yth), 2),
+            "b2_reg": round(b2_r, 2),
+            "b2_yth": round(b2_y, 2),
+            "b3_reg": round(b3_r, 2),
+            "b3_yth": round(b3_y, 2),
+            "has_data": has_d,
+            "from_filed": bool(d.get("from_filed")),
+        }
+
+    def _cohort_1st_info(y_cohort: int) -> dict[str, Any]:
+        """y_cohort 귀속분의 최초(1차년도) 상시·청년등·증가인원·1차공제세액 추정"""
+        f_d = ps.get(str(y_cohort)) or {}
+        sy = _s_yr(y_cohort)
+        sy_prev = _s_yr(y_cohort - 1)
+        use_recalc = (active_pm_basis == R.PM_BASIS_RECALC)
+
+        # 1) 세법원칙(사원표 재계산) 우선 확인
+        recalc_ok = sy["has_data"] and not sy["from_filed"] and sy_prev["has_data"] and not sy_prev["from_filed"]
+        inc_recalc = (
+            H.calc_increase_with_cap(sy["reg"], sy["yth"], sy_prev["reg"], sy_prev["yth"])
+            if recalc_ok
+            else None
+        )
+        cr_recalc = (
+            int(round((inc_recalc["youth_inc"] * yth_r + inc_recalc["non_youth_inc"] * gen_r) * 10_000))
+            if inc_recalc is not None
+            else None
+        )
+
+        # 2) 기신고 입력값 확인
+        f_reg = f_d.get("상시")
+        f_yth = f_d.get("청년등")
+        f_y_inc = f_d.get("청년등_증가")
+        f_g_inc = f_d.get("청년등외_증가")
+        f_clm = f_d.get("공제세액")
+
+        if use_recalc and recalc_ok and inc_recalc is not None:
+            return {
+                "has": True,
+                "reg": sy["reg"],
+                "yth": sy["yth"],
+                "yth_inc": inc_recalc["youth_inc"],
+                "gen_inc": inc_recalc["non_youth_inc"],
+                "credit_1st_won": int(cr_recalc or 0),
+            }
+
+        if f_y_inc is not None or f_g_inc is not None or f_clm is not None:
+            yi = float(f_y_inc or 0.0)
+            gi = float(f_g_inc or 0.0)
+            calc_1st = int(round((yi * yth_r + gi * gen_r) * 10_000))
+            if f_clm is not None and int(f_clm or 0) > 0:
+                c1_won = int(f_clm)
+            else:
+                c1_won = calc_1st
+            return {
+                "has": True,
+                "reg": float(f_reg if f_reg is not None else sy["reg"]),
+                "yth": float(f_yth if f_yth is not None else sy["yth"]),
+                "yth_inc": yi,
+                "gen_inc": gi,
+                "credit_1st_won": c1_won,
+            }
+
+        if recalc_ok and inc_recalc is not None:
+            return {
+                "has": True,
+                "reg": sy["reg"],
+                "yth": sy["yth"],
+                "yth_inc": inc_recalc["youth_inc"],
+                "gen_inc": inc_recalc["non_youth_inc"],
+                "credit_1st_won": int(cr_recalc or 0),
+            }
+
+        return {
+            "has": False,
+            "reg": sy["reg"],
+            "yth": sy["yth"],
+            "yth_inc": 0.0,
+            "gen_inc": 0.0,
+            "credit_1st_won": 0,
+        }
+
+    cols: dict[int, dict[str, Any]] = {}
+    y_m3, y_m2, y_m1, y_0 = tax_yr - 3, tax_yr - 2, tax_yr - 1, tax_yr
+
+    info_m3 = _cohort_1st_info(y_m3)
+    info_m2 = _cohort_1st_info(y_m2)
+    info_m1 = _cohort_1st_info(y_m1)
+
+    # ── (A) tax_yr - 3 열 (예: 2023년) ──
+    c_m3_1 = info_m3["credit_1st_won"]
+    cols[y_m3] = {
+        "r1_credit": c_m3_1, "r1_claw": 0,
+        "r2_credit": 0, "r2_claw": 0,
+        "r3_credit": 0, "r3_claw": 0,
+        "net_total": c_m3_1,
+    }
+
+    # ── (B) tax_yr - 2 열 (예: 2024년) ──
+    c_m2_1 = info_m2["credit_1st_won"]
+    c_m2_2_cr, c_m2_2_cl = 0, 0
+    s_m2 = _s_yr(y_m2)
+    if info_m3["has"] and s_m2["has_data"] and (info_m3["yth_inc"] + info_m3["gen_inc"] > 0):
+        pm_m3_in_m2 = H.calc_legacy_post_management(
+            cohort_year=y_m3,
+            eval_year=y_m2,
+            corp_size=corp_size,
+            is_capital=is_capital,
+            init_reg=info_m3["reg"],
+            init_yth=info_m3["yth"],
+            init_yth_inc=info_m3["yth_inc"],
+            init_gen_inc=info_m3["gen_inc"],
+            cur_pm_reg=s_m2["b2_reg"],
+            cur_pm_yth=s_m2["b2_yth"],
+            init_credit_claimed_won=info_m3["credit_1st_won"],
+        )
+        c_m2_2_cr = int(pm_m3_in_m2.get("continued_credit_won") or 0)
+        c_m2_2_cl = int(pm_m3_in_m2.get("clawback_net_payable_won") or 0)
+    cols[y_m2] = {
+        "r1_credit": c_m2_1, "r1_claw": 0,
+        "r2_credit": c_m2_2_cr, "r2_claw": c_m2_2_cl,
+        "r3_credit": 0, "r3_claw": 0,
+        "net_total": c_m2_1 + c_m2_2_cr - c_m2_2_cl,
+    }
+
+    # ── (C) tax_yr - 1 열 (예: 2025년) ──
+    c_m1_1 = info_m1["credit_1st_won"]
+    c_m1_2_cr, c_m1_2_cl = 0, 0
+    c_m1_3_cr, c_m1_3_cl = 0, 0
+    s_m1 = _s_yr(y_m1)
+    f_m2 = ps.get(str(y_m2)) or {}
+    if active_pm_basis == R.PM_BASIS_FILED and (
+        f_m2.get("2차_공제세액") is not None or f_m2.get("기추징세액") is not None
+    ):
+        c_m1_2_cr = int(f_m2.get("2차_공제세액") or 0)
+        c_m1_2_cl = int(f_m2.get("기추징세액") or 0)
+    elif info_m2["has"] and s_m1["has_data"] and (info_m2["yth_inc"] + info_m2["gen_inc"] > 0):
+        pm_m2_in_m1 = H.calc_legacy_post_management(
+            cohort_year=y_m2,
+            eval_year=y_m1,
+            corp_size=corp_size,
+            is_capital=is_capital,
+            init_reg=info_m2["reg"],
+            init_yth=info_m2["yth"],
+            init_yth_inc=info_m2["yth_inc"],
+            init_gen_inc=info_m2["gen_inc"],
+            cur_pm_reg=s_m1["b2_reg"],
+            cur_pm_yth=s_m1["b2_yth"],
+            init_credit_claimed_won=info_m2["credit_1st_won"],
+        )
+        c_m1_2_cr = int(pm_m2_in_m1.get("continued_credit_won") or 0)
+        c_m1_2_cl = int(pm_m2_in_m1.get("clawback_net_payable_won") or 0)
+
+    if info_m3["has"] and s_m1["has_data"] and (info_m3["yth_inc"] + info_m3["gen_inc"] > 0):
+        cap_m3_2yr = info_m3["credit_1st_won"] + (c_m2_2_cr if not is_large else 0)
+        pm_m3_in_m1 = H.calc_legacy_post_management(
+            cohort_year=y_m3,
+            eval_year=y_m1,
+            corp_size=corp_size,
+            is_capital=is_capital,
+            init_reg=info_m3["reg"],
+            init_yth=info_m3["yth"],
+            init_yth_inc=info_m3["yth_inc"],
+            init_gen_inc=info_m3["gen_inc"],
+            cur_pm_reg=s_m1["b3_reg"],
+            cur_pm_yth=s_m1["b3_yth"],
+            init_credit_claimed_won=cap_m3_2yr,
+            prev_pm_reg=s_m2["b2_reg"] if s_m2["has_data"] else None,
+            prev_pm_yth=s_m2["b2_yth"] if s_m2["has_data"] else None,
+            prior_clawback_paid_won=c_m2_2_cl,
+            y1_continued_credit_won=c_m2_2_cr,
+        )
+        c_m1_3_cr = int(pm_m3_in_m1.get("continued_credit_won") or 0)
+        c_m1_3_cl = int(pm_m3_in_m1.get("clawback_net_payable_won") or 0)
+
+    cols[y_m1] = {
+        "r1_credit": c_m1_1, "r1_claw": 0,
+        "r2_credit": c_m1_2_cr, "r2_claw": c_m1_2_cl,
+        "r3_credit": c_m1_3_cr, "r3_claw": c_m1_3_cl,
+        "net_total": (c_m1_1 + c_m1_2_cr + c_m1_3_cr) - (c_m1_2_cl + c_m1_3_cl),
+    }
+
+    # ── (D) 당해 과세연도(tax_yr) 열 (예: 2026년) ──
+    if pkg_cur["active_scheme"] == "new_2026":
+        c_0_1 = int(pkg_cur.get("cur_new_a_won") or 0)
+    else:
+        c_0_1 = int(pkg_cur.get("cur_legacy_total_won") or 0)
+    pm1 = pkg_cur["pm_y1"]
+    pm2 = pkg_cur["pm_y2"]
+    c_0_2_cr = int(pm1.get("continued_credit_won") or 0)
+    c_0_2_cl = int(pm1.get("clawback_net_payable_won") or 0)
+    c_0_3_cr = int(pm2.get("continued_credit_won") or 0)
+    c_0_3_cl = int(pm2.get("clawback_net_payable_won") or 0)
+    cols[y_0] = {
+        "r1_credit": c_0_1, "r1_claw": 0,
+        "r2_credit": c_0_2_cr, "r2_claw": c_0_2_cl,
+        "r3_credit": c_0_3_cr, "r3_claw": c_0_3_cl,
+        "net_total": (c_0_1 + c_0_2_cr + c_0_3_cr) - (c_0_2_cl + c_0_3_cl),
+    }
+    return cols
+
+
+def _build_pm_formula_lines(
+    pm: dict,
+    cohort_year: int,
+    eval_year: int,
+    elapsed: int,
+    cur_pm_reg: float,
+    cur_pm_yth: float,
+    rates_legacy: dict[str, int],
+) -> tuple[str, list[str], str, int, bool]:
+    """
+    (3) 2차년도 사후관리 계산 / (4) 3차년도 사후관리 계산 박스용 상세 산식 생성.
+    반환: (제목 요약, 산식 줄 리스트, 우측 금액 라벨, 표시 금액(음수는 추징), 음수여부)
+    """
+    yth_r = int(rates_legacy["청년등"])
+    gen_r = int(rates_legacy["청년등외"])
+    diff_r = max(0, yth_r - gen_r)
+    nth_label = f"{elapsed + 1}차년도"
+
+    if pm.get("base_missing"):
+        return (
+            f"{cohort_year}년 귀속분 기초자료 미입력 ({pm.get('case_code', '기초값 없음')})",
+            [
+                f"• {cohort_year}년 최초공제연도의 상시·청년등 인원 또는 증가인원 기초값이 없습니다.",
+                "• 상단 계산 기준을 『⚖️ 2단계 사원표(세법원칙) 기준 계산』으로 선택하거나 아래 기신고 기초값을 입력해 주세요.",
+            ],
+            "세액공제액 / 추가납부액",
+            0,
+            False,
+        )
+
+    if not pm.get("active"):
+        return (
+            f"{cohort_year}년 귀속분 — {pm.get('case_title', '사후관리 대상 아님')}",
+            [
+                f"• {cohort_year}년 귀속 최초 공제 대상 고용증가 인원이 없거나 사후관리 대상이 아닙니다.",
+                f"• 산식: 공제대상 증가인원 0명 × 공제단가 = 0원",
+            ],
+            "세액공제액 / 추가납부액",
+            0,
+            False,
+        )
+
+    init_reg = float(pm.get("init_reg") or 0.0)
+    init_yth = float(pm.get("init_yth") or 0.0)
+    init_y_inc = float(pm.get("init_yth_inc") or 0.0)
+    init_g_inc = float(pm.get("init_gen_inc") or 0.0)
+    ret_y = float(pm.get("retained_yth_inc") or 0.0)
+    ret_g = float(pm.get("retained_gen_inc") or 0.0)
+    reg_dec = float(pm.get("reg_decrease") or 0.0)
+    yth_dec = float(pm.get("yth_decrease") or 0.0)
+
+    cont_won = int(pm.get("continued_credit_won") or 0)
+    claw_net_won = int(pm.get("clawback_net_payable_won") or 0)
+    claw_raw_won = int(pm.get("clawback_raw_cumulative_won") or 0)
+    prior_ded_won = int(pm.get("prior_clawback_deducted_won") or 0)
+    cf_off_won = int(pm.get("carryforward_offset_won") or 0)
+
+    lines = [
+        f"• 인원 비교 ({cohort_year}년 최초공제 대비 {eval_year}년 사후관리 기준): "
+        f"전체 상시 {init_reg:.2f}명 → {cur_pm_reg:.2f}명 (증감 {cur_pm_reg - init_reg:+.2f}명) / "
+        f"청년등 {init_yth:.2f}명 → {cur_pm_yth:.2f}명 (증감 {cur_pm_yth - init_yth:+.2f}명)",
+        f"• {cohort_year}년 최초 공제받은 증가인원: 전체 {init_y_inc + init_g_inc:.2f}명 "
+        f"(청년등 {init_y_inc:.2f}명 · 청년등 외 {init_g_inc:.2f}명)",
+    ]
+
+    if cont_won > 0 and claw_net_won == 0:
+        lines.append(
+            f"• {nth_label} 연속공제 산식: (유지 청년등 {ret_y:.2f}명 × {yth_r*10_000:,}원) + "
+            f"(유지 청년등 외 {ret_g:.2f}명 × {gen_r*10_000:,}원) = {cont_won:,}원"
+        )
+        return (
+            f"{cohort_year}년 귀속분 {nth_label} 사후관리 — {pm.get('case_code', '고용 유지')}",
+            lines,
+            f"{nth_label} 세액공제액",
+            cont_won,
+            False,
+        )
+
+    if claw_net_won > 0 and cont_won > 0:
+        capped_y_dec = min(init_y_inc, yth_dec)
+        lines.append(
+            f"• {nth_label} 부분 연속공제 산식: (유지 청년등 {ret_y:.2f}명 × {yth_r*10_000:,}원) + "
+            f"(대체포함 일반 {ret_g:.2f}명 × {gen_r*10_000:,}원) = {cont_won:,}원"
+        )
+        lines.append(
+            f"• 청년등 감소분 단가차액 추가납부 산식: 감소 청년등 {capped_y_dec:.2f}명 × "
+            f"({yth_r*10_000:,}원 - {gen_r*10_000:,}원 = {diff_r*10_000:,}원) → 추가납부 (-){claw_net_won:,}원"
+        )
+        net_v = cont_won - claw_net_won
+        return (
+            f"{cohort_year}년 귀속분 {nth_label} 사후관리 — {pm.get('case_code', '부분공제 + 추가납부')}",
+            lines,
+            f"{nth_label} 순세액 (공제 {cont_won:,} / 추징 -{claw_net_won:,})",
+            net_v,
+            net_v < 0,
+        )
+
+    if claw_net_won > 0 or claw_raw_won > 0:
+        lines.append(f"• 사후관리 추징 산식: {pm.get('formula_note', '')}")
+        if prior_ded_won > 0 or cf_off_won > 0:
+            lines.append(
+                f"• 차감 반영: 산출 추징액 {claw_raw_won:,}원 - 기추징 차감 {prior_ded_won:,}원 - "
+                f"미공제 이월세액 차감 {cf_off_won:,}원 = 당기 추가납부세액 (-){claw_net_won:,}원"
+            )
+        return (
+            f"{cohort_year}년 귀속분 {nth_label} 사후관리 — {pm.get('case_code', '고용 감소 추징')}",
+            lines,
+            f"{nth_label} 추가납부세액",
+            -claw_net_won,
+            claw_net_won > 0,
+        )
+
+    lines.append(f"• 검토 결과: {pm.get('formula_note', '연속공제 및 추가납부세액 0원')}")
+    return (
+        f"{cohort_year}년 귀속분 {nth_label} 사후관리 — {pm.get('case_code', '세액 없음')}",
+        lines,
+        "세액공제액 / 추가납부액",
+        0,
+        False,
+    )
 
 
 def _page_calculation():
@@ -3282,25 +3795,26 @@ def _page_calculation():
     corp_size = b.get("기업구분", "중소기업")
     cap_bool = H.is_capital_area(b.get("사업장소재지", ""))
     is_capital = True if cap_bool is None else bool(cap_bool)
-    loc_label = "수도권" if is_capital else "수도권 외(비수도권)"
+    loc_label = "수도권" if is_capital else "수도권 외"
 
     totals_all = _ensure_totals_snapshot(s)
     cur_t = totals_all.get(tax_yr, {})
     prev_t = totals_all.get(tax_yr - 1, {})
     prev2_t = totals_all.get(tax_yr - 2, {})
-    has_t2_data = bool(prev2_t.get("has_data") or _has_year_data(s, tax_yr - 2))
     b3_title, b4_title, b5_title = _block_titles_for_year(tax_yr, two_line=False)
 
-    st.markdown(f"### 🧮 3. 통합고용세액공제 및 1·2차 사후관리 계산 ({tax_yr}년 귀속)")
-    st.markdown(
-        f"<div class='ec-law-banner'>"
-        f"🏢 <b>적용 기준:</b> {corp_size} · {loc_label} &nbsp;|&nbsp; "
-        f"<b>① {b3_title}</b> + <b>② {b4_title}</b> + "
-        f"<b>③ {b5_title}</b> + <b>④ 육아휴직복귀/정규직전환 추가공제</b>를 통합 산출합니다. "
-        f"<br>📌 <b>사후관리 산정 원칙:</b> 표 오른쪽 위에서 기본값인 <b>『기신고 기준 (원칙)』</b>과 원천징수부 기반 <b>『세법원칙 기준 (재계산)』</b>을 전환하여 총인원수·평균인원수 및 사후관리세액을 즉시 비교하실 수 있습니다."
-        f"</div>",
-        unsafe_allow_html=True,
+    # 기신고 서식을 별도로 업로드하지 않았고 사용자가 아직 계산 기준을 수동 변경하지 않았다면,
+    # 2단계 사원표(세법원칙)에서 계산된 인원이 3단계에 즉시 반영되도록 자동 설정합니다.
+    has_prev_doc = bool(((s.get("ext") or {}).get("prev_filing") or {}).get("연도별"))
+    ps = s.setdefault("prev_summary", {})
+    has_any_manual_ps = any(
+        (ps.get(str(y)) or {}).get(k) is not None
+        for y in (tax_yr - 1, tax_yr - 2)
+        for k in ("상시", "청년등", "청년등_증가", "청년등외_증가", "공제세액")
     )
+    if not s.get("_pm_basis_user_touched") and not has_prev_doc and not has_any_manual_ps:
+        if prev_t.get("has_data") and not prev_t.get("from_filed"):
+            s["pm_basis"] = R.PM_BASIS_RECALC
 
     if cap_bool is None:
         st.warning("사업장 소재지가 입력되지 않아 수도권 단가로 임시 계산되었습니다. 좌측 사이드바에서 사업장 소재지를 입력해 주세요.")
@@ -3316,7 +3830,355 @@ def _page_calculation():
             unsafe_allow_html=True,
         )
 
-    ps = s.setdefault("prev_summary", {})
+    for cohort in (tax_yr - 1, tax_yr - 2, tax_yr - 3):
+        ps.setdefault(str(cohort), {})
+
+    p1 = ps[str(tax_yr - 1)]
+    p2 = ps[str(tax_yr - 2)]
+    add_in = s.setdefault("additional_inputs", {})
+    active_pm_basis = s.get("pm_basis", R.PM_BASIS_RECALC)
+
+    prior_filings_payload = {
+        cohort: {
+            "init_reg": f.get("상시"),
+            "init_yth": f.get("청년등"),
+            "init_reg_total": f.get("상시_총인원"),
+            "init_yth_total": f.get("청년등_총인원"),
+            "init_yth_inc": f.get("청년등_증가"),
+            "init_gen_inc": f.get("청년등외_증가"),
+            "claimed_won": f.get("공제세액"),
+            "carryforward_won": f.get("이월세액"),
+            "y1_continued_won": f.get("2차_공제세액") if cohort == tax_yr - 2 else None,
+            "prior_clawback_paid_won": f.get("기추징세액") if cohort == tax_yr - 2 else None,
+        }
+        for cohort, f in ((tax_yr - 1, p1), (tax_yr - 2, p2))
+    }
+
+    pkg = H.calculate_tax_year_package(
+        tax_year=tax_yr,
+        corp_size=corp_size,
+        is_capital=is_capital,
+        summaries=totals_all,
+        prior_filings=prior_filings_payload,
+        additional_inputs=add_in,
+        scheme_2026=s.get("scheme_2026", "new_2026"),
+        pm_basis=active_pm_basis,
+    )
+    s["calc_pkg"] = pkg
+    basis_lbl = pkg["pm_basis_label"]
+
+    # ══════════════════════════════════════════════════════════════
+    # [상단] 연도별 세액공제 및 사후관리 요약 매트릭스 (4개 과세연도 한눈에 보기)
+    # ══════════════════════════════════════════════════════════════
+    matrix_cols = _compute_historical_matrix_columns(
+        s=s,
+        tax_yr=tax_yr,
+        corp_size=corp_size,
+        is_capital=is_capital,
+        totals_all=totals_all,
+        ps=ps,
+        pkg_cur=pkg,
+        active_pm_basis=active_pm_basis,
+    )
+    yr_list = [tax_yr - 3, tax_yr - 2, tax_yr - 1, tax_yr]
+
+    basis_badge_html = (
+        f"<span class='ec-basis-pill-recalc'>⚖️ 적용 기준: 2단계 사원표(세법원칙) 기준</span>"
+        if active_pm_basis == R.PM_BASIS_RECALC
+        else f"<span class='ec-basis-pill-filed'>📋 적용 기준: 기신고 서식 숫자 기준</span>"
+    )
+
+    th_years_html = "".join(
+        f"<th class='{'active-yr' if y == tax_yr else ''}'>{y}년{' (당해 귀속)' if y == tax_yr else ''}</th>"
+        for y in yr_list
+    )
+    r1_cells = "".join(
+        f"<td class='{'active-yr-cell' if y == tax_yr else ''}'>"
+        f"{_fmt_matrix_won(matrix_cols[y]['r1_credit'], matrix_cols[y]['r1_claw'])}</td>"
+        for y in yr_list
+    )
+    r2_cells = "".join(
+        f"<td class='{'active-yr-cell' if y == tax_yr else ''}'>"
+        f"{_fmt_matrix_won(matrix_cols[y]['r2_credit'], matrix_cols[y]['r2_claw'])}</td>"
+        for y in yr_list
+    )
+    r3_cells = "".join(
+        f"<td class='{'active-yr-cell' if y == tax_yr else ''}'>"
+        f"{_fmt_matrix_won(matrix_cols[y]['r3_credit'], matrix_cols[y]['r3_claw'])}</td>"
+        for y in yr_list
+    )
+    tot_cells = "".join(
+        f"<td class='{'active-yr-cell' if y == tax_yr else ''}'>"
+        f"{_fmt_signed_total_won(matrix_cols[y]['net_total'])}</td>"
+        for y in yr_list
+    )
+
+    st.markdown(
+        f"<div class='ec-matrix-wrap'>"
+        f"<div class='ec-matrix-title'>"
+        f"<span>📊 연도별 통합고용세액공제 요약표 ({corp_size} · {loc_label})</span>"
+        f"<span style='font-size:.8rem;font-weight:600;color:#475569;'>"
+        f"{basis_badge_html} &nbsp;·&nbsp; 단위: 원 (추가납부세액은 <span class='ec-neg-val'>-붉은색</span> 표시)"
+        f"</span>"
+        f"</div>"
+        f"<table class='ec-matrix-tbl'>"
+        f"<thead>"
+        f"<tr><th colspan='2' style='width:22%;'>구분</th>{th_years_html}</tr>"
+        f"</thead>"
+        f"<tbody>"
+        f"<tr><td rowspan='4' class='lbl-col' style='width:12%;'>세액공제액<br><span style='font-size:.74rem;font-weight:600;color:#64748b;'>(추가납부세액)</span></td>"
+        f"<td class='lbl-col' style='width:10%;'>1차</td>{r1_cells}</tr>"
+        f"<tr><td class='lbl-col'>2차</td>{r2_cells}</tr>"
+        f"<tr><td class='lbl-col'>3차</td>{r3_cells}</tr>"
+        f"<tr class='ec-tot-row'><td class='lbl-col'>합계</td>{tot_cells}</tr>"
+        f"</tbody>"
+        f"</table>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+    # ── 계산 기준 선택 바 (2단계 사원표 기준 vs 기신고 서식 기준) ──
+    c_sel_lbl, c_sel_wg, c_scheme_wg = st.columns([2.2, 2.6, 1.8])
+    with c_sel_lbl:
+        st.markdown(
+            "<div style='padding-top:6px;font-size:.86rem;font-weight:800;color:#1e293b;'>"
+            "🔘 세액공제·사후관리 계산 기준 선택"
+            "</div>"
+            "<div style='font-size:.76rem;color:#64748b;'>"
+            "2단계 사원표 재계산 값과 기신고 서식 숫자 중 원하는 기준을 선택하세요."
+            "</div>",
+            unsafe_allow_html=True,
+        )
+    with c_sel_wg:
+        _render_pm_basis_selector_right(s, widget_key=f"pm_basis_top_step3_{tax_yr}")
+    with c_scheme_wg:
+        if tax_yr >= 2026:
+            scheme_opt = st.selectbox(
+                f"{tax_yr}년 신규공제 단가 체계",
+                options=["new_2026", "legacy"],
+                index=0 if s.get("scheme_2026", "new_2026") == "new_2026" else 1,
+                format_func=lambda x: "2026 신법 (연차별 차등 A+B+C)" if x == "new_2026" else "구법 단가 시뮬레이션 (균등단가)",
+                label_visibility="collapsed",
+                key=f"scheme_2026_top_sel_{tax_yr}",
+            )
+            if scheme_opt != s.get("scheme_2026", "new_2026"):
+                s["scheme_2026"] = scheme_opt
+                _save_ec_to_disk(s)
+                st.rerun()
+
+    # ══════════════════════════════════════════════════════════════
+    # [본문] 선택된 당해 귀속연도(tax_yr) 세액공제 상세 내역 (단독 표시)
+    # ══════════════════════════════════════════════════════════════
+    st.markdown(
+        f"<div class='ec-sec-header'>1. {tax_yr}년 세액공제 ({corp_size} · {loc_label} · {basis_lbl})</div>",
+        unsafe_allow_html=True,
+    )
+
+    # ── (1) 평균 상시근로자 증가 인원 ──
+    cur_s = pkg["cur_s"]
+    prev_s = pkg["prev_s"]
+    cur_inc = pkg["cur_inc"]
+
+    # 기신고 기준 선택 시 직전연도 기신고 인원이 있으면 직전 과세연도 표시값에 반영 가능
+    if active_pm_basis == R.PM_BASIS_FILED and p1.get("상시") is not None and p1.get("청년등") is not None:
+        prv_reg_disp = float(p1["상시"])
+        prv_yth_disp = float(p1["청년등"])
+        prv_gen_disp = round(max(0.0, prv_reg_disp - prv_yth_disp), 2)
+        inc_disp = H.calc_increase_with_cap(cur_s["regular"], cur_s["youth"], prv_reg_disp, prv_yth_disp)
+    else:
+        prv_reg_disp = prev_s["regular"]
+        prv_yth_disp = prev_s["youth"]
+        prv_gen_disp = prev_s["non_youth"]
+        inc_disp = cur_inc
+
+    cap_notice_html = ""
+    if inc_disp.get("raw_youth_inc", 0) > inc_disp["youth_inc"]:
+        cap_notice_html = (
+            f"<div style='font-size:.79rem;color:#b45309;margin-top:-6px;margin-bottom:10px;'>"
+            f"※ 청년 등 순증가 인원({inc_disp['raw_youth_inc']:.2f}명)이 전체 상시근로자 증가 한도({inc_disp['total_inc']:.2f}명)를 초과하여 "
+            f"한도({inc_disp['youth_inc']:.2f}명)가 적용되었습니다 (조특령 제26조의8 제3항)."
+            f"</div>"
+        )
+
+    st.markdown("<div class='ec-sub-header'>(1) 평균 상시근로자 증가 인원</div>", unsafe_allow_html=True)
+    st.markdown(
+        f"<table class='ec-inc-tbl'>"
+        f"<thead>"
+        f"<tr>"
+        f"<th>구분</th>"
+        f"<th>해당 과세연도 ({tax_yr}년)</th>"
+        f"<th>직전 과세연도 ({tax_yr - 1}년)</th>"
+        f"<th>증가인원</th>"
+        f"</tr>"
+        f"</thead>"
+        f"<tbody>"
+        f"<tr>"
+        f"<td class='inc-lbl'>상시근로자 증가</td>"
+        f"<td>{cur_s['regular']:.2f}명</td>"
+        f"<td>{prv_reg_disp:.2f}명</td>"
+        f"<td class='inc-hi'>{inc_disp['total_inc']:.2f}명 "
+        f"<span style='font-size:.76rem;color:#64748b;font-weight:500;'>(증감 {inc_disp['total_diff']:+.2f})</span></td>"
+        f"</tr>"
+        f"<tr>"
+        f"<td class='inc-lbl'>청년 등 상시근로자 증가</td>"
+        f"<td>{cur_s['youth']:.2f}명</td>"
+        f"<td>{prv_yth_disp:.2f}명</td>"
+        f"<td class='inc-hi'>{inc_disp['youth_inc']:.2f}명</td>"
+        f"</tr>"
+        f"<tr>"
+        f"<td class='inc-lbl'>이 외 상시근로자 증가</td>"
+        f"<td>{cur_s['non_youth']:.2f}명</td>"
+        f"<td>{prv_gen_disp:.2f}명</td>"
+        f"<td class='inc-hi'>{inc_disp['non_youth_inc']:.2f}명</td>"
+        f"</tr>"
+        f"</tbody>"
+        f"</table>"
+        f"{cap_notice_html}",
+        unsafe_allow_html=True,
+    )
+
+    # ── (2) 1차년도 세액공제액 계산 (기업구분, 수도권/비수도권) ──
+    st.markdown(
+        f"<div class='ec-sub-header'>(2) 1차년도 세액공제액 계산 ({corp_size}, {loc_label})</div>",
+        unsafe_allow_html=True,
+    )
+    if pkg["active_scheme"] == "new_2026":
+        r_y1 = pkg["rates_new_y1"]
+        y_unit_won = r_y1["청년등"] * 10_000
+        g_unit_won = r_y1["청년등외"] * 10_000
+        y_amt_won = int(round(inc_disp["youth_inc"] * y_unit_won))
+        g_amt_won = int(round(inc_disp["non_youth_inc"] * g_unit_won))
+        ded_won = int(pkg["cur_new_ded_won"] or 0)
+        first_yr_credit_won = max(0, y_amt_won + g_amt_won - ded_won)
+        ded_line_html = (
+            f"<div class='f-line' style='color:#b45309;'>"
+            f"• 최소고용증가인원({pkg['hurdle_res']['hurdle']:g}명) 차감액: -{ded_won:,}원 ({pkg['hurdle_res']['note']})"
+            f"</div>"
+            if ded_won > 0 or not pkg["hurdle_res"]["hurdle_met"]
+            else ""
+        )
+        formula_y1_html = (
+            f"<div class='f-title'>{tax_yr}년 귀속 1차년도 신규 고용증가 세액공제 (2026 신법 1년차 단가)</div>"
+            f"<div class='f-line'>• 청년 등 상시근로자 증가: {inc_disp['youth_inc']:.2f}명 × {y_unit_won:,}원 = {y_amt_won:,}원</div>"
+            f"<div class='f-line'>• 청년 등 외 상시근로자 증가: {inc_disp['non_youth_inc']:.2f}명 × {g_unit_won:,}원 = {g_amt_won:,}원</div>"
+            f"{ded_line_html}"
+            f"<div class='f-sub'>산식 합계: ({inc_disp['youth_inc']:.2f} × {y_unit_won:,}원) + ({inc_disp['non_youth_inc']:.2f} × {g_unit_won:,}원)"
+            f"{f' - {ded_won:,}원' if ded_won > 0 else ''} = <b>{first_yr_credit_won:,}원</b></div>"
+        )
+    else:
+        r_leg = pkg["rates_legacy"]
+        y_unit_won = r_leg["청년등"] * 10_000
+        g_unit_won = r_leg["청년등외"] * 10_000
+        y_amt_won = int(round(inc_disp["youth_inc"] * y_unit_won))
+        g_amt_won = int(round(inc_disp["non_youth_inc"] * g_unit_won))
+        first_yr_credit_won = y_amt_won + g_amt_won
+        formula_y1_html = (
+            f"<div class='f-title'>{tax_yr}년 귀속 1차년도 고용증가 세액공제 (조특법 제29조의8 제1항 단가)</div>"
+            f"<div class='f-line'>• 청년 등 상시근로자 증가: {inc_disp['youth_inc']:.2f}명 × {y_unit_won:,}원 = {y_amt_won:,}원</div>"
+            f"<div class='f-line'>• 청년 등 외 상시근로자 증가: {inc_disp['non_youth_inc']:.2f}명 × {g_unit_won:,}원 = {g_amt_won:,}원</div>"
+            f"<div class='f-sub'>산식 합계: ({inc_disp['youth_inc']:.2f} × {y_unit_won:,}원) + ({inc_disp['non_youth_inc']:.2f} × {g_unit_won:,}원) = <b>{first_yr_credit_won:,}원</b></div>"
+        )
+
+    st.markdown(
+        f"<div class='ec-calc-box'>"
+        f"<div class='ec-calc-formula'>{formula_y1_html}</div>"
+        f"<div class='ec-calc-amount'>"
+        f"<div class='a-lbl'>1차년도 세액공제액</div>"
+        f"<div class='a-val {'pos' if first_yr_credit_won > 0 else ''}'>{first_yr_credit_won:,}원</div>"
+        f"</div>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+    # ── (3) 2차년도 사후관리 계산 (직전 과세연도 귀속분의 당해 사후관리) ──
+    st.markdown(
+        f"<div class='ec-sub-header'>(3) 2차년도 사후관리 계산 ({tax_yr - 1}년 귀속분 → {tax_yr}년 1차 사후관리)</div>",
+        unsafe_allow_html=True,
+    )
+    pm1_title, pm1_lines, pm1_amt_lbl, pm1_val, pm1_is_neg = _build_pm_formula_lines(
+        pm=pkg["pm_y1"],
+        cohort_year=tax_yr - 1,
+        eval_year=tax_yr,
+        elapsed=1,
+        cur_pm_reg=cur_s["b2_reg"],
+        cur_pm_yth=cur_s["b2_yth"],
+        rates_legacy=pkg["rates_legacy"],
+    )
+    pm1_lines_html = "".join(f"<div class='f-line'>{ln}</div>" for ln in pm1_lines)
+    pm1_val_str = f"-{abs(pm1_val):,}원" if pm1_val < 0 else f"{pm1_val:,}원"
+    pm1_cls = "neg" if pm1_is_neg else ("pos" if pm1_val > 0 else "")
+
+    st.markdown(
+        f"<div class='ec-calc-box'>"
+        f"<div class='ec-calc-formula'>"
+        f"<div class='f-title'>{pm1_title}</div>"
+        f"{pm1_lines_html}"
+        f"</div>"
+        f"<div class='ec-calc-amount'>"
+        f"<div class='a-lbl'>{pm1_amt_lbl}</div>"
+        f"<div class='a-val {pm1_cls}'>{pm1_val_str}</div>"
+        f"</div>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+    # ── (4) 3차년도 사후관리 계산 (전전 과세연도 귀속분의 당해 사후관리) ──
+    st.markdown(
+        f"<div class='ec-sub-header'>(4) 3차년도 사후관리 계산 ({tax_yr - 2}년 귀속분 → {tax_yr}년 2차 사후관리)</div>",
+        unsafe_allow_html=True,
+    )
+    pm2_title, pm2_lines, pm2_amt_lbl, pm2_val, pm2_is_neg = _build_pm_formula_lines(
+        pm=pkg["pm_y2"],
+        cohort_year=tax_yr - 2,
+        eval_year=tax_yr,
+        elapsed=2,
+        cur_pm_reg=cur_s["b3_reg"],
+        cur_pm_yth=cur_s["b3_yth"],
+        rates_legacy=pkg["rates_legacy"],
+    )
+    pm2_lines_html = "".join(f"<div class='f-line'>{ln}</div>" for ln in pm2_lines)
+    pm2_val_str = f"-{abs(pm2_val):,}원" if pm2_val < 0 else f"{pm2_val:,}원"
+    pm2_cls = "neg" if pm2_is_neg else ("pos" if pm2_val > 0 else "")
+
+    st.markdown(
+        f"<div class='ec-calc-box'>"
+        f"<div class='ec-calc-formula'>"
+        f"<div class='f-title'>{pm2_title}</div>"
+        f"{pm2_lines_html}"
+        f"</div>"
+        f"<div class='ec-calc-amount'>"
+        f"<div class='a-lbl'>{pm2_amt_lbl}</div>"
+        f"<div class='a-val {pm2_cls}'>{pm2_val_str}</div>"
+        f"</div>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+    # 추가공제(육아휴직복귀/정규직전환) 또는 농특세가 있는 경우 요약 안내
+    if pkg["additional_credit_won"] > 0 or pkg["additional_clawback_won"] > 0 or pkg["rural_special_tax_won"] > 0:
+        add_net = pkg["additional_credit_won"] - pkg["additional_clawback_won"]
+        st.markdown(
+            f"<div class='ec-sub-header'>(5) 추가공제(육아휴직 복귀·정규직 전환) 및 농어촌특별세(20%) 요약</div>"
+            f"<div class='ec-calc-box'>"
+            f"<div class='ec-calc-formula'>"
+            f"<div class='f-line'>• 육아휴직 복귀·정규직 전환 추가공제: +{pkg['additional_credit_won']:,}원 / "
+            f"2년 내 퇴직 추가납부: <span class='ec-neg-val'>-{pkg['additional_clawback_won']:,}원</span></div>"
+            f"<div class='f-line'>• 농어촌특별세(실공제세액 {pkg['actual_deducted_credit_won']:,}원의 20%): "
+            f"<span class='ec-neg-val'>-{pkg['rural_special_tax_won']:,}원</span> "
+            f"(농특세 차감 후 실질 세후 혜택: <b>{pkg['net_after_rural_tax_won']:+,}원</b>)</div>"
+            f"</div>"
+            f"<div class='ec-calc-amount'>"
+            f"<div class='a-lbl'>추가공제 순세액</div>"
+            f"<div class='a-val {'neg' if add_net < 0 else 'pos'}'>"
+            f"{f'-{abs(add_net):,}원' if add_net < 0 else f'{add_net:,}원'}</div>"
+            f"</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+    # ══════════════════════════════════════════════════════════════
+    # [보조 설정] 기신고 기초값 수기 입력 및 추가공제 옵션 (접이식 Expander)
+    # ══════════════════════════════════════════════════════════════
     fill_ver = int(s.get("fill_ver", 0))
     kver = (abs(hash(str(s.get("built_sig")))) + fill_ver) % 100000
     rates_legacy = H.get_unit_rates(corp_size, is_capital, scheme="legacy", retention_year=1)
@@ -3333,20 +4195,20 @@ def _page_calculation():
         )
 
     with st.expander(
-        f"⚙️ 사후관리 『기신고 기준』 기초값 ({tax_yr-1}년 · {tax_yr-2}년 귀속분 기신고 서식)", expanded=True,
+        f"⚙️ 기신고 서식 숫자 직접 입력·보정 ({tax_yr-1}년 · {tax_yr-2}년 귀속분 — 『📋 기신고 서식 숫자 기준』 선택 시 사용)",
+        expanded=(active_pm_basis == R.PM_BASIS_FILED and not has_any_manual_ps),
     ):
         c_cap, c_btn = st.columns([4.2, 1.8])
         with c_cap:
             st.caption(
-                "기신고 상시근로자 명세서·공제감면세액계산서에서 읽은 값입니다. 빈 칸은 서식에서 읽지 못한 값이니 직접 입력하시거나 우측 버튼으로 사원표 재계산 값을 복사해 채울 수 있습니다. "
-                "각 칸 이름 옆 괄호는 2단계 사원표로 다시 계산한 『세법원칙 기준』 값입니다 (사원표가 없으면 '-')."
+                "기신고 상시근로자 명세서·공제감면세액계산서 숫자가 사원표 재계산 값과 다를 때 입력합니다. "
+                "각 칸 이름 옆 괄호는 2단계 사원표로 계산한 『세법원칙 기준』 값입니다."
             )
         with c_btn:
             if st.button(
-                "🔄 사원표 재계산 값으로 빈칸 채우기",
+                "🔄 2단계 사원표 재계산 값으로 빈칸 자동 채우기",
                 use_container_width=True,
                 key=f"btn_fill_from_recalc_{tax_yr}",
-                help="별도 기신고서를 올리지 않은 경우, 2단계 사원표에서 계산된 인원·증가인원·추정 공제세액을 기신고 입력칸에 복사합니다.",
             ):
                 for cohort, t_init, t_before in (
                     (tax_yr - 1, prev_t, prev2_t),
@@ -3372,58 +4234,63 @@ def _page_calculation():
                             f_d["청년등_증가"] = float(inc_c["youth_inc"])
                         if f_d.get("청년등외_증가") is None:
                             f_d["청년등외_증가"] = float(inc_c["non_youth_inc"])
-                        if f_d.get("공제세액") is None:
-                            yr_cnt = 1 if cohort == tax_yr - 1 else (1 if corp_size in ("일반기업", "대기업") else 2)
-                            f_d["공제세액"] = int(
-                                round(
-                                    (inc_c["youth_inc"] * rates_legacy["청년등"] + inc_c["non_youth_inc"] * rates_legacy["청년등외"])
-                                    * 10_000
-                                    * yr_cnt
-                                )
+                        c1_est = int(
+                            round(
+                                (inc_c["youth_inc"] * rates_legacy["청년등"] + inc_c["non_youth_inc"] * rates_legacy["청년등외"])
+                                * 10_000
                             )
+                        )
+                        if f_d.get("공제세액") is None:
+                            f_d["공제세액"] = c1_est
+                        if cohort == tax_yr - 2 and f_d.get("2차_공제세액") is None and corp_size not in ("일반기업", "대기업"):
+                            if not (prev_t.get("has_data") and float(prev_t.get("b2_reg", 0.0)) < float(t_init.get("상시_평균", 0.0))):
+                                f_d["2차_공제세액"] = c1_est
                 s["fill_ver"] = fill_ver + 1
                 _save_ec_to_disk(s)
                 st.rerun()
 
         col_y1, col_y2 = st.columns(2)
-        for col, cohort, t_init, t_before, m_key in (
-            (col_y1, tax_yr - 1, prev_t, prev2_t, "전년_월수"),
-            (col_y2, tax_yr - 2, prev2_t, totals_all.get(tax_yr - 3, {}), "전전년_월수"),
+        for col, cohort, step_lbl, t_init, t_before in (
+            (col_y1, tax_yr - 1, "1차 사후관리 (2차년도)", prev_t, prev2_t),
+            (col_y2, tax_yr - 2, "2차 사후관리 (3차년도)", prev2_t, totals_all.get(tax_yr - 3, {})),
         ):
             f = ps.setdefault(str(cohort), {})
             has_init = bool(t_init.get("has_data")) and not t_init.get("from_filed")
             has_before = bool(t_before.get("has_data")) and not t_before.get("from_filed")
-            law_inc = (
+            inc_r = (
                 H.calc_increase_with_cap(
                     t_init["상시_평균"], t_init["청년등_평균"], t_before["상시_평균"], t_before["청년등_평균"]
                 )
-                if has_init and has_before
+                if (has_init and has_before)
                 else None
             )
-            law = lambda k: (f"{t_init.get(k, 0.0):.2f}" if has_init else "-")
-            stage = "2차년도·사후관리 1년차" if cohort == tax_yr - 1 else "3차년도·사후관리 2년차"
+            r_reg = f"{t_init['상시_평균']:.2f}" if has_init else "-"
+            r_yth = f"{t_init['청년등_평균']:.2f}" if has_init else "-"
+            r_rtot = f"{t_init['상시_합계']:g}" if has_init else "-"
+            r_ytot = f"{t_init['청년등_합계']:g}" if has_init else "-"
+            r_yi = f"{inc_r['youth_inc']:.2f}" if inc_r else "-"
+            r_gi = f"{inc_r['non_youth_inc']:.2f}" if inc_r else "-"
+
             with col:
-                st.markdown(f"##### 📌 {cohort}년 귀속분 ({stage})")
+                st.markdown(f"**📋 {cohort}년 귀속 기신고분 ({step_lbl})**")
                 a, b_ = st.columns(2)
-                f["상시"] = _num_in(a, f"상시 평균인원 ({law('상시_평균')})", f.get("상시"), f"pf_{cohort}_reg_{kver}")
-                f["청년등"] = _num_in(b_, f"청년등 평균인원 ({law('청년등_평균')})", f.get("청년등"), f"pf_{cohort}_yth_{kver}")
                 f["상시_총인원"] = _num_in(
-                    a, f"상시 총인원수·연인원 ({law('상시_합계')})", f.get("상시_총인원"), f"pf_{cohort}_rt_{kver}", step=0.25
+                    a, f"{cohort}년 상시 연인원 합계 (재계산: {r_rtot})", f.get("상시_총인원"), f"pf_{cohort}_rtot_{kver}", step=1.0
                 )
                 f["청년등_총인원"] = _num_in(
-                    b_, f"청년등 총인원수·연인원 ({law('청년등_합계')})", f.get("청년등_총인원"), f"pf_{cohort}_yt_{kver}", step=0.25
+                    b_, f"{cohort}년 청년등 연인원 합계 (재계산: {r_ytot})", f.get("청년등_총인원"), f"pf_{cohort}_ytot_{kver}", step=1.0
+                )
+                f["상시"] = _num_in(
+                    a, f"{cohort}년 상시 평균인원 (재계산: {r_reg})", f.get("상시"), f"pf_{cohort}_reg_{kver}"
+                )
+                f["청년등"] = _num_in(
+                    b_, f"{cohort}년 청년등 평균인원 (재계산: {r_yth})", f.get("청년등"), f"pf_{cohort}_yth_{kver}"
                 )
                 f["청년등_증가"] = _num_in(
-                    a,
-                    f"공제받은 청년등 증가 ({'-' if law_inc is None else format(law_inc['youth_inc'], '.2f')})",
-                    f.get("청년등_증가"),
-                    f"pf_{cohort}_yi_{kver}",
+                    a, f"{cohort}년 공제 청년등 증가 (재계산: {r_yi})", f.get("청년등_증가"), f"pf_{cohort}_yi_{kver}"
                 )
                 f["청년등외_증가"] = _num_in(
-                    b_,
-                    f"공제받은 청년등외 증가 ({'-' if law_inc is None else format(law_inc['non_youth_inc'], '.2f')})",
-                    f.get("청년등외_증가"),
-                    f"pf_{cohort}_gi_{kver}",
+                    b_, f"{cohort}년 공제 청년등외 증가 (재계산: {r_gi})", f.get("청년등외_증가"), f"pf_{cohort}_gi_{kver}"
                 )
                 if cohort == tax_yr - 1:
                     f["공제세액"] = _num_in(
@@ -3457,299 +4324,143 @@ def _page_calculation():
                         f"pf_{cohort}_paid_{kver}",
                         is_won=True,
                     )
-                missing = [k for k in ("상시", "청년등", "청년등_증가", "청년등외_증가") if f.get(k) is None]
-                if missing:
-                    st.caption(f"⚠️ 기신고 숫자 없음: {', '.join(missing)} → 『기신고 기준』으로는 계산하지 않습니다.")
-    p1, p2 = ps[str(tax_yr - 1)], ps[str(tax_yr - 2)]
 
-    add_in = s.setdefault("additional_inputs", {})
-    with st.expander("➕ 추가공제(육아휴직복귀·정규직전환·출산휴가대체인력) · 농특세 실공제 보정 · 단가 옵션", expanded=False):
+    with st.expander("➕ 추가공제(육아휴직복귀·정규직전환·출산휴가대체인력) 및 미공제 이월세액 입력", expanded=False):
         ca1, ca2, ca3 = st.columns(3)
         add_in["parental_return_count"] = ca1.number_input(
             "육아휴직 복귀자 수 (명, ~2026년 적용)",
             0,
             500,
             int(add_in.get("parental_return_count") or 0),
-            help="1년 이상 근속 후 6개월 이상 육아휴직 후 복귀한 근로자(자녀당 1회, 중소 1,300만원/중견 900만원)",
+            1,
+            help="조특법 제29조의8 제2항: 1인당 중소 1,300만원 / 중견 900만원 추가공제 (전체 상시근로자 수 미감소 요건 충족 시)",
         )
         add_in["regular_conversion_count"] = ca2.number_input(
-            "정규직 전환자 수 (명, 2024년 귀속까지 일몰)",
+            "정규직 전환자 수 (명, ~2024년 귀속까지만 적용)",
             0,
             500,
             int(add_in.get("regular_conversion_count") or 0),
-            disabled=(tax_yr > 2024),
-            help="정규직 전환 추가공제는 2024년 귀속분까지 적용됩니다 (2023.6.30 당시 비정규직·파견·하도급 → 2024년 중 무기계약 전환).",
+            1,
+            disabled=(tax_yr >= 2025),
+            help="정규직 전환 추가공제는 2024년 귀속까지만 적용되며 2025년 이후 귀속분은 일몰 종료되었습니다.",
         )
         add_in["additional_clawback_count"] = ca3.number_input(
-            "전환·복귀 후 2년 내 퇴사 추징 인원 (명)",
+            "복귀·전환일로부터 2년 내 퇴직자 수 (추징 대상, 명)",
             0,
             500,
             int(add_in.get("additional_clawback_count") or 0),
-            help="정규직 전환일 또는 육아휴직 복귀일로부터 2년 이내에 근로관계가 종료된 인원",
+            1,
+            help="조특법 제29조의8 제4항: 복귀·전환일로부터 2년 내 근로관계 종료 시 기공제 세액 추징",
         )
         cb1, cb2, cb3 = st.columns(3)
         add_in["maternity_replacement_count"] = cb1.number_input(
-            f"출산전후휴가자 제외 인원 ({tax_yr}년, 연평균)",
+            f"{tax_yr}년 출산전후휴가 대체인력 연평균 제외인원 (명)",
             0.0,
-            500.0,
+            100.0,
             float(add_in.get("maternity_replacement_count") or 0.0),
             0.01,
-            help="대체인력을 채용한 출산전후휴가자는 추가공제(정규직 전환·육아휴직 복귀)의 비감소 판정 시 상시근로자 수에서 뺍니다 (조특령 제26조의8 제7항).",
+            format="%.2f",
+            help="추가공제 요건(상시근로자 미감소) 판정 시 당해 상시근로자 수에서 뺄 출산전후휴가 대체인력(조특령 §26의8⑤)입니다.",
         )
-        add_in["maternity_prev_count"] = cb1.number_input(
-            f"출산전후휴가자 제외 인원 ({tax_yr-1}년, 연평균)",
+        add_in["maternity_prev_count"] = cb2.number_input(
+            f"{tax_yr-1}년 출산전후휴가 대체인력 연평균 제외인원 (명)",
             0.0,
-            500.0,
+            100.0,
             float(add_in.get("maternity_prev_count") or 0.0),
             0.01,
+            format="%.2f",
+            help="직전연도 상시근로자 수에서 뺄 출산전후휴가 대체인력입니다.",
         )
-        add_in["current_unclaimed_carryforward_won"] = cb2.number_input(
-            f"당해({tax_yr}년) 최저한세 등 미공제 이월예정액 (원)",
+        add_in["current_unclaimed_carryforward_won"] = cb3.number_input(
+            f"{tax_yr}년 발생 공제세액 중 최저한세 등으로 당해 미공제 이월된 세액 (원)",
             0,
             50_000_000_000,
             int(add_in.get("current_unclaimed_carryforward_won") or 0),
             100_000,
             help="농어촌특별세(20%)는 실제 감면받는 세액(당해 공제액 - 당해 미공제 이월액)에 대해서만 부과됩니다 (농특세법 제5조 제1항).",
         )
-        if tax_yr >= 2026:
-            scheme_opt = cb3.selectbox(
-                f"{tax_yr}년 신규공제 단가 체계",
-                options=["new_2026", "legacy"],
-                index=0 if s.get("scheme_2026", "new_2026") == "new_2026" else 1,
-                format_func=lambda x: "2026 신법 (연차별 차등 A+B+C)" if x == "new_2026" else "구법 단가 시뮬레이션 (균등단가 비교)",
-            )
-            s["scheme_2026"] = scheme_opt
 
-    prior_filings_payload = {
-        cohort: {
-            "init_reg": f.get("상시"),
-            "init_yth": f.get("청년등"),
-            "init_reg_total": f.get("상시_총인원"),
-            "init_yth_total": f.get("청년등_총인원"),
-            "init_yth_inc": f.get("청년등_증가"),
-            "init_gen_inc": f.get("청년등외_증가"),
-            "claimed_won": f.get("공제세액"),
-            "carryforward_won": f.get("이월세액"),
-            "y1_continued_won": f.get("2차_공제세액") if cohort == tax_yr - 2 else None,
-            "prior_clawback_paid_won": f.get("기추징세액") if cohort == tax_yr - 2 else None,
-        }
-        for cohort, f in ((tax_yr - 1, p1), (tax_yr - 2, p2))
-    }
-
-    active_pm_basis = s.get("pm_basis", R.PM_BASIS_FILED)
-    pkg = H.calculate_tax_year_package(
-        tax_year=tax_yr,
-        corp_size=corp_size,
-        is_capital=is_capital,
-        summaries=totals_all,
-        prior_filings=prior_filings_payload,
-        additional_inputs=add_in,
-        scheme_2026=s.get("scheme_2026", "new_2026"),
-        pm_basis=active_pm_basis,
-    )
-    s["calc_pkg"] = pkg
-    basis_lbl = pkg["pm_basis_label"]
-    basis_pill_html = (
-        f"<span class='ec-basis-pill-filed'>📋 현재 기준: {basis_lbl} (원칙)</span>"
-        if pkg["pm_basis"] == R.PM_BASIS_FILED
-        else f"<span class='ec-basis-pill-recalc'>⚖️ 현재 기준: {basis_lbl} (원천징수부 재계산)</span>"
-    )
-
-    k1, k2, k3, k4 = st.columns(4)
-    with k1:
-        st.markdown(
-            f"<div class='ec-summary-card green'>"
-            f"<div class='card-lbl'>① {tax_yr}년 총 공제세액 ({basis_lbl})</div>"
-            f"<div class='card-val'>{pkg['total_credit_gross_won']:,}원</div>"
-            f"<div class='card-sub'>당해 신규 {pkg['cur_base_credit_won']:,}원 + 연속 {pkg['total_continued_credit_won']:,}원 + 추가 {pkg['additional_credit_won']:,}원</div>"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
-    with k2:
-        st.markdown(
-            f"<div class='ec-summary-card {'red' if pkg['total_clawback_net_payable_won'] > 0 else ''}'>"
-            f"<div class='card-lbl'>② 사후관리 추가납부세액 ({basis_lbl})</div>"
-            f"<div class='card-val'>{pkg['total_clawback_net_payable_won']:,}원</div>"
-            f"<div class='card-sub'>차감전 추징 {pkg['total_clawback_gross_won']:,}원 − 미공제 이월액 소멸 {pkg['total_carryforward_offset_won']:,}원</div>"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
-    with k3:
-        st.markdown(
-            f"<div class='ec-summary-card'>"
-            f"<div class='card-lbl'>③ 농어촌특별세 (실공제세액의 20%)</div>"
-            f"<div class='card-val'>{pkg['rural_special_tax_won']:,}원</div>"
-            f"<div class='card-sub'>실공제 {pkg['actual_deducted_credit_won']:,}원 기준 (당해 이월액·추징액 제외)</div>"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
-    with k4:
-        st.markdown(
-            f"<div class='ec-summary-card green'>"
-            f"<div class='card-lbl'>④ 실질 순절세 효과 (① − ② − ③)</div>"
-            f"<div class='card-val'>{pkg['net_after_rural_tax_won']:,}원</div>"
-            f"<div class='card-sub'>농특세 차감 전 순공제액: {pkg['net_tax_benefit_won']:,}원</div>"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
-
-    c_th1, c_th2 = st.columns([3.4, 2.2])
-    with c_th1:
-        st.markdown(
-            f"<div class='ec-tbl-header-bar'>"
-            f"<span class='ec-tbl-header-title'>📊 1. 연도별·사후관리 총인원수(연인원) / 평균인원수 비교표 {basis_pill_html}</span>"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
-    with c_th2:
-        _render_pm_basis_selector_right(s, widget_key=f"pm_basis_sel_hc_{tax_yr}")
-
-    is_recalc = pkg["pm_basis"] == R.PM_BASIS_RECALC
-
-    def _fmt(v, f=".2f"):
-        return "-" if v is None else format(float(v), f)
-
-    def _base_row(cohort: int, base: dict, s_year: dict, pf: dict) -> dict:
-        use = base.get("recalc" if is_recalc else "filed") or {}
-        reg, yth = use.get("init_reg"), use.get("init_yth")
-        if is_recalc and s_year.get("has_data") and not s_year.get("from_filed"):
-            rtot, ytot = s_year["reg_total"], s_year["yth_total"]
-        else:
-            rtot, ytot = pf.get("상시_총인원"), pf.get("청년등_총인원")
-        gen = None if reg is None or yth is None else round(max(0.0, reg - yth), 2)
-        gtot = None if rtot is None or ytot is None else round(max(0.0, float(rtot) - float(ytot)), 2)
-        other = base.get("filed" if is_recalc else "recalc") or {}
-        borrowed = base.get("borrowed") or []
-        return {
-            "구분": f"{cohort}년 사후관리 기초 [{basis_lbl}]",
-            "전체 [총인원(연인원) / 평균]": f"{_fmt(rtot, 'g')}명 / {_fmt(reg)}명",
-            "청년등 [총인원 / 평균]": f"{_fmt(ytot, 'g')}명 / {_fmt(yth)}명",
-            "청년등 외 [총인원 / 평균]": f"{_fmt(gtot, 'g')}명 / {_fmt(gen)}명",
-            "적용 기준 및 비교 안내": (
-                f"{'기신고 기준' if is_recalc else '세법원칙 기준'}이면: 상시 {_fmt(other.get('init_reg'))}명 / 청년등 {_fmt(other.get('init_yth'))}명"
-                + (f" · 세법원칙 기준 중 {', '.join(borrowed)}은 사원표가 없어 기신고 숫자 사용" if is_recalc and borrowed else "")
-            ),
-        }
-
-    cur_b2_gen = round(max(0.0, pkg["cur_s"]["b2_reg"] - pkg["cur_s"]["b2_yth"]), 2)
-    cur_b2_gtot = round(max(0.0, pkg["cur_s"]["reg_total"] - pkg["cur_s"]["b2_yth_total"]), 2)
-    cur_b3_gen = round(max(0.0, pkg["cur_s"]["b3_reg"] - pkg["cur_s"]["b3_yth"]), 2)
-    cur_b3_gtot = round(max(0.0, pkg["cur_s"]["reg_total"] - pkg["cur_s"]["b3_yth_total"]), 2)
-
-    hc_rows = [
-        {
-            "구분": f"{tax_yr}년 귀속 [{b3_title}]",
-            "전체 [총인원(연인원) / 평균]": f"{pkg['cur_s']['reg_total']:g}명 / {pkg['cur_s']['regular']:.2f}명",
-            "청년등 [총인원 / 평균]": f"{pkg['cur_s']['yth_total']:g}명 / {pkg['cur_s']['youth']:.2f}명",
-            "청년등 외 [총인원 / 평균]": f"{pkg['cur_s']['non_youth_total']:g}명 / {pkg['cur_s']['non_youth']:.2f}명",
-            "적용 기준 및 비교 안내": f"당해({tax_yr}년) 원천징수부 기준 (÷{pkg['cur_s']['months_in_year']}개월 · {'합산 후 절사'})",
-        },
-    ]
-    if _has_year_data(s, tax_yr - 1):
-        hc_rows.append(
+    # 사원표 및 기신고 vs 세법원칙 비교표 (상세 대조용 접이식)
+    with st.expander("📊 [상세 대조] 2단계 사원표 인원 현황 및 기신고 기준 vs 세법원칙 기준 비교표", expanded=False):
+        cur_b2_gen = round(max(0.0, pkg["cur_s"]["b2_reg"] - pkg["cur_s"]["b2_yth"]), 2)
+        cur_b3_gen = round(max(0.0, pkg["cur_s"]["b3_reg"] - pkg["cur_s"]["b3_yth"]), 2)
+        cur_b2_gtot = round(max(0.0, pkg["cur_s"]["reg_total"] - pkg["cur_s"]["b2_yth_total"]), 2)
+        cur_b3_gtot = round(max(0.0, pkg["cur_s"]["reg_total"] - pkg["cur_s"]["b3_yth_total"]), 2)
+        cmp_rows = [
             {
-                "구분": f"{tax_yr}년 귀속 [{b4_title}]",
-                "전체 [총인원(연인원) / 평균]": f"{pkg['cur_s']['reg_total']:g}명 / {pkg['cur_s']['b2_reg']:.2f}명",
+                "연도 · 블록 구분": f"① {tax_yr}년 귀속 [{b3_title}]",
+                "전체 상시 [총인원 / 평균]": f"{pkg['cur_s']['reg_total']:g}명 / {pkg['cur_s']['regular']:.2f}명",
+                "청년등 [총인원 / 평균]": f"{pkg['cur_s']['yth_total']:g}명 / {pkg['cur_s']['youth']:.2f}명",
+                "청년등 외 [총인원 / 평균]": f"{pkg['cur_s']['non_youth_total']:g}명 / {pkg['cur_s']['non_youth']:.2f}명",
+                "적용 기준 및 비교 안내": f"당해({tax_yr}년) 원천징수부 기준 (÷{pkg['cur_s']['months_in_year']}개월 · {'인별절사' if tax_yr >= 2025 else '전체절사'})",
+            },
+            {
+                "연도 · 블록 구분": f"② {tax_yr}년 귀속 [{b4_title}]",
+                "전체 상시 [총인원 / 평균]": f"{pkg['cur_s']['reg_total']:g}명 / {pkg['cur_s']['b2_reg']:.2f}명",
                 "청년등 [총인원 / 평균]": f"{pkg['cur_s']['b2_yth_total']:g}명 / {pkg['cur_s']['b2_yth']:.2f}명",
                 "청년등 외 [총인원 / 평균]": f"{cur_b2_gtot:g}명 / {cur_b2_gen:.2f}명",
-                "적용 기준 및 비교 안내": f"{tax_yr-1}년 입사 청년 연령경과(34세 초과) 간주 특례 반영 ({'합산 후 절사'})",
-            }
-        )
-    if has_t2_data:
-        hc_rows.append(
+                "적용 기준 및 비교 안내": f"{tax_yr-1}년 입사 청년 연령경과(34세 초과) 간주 특례 반영 ({'인별절사' if (tax_yr-1) >= 2025 else '전체절사'})",
+            },
             {
-                "구분": f"{tax_yr}년 귀속 [{b5_title}]",
-                "전체 [총인원(연인원) / 평균]": f"{pkg['cur_s']['reg_total']:g}명 / {pkg['cur_s']['b3_reg']:.2f}명",
+                "연도 · 블록 구분": f"③ {tax_yr}년 귀속 [{b5_title}]",
+                "전체 상시 [총인원 / 평균]": f"{pkg['cur_s']['reg_total']:g}명 / {pkg['cur_s']['b3_reg']:.2f}명",
                 "청년등 [총인원 / 평균]": f"{pkg['cur_s']['b3_yth_total']:g}명 / {pkg['cur_s']['b3_yth']:.2f}명",
                 "청년등 외 [총인원 / 평균]": f"{cur_b3_gtot:g}명 / {cur_b3_gen:.2f}명",
-                "적용 기준 및 비교 안내": f"{tax_yr-2}년 입사 청년 연령경과(34세 초과) 간주 특례 반영 ({'합산 후 절사'})",
-            }
+                "적용 기준 및 비교 안내": f"{tax_yr-2}년 입사 청년 연령경과(34세 초과) 간주 특례 반영 ({'인별절사' if (tax_yr-2) >= 2025 else '전체절사'})",
+            },
+        ]
+        st.dataframe(pd.DataFrame(cmp_rows), use_container_width=True, hide_index=True)
+
+        pm_cmp_df = pd.DataFrame(
+            [
+                {
+                    "사후관리 구분": f"① {tax_yr-1}년 귀속분 1차 사후관리 (2차년도)",
+                    "기신고 기준 [연속공제 / 추징]": f"+{pkg['pm_y1_filed']['continued_credit_won']:,}원 / -{pkg['pm_y1_filed']['clawback_net_payable_won']:,}원",
+                    "세법원칙 기준 [연속공제 / 추징]": f"+{pkg['pm_y1_recalc']['continued_credit_won']:,}원 / -{pkg['pm_y1_recalc']['clawback_net_payable_won']:,}원",
+                    "현재 선택된 적용 결과": f"{pkg['pm_y1']['case_code']} (+{pkg['pm_y1']['continued_credit_won']:,}원 / -{pkg['pm_y1']['clawback_net_payable_won']:,}원)",
+                },
+                {
+                    "사후관리 구분": f"② {tax_yr-2}년 귀속분 2차 사후관리 (3차년도)",
+                    "기신고 기준 [연속공제 / 추징]": f"+{pkg['pm_y2_filed']['continued_credit_won']:,}원 / -{pkg['pm_y2_filed']['clawback_net_payable_won']:,}원",
+                    "세법원칙 기준 [연속공제 / 추징]": f"+{pkg['pm_y2_recalc']['continued_credit_won']:,}원 / -{pkg['pm_y2_recalc']['clawback_net_payable_won']:,}원",
+                    "현재 선택된 적용 결과": f"{pkg['pm_y2']['case_code']} (+{pkg['pm_y2']['continued_credit_won']:,}원 / -{pkg['pm_y2']['clawback_net_payable_won']:,}원)",
+                },
+            ]
         )
-    if pkg.get("base_y1"):
-        hc_rows.append(_base_row(tax_yr - 1, pkg["base_y1"], pkg["prev_s"], p1))
-    if pkg.get("base_y2"):
-        hc_rows.append(_base_row(tax_yr - 2, pkg["base_y2"], pkg["prev2_s"], p2))
-    st.dataframe(pd.DataFrame(hc_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pm_cmp_df, use_container_width=True, hide_index=True)
 
-    c_tx1, c_tx2 = st.columns([3.4, 2.2])
-    with c_tx1:
-        st.markdown(
-            f"<div class='ec-tbl-header-bar'>"
-            f"<span class='ec-tbl-header-title'>💰 2. 항목별 공제세액 및 사후관리세액(연속공제·추가납부) 산출내역 {basis_pill_html}</span>"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
-    with c_tx2:
-        _render_pm_basis_selector_right(s, widget_key=f"pm_basis_sel_tax_{tax_yr}")
-
-    pm1 = pkg["pm_y1"]
-    pm2 = pkg["pm_y2"]
-    pm1_alt = pkg["pm_y1_recalc"] if not is_recalc else pkg["pm_y1_filed"]
-    pm2_alt = pkg["pm_y2_recalc"] if not is_recalc else pkg["pm_y2_filed"]
-    alt_lbl = "세법원칙 재계산" if not is_recalc else "기신고 기준"
-
-    abc_tiers = pkg["abc_res"]["tiers"]
-    abc_desc = (
-        f"A(1년차) {pkg['cur_new_a_won']:,}원"
-        + (f" + B(2년차) {pkg['cur_new_b_won']:,}원" if abc_tiers["B"]["comp_year"] else "")
-        + (f" + C(3년차) {pkg['cur_new_c_won']:,}원" if abc_tiers["C"]["comp_year"] else "")
-        + f" ({pkg['hurdle_res']['note']})"
+    # ══════════════════════════════════════════════════════════════
+    # [하단] 계산근거 법령조문 바로가기 링크
+    # ══════════════════════════════════════════════════════════════
+    st.markdown(
+        "<div class='ec-law-ref-box'>"
+        "<div style='font-weight:900;font-size:.92rem;color:#0f172a;margin-bottom:6px;'>"
+        "📚 계산근거 관련 법령조문 (국가법령정보센터 바로가기)"
+        "</div>"
+        "• <a href='https://www.law.go.kr/법령/조세특례제한법/제29조의8' target='_blank'>"
+        "조세특례제한법 제29조의8 (통합고용세액공제)</a> — "
+        "제1항(고용증가 세액공제 및 연차별 공제단가), 제2항(육아휴직 복귀자·정규직 전환자 추가공제), "
+        "제3항(고용유지 연속공제 및 인원 감소 시 추가납부세액)<br>"
+        "• <a href='https://www.law.go.kr/법령/조세특례제한법시행령/제26조의8' target='_blank'>"
+        "조세특례제한법 시행령 제26조의8 (통합고용세액공제 상시근로자 범위·사후관리 산식)</a> — "
+        "제2항·제3항(청년등 상시근로자 범위 및 전체 증가한도 Cap), 제5항(사후관리 시 청년등 연령경과 간주 특례), "
+        "제6항·제7항(인원 감소 시 추가납부세액 산식), 제9항(소수점 둘째 자리 절사), 제10항(포괄양수·고용승계 특례)<br>"
+        "• <a href='https://www.law.go.kr/법령/조세특례제한법시행규칙/제14조의2' target='_blank'>"
+        "조세특례제한법 시행규칙 제14조의2 및 별지 제10호의4 서식 (통합고용세액공제 상시근로자 명세서)</a> &nbsp;|&nbsp; "
+        "<a href='https://www.law.go.kr/법령/농어촌특별세법/제5조' target='_blank'>"
+        "농어촌특별세법 제5조 제1항 (감면세액의 20% 과세)</a>"
+        "</div>",
+        unsafe_allow_html=True,
     )
-    detail_rows = [
-        {
-            "항목 구분": f"① {b3_title}",
-            "적용 기준 · 판정 케이스": "2026 신법(A+B+C)" if pkg["active_scheme"] == "new_2026" else "구법 단가",
-            "인정 인원 (청년등 / 청년외)": f"청년등 +{pkg['hurdle_res']['recognized_youth_inc'] if pkg['active_scheme']=='new_2026' else pkg['cur_inc']['youth_inc']:.2f}명 / 청년외 +{pkg['hurdle_res']['recognized_non_youth_inc'] if pkg['active_scheme']=='new_2026' else pkg['cur_inc']['non_youth_inc']:.2f}명",
-            "당해 공제세액 (+)": f"{pkg['cur_base_credit_won']:,}원",
-            "추가납부 추징세액 (-)": "0원",
-            "산출근거 및 기준별 비교": (
-                f"전체 증가 +{pkg['cur_inc']['total_inc']:.2f}명 한도(Cap) 적용 · "
-                + (
-                    f"{abc_desc} (구법 적용 시 {pkg['cur_legacy_total_won']:,}원)"
-                    if pkg["active_scheme"] == "new_2026"
-                    else f"구법 단가(청년 {pkg['rates_legacy']['청년등']:,}만/일반 {pkg['rates_legacy']['청년등외']:,}만) 적용"
-                )
-            ),
-        },
-        {
-            "항목 구분": f"② {b4_title} (2차년도)",
-            "적용 기준 · 판정 케이스": f"[{basis_lbl}] {pm1['case_code']}",
-            "인정 인원 (청년등 / 청년외)": f"유지 청년 {pm1['retained_yth_inc']:.2f}명 / 일반 {pm1['retained_gen_inc']:.2f}명",
-            "당해 공제세액 (+)": f"{pm1['continued_credit_won']:,}원",
-            "추가납부 추징세액 (-)": f"{pm1['clawback_net_payable_won']:,}원 (이월차감 {pm1['carryforward_offset_won']:,}원)",
-            "산출근거 및 기준별 비교": (
-                f"{pm1['formula_note']} | 💡 [{alt_lbl} 선택 시: 연속공제 {pm1_alt['continued_credit_won']:,}원 / 추가납부 {pm1_alt['clawback_net_payable_won']:,}원]"
-            ),
-        },
-        {
-            "항목 구분": f"③ {b5_title} (3차년도)",
-            "적용 기준 · 판정 케이스": f"[{basis_lbl}] {pm2['case_code']}",
-            "인정 인원 (청년등 / 청년외)": f"유지 청년 {pm2['retained_yth_inc']:.2f}명 / 일반 {pm2['retained_gen_inc']:.2f}명",
-            "당해 공제세액 (+)": f"{pm2['continued_credit_won']:,}원",
-            "추가납부 추징세액 (-)": f"{pm2['clawback_net_payable_won']:,}원 (이월차감 {pm2['carryforward_offset_won']:,}원)",
-            "산출근거 및 기준별 비교": (
-                f"{pm2['formula_note']} | 💡 [{alt_lbl} 선택 시: 연속공제 {pm2_alt['continued_credit_won']:,}원 / 추가납부 {pm2_alt['clawback_net_payable_won']:,}원]"
-            ),
-        },
-        {
-            "항목 구분": "④ 육아휴직 복귀 · 정규직 전환 추가공제 및 추징",
-            "적용 기준 · 판정 케이스": "상시근로자 비감소 충족" if pkg["non_decrease_ok"] else "상시근로자 감소로 추가공제 배제",
-            "인정 인원 (청년등 / 청년외)": f"복귀 {pkg['parental_ret_cnt']}명 / 전환 {pkg['reg_conv_cnt']}명 / 추징 {pkg['early_term_add_cnt']}명",
-            "당해 공제세액 (+)": f"{pkg['additional_credit_won']:,}원",
-            "추가납부 추징세액 (-)": f"{pkg['additional_clawback_won']:,}원",
-            "산출근거 및 기준별 비교": f"1인당 {R.ADDITIONAL_CREDIT_PER_PERSON.get(corp_size, 0):,}만원 (출산전후휴가자 당해 제외 -{pkg['maternity_rep_cnt']:.2f}명 / 직전 제외 -{pkg.get('maternity_prev_cnt', 0.0):.2f}명 반영)",
-        },
-    ]
-    st.dataframe(pd.DataFrame(detail_rows), use_container_width=True, hide_index=True)
 
     _save_ec_to_disk(s)
-    st.markdown("<div class='ec-nav-divider'></div>", unsafe_allow_html=True)
-    c_prev, _, c_next = st.columns([1.3, 4.5, 1.3])
-    if c_prev.button("< 이전(2단계)", use_container_width=True):
+    st.divider()
+    c_prev, _, c_next = st.columns([1.3, 4.4, 1.8])
+    if c_prev.button("← 이전(2단계 사원정보)", use_container_width=True):
         s["step"] = 2
         _save_ec_to_disk(s)
         st.rerun()
-    if c_next.button("다음(4단계 보고서)", type="primary", use_container_width=True):
+    if c_next.button("다음(4단계 보고서) →", type="primary", use_container_width=True):
         s["step"] = 4
         _save_ec_to_disk(s)
         st.rerun()
@@ -3848,7 +4559,7 @@ def _build_report_markdown(s: dict) -> str:
         "## 3. 연도별·사후관리 코호트별 상시근로자 수 상세 (총인원수 / 평균인원수)",
         "| 구분 | 전체 상시 [총인원 / 평균] | 청년등 [총인원 / 평균] | 청년등 외 [총인원 / 평균] | 적용 기준 |",
         "| :--- | ---: | ---: | ---: | :--- |",
-        f"| **{tax_yr}년 귀속 [{b3_title}]** | {pkg['cur_s']['reg_total']:g}명 / {pkg['cur_s']['regular']:.2f}명 | {pkg['cur_s']['yth_total']:g}명 / {pkg['cur_s']['youth']:.2f}명 | {pkg['cur_s']['non_youth_total']:g}명 / {pkg['cur_s']['non_youth']:.2f}명 | 근로계약 체결일 현재 연령 기준 ({'합산 후 절사'}) |",
+        f"| **{tax_yr}년 귀속 [{b3_title}]** | {pkg['cur_s']['reg_total']:g}명 / {pkg['cur_s']['regular']:.2f}명 | {pkg['cur_s']['yth_total']:g}명 / {pkg['cur_s']['youth']:.2f}명 | {pkg['cur_s']['non_youth_total']:g}명 / {pkg['cur_s']['non_youth']:.2f}명 | 근로계약 체결일 현재 연령 기준 ({'인별절사' if tax_yr >= 2025 else '전체절사'}) |",
         f"| **{tax_yr}년 귀속 [{b4_title}]** | {pkg['cur_s']['reg_total']:g}명 / {pkg['cur_s']['b2_reg']:.2f}명 | {pkg['cur_s']['b2_yth_total']:g}명 / {pkg['cur_s']['b2_yth']:.2f}명 | {round(max(0.0, pkg['cur_s']['reg_total']-pkg['cur_s']['b2_yth_total']),2):g}명 / {round(max(0.0, pkg['cur_s']['b2_reg']-pkg['cur_s']['b2_yth']),2):.2f}명 | 구 조특령 제26조의8 제5항 연령경과 간주 특례 |",
         f"| **{tax_yr}년 귀속 [{b5_title}]** | {pkg['cur_s']['reg_total']:g}명 / {pkg['cur_s']['b3_reg']:.2f}명 | {pkg['cur_s']['b3_yth_total']:g}명 / {pkg['cur_s']['b3_yth']:.2f}명 | {round(max(0.0, pkg['cur_s']['reg_total']-pkg['cur_s']['b3_yth_total']),2):g}명 / {round(max(0.0, pkg['cur_s']['b3_reg']-pkg['cur_s']['b3_yth']),2):.2f}명 | 구 조특령 제26조의8 제5항 연령경과 간주 특례 |",
         f"| **{tax_yr-1}년 사후관리 기초 ({basis_lbl})** | - / {pm1['init_reg']:.2f}명 | - / {pm1['init_yth']:.2f}명 | - / {round(max(0.0, pm1['init_reg']-pm1['init_yth']),2):.2f}명 | 1차 사후관리 비교 기준 (증가 청년 {pm1['init_yth_inc']:.2f}명 / 일반 {pm1['init_gen_inc']:.2f}명) |",
@@ -3886,7 +4597,7 @@ def _build_csv_bytes(s: dict) -> bytes:
         rows, _, totals = _build_year_rows(s, y)
         has_y1 = _has_year_data(s, y - 1)
         has_y2 = _has_year_data(s, y - 2)
-        trunc_mode = "합산 후 절사"
+        trunc_mode = "인별절사" if int(y) >= 2025 else "전체절사"
         for r in rows:
             writer.writerow(
                 [
