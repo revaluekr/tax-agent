@@ -1560,6 +1560,11 @@ div[class*="st-key-ec_step_nav_wait_"] button p {
 .ec-agent-report-wrap li {
     margin-bottom: 8px !important;
 }
+.ec-agent-report-wrap del,
+.ec-agent-report-wrap s {
+    text-decoration: none !important;
+    color: inherit !important;
+}
 .ec-agent-report-wrap strong,
 .ec-agent-report-wrap b {
     font-weight: 800 !important;
@@ -6007,19 +6012,35 @@ def _strip_all_emojis(text: str) -> str:
     return _REPORT_EMOJI_RE.sub("", str(text))
 
 
+def _sanitize_markdown_tilde(text: str) -> str:
+    """
+    마크다운(GFM)에서 `10~12월 ... 10~12월`처럼 한 문단에 물결표(`~`)가 두 번 이상 들어가면
+    사이에 있는 문장 전체가 취소선(`<del>...</del>`)으로 렌더링되고 물결표가 사라져 `1012월`로 깨지는 문제를 방지합니다.
+    반각 물결표(`~`)를 취소선 문법으로 인식되지 않는 유니코드 물결표(`∼`, U+223C)로 변환합니다.
+    """
+    if not text:
+        return ""
+    s = str(text)
+    s = re.sub(r"~~+", "∼", s)
+    s = s.replace("~", "∼")
+    s = re.sub(r"\b(1[0-2]|[1-9])12월", r"\1∼12월", s)
+    return s
+
+
 def _parse_and_clean_pro_audit(raw_comment: str) -> tuple[str, str]:
     """
     저장된 `pro_audit_comment`에서:
     1) 적용 모델명(`model_id`)을 분리해 반환하고,
     2) 본문 내 이모지(왕관·돋보기·방패·문서 등)와 상단 `[Pro/Argon 심층 진단 완료 — 적용 모델: ...]` 배너 줄을 제거하며,
     3) `- **추가 절세 가능성 발굴**`, `1. **추가 절세...**`, `#### (1) ...` 등 모든 변형 패턴을
-       깔끔한 `### (1) 제목` 소제목 + 1단 불릿(`- **핵심키워드**: 설명`)으로 정규화합니다.
+       깔끔한 `### (1) 제목` 소제목 + 1단 불릿(`- **핵심키워드**: 설명`)으로 정규화하고,
+    4) 반각 물결표(`~`)로 인한 마크다운 취소선(`선 그어짐`) 현상을 원천 차단합니다.
     반환: (clean_body_markdown, model_name)
     """
     if not raw_comment or not str(raw_comment).strip():
         return "", ""
 
-    txt = str(raw_comment).strip()
+    txt = _sanitize_markdown_tilde(str(raw_comment).strip())
     model_name = ""
     m_mod = re.search(r"적용\s*모델\s*[:：]\s*`?([^\]\n`]+)`?", txt)
     if m_mod:
@@ -6365,7 +6386,7 @@ def _build_report_markdown(s: dict, log_tokens_fn=None, room_key: str = "") -> s
         "## Ⅳ. 심층 세무진단 의견",
         audit_body,
     ]
-    return "\n".join(lines)
+    return _sanitize_markdown_tilde("\n".join(lines))
 
 
 def _build_report_pdf_bytes(s: dict, log_tokens_fn=None, room_key: str = "") -> bytes:
@@ -6626,10 +6647,7 @@ def _page_report(room_key: str = "", log_tokens_fn=None):
 
     # 버튼 클릭 없이도 Ⅳ. 심층 세무진단 의견이 항상 자동 생성·표시되도록 처리
     with st.spinner("보고서 및 심층 세무진단 의견을 구성하고 있습니다..."):
-        _, model_used = _ensure_auto_pro_audit_comment(s, log_tokens_fn=log_tokens_fn, room_key=room_key)
-        md_text = _build_report_markdown(s, log_tokens_fn=log_tokens_fn, room_key=room_key)
-        pdf_report_bytes = _build_report_pdf_bytes(s, log_tokens_fn=log_tokens_fn, room_key=room_key)
-        csv_bytes = _build_csv_bytes(s)
+        audit_clean_body, model_used = _ensure_auto_pro_audit_comment(s, log_tokens_fn=log_tokens_fn, room_key=room_key)
 
     corp_nm = (s.get("biz", {}).get("상호") or "통합고용세액공제").strip()
     corp_fn = re.sub(r'[\\/:*?"<>|\s]+', "_", corp_nm)[:30]
@@ -6640,45 +6658,41 @@ def _page_report(room_key: str = "", log_tokens_fn=None):
         st.markdown(
             f"<div class='ec-warn-banner'>"
             f"<b>[기중 가결산 추정치 안내]</b> 본 보고서는 {tax_yr}년 <b>{last_m_cur}월 가결산</b> 기준으로 "
-            f"{last_m_cur+1}~12월을 '연말까지 재직 가정(1 자동 채움)'하여 산출된 추정 보고서입니다. "
+            f"{last_m_cur+1}∼12월을 '연말까지 재직 가정(1 자동 채움)'하여 산출된 추정 보고서입니다. "
             f"확정신고 시에는 12월 최종 원천징수부를 반영하여 확정하시기 바랍니다."
             f"</div>",
             unsafe_allow_html=True,
         )
 
-    c_dl1, c_dl2, c_dl3, _ = st.columns([1.8, 1.8, 1.8, 1.8])
-    with c_dl1:
-        st.download_button(
-            "검토보고서 다운로드 (.md)",
-            data=md_text.encode("utf-8"),
-            file_name=f"{corp_fn}_{tax_yr}년귀속_통합고용세액공제_검토보고서.md",
-            mime="text/markdown",
-            use_container_width=True,
-        )
-    with c_dl2:
-        st.download_button(
-            "상시근로자 명세표 다운로드 (.csv)",
-            data=csv_bytes,
-            file_name=f"{corp_fn}_{tax_yr}년귀속_상시근로자명세_사후관리블록포함.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
-    with c_dl3:
-        with st.container(key="ec_btn_pdf_rep_wrap"):
-            st.download_button(
-                "보고서 PDF 다운 (.pdf)",
-                data=pdf_report_bytes,
-                file_name=f"{corp_fn}_{tax_yr}년귀속_통합고용세액공제_검토보고서.pdf",
-                mime="application/pdf",
-                use_container_width=True,
-                key="dl_pdf_report_all",
-            )
+    md_text = _build_report_markdown(s, log_tokens_fn=log_tokens_fn, room_key=room_key)
+    pdf_report_bytes = _build_report_pdf_bytes(s, log_tokens_fn=log_tokens_fn, room_key=room_key)
 
     # 보고서 본문: 자율 에이전트AI 스크린 글자크기(1.12rem) + 대/중/소제목/내용 위계 적용 래퍼
     st.markdown(f"<div class='ec-agent-report-wrap'>\n\n{md_text}\n\n</div>", unsafe_allow_html=True)
 
-    # 하단 적용모델 정보는 스크린에만 표시 (PDF 출력물에서는 제외됨)
+    # 사용자가 보고서 내 Ⅳ. 심층 세무진단 의견 문구를 직접 다듬거나 수정할 수 있는 편집 영역
     disp_model = model_used or str(s.get("pro_audit_model") or "gemini-2.5-pro")
+    with st.expander("✏️ Ⅳ. 심층 세무진단 의견 문구 직접 수정 · AI 재생성", expanded=False):
+        st.caption("아래에서 보고서 『Ⅳ. 심층 세무진단 의견』 문구를 직접 수정하고 [수정 내용 반영]을 누르면 화면 보고서와 PDF 출력물에 즉시 반영됩니다.")
+        edited_audit = st.text_area(
+            "Ⅳ. 심층 세무진단 의견 본문",
+            value=audit_clean_body,
+            height=240,
+            label_visibility="collapsed",
+            key=f"ec_edit_audit_area_{tax_yr}",
+        )
+        ce1, ce2, _ = st.columns([1.4, 1.4, 4.2])
+        if ce1.button("💾 수정 내용 반영", type="primary", use_container_width=True, key="btn_save_edited_audit"):
+            s["pro_audit_comment"] = f"[적용 모델: {disp_model}]\n\n{_sanitize_markdown_tilde(edited_audit)}"
+            _save_ec_to_disk(s)
+            st.rerun()
+        if ce2.button("🔄 AI 의견 다시 생성", use_container_width=True, key="btn_regen_audit"):
+            s["pro_audit_comment"] = ""
+            s["pro_audit_sig"] = ""
+            _save_ec_to_disk(s)
+            st.rerun()
+
+    # 하단 적용모델 정보는 스크린에만 표시 (PDF 출력물에서는 제외됨)
     st.markdown(
         f"<div class='ec-model-footer-bar'>"
         f"<span>심층 세무진단 분석 완료</span>"
@@ -6687,6 +6701,7 @@ def _page_report(room_key: str = "", log_tokens_fn=None):
         unsafe_allow_html=True,
     )
 
+    # 하단 단일 네비게이션 & 다운로드 바 (상단 중복 PDF 버튼 제거 → 2·3단계와 동일한 하단 구조로 통일)
     st.markdown("<div class='ec-nav-divider'></div>", unsafe_allow_html=True)
     c_prev, _, c_pdf_bot, c_reset = st.columns([1.2, 3.45, 1.25, 1.3])
     if c_prev.button("< 이전(3단계)", use_container_width=True):
@@ -6696,12 +6711,13 @@ def _page_report(room_key: str = "", log_tokens_fn=None):
     with c_pdf_bot:
         with st.container(key="ec_btn_pdf_rep_bot"):
             st.download_button(
-                "보고서 PDF 다운",
+                "📕 보고서 PDF 다운",
                 data=pdf_report_bytes,
                 file_name=f"{corp_fn}_{tax_yr}년귀속_통합고용세액공제_검토보고서.pdf",
                 mime="application/pdf",
                 use_container_width=True,
                 key="dl_pdf_report_bot",
+                help="현재 화면의 통합고용세액공제 및 사후관리 검토보고서를 A4 PDF로 다운로드합니다.",
             )
     if c_reset.button("처음으로(1단계)", use_container_width=True):
         s["step"] = 1
