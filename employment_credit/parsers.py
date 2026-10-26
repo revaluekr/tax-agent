@@ -8,6 +8,7 @@
      * `app.py`의 `extract_file_content`가 출력하는 공백 구분 표(`df.head(1500).to_string(index=False)` — `Unnamed: 0` 헤더 및 빈 셀 `NaN` 포함),
      * 마크다운 파이프(`| ... |`) 표,
      * CSV(쉼표)/TSV(탭) 및 정형 텍스트 원천징수부를 정규식·열 매핑 파서로 0.01초 만에 100% 자체 추출합니다.
+     * 사번(`사001`, `사002`, `EMP01` 등)을 사업장명으로 오인하지 않도록 정밀 필터(`_is_employee_id_token`)를 적용했습니다.
    - 복수 사업장(법인 본점·지점 합산, 개인 기중 양도·포괄양수 1·2번 사업장 합산) 지원:
      * 파일명·본문에서 `사업장명`(`본점`, `지점`, `1번사업장`, `2번사업장`, 상호 등)을 자동 추론하고,
      * 동일 사원이 기중에 1번 사업장에서 2번 사업장으로 이동(전출입·포괄승계)한 경우 월별 급여를 합산하여 계속근로자로 통합 판정하며 `사업장명`에 `1번사업장→2번사업장`으로 자동 기록합니다.
@@ -34,6 +35,27 @@ FILE_WP_MARKER_RE = re.compile(r"^<<<FILE_WP:(.*?)>>>$")
 # ══════════════════════════════════════════════════════════════════
 # 1. 파일명 · 본문 기반 서류 자동 분류 및 사업장명 자동 추론
 # ══════════════════════════════════════════════════════════════════
+def _is_employee_id_token(tok: str) -> bool:
+    """
+    원천징수부 성명 앞 열에 위치한 '사001', '사002', 'EMP01', '1001' 등의 사원번호(사번) 토큰이
+    사업장명으로 잘못 인식되지 않도록 판별합니다.
+    """
+    s = (tok or "").strip()
+    if not s or s.lower() in ("nan", "none", "-", "사번", "번호", "no"):
+        return True
+    if s.isdigit():
+        return True
+    if re.match(r"^[A-Za-z0-9_\-.]+$", s):
+        return True
+    # '사001', '사원01', '번호1', '제1호' 등 사번/일련번호 패턴
+    if re.match(r"^(?:사번?|사원|번호|일련번호|no\.?|id|emp)?[-_.\s]*\d+호?$", s, flags=re.IGNORECASE):
+        return True
+    # 끝에 2자리 이상 숫자가 붙은 코드형 토큰(예: 본사001, 직012 등)은 사번으로 간주
+    if re.search(r"\d{2,}$", s):
+        return True
+    return False
+
+
 def infer_workplace_name(name: str, text: str = "") -> str:
     """
     업로드된 파일명이나 본문에서 사업장명(예: 본점, 강남지점, 1번사업장, 2번사업장 등)을 자동 추론합니다.
@@ -42,7 +64,10 @@ def infer_workplace_name(name: str, text: str = "") -> str:
     head = (text or "")[:2000]
 
     # 1) 명시적 사업장 패턴 (1번사업장, 제2사업장, OO지점, 본점 등)
-    m_num_wp = re.search(r"((?:제?\s*[1-9]\s*번?\s*사업장)|(?:[가-힣A-Za-z0-9]{1,10}지점)|본점|주사업장|양도사업장|양수사업장)", stem)
+    m_num_wp = re.search(
+        r"((?:제?\s*[1-9]\s*번?\s*사업장)|(?:[가-힣A-Za-z0-9]{1,10}지점)|본점|주사업장|양도사업장|양수사업장)",
+        stem,
+    )
     if m_num_wp:
         return re.sub(r"\s+", "", m_num_wp.group(1))
 
@@ -51,7 +76,7 @@ def infer_workplace_name(name: str, text: str = "") -> str:
     if m_body_wp:
         cand = m_body_wp.group(1).strip()
         cand = re.sub(r"\s*(?:사업자|대표자|업태|소재지).*$", "", cand).strip()
-        if cand and cand.lower() not in ("nan", "none"):
+        if cand and cand.lower() not in ("nan", "none") and not _is_employee_id_token(cand):
             return cand[:16]
 
     # 3) 파일명에서 연도·서류종류 키워드를 제거한 나머지 토큰이 있으면 사업장명으로 활용
@@ -62,7 +87,7 @@ def infer_workplace_name(name: str, text: str = "") -> str:
         flags=re.IGNORECASE,
     )
     cleaned = re.sub(r"[_\-()\[\].]+", " ", cleaned).strip()
-    if cleaned and len(cleaned) <= 14 and not cleaned.isdigit():
+    if cleaned and len(cleaned) <= 14 and not _is_employee_id_token(cleaned):
         return cleaned
 
     return ""
@@ -249,7 +274,7 @@ PROMPT_SH = """다음은 주주명부입니다. 아래 JSON 형식으로 읽어�
 {"주주":[{"성명":"", "주민앞6자리":"", "지분율":0.0, "관계":""}]}"""
 
 PROMPT_WHT = """다음은 소득자별 근로소득원천징수부입니다. 모든 근로자를 빠짐없이 아래 JSON 형식으로 읽어주세요.
-주민등록번호는 앞 6자리와 뒷자리 첫 1자리만 '000000-0' 형태로 적고, 각 월(1~12)의 급여총액(과세급여)을 숫자로 넣으세요. 사업장명(본점/지점/1번사업장 등)이 있으면 함께 적으세요.
+주민등록번호는 앞 6자리와 뒷자리 첫 1자리만 '000000-0' 형태로 적고, 각 월(1~12)의 급여총액(과세급여)을 숫자로 넣으세요. 사업장명(본점/지점/1번사업장 등, 사번 제외)이 있으면 함께 적으세요.
 {"근로자":[{"사업장명":"", "성명":"", "주민번호앞7자리":"000000-0", "입사일":"YYYY-MM-DD", "퇴사일":"YYYY-MM-DD", "고용유형":"정규직/계약직(기간제)/단시간(60시간 이상)/대표이사/임원", "병역개월":0, "월급여":{"1":0,"2":0,"3":0,"4":0,"5":0,"6":0,"7":0,"8":0,"9":0,"10":0,"11":0,"12":0}}]}"""
 
 PROMPT_PREV = """다음은 이미 신고한 통합고용세액공제(또는 고용증대세액공제) 관련 서식(공제감면세액계산서·상시근로자 명세서·공제세액계산서·세액공제조정명세서)입니다.
@@ -369,7 +394,7 @@ def _parse_whitespace_wht_rows(text: str, default_wp: str = "") -> list[dict] | 
             if m_sh:
                 sh_nm = m_sh.group(1).strip()
                 if any(k in sh_nm for k in ("본점", "지점", "사업장")) and not any(
-                     str(y) == sh_nm for y in range(2020, 2030)
+                    str(y) == sh_nm for y in range(2020, 2030)
                 ):
                     cur_wp = sh_nm
             continue
@@ -406,17 +431,14 @@ def _parse_whitespace_wht_rows(text: str, default_wp: str = "") -> list[dict] | 
         if not name_tok or name_tok.lower() in ("nan", "none", "성명", "이름", "합계", "총계"):
             continue
 
-        # 성명 왼쪽에 사번이 아닌 사업장명 토큰(예: 본점, 강남지점, 1번사업장)이 있는 경우 자동 추출
+        # 성명 왼쪽에 사번('사001' 등)이 아닌 실제 사업장명 토큰(예: 본점, 강남지점, 1번사업장)이 있는 경우에만 추출
         row_wp = cur_wp
         if rrn_idx >= 2:
-            prefix_tok = tokens[rrn_idx - 2].strip()
-            if (
-                prefix_tok
-                and not prefix_tok.isdigit()
-                and not re.match(r"^[A-Za-z0-9_\-]+$", prefix_tok)
-                and prefix_tok.lower() not in ("nan", "none")
-            ):
-                row_wp = prefix_tok
+            for prev_i in range(rrn_idx - 2, -1, -1):
+                cand_tok = tokens[prev_i].strip()
+                if not _is_employee_id_token(cand_tok):
+                    row_wp = cand_tok
+                    break
 
         rrn_or_birth = tokens[rrn_idx].strip()
         rest = tokens[rrn_idx + 1 :]
@@ -586,7 +608,7 @@ def _try_fast_parse_wht_table(text: str, default_wp: str = "") -> list[dict] | N
                             if "사업장명" in col_map and col_map["사업장명"] < len(cols)
                             else default_wp
                         )
-                        if wp_val.lower() in ("nan", "none", "-"):
+                        if _is_employee_id_token(wp_val):
                             wp_val = default_wp
 
                         rrn7 = cols[col_map["주민"]].strip() if "주민" in col_map and col_map["주민"] < len(cols) else ""
@@ -688,6 +710,9 @@ def _try_fast_parse_biz_reg(text: str) -> dict:
                         "종목": sb.get("종목", ""),
                         "개업일": sb.get("개업일", ""),
                         "폐업일": "",
+                        "승계_직전상시": 0.0,
+                        "승계_직전청년": 0.0,
+                        "고용승계_입사일유지": True,
                     }
                 )
         if sub_list:
@@ -780,7 +805,7 @@ def _normalize_wht_rows(raw_employees: list[dict]) -> list[dict]:
         if not name or name.lower() in ("nan", "none"):
             continue
         wp_name = str(emp.get("사업장명") or "").strip()
-        if wp_name.lower() in ("nan", "none", "-"):
+        if _is_employee_id_token(wp_name):
             wp_name = ""
         rrn_raw = emp.get("주민번호앞7자리") or emp.get("주민번호7") or ""
         b_dt, is_for = birth_from_rrn7(rrn_raw)
@@ -814,13 +839,6 @@ def _normalize_wht_rows(raw_employees: list[dict]) -> list[dict]:
 # 4. 100% 자체파싱(1순위) + 멀티스레드 AI 보완 추출(2순위) 통합 (extract_all)
 # ══════════════════════════════════════════════════════════════════
 def extract_all(doc_texts: dict[str, str], log_tokens_fn=None, room_key: str = "") -> dict:
-    """
-    업로드된 모든 서류를 추출합니다:
-    - 1단계(자체 파싱): 모든 서류에 대해 파이썬 자체 파서(`_try_fast_parse_*`)를 먼저 즉시 실행합니다.
-      * 원천징수부(엑셀/CSV/표)는 자체 파서 성공 시 AI 호출을 100% 생략하여 0.01초 만에 완료합니다.
-    - 2단계(보완적 AI 호출): 비정형 PDF 원천징수부(자체 파싱 실패 시)나 사업자등록증·등기부등본·주주명부·공제감면세액계산서 중
-      자체 파싱에서 누락된 필드가 있는 경우에만 `ThreadPoolExecutor`로 AI를 병렬 호출하여 빈칸을 보완합니다.
-    """
     out: dict = {
         "biz_reg": {},
         "corp_reg": {},
@@ -981,7 +999,7 @@ def build_sub_biz_list(ext: dict, main_biz: dict, existing_sub_biz: list[dict] |
         if not isinstance(sb, dict):
             continue
         nm = str(sb.get("상호") or "").strip()
-        if nm and nm not in seen_names and nm != main_nm:
+        if nm and nm not in seen_names and nm != main_nm and not _is_employee_id_token(nm):
             seen_names.add(nm)
             out.append(
                 {
@@ -993,6 +1011,9 @@ def build_sub_biz_list(ext: dict, main_biz: dict, existing_sub_biz: list[dict] |
                     "종목": str(sb.get("종목") or "").strip(),
                     "개업일": _iso(sb.get("개업일")),
                     "폐업일": _iso(sb.get("폐업일")),
+                    "승계_직전상시": float(sb.get("승계_직전상시") or 0.0),
+                    "승계_직전청년": float(sb.get("승계_직전청년") or 0.0),
+                    "고용승계_입사일유지": bool(sb.get("고용승계_입사일유지", True)),
                 }
             )
 
@@ -1001,7 +1022,7 @@ def build_sub_biz_list(ext: dict, main_biz: dict, existing_sub_biz: list[dict] |
     for rows in ((ext or {}).get("wht") or {}).values():
         for r in rows or []:
             wp = str(r.get("사업장명") or "").strip()
-            if wp and wp not in wht_wps:
+            if wp and not _is_employee_id_token(wp) and wp not in wht_wps:
                 wht_wps.append(wp)
 
     if len(wht_wps) >= 2:
@@ -1023,6 +1044,9 @@ def build_sub_biz_list(ext: dict, main_biz: dict, existing_sub_biz: list[dict] |
                         "종목": "",
                         "개업일": "",
                         "폐업일": "",
+                        "승계_직전상시": 0.0,
+                        "승계_직전청년": 0.0,
+                        "고용승계_입사일유지": True,
                     }
                 )
 
@@ -1088,10 +1112,6 @@ def build_people(
 ) -> tuple[dict, dict]:
     """
     선택된 귀속사업연도(`max_tax_year`) 이하의 원천징수부 데이터를 성명+생년월일 기준으로 병합합니다.
-    - 귀속사업연도보다 미래 연도(예: 2025년 귀속 선택 시 2026년 파일)는 병합에서 제외하여,
-      2025년·2024년 귀속 계산 시 미래 입사자나 미래 퇴사일이 섞이지 않도록 보장합니다.
-    - 동일 사원이 본·지점 또는 1번(양도)·2번(포괄양수) 사업장에 중복 등재된 경우,
-      월별 급여를 합산하고 `사업장명`에 `제1사업장→제2사업장`으로 기록합니다.
     """
     wht_by_year = (ext or {}).get("wht") or {}
     corp_execs = ((ext or {}).get("corp_reg") or (ext or {}).get("corp") or {}).get("임원") or []
@@ -1127,7 +1147,8 @@ def build_people(
             if not nm:
                 continue
             b_str = str(row.get("생년월일") or "").strip()
-            row_wp = str(row.get("사업장명") or "").strip() or fallback_wp
+            raw_wp = str(row.get("사업장명") or "").strip()
+            row_wp = raw_wp if (raw_wp and not _is_employee_id_token(raw_wp)) else fallback_wp
             dedup_key = f"{nm}|{b_str}" if b_str else nm
             pid = key_to_pid.get(dedup_key) or key_to_pid.get(nm)
             if not pid:
@@ -1155,7 +1176,6 @@ def build_people(
             if b_str and not p["생년월일"]:
                 p["생년월일"] = b_str
 
-            # 사업장명 병합 (동일 연도에 본점->지점 또는 1번사업장->2번사업장 이동 시 'A→B'로 표시)
             prev_yr_wp = p["연도별_사업장명"].get(str(y_int), "")
             combined_yr_wp = _combine_workplace_labels(prev_yr_wp, row_wp)
             p["연도별_사업장명"][str(y_int)] = combined_yr_wp
@@ -1166,7 +1186,6 @@ def build_people(
                     p["입사일"] = row["입사일"]
                     p["계약체결일"] = row["입사일"]
 
-            # 월급여 병합 (복수 사업장에서 받은 월별 급여를 월 단위로 합산)
             incoming_pay = row.get("월급여") or {}
             existing_pay = p["월급여"].get(str(y_int))
             if existing_pay:
@@ -1178,14 +1197,11 @@ def build_people(
             else:
                 p["월급여"][str(y_int)] = {str(m): float(incoming_pay.get(str(m), 0.0) or 0.0) for m in range(1, 13)}
 
-            # 퇴사일 처리:
-            # 만약 1번 사업장에서 퇴사일(예: 5월말)이 있었으나 2번 사업장에서 이후 월 급여가 있고 퇴사일이 없다면 계속 재직 중인 것으로 처리
             row_ret = str(row.get("퇴사일") or "").strip()
             if row_ret:
                 p["연도별_퇴사일"][str(y_int)] = row_ret
                 p["퇴사일"] = row_ret
             elif existing_pay and p["연도별_퇴사일"].get(str(y_int)):
-                # 이전 사업장 퇴사월 이후에 신규 사업장 급여가 존재하는지 확인
                 old_ret_dt = parse_date(p["연도별_퇴사일"].get(str(y_int)))
                 if old_ret_dt and any(
                     float(incoming_pay.get(str(m), 0.0) or 0.0) > 0 for m in range(old_ret_dt.month + 1, 13)
@@ -1225,9 +1241,6 @@ def build_people(
 
 
 def ai_extra_warnings(ext: dict, log_tokens_fn=None, room_key: str = "") -> list[str]:
-    """
-    [추가 LLM 호출 대기(0초) 없이 추출된 서류 간 불일치·주의사항을 정밀 교차검증]
-    """
     if not ext:
         return []
     warnings: list[str] = []
@@ -1245,7 +1258,7 @@ def ai_extra_warnings(ext: dict, log_tokens_fn=None, room_key: str = "") -> list
                 continue
             all_wht_names.add(nm)
             wp = str(r.get("사업장명") or "").strip()
-            if wp:
+            if wp and not _is_employee_id_token(wp):
                 workplaces_found.add(wp)
             if not r.get("생년월일"):
                 missing_birth_names.add(nm)

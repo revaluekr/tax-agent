@@ -472,7 +472,12 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
                         val = weight
                     elif last_paid_month < 12 and m > last_paid_month:
                         hired_after_cut = bool(hire and hire > month_end(year, last_paid_month))
-                        if assume_year_end and (paid_in_last_m or hired_after_cut):
+                        close_map = ctx.get("workplace_close_month_map") or {}
+                        yr_wp = str((person.get("연도별_사업장명") or {}).get(str(year)) or person.get("사업장명") or "").strip()
+                        close_m = close_map.get(yr_wp) if ("→" not in yr_wp) else None
+                        if close_m is not None and m > int(close_m):
+                            val = 0.0
+                        elif assume_year_end and (paid_in_last_m or hired_after_cut):
                             val = weight
                             projected_months.append(m)
                         else:
