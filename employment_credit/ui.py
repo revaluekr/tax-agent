@@ -476,7 +476,7 @@ def _compose_doc_texts_with_wp(s: dict, classified: dict[str, list[str]]) -> dic
         for n in names:
             f_obj = s["files"].get(n) or {}
             raw_wp = str(f_obj.get("wp") or "").strip()
-            clean_wp = _sanitize_workplace_label(raw_wp, "") or P.infer_workplace_name(n, f_obj.get("text", "")) or default_wp
+            clean_wp = _sanitize_workplace_label(raw_wp, "") or getattr(P, "infer_workplace_name", lambda nm, tx="": "")(n, f_obj.get("text", "")) or default_wp
             chunks.append(f"<<<FILE_WP:{clean_wp}>>>\n{f_obj.get('text', '')}")
         texts[k] = "\n\n".join(chunks)
     return texts
@@ -1580,7 +1580,7 @@ def _dlg_review(items: list[tuple[str, str]], audit_payload: dict | None = None,
     if audit_payload:
         if st.button("👑 Pro/Argon AI 심층 세무진단 코멘트 생성 (특수사례·판례 정밀점검)", use_container_width=True, key="btn_run_pro_audit"):
             with st.spinner("👑 Pro/Argon 모델이 사원표·특례·사후관리 리스크를 심층 분석하고 있습니다..."):
-                s["pro_audit_comment"] = P.call_pro_argon_audit_commentary(
+                s["pro_audit_comment"] = getattr(P, "call_pro_argon_audit_commentary", lambda *a, **kw: "Pro/Argon 심층 진단 함수를 찾을 수 없습니다. parsers.py를 최신 버전으로 업데이트해 주세요.")(
                     audit_payload, log_tokens_fn=log_tokens_fn, room_key=room_key
                 )
                 _save_ec_to_disk(s)
@@ -2003,7 +2003,7 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
         with st.spinner(f"📄 {len(new)}개 파일에서 텍스트 및 표 데이터를 추출하고 있습니다..."):
             for u in new:
                 text = extract_file_fn(u, room_key) or ""
-                auto_wp = _sanitize_workplace_label(P.infer_workplace_name(u.name, text), _default_workplace_label(s))
+                auto_wp = _sanitize_workplace_label(getattr(P, "infer_workplace_name", lambda nm, tx="": "")(u.name, text), _default_workplace_label(s))
                 s["files"][u.name] = {
                     "key": P.classify_file(u.name, text),
                     "text": text,
@@ -2302,6 +2302,30 @@ def _block_titles_for_year(year: int, two_line: bool = False) -> tuple[str, str,
     )
 
 
+def _is_emp_id_token_safe(tok: str) -> bool:
+    """parsers._is_employee_id_token이 없는 구버전 parsers.py와 함께 실행되더라도 AttributeError가 절대 나지 않도록 자체 내장한 안전 판별기."""
+    fn = getattr(P, "_is_employee_id_token", None)
+    if callable(fn):
+        try:
+            return bool(fn(tok))
+        except Exception:
+            pass
+    s = (tok or "").strip()
+    if not s or s.lower() in ("nan", "none", "-", "사번", "번호", "no", "년", "월", "일"):
+        return True
+    if any(noise in s for noise in ("첨부", "파일명", "엑셀", "시트명", "페이지", "Unnamed", "명:")):
+        return True
+    if s.isdigit():
+        return True
+    if re.match(r"^[A-Za-z0-9_\-.]+$", s):
+        return True
+    if re.match(r"^(?:사번?|사원|번호|일련번호|no\.?|id|emp)?[-_.\s]*\d+호?$", s, flags=re.IGNORECASE):
+        return True
+    if re.search(r"\d{2,}$", s):
+        return True
+    return False
+
+
 def _sanitize_workplace_label(raw_wp: str, default_wp: str) -> str:
     """
     사번('사001' 등)이나 파일 헤더 노이즈('첨부 엑셀 명: 년' 등)가 이전 세션에 남아 있는 경우
@@ -2317,12 +2341,12 @@ def _sanitize_workplace_label(raw_wp: str, default_wp: str) -> str:
             pt_c = pt.strip()
             if not pt_c:
                 continue
-            if P._is_employee_id_token(pt_c) or any(k in pt_c for k in noise_marks) or pt_c in ("년", "월"):
+            if _is_emp_id_token_safe(pt_c) or any(k in pt_c for k in noise_marks) or pt_c in ("년", "월"):
                 pt_c = default_wp
             if pt_c and pt_c not in parts:
                 parts.append(pt_c)
         return "→".join(parts) if parts else default_wp
-    if P._is_employee_id_token(s) or any(k in s for k in noise_marks) or s in ("년", "월", "귀속"):
+    if _is_emp_id_token_safe(s) or any(k in s for k in noise_marks) or s in ("년", "월", "귀속"):
         return default_wp
     return s
 
