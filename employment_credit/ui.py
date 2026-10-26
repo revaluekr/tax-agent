@@ -937,11 +937,11 @@ def _build_review_pdf_bytes(s: dict, items: list[tuple[str, str]], pro_comment: 
     )
 
     b = s.get("biz") or {}
-    corp_nm = (b.get("상호") or "").strip() or "상호미입력"
-    biz_no = (b.get("사업자번호") or "").strip() or "-"
+    corp_nm = (b.get("상호") or "").strip()
+    biz_no = (b.get("사업자번호") or "").strip()
     corp_sz = b.get("기업구분") or "중소기업"
     cap = H.is_capital_area(b.get("사업장소재지", ""))
-    loc_str = "수도권" if cap is True else ("수도권 외(비수도권)" if cap is False else "소재지미입력")
+    loc_str = "수도권" if cap is True else ("수도권 외(비수도권)" if cap is False else "")
     tax_yr = int(s.get("tax_year") or R.DEFAULT_TAX_YEAR)
 
     errs = [m for lv, m in (items or []) if lv == "오류"]
@@ -952,7 +952,7 @@ def _build_review_pdf_bytes(s: dict, items: list[tuple[str, str]], pro_comment: 
     title_suffix = " (Pro/Argon 심층 세무진단 포함)" if pro_comment else ""
     story.append(
         Paragraph(
-            _pdf_text(f"[{corp_nm}] {tax_yr}년 귀속 통합고용세액공제 법령·심판례·절세누락 정밀 검토 보고서{title_suffix}"),
+            _pdf_text((f"[{corp_nm}] " if corp_nm else "") + f"{tax_yr}년 귀속 통합고용세액공제 법령·심판례·절세누락 정밀 검토 보고서{title_suffix}"),
             st_title,
         )
     )
@@ -1108,19 +1108,19 @@ def _build_schedule_pdf_bytes(s: dict, target_years: list[int], include_summary:
     )
 
     b = s.get("biz") or {}
-    corp_nm = (b.get("상호") or "").strip() or "상호미입력"
-    biz_no = (b.get("사업자번호") or "").strip() or "-"
+    corp_nm = (b.get("상호") or "").strip()
+    biz_no = (b.get("사업자번호") or "").strip()
     corp_sz = b.get("기업구분") or "중소기업"
     cap = H.is_capital_area(b.get("사업장소재지", ""))
-    loc_str = "수도권" if cap is True else ("수도권 외(비수도권)" if cap is False else "소재지미입력")
+    loc_str = "수도권" if cap is True else ("수도권 외(비수도권)" if cap is False else "")
     tax_yr = int(s.get("tax_year") or R.DEFAULT_TAX_YEAR)
 
     story = []
     if len(target_years) == 1:
         y_only = target_years[0]
-        story.append(Paragraph(f"[{corp_nm}] {y_only}년 귀속 상시근로자 명세서 (통합고용세액공제 · 사후관리 판정표)", st_title))
+        story.append(Paragraph((f"[{corp_nm}] " if corp_nm else "") + f"{y_only}년 귀속 상시근로자 명세서 (통합고용세액공제 · 사후관리 판정표)", st_title))
     else:
-        story.append(Paragraph(f"[{corp_nm}] {tax_yr}년 귀속 통합고용세액공제 전체 연도 상시근로자 명세서 ({', '.join(str(y)+'년' for y in target_years)})", st_title))
+        story.append(Paragraph((f"[{corp_nm}] " if corp_nm else "") + f"{tax_yr}년 귀속 통합고용세액공제 전체 연도 상시근로자 명세서 ({', '.join(str(y)+'년' for y in target_years)})", st_title))
 
     story.append(
         Paragraph(
@@ -1802,40 +1802,49 @@ div[class*="st-key-ec_step_nav_wait_"] button p {
 .ec-legend {
     display: flex;
     flex-wrap: wrap;
+    align-items: center;
     gap: 6px;
-    margin: 2px 0 6px 0;
+    margin: 6px 0 10px 0;
+    padding: 7px 12px;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
 }
 .ec-legend span {
     display: inline-flex;
     align-items: center;
-    padding: 2px 9px;
+    padding: 3px 10px;
     border-radius: 6px;
-    font-size: 0.79rem;
+    font-size: 0.81rem;
     font-weight: 700;
+    letter-spacing: -0.2px;
 }
 .ec-year-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    background: linear-gradient(90deg, #f1f5f9 0%, #ffffff 100%);
-    border-left: 5px solid #1e3a8a;
-    border-top: 1px solid #e2e8f0;
-    border-right: 1px solid #e2e8f0;
-    border-bottom: 1px solid #e2e8f0;
-    padding: 7px 14px;
+    background: linear-gradient(90deg, #eff6ff 0%, #f8fafc 65%, #ffffff 100%);
+    border-left: 5px solid #1d4ed8;
+    border-top: 1px solid #cbd5e1;
+    border-right: 1px solid #cbd5e1;
+    border-bottom: 1px solid #cbd5e1;
+    padding: 8px 16px;
     border-radius: 0 8px 8px 0;
-    min-height: 38px;
+    min-height: 40px;
+    margin-bottom: 4px;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
 }
 .ec-year-title {
-    font-size: 1.04rem;
-    font-weight: 800;
+    font-size: 1.08rem;
+    font-weight: 900;
     color: #1e3a8a;
     white-space: nowrap;
+    letter-spacing: -0.3px;
 }
 .ec-year-sub {
-    font-size: 0.82rem;
-    font-weight: 600;
-    color: #475569;
+    font-size: 0.86rem;
+    font-weight: 700;
+    color: #334155;
     text-align: right;
 }
 
@@ -1848,11 +1857,11 @@ div[class*="st-key-ec_step_nav_wait_"] button p {
     border: 1.5px solid #cbd5e1;
     border-left: 6px solid #16a34a;
     border-radius: 10px;
-    padding: 9px 13px;
-    margin: 5px 0 16px 0;
+    padding: 10px 14px;
+    margin: 6px 0 26px 0;
     align-items: center;
     justify-content: space-between;
-    box-shadow: 0 2px 6px rgba(15, 23, 42, 0.05);
+    box-shadow: 0 3px 8px rgba(15, 23, 42, 0.06);
     font-family: 'Pretendard', 'Malgun Gothic', sans-serif;
 }
 .ec-kpi-items {
@@ -2269,23 +2278,27 @@ div[class*="st-key-ec_step_nav_wait_"] button p {
 def _top_status_bar(s: dict):
     """자율 에이전트AI 상단과 동일한 디자인의 미니 상태바(.top-mini-status-bar)를 렌더링합니다."""
     b = s.get("biz") or {}
-    corp_nm = (b.get("상호") or "").strip() or "상호 미입력"
+    corp_nm = (b.get("상호") or "").strip()
     sub_cnt = len(s.get("sub_biz_list") or [])
     if sub_cnt > 0:
-        corp_nm = f"{corp_nm} 외 {sub_cnt}개 사업장 합산"
+        corp_nm = f"{corp_nm} 외 {sub_cnt}개 사업장 합산" if corp_nm else f"{sub_cnt + 1}개 사업장 합산"
     corp_sz = b.get("기업구분") or "중소기업"
     cap = H.is_capital_area(b.get("사업장소재지", ""))
-    loc_str = "수도권" if cap is True else ("비수도권(수도권 외)" if cap is False else "소재지 미입력")
+    loc_str = "수도권" if cap is True else ("비수도권(수도권 외)" if cap is False else "")
+    meta_parts = [p for p in (corp_sz, loc_str) if p]
+    meta_str = " · ".join(meta_parts)
+    if corp_nm:
+        biz_disp = f"🏢 <b>{corp_nm}</b> ({meta_str})" if meta_str else f"🏢 <b>{corp_nm}</b>"
+    else:
+        biz_disp = f"🏢 <b>{meta_str}</b>"
     tax_yr = int(s.get("tax_year") or R.DEFAULT_TAX_YEAR)
     pm_lbl = R.PM_BASIS_LABELS.get(s.get("pm_basis", R.PM_BASIS_FILED), "기신고 기준")
-    law_ver = (
-        f"{tax_yr}귀속 (합산 후 절사 · 사후관리: {pm_lbl})"
-    )
+    law_ver = f"{tax_yr}귀속 (합산 후 절사 · 사후관리: {pm_lbl})"
     step_nm = STEPS[max(0, min(len(STEPS) - 1, int(s.get("step", 1)) - 1))]
 
     st.markdown(
         f"<div class='top-mini-status-bar'>"
-        f"<span>🧮 <b>통합고용세액공제 ({tax_yr}년 귀속)</b> &nbsp;|&nbsp; 🏢 <b>{corp_nm}</b> ({corp_sz} · {loc_str})</span>"
+        f"<span>🧮 <b>통합고용세액공제 ({tax_yr}년 귀속)</b> &nbsp;|&nbsp; {biz_disp}</span>"
         f"<span>📌 현재 단계: <b>{s.get('step', 1)}단계 [{step_nm}]</b> &nbsp;·&nbsp; <span class='sb-badge-green'>💾 자동보관 ON · {law_ver}</span></span>"
         f"</div>",
         unsafe_allow_html=True,
@@ -3076,7 +3089,7 @@ function(p){
 
 JS_STYLE = JsCode("""
 function(p){
-  const baseFont = {fontFamily: 'Pretendard, Malgun Gothic, sans-serif', fontSize: '11.8px', paddingLeft: '3px', paddingRight: '3px', overflow: 'visible', textOverflow: 'clip'};
+  const baseFont = {fontFamily: 'Pretendard, Malgun Gothic, sans-serif', fontSize: '12.6px', paddingLeft: '3px', paddingRight: '3px', overflow: 'visible', textOverflow: 'clip'};
   if (p.node.rowPinned) return Object.assign(baseFont, {backgroundColor:'#dcfce7', color:'#14532d', fontWeight:'800'});
   const L = (p.data._lock || '').split(',');
   if (L.includes(p.colDef.field)) return Object.assign(baseFont, {backgroundColor:'#e2e8f0', color:'#0f172a', fontWeight:'600'});
@@ -3085,7 +3098,7 @@ function(p){
 
 JS_STYLE_WORKPLACE = JsCode("""
 function(p){
-  const baseFont = {fontFamily: 'Pretendard, Malgun Gothic, sans-serif', fontSize: '11.6px', textAlign: 'center', paddingLeft: '3px', paddingRight: '3px', overflow: 'visible', textOverflow: 'clip'};
+  const baseFont = {fontFamily: 'Pretendard, Malgun Gothic, sans-serif', fontSize: '12.4px', textAlign: 'center', paddingLeft: '3px', paddingRight: '3px', overflow: 'visible', textOverflow: 'clip'};
   if (p.node.rowPinned) return Object.assign(baseFont, {backgroundColor:'#dcfce7', color:'#14532d', fontWeight:'800'});
   const v = String(p.value || '');
   if (v.includes('→')) return Object.assign(baseFont, {backgroundColor:'#dbeafe', color:'#1e40af', fontWeight:'800'});
@@ -3094,7 +3107,7 @@ function(p){
 
 JS_STYLE_CENTER = JsCode("""
 function(p){
-  const baseFont = {fontFamily: 'Pretendard, Malgun Gothic, sans-serif', fontSize: '11.8px', textAlign: 'center', paddingLeft: '3px', paddingRight: '3px', overflow: 'visible', textOverflow: 'clip'};
+  const baseFont = {fontFamily: 'Pretendard, Malgun Gothic, sans-serif', fontSize: '12.6px', textAlign: 'center', paddingLeft: '3px', paddingRight: '3px', overflow: 'visible', textOverflow: 'clip'};
   if (p.node.rowPinned) return Object.assign(baseFont, {backgroundColor:'#dcfce7', color:'#14532d', fontWeight:'800'});
   const L = (p.data._lock || '').split(',');
   if (L.includes(p.colDef.field)) return Object.assign(baseFont, {backgroundColor:'#e2e8f0', color:'#0f172a', fontWeight:'600'});
@@ -3103,7 +3116,7 @@ function(p){
 
 JS_STYLE_EXCL = JsCode("""
 function(p){
-  const baseFont = {fontFamily: 'Pretendard, Malgun Gothic, sans-serif', fontSize: '11.6px', textAlign: 'center', paddingLeft: '3px', paddingRight: '3px', overflow: 'visible', textOverflow: 'clip'};
+  const baseFont = {fontFamily: 'Pretendard, Malgun Gothic, sans-serif', fontSize: '12.4px', textAlign: 'center', paddingLeft: '3px', paddingRight: '3px', overflow: 'visible', textOverflow: 'clip'};
   if (p.node.rowPinned) return Object.assign(baseFont, {backgroundColor:'#dcfce7', color:'#14532d', fontWeight:'800'});
   const v = String(p.value || '');
   if (v && v !== '해당없음') return Object.assign(baseFont, {backgroundColor:'#fef2f2', color:'#b91c1c', fontWeight:'800'});
@@ -3114,7 +3127,7 @@ function(p){
 
 JS_STYLE_YOUTH = JsCode("""
 function(p){
-  const baseFont = {fontFamily: 'Pretendard, Malgun Gothic, sans-serif', fontSize: '11.6px', textAlign: 'center', paddingLeft: '3px', paddingRight: '3px', overflow: 'visible', textOverflow: 'clip'};
+  const baseFont = {fontFamily: 'Pretendard, Malgun Gothic, sans-serif', fontSize: '12.4px', textAlign: 'center', paddingLeft: '3px', paddingRight: '3px', overflow: 'visible', textOverflow: 'clip'};
   if (p.node.rowPinned) return Object.assign(baseFont, {backgroundColor:'#dcfce7', color:'#14532d', fontWeight:'800'});
   const v = String(p.value || '');
   if (v && !v.startsWith('해당없음')) return Object.assign(baseFont, {backgroundColor:'#f0fdf4', color:'#15803d', fontWeight:'800'});
@@ -3125,7 +3138,7 @@ function(p){
 
 JS_STYLE_REGULAR = JsCode("""
 function(p){
-  const baseFont = {fontFamily: 'Pretendard, Malgun Gothic, sans-serif', fontSize: '12.0px', textAlign: 'center', paddingLeft: '2px', paddingRight: '2px', overflow: 'visible', textOverflow: 'clip'};
+  const baseFont = {fontFamily: 'Pretendard, Malgun Gothic, sans-serif', fontSize: '12.8px', textAlign: 'center', paddingLeft: '2px', paddingRight: '2px', overflow: 'visible', textOverflow: 'clip'};
   if (p.node.rowPinned) return Object.assign(baseFont, {backgroundColor:'#dcfce7', color:'#14532d', fontWeight:'800'});
   const ovr = p.data._sovr === '1';
   const base = p.value === 'O'
@@ -3145,7 +3158,7 @@ function(p){
 
 JS_MONTH_STYLE = JsCode("""
 function(p){
-  const s = {fontFamily: 'Pretendard, Malgun Gothic, sans-serif', fontSize: '11.8px', textAlign:'center', paddingLeft:'1px', paddingRight:'1px', overflow: 'visible', textOverflow: 'clip'};
+  const s = {fontFamily: 'Pretendard, Malgun Gothic, sans-serif', fontSize: '12.6px', textAlign:'center', paddingLeft:'1px', paddingRight:'1px', overflow: 'visible', textOverflow: 'clip'};
   if (p.node.rowPinned) return Object.assign(s, {backgroundColor:'#dcfce7', color:'#14532d', fontWeight:'800'});
   const i = parseInt(p.colDef.field.slice(1)) - 1;
   if ((p.data._inact || '')[i] === '1') { s.backgroundColor = '#f1f5f9'; s.color = '#cbd5e1'; return s; }
@@ -3395,7 +3408,7 @@ def _grid_options(
     def _blk_style(bg_hex: str, fg_hex: str = "#0f172a", bold: bool = True) -> dict:
         return {
             "fontFamily": "Pretendard, Malgun Gothic, sans-serif",
-            "fontSize": "11.8px",
+            "fontSize": "12.5px",
             "backgroundColor": bg_hex,
             "color": fg_hex,
             "fontWeight": "800" if bold else "600",
@@ -3435,8 +3448,8 @@ def _grid_options(
         {
             "field": "생년월일",
             "headerName": "생년월일",
-            "width": 88,
-            "minWidth": 88,
+            "width": 82,
+            "minWidth": 82,
             "suppressSizeToFit": True,
             "editable": JS_LOCKED,
             "cellStyle": JS_STYLE_CENTER,
@@ -3445,8 +3458,8 @@ def _grid_options(
         {
             "field": "입사일",
             "headerName": "입사일",
-            "width": 88,
-            "minWidth": 88,
+            "width": 82,
+            "minWidth": 82,
             "suppressSizeToFit": True,
             "editable": JS_LOCKED,
             "cellStyle": JS_STYLE_CENTER,
@@ -3455,8 +3468,8 @@ def _grid_options(
         {
             "field": "퇴사일",
             "headerName": "퇴사일",
-            "width": 88,
-            "minWidth": 88,
+            "width": 82,
+            "minWidth": 82,
             "suppressSizeToFit": True,
             "editable": JS_LOCKED,
             "cellStyle": JS_STYLE_CENTER,
@@ -3474,8 +3487,8 @@ def _grid_options(
         {
             "field": "고용유형",
             "headerName": "고용유형",
-            "width": 178,          # '단시간(60시간 이상+요건충족)' 등 세 가지 단시간 유형이 구분되도록
-            "minWidth": 178,
+            "width": 108,          # 셀은 컴팩트하게 유지하고 클릭 시 팝업(260px)으로 전체 표시
+            "minWidth": 108,
             "suppressSizeToFit": True,
             "editable": JsCode("function(p){ return !p.node.rowPinned; }"),
             "cellStyle": JS_STYLE,
@@ -3535,8 +3548,8 @@ def _grid_options(
             {
                 "field": c,
                 "headerName": f"{i}월",
-                "width": 50,       # '자동'·'0.75' 선택지가 잘리지 않도록
-                "minWidth": 50,
+                "width": 44,       # 클릭 시 팝업(90px)으로 표시되므로 셀 폭은 한 화면 수납을 위해 슬림화
+                "minWidth": 44,
                 "suppressSizeToFit": True,
                 "suppressMenu": True,
                 "suppressHeaderMenuButton": True,
@@ -3611,7 +3624,7 @@ def _grid_options(
             "사업장명": "합산합계",
             "성명": "상시근로자",
             "생년월일": "",
-            "고용유형": f"÷ {n}개월 ({trunc_mode})",
+            "고용유형": f"÷ {n}개월 절사",
             **{MONTH_COLS[i]: totals["월별_상시"][i] for i in range(12)},
             "합계": totals["상시_합계"],
             "b1_yth": totals["b1_yth"],
@@ -3854,7 +3867,7 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
             "color": "#f8fafc !important",
             "font-weight": "800 !important",
             "font-family": "'Pretendard', 'Malgun Gothic', sans-serif !important",
-            "font-size": "11.8px !important",
+            "font-size": "12.6px !important",
             "border-right": "1px solid #475569 !important",
             "justify-content": "center !important",
             "padding-left": "3px !important",
@@ -3891,7 +3904,7 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
             "color": "#ffffff !important",
             "font-weight": "700 !important",
             "font-family": "'Pretendard', 'Malgun Gothic', sans-serif !important",
-            "font-size": "11.6px !important",
+            "font-size": "12.4px !important",
             "overflow": "visible !important",
             "text-overflow": "clip !important",
             "white-space": "nowrap !important",
@@ -4863,8 +4876,8 @@ def _build_step3_calculation_pdf_bytes(
     )
 
     b = s.get("biz") or {}
-    corp_nm = (b.get("상호") or "").strip() or "상호미입력"
-    biz_no = (b.get("사업자번호") or "").strip() or "-"
+    corp_nm = (b.get("상호") or "").strip()
+    biz_no = (b.get("사업자번호") or "").strip()
     corp_size = pkg.get("corp_size") or "중소기업"
     is_capital = bool(pkg.get("is_capital", True))
     loc_label = "수도권" if is_capital else "수도권 외(비수도권)"
@@ -4874,7 +4887,7 @@ def _build_step3_calculation_pdf_bytes(
     story = []
     story.append(
         Paragraph(
-            _pdf_text(f"[{corp_nm}] {tax_yr}년 귀속 통합고용세액공제 및 사후관리 계산서"),
+            _pdf_text((f"[{corp_nm}] " if corp_nm else "") + f"{tax_yr}년 귀속 통합고용세액공제 및 사후관리 계산서"),
             st_title,
         )
     )
@@ -6151,15 +6164,36 @@ def _build_report_markdown(s: dict, log_tokens_fn=None, room_key: str = "") -> s
     b = s.get("biz") or {}
     sub_list = s.get("sub_biz_list") or []
     tax_yr = int(s.get("tax_year") or R.DEFAULT_TAX_YEAR)
-    corp_nm = (b.get("상호") or "").strip() or "미입력 법인(사업자)"
-    biz_no = (b.get("사업자번호") or "").strip() or "-"
+    corp_nm = (b.get("상호") or "").strip()
+    biz_no = (b.get("사업자번호") or "").strip()
+    if corp_nm and biz_no:
+        corp_disp = f"**{corp_nm}** ({biz_no})"
+    elif corp_nm:
+        corp_disp = f"**{corp_nm}**"
+    elif biz_no:
+        corp_disp = biz_no
+    else:
+        corp_disp = ""
+
     corp_sz = b.get("기업구분", "중소기업")
     cap_bool = H.is_capital_area(b.get("사업장소재지", ""))
     is_capital = True if cap_bool is None else bool(cap_bool)
     loc_label = "수도권" if is_capital else "수도권 외(비수도권)"
-    addr_str = (b.get("사업장소재지") or "").strip() or "소재지 미입력"
-    uptae_str = f"{b.get('업태') or '-'} · {b.get('종목') or '-'}"
-    open_dt_str = (b.get("설립일") or "").strip() or "-"
+    addr_str = (b.get("사업장소재지") or "").strip()
+    size_loc_disp = f"**{corp_sz} · {loc_label}** ({addr_str})" if addr_str else f"**{corp_sz} · {loc_label}**"
+
+    uptae_val = (b.get("업태") or "").strip()
+    jongmok_val = (b.get("종목") or "").strip()
+    open_dt_val = (b.get("설립일") or "").strip()
+    uj_part = " · ".join([x for x in (uptae_val, jongmok_val) if x])
+    if uj_part and open_dt_val:
+        uptae_disp = f"{uj_part} (설립·개업일: {open_dt_val})"
+    elif uj_part:
+        uptae_disp = uj_part
+    elif open_dt_val:
+        uptae_disp = f"설립·개업일: {open_dt_val}"
+    else:
+        uptae_disp = ""
 
     totals_all = _ensure_totals_snapshot(s)
     ps = s.get("prev_summary") or {}
@@ -6260,8 +6294,8 @@ def _build_report_markdown(s: dict, log_tokens_fn=None, room_key: str = "") -> s
         "",
         "| 항목 | 내용 | 항목 | 내용 |",
         "| :--- | :--- | :--- | :--- |",
-        f"| **상호(법인명)** | **{corp_nm}** ({biz_no}) | **기업규모 · 소재지** | **{corp_sz} · {loc_label}** ({addr_str}) |",
-        f"| **업태 · 종목** | {uptae_str} (설립·개업일: {open_dt_str}) | **과세기간 월수** | 당해({tax_yr}년) {b.get('당해_월수', 12)}개월 / 직전({tax_yr-1}년) {b.get('전년_월수', 12)}개월 |",
+        f"| **상호(법인명)** | {corp_disp} | **기업규모 · 소재지** | {size_loc_disp} |",
+        f"| **업태 · 종목** | {uptae_disp} | **과세기간 월수** | 당해({tax_yr}년) {b.get('당해_월수', 12)}개월 / 직전({tax_yr-1}년) {b.get('전년_월수', 12)}개월 |",
         f"| **사후관리 산정 기준** | **{basis_lbl}** | **적용 공제단가 체계** | {scheme_desc} |",
         "",
         *sub_biz_lines,
