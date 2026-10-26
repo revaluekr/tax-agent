@@ -971,6 +971,8 @@ def extract_all(doc_texts: dict[str, str], log_tokens_fn=None, room_key: str = "
         if key.startswith("wht_"):
             yr = key.replace("wht_", "").strip()
             nts_n = _nts_wht_people_count(text)
+            if "[[계산기 경고: 파일 글자가 공용 읽기 상한" in text:
+                out.setdefault("_truncated", []).append(yr)      # 읽기 상한으로 잘린 파일 → 경고
             if nts_n:
                 nts_rows = _parse_nts_wht_form(text)
                 if len(nts_rows) == nts_n:
@@ -1506,6 +1508,8 @@ def ai_extra_warnings(ext: dict, log_tokens_fn=None, room_key: str = "") -> list
         return []
     warnings: list[str] = []
 
+    for yr in (ext.get("_truncated") or []):
+        warnings.append(f"{yr}년 원천징수부가 너무 커서 뒷부분이 잘렸을 수 있습니다. 직원 수가 맞는지 2단계에서 꼭 확인하세요.")
     for yr, exp in (ext.get("_parse_expected") or {}).items():
         got = len((ext.get("wht") or {}).get(yr) or [])
         if exp and got < exp:

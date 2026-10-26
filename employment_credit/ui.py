@@ -705,6 +705,54 @@ def _ensure_korean_pdf_font() -> tuple[str, str]:
         return "Helvetica", "Helvetica-Bold"
 
 
+_APP_PDF_CHAR_CAP = 150_000      # app.py 공용 읽기 함수의 글자 상한 (이 길이면 잘렸을 가능성)
+
+
+def _read_upload_text(u, extract_file_fn, room_key: str = "") -> str:
+    """
+    업로드 파일 → 글자.
+    PDF는 계산기가 직접 '모든 쪽'을 읽습니다. app.py 공용 함수는 150쪽·150,000자에서 잘라
+    직원 25명을 넘는 원천징수부(1인 3쪽)의 뒷부분이 조용히 빠지기 때문입니다.
+    스캔 이미지 PDF처럼 글자가 거의 없으면 공용 함수(이미지 판독)로 넘깁니다.
+    """
+    name = str(getattr(u, "name", "") or "")
+    if name.lower().endswith(".pdf"):
+        # 1순위 pypdfium2: 글자 단위로 저장된 원천징수부도 빠르게 읽음 (300쪽 약 4초, pypdf는 약 60초)
+        try:
+            import pypdfium2 as pdfium
+            doc = pdfium.PdfDocument(u.getvalue())
+            parts = [f"[첨부 PDF 파일명: {name} (총 {len(doc)}페이지)]"]
+            body = 0
+            for i in range(len(doc)):
+                tp = doc[i].get_textpage()
+                t = (tp.get_text_range() or "").strip()
+                tp.close()
+                body += len(t)
+                parts.append(f"\n--- {i + 1}페이지 ---\n{t}")
+            doc.close()
+            if body >= 40:
+                return "\n".join(parts)
+        except Exception:
+            pass
+        try:
+            from pypdf import PdfReader
+            reader = PdfReader(io.BytesIO(u.getvalue()))
+            parts = [f"[첨부 PDF 파일명: {name} (총 {len(reader.pages)}페이지)]"]
+            body = 0
+            for i, page in enumerate(reader.pages):
+                t = (page.extract_text() or "").strip()
+                body += len(t)
+                parts.append(f"\n--- {i + 1}페이지 ---\n{t}")
+            if body >= 40:
+                return "\n".join(parts)
+        except Exception:
+            pass
+    text = extract_file_fn(u, room_key) or ""
+    if len(text) >= _APP_PDF_CHAR_CAP:
+        text += "\n[[계산기 경고: 파일 글자가 공용 읽기 상한에 닿아 뒷부분이 잘렸을 수 있습니다]]"
+    return text
+
+
 def _pdf_text(t: str) -> str:
     """PDF 문단용: 특수문자 이스케이프 + 마크다운 굵게(**...**)만 살림"""
     t = str(t or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -2399,7 +2447,7 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
     if new:
         with st.spinner(f"📄 {len(new)}개 파일에서 텍스트 및 표 데이터를 추출하고 있습니다..."):
             for u in new:
-                text = extract_file_fn(u, room_key) or ""
+                text = _read_upload_text(u, extract_file_fn, room_key)
                 auto_wp = _sanitize_workplace_label(getattr(P, "infer_workplace_name", lambda nm, tx="": "")(u.name, text), _default_workplace_label(s))
                 s["files"][u.name] = {
                     "key": P.classify_file(u.name, text),
