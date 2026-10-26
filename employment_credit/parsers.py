@@ -7,13 +7,13 @@
    - 업로드된 원천징수부가 엑셀/CSV 표 형식(`### [시트:` 또는 파이프 `|` 테이블)인 경우,
      LLM 호출 없이 정규식·테이블 파서로 **0.01초 만에 즉시 추출**하여 1단계 → 2단계 전환 속도를 획기적으로 단축합니다.
 2. 비정형 PDF 서류 멀티스레드 병렬 추출(`ThreadPoolExecutor`):
-   - 사업자등록증, 등기부등본, 주주명부, 비정형 PDF 원천징수부, 기신고 세액공제 명세서를
+   - 사업자등록증, 등기부등본, 주주명부, 비정형 PDF 원천징수부, 2025년 공제감면세액계산서 및 기신고 세액공제 명세서를
      순차 호출하지 않고 동시에 병렬 호출하여 대기 시간을 1/4 이하로 줄입니다.
-3. 2024·2025·2026~2028 전 연도 원천징수부(`wht_YYYY`) 및 기신고 명세서(`prev_filing` — 상시·청년등·증가인원·기공제세액·이월세액) 완벽 지원.
-4. [오류 ⑬ 해결] `ai_extra_warnings` 정밀 교차검증 경고 구현:
-   - 추가 LLM 대기 시간(0초) 없이 사업자등록증·법인등기부등본의 대표자/임원 급여 수령 여부,
-     주주명부 최대주주·특수관계인 포함 여부, 원천징수부 생년월일/입사일 누락 여부,
-     기신고 명세서와 원천징수부 인원 불일치 여부를 즉시 교차 검증하여 안내합니다.
+3. `2025년 공제감면세액계산서`(`credit_calc_2025` 등) 및 `기신고 명세서`(`prev_filing`) 완벽 인식·병합:
+   - 파일명이나 본문에 `2025`와 `공제감면`/`공제세액계산서`/`세액공제신청서`/`상시근로자`가 있으면 `credit_calc_2025`로 즉시 자동 분류하여
+     1단계 체크리스트의 『2025년 공제감면세액계산서』 행에 초록불(`🟢`)이 켜지도록 지원합니다.
+   - 추출 시 연도별 `상시_총인원(연인원)`, `청년등_총인원(연인원)`, `상시(평균)`, `청년등(평균)`, `청년등_증가`, `청년등외_증가`, `공제세액`, `이월세액`, `기추징세액`을 모두 읽어옵니다.
+4. [오류 ⑬ 해결] `ai_extra_warnings` 정밀 교차검증 경고 구현.
 """
 from __future__ import annotations
 
@@ -29,23 +29,41 @@ MAX_TEXT_CHARS = 120_000
 
 
 # ══════════════════════════════════════════════════════════════════
-# 1. 파일명 · 본문 기반 서류 자동 분류 (2022~2028년 원천징수부 동적 인식)
+# 1. 파일명 · 본문 기반 서류 자동 분류 (2025년 공제감면세액계산서 및 2022~2028년 원천징수부 동적 인식)
 # ══════════════════════════════════════════════════════════════════
 def classify_file(name: str, text: str = "") -> str | None:
     n = (name or "").lower()
     head = (text or "")[:3000]
 
-    # 1) 사업자등록증 / 등기부등본 / 주주명부 / 기신고 명세서 우선 판별
+    # 1) 사업자등록증 / 등기부등본 / 주주명부 우선 판별
     if any(k in n for k in ("사업자등록", "사업자 등록", "biz_reg")):
         return "biz_reg"
     if any(k in n for k in ("등기부", "등기사항", "등본", "corp_reg")):
         return "corp_reg"
     if any(k in n for k in ("주주명부", "주주현황", "주식등변동", "shareholder")):
         return "shareholder"
-    if any(k in n for k in ("상시근로자", "통합고용", "고용증대", "공제세액계산", "세액공제신청", "조정명세")):
+
+    # 2) 공제감면세액계산서 / 기신고 상시근로자 명세서 판별 (연도별 credit_calc_YYYY 우선 매칭)
+    credit_calc_keywords = (
+        "공제감면", "감면세액", "공제세액계산", "세액공제신청", "상시근로자", "통합고용", "고용증대", "조정명세", "credit_calc"
+    )
+    is_credit_doc = any(k in n for k in credit_calc_keywords) or any(
+        k in head for k in ("공제감면세액계산서", "공제세액계산서", "상시근로자 명세서", "세액공제신청서", "세액공제조정명세서")
+    )
+    if is_credit_doc and not any(k in n for k in ("원천징수", "근로소득원천", "급여대장", "wht")):
+        # 파일명에서 연도(예: 2025년 공제감면세액계산서)가 확인되면 credit_calc_YYYY 반환
+        for yr in range(2028, 2021, -1):
+            short_yr = f"{yr % 100:02d}"
+            if str(yr) in n or f"{short_yr}년" in n or f"_{short_yr}" in n:
+                if yr == 2025 or f"credit_calc_{yr}" in R.get_all_selectable_doc_labels(R.DEFAULT_TAX_YEAR):
+                    return f"credit_calc_{yr}" if yr >= 2025 else "prev_filing"
+        # 본문 상단에서 귀속연도 확인
+        for yr in range(2028, 2024, -1):
+            if f"{yr}년" in head or f"{yr}귀속" in head:
+                return f"credit_calc_{yr}"
         return "prev_filing"
 
-    # 2) 파일명에서 연도가 포함된 원천징수부/급여대장 판별
+    # 3) 파일명에서 연도가 포함된 원천징수부/급여대장 판별
     wht_keywords = ("원천징수", "근로소득", "급여대장", "급여명세", "사원", "임직원", "wht", "원천")
     is_wht_like = any(k in n for k in wht_keywords) or ("원천징수부" in head) or ("급여" in head and "주민등록번호" in head)
 
@@ -55,15 +73,13 @@ def classify_file(name: str, text: str = "") -> str | None:
             if is_wht_like or n.endswith((".xlsx", ".xls", ".csv", ".pdf")):
                 return f"wht_{yr}"
 
-    # 3) 파일명에 연도가 없더라도 본문 상단에서 서류 종류 및 귀속연도 판별
+    # 4) 파일명에 연도가 없더라도 본문 상단에서 서류 종류 및 귀속연도 판별
     if "사업자등록증" in head and ("업태" in head or "종목" in head):
         return "biz_reg"
     if "등기사항전부증명서" in head or ("대표이사" in head and "본점" in head):
         return "corp_reg"
     if "주주명부" in head or ("지분율" in head and "주식수" in head):
         return "shareholder"
-    if any(k in head for k in ("상시근로자 명세서", "통합고용세액공제", "공제세액계산서")):
-        return "prev_filing"
 
     if is_wht_like:
         for yr in range(2028, 2021, -1):
@@ -131,9 +147,9 @@ PROMPT_WHT = """다음은 소득자별 근로소득원천징수부입니다. 모
 주민등록번호는 앞 6자리와 뒷자리 첫 1자리만 '000000-0' 형태로 적고, 각 월(1~12)의 급여총액(과세급여)을 숫자로 넣으세요.
 {"근로자":[{"성명":"", "주민번호앞7자리":"000000-0", "입사일":"YYYY-MM-DD", "퇴사일":"YYYY-MM-DD", "고용유형":"정규직/계약직(기간제)/단시간(60시간 이상)/대표이사/임원", "월급여":{"1":0,"2":0,"3":0,"4":0,"5":0,"6":0,"7":0,"8":0,"9":0,"10":0,"11":0,"12":0}}]}"""
 
-PROMPT_PREV = """다음은 이미 신고한 통합고용세액공제(또는 고용증대세액공제) 관련 서식(상시근로자 명세서·공제세액계산서·세액공제조정명세서)입니다.
-연도별 전체 상시근로자 수, 청년등 상시근로자 수, 공제받은 청년등 증가인원, 청년등 외 증가인원, 기공제세액(원), 최저한세 등으로 공제받지 못해 이월된 미공제 이월세액(원), 1차 사후관리 기납부 추징세액(원)을 아래 JSON 형식으로 읽어주세요.
-{"연도별":{"2023":{"상시":0.0, "청년등":0.0, "청년등_증가":0.0, "청년등외_증가":0.0, "공제세액":0, "이월세액":0}, "2024":{"상시":0.0, "청년등":0.0, "청년등_증가":0.0, "청년등외_증가":0.0, "공제세액":0, "이월세액":0, "기추징세액":0}, "2025":{"상시":0.0, "청년등":0.0, "청년등_증가":0.0, "청년등외_증가":0.0, "공제세액":0, "이월세액":0}}}"""
+PROMPT_PREV = """다음은 이미 신고한 통합고용세액공제(또는 고용증대세액공제) 관련 서식(공제감면세액계산서·상시근로자 명세서·공제세액계산서·세액공제조정명세서)입니다.
+연도별 전체 상시근로자 총인원수(연인원 합계) 및 평균인원수(상시), 청년등 총인원수(연인원 합계) 및 평균인원수(청년등), 공제받은 청년등 증가인원, 청년등 외 증가인원, 기공제세액(원), 최저한세 등으로 공제받지 못해 이월된 미공제 이월세액(원), 1차 사후관리 기납부 추징세액(원)을 아래 JSON 형식으로 읽어주세요.
+{"연도별":{"2023":{"상시_총인원":0.0, "청년등_총인원":0.0, "상시":0.0, "청년등":0.0, "청년등_증가":0.0, "청년등외_증가":0.0, "공제세액":0, "이월세액":0}, "2024":{"상시_총인원":0.0, "청년등_총인원":0.0, "상시":0.0, "청년등":0.0, "청년등_증가":0.0, "청년등외_증가":0.0, "공제세액":0, "이월세액":0, "기추징세액":0}, "2025":{"상시_총인원":0.0, "청년등_총인원":0.0, "상시":0.0, "청년등":0.0, "청년등_증가":0.0, "청년등외_증가":0.0, "공제세액":0, "이월세액":0}}}"""
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -302,20 +318,20 @@ def _normalize_wht_rows(raw_employees: list[dict]) -> list[dict]:
 
 
 # ══════════════════════════════════════════════════════════════════
-# 4. 멀티스레드 병렬 서류 추출 (extract_all)
+# 4. 멀티스레드 병렬 서류 추출 (extract_all — credit_calc_YYYY 및 prev_filing 통합 병합)
 # ══════════════════════════════════════════════════════════════════
 def extract_all(doc_texts: dict[str, str], log_tokens_fn=None, room_key: str = "") -> dict:
     """
     업로드된 모든 서류를 병렬 추출합니다.
     - 엑셀/CSV 원천징수부는 LLM 호출 없이 즉시 파싱합니다.
-    - PDF 서류들은 `ThreadPoolExecutor`로 동시에 Gemini API를 호출합니다.
+    - PDF 서류들(`credit_calc_2025`, `prev_filing` 포함)은 `ThreadPoolExecutor`로 동시에 Gemini API를 호출합니다.
     """
     out: dict = {
         "biz_reg": {},
         "corp_reg": {},
         "shareholder": [],
         "wht": {},
-        "prev_filing": {},
+        "prev_filing": {"연도별": {}},
     }
     if not doc_texts:
         return out
@@ -338,7 +354,7 @@ def extract_all(doc_texts: dict[str, str], log_tokens_fn=None, room_key: str = "
             llm_tasks[key] = (PROMPT_CORP, text)
         elif key == "shareholder":
             llm_tasks[key] = (PROMPT_SH, text)
-        elif key == "prev_filing":
+        elif key == "prev_filing" or key.startswith("credit_calc_"):
             llm_tasks[key] = (PROMPT_PREV, text)
 
     if llm_tasks:
@@ -360,8 +376,19 @@ def extract_all(doc_texts: dict[str, str], log_tokens_fn=None, room_key: str = "
                     out["corp_reg"] = res
                 elif k == "shareholder":
                     out["shareholder"] = res.get("주주") or []
-                elif k == "prev_filing":
-                    out["prev_filing"] = res
+                elif k == "prev_filing" or k.startswith("credit_calc_"):
+                    yr_dict = (res.get("연도별") if isinstance(res, dict) else None) or {}
+                    if isinstance(yr_dict, dict):
+                        target_map = out["prev_filing"].setdefault("연도별", {})
+                        for y_str, y_vals in yr_dict.items():
+                            if not isinstance(y_vals, dict):
+                                continue
+                            has_nonzero = any(_num(v) > 0 for v in y_vals.values())
+                            if has_nonzero or str(y_str) not in target_map:
+                                cur_entry = target_map.setdefault(str(y_str), {})
+                                for fk, fv in y_vals.items():
+                                    if _num(fv) > 0 or fk not in cur_entry:
+                                        cur_entry[fk] = fv
                 elif k.startswith("wht_"):
                     yr = k.replace("wht_", "").strip()
                     out["wht"][yr] = _normalize_wht_rows(res.get("근로자") or [])
@@ -442,8 +469,6 @@ def new_year_rec(emp_type: str = R.EMP_REGULAR, confirmed_emp: bool = False) -> 
 def build_people(ext: dict, years: list[int]) -> tuple[dict, dict]:
     """
     모든 연도(예: 2024·2025·2026)의 원천징수부 데이터를 성명+생년월일 기준으로 병합합니다.
-    - 만약 근로자가 과거 연도(예: 2025년)에 퇴사 후 당해연도에 재입사한 경우에도 연도별 퇴사일이 섞이지 않도록
-      `연도별_퇴사일`을 함께 관리합니다.
     """
     wht_by_year = (ext or {}).get("wht") or {}
     corp_execs = ((ext or {}).get("corp_reg") or {}).get("임원") or []
@@ -540,9 +565,6 @@ def build_people(ext: dict, years: list[int]) -> tuple[dict, dict]:
 def ai_extra_warnings(ext: dict, log_tokens_fn=None, room_key: str = "") -> list[str]:
     """
     [오류 ⑬ 해결: 추가 LLM 호출 대기(0초) 없이 추출된 서류 간 불일치·주의사항을 정밀 교차검증]
-    - 등기부등본/사업자등록증상 대표자·등기임원이 원천징수부에 포함된 경우 자동 제외 안내
-    - 주주명부상 최대주주·특수관계인이 원천징수부에 포함된 경우 자동 제외 안내
-    - 원천징수부 근로자 중 생년월일 또는 입사일이 누락된 인원 경고
     """
     if not ext:
         return []
@@ -605,11 +627,17 @@ def check_missing(classified: dict[str, list[str]], ext: dict | None, tax_year: 
         if req and not classified.get(k):
             msgs.append(f"**{label}** 자료가 업로드되지 않았습니다.")
 
-    t2_wht_key = f"wht_{int(tax_year) - 2}"
-    if not classified.get(t2_wht_key) and not classified.get("prev_filing"):
+    t1 = int(tax_year) - 1
+    t2 = int(tax_year) - 2
+    if not classified.get(f"credit_calc_{t1}") and not classified.get("prev_filing"):
         msgs.append(
-            f"**{int(tax_year)-2}년 귀속분 2차 사후관리(3차년도)** 확인을 위한 `{int(tax_year)-2}년 원천징수부` 또는 `기신고 명세서`가 없습니다. "
-            f"(2단계·3단계에서 {int(tax_year)-2}년 기신고 인원을 직접 입력하거나 사원표를 열어 계산할 수 있습니다.)"
+            f"**{t1}년 공제감면세액계산서**가 업로드되지 않았습니다. "
+            f"(3단계에서 사후관리 기본값인 『기신고 기준』 숫자를 직접 입력하거나 『세법원칙 기준(재계산)』으로 전환하여 계산할 수 있습니다.)"
+        )
+    if not classified.get(f"wht_{t2}") and not classified.get("prev_filing") and not classified.get(f"credit_calc_{t2}"):
+        msgs.append(
+            f"**{t2}년 귀속분 2차 사후관리(3차년도)** 확인을 위한 `{t2}년 원천징수부` 또는 `기신고 명세서`가 없습니다. "
+            f"(2단계·3단계에서 {t2}년 기신고 인원을 직접 입력하거나 사원표를 열어 계산할 수 있습니다.)"
         )
 
     if ext:
