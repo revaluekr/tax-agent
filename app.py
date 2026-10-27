@@ -521,7 +521,7 @@ WATCHED_TAX_LAWS = [
 ]
 
 _CITED_ARTICLE_TAG_RE = re.compile(
-    r"\[조문(?:\s*[:：]\s*|\s*)(?=[가-힣A-Za-z0-9「])([^\]]+)\]"
+    r"\[(?:조문|부칙)(?:\s*[:：]\s*|\s*)(?=[가-힣A-Za-z0-9「])([^\]]+)\]"
 )
 
 def _get_first_env_or_secret(key_names: list[str]) -> str:
@@ -746,7 +746,7 @@ def extract_cited_articles_map_in_room(messages: list[dict]) -> dict[str, list[s
     for m in _CITED_ARTICLE_TAG_RE.finditer(blob):
         raw_ref = m.group(1).strip()
         m_art = re.search(r"(제\s*\d+\s*조(?:\s*의\s*\d+)?(?:\s*제\s*\d+\s*항)?)", raw_ref)
-        law_part = re.sub(r"제\s*\d+\s*조.*", "", raw_ref).replace(" ", "").replace("「", "").replace("」", "").strip()
+        law_part = re.sub(r"(?:부칙|제\s*\d+\s*조).*", "", raw_ref).replace(" ", "").replace("「", "").replace("」", "").strip()
         if not law_part:
             continue
         art_str = re.sub(r"\s+", "", m_art.group(1)) if m_art else ""
@@ -878,7 +878,7 @@ def extract_cited_laws_in_room(messages: list[dict], law_prom_map: dict[str, dic
 
     for idx, m in enumerate(_CITED_ARTICLE_TAG_RE.finditer(blob)):
         val = m.group(1)
-        val_clean = re.sub(r"제\s*\d+\s*조.*", "", val).replace(" ", "").replace("「", "").replace("」", "").strip()
+        val_clean = re.sub(r"(?:부칙|제\s*\d+\s*조).*", "", val).replace(" ", "").replace("「", "").replace("」", "").strip()
         matched_cname = ""
         if val_clean in law_prom_map:
             matched_cname = val_clean
@@ -955,9 +955,9 @@ DEFAULT_API_EXPIRY_CONFIG = {
         "url": "https://www.vworld.kr/dev/v4dv_apikey_s001.do"
     },
     "DATA_GO_KR": {
-        "name": "공공데이터포털(국세청·국토부·4대보험·관세청) API",
-        "org_name": "공공데이터포털 (국세청 · 국토부 · 근로복지공단 · 국민연금 · 관세청)",
-        "api_info": "사업자상태·진위확인 / 매매·전월세 실거래가·건축물대장 / 고용·산재·국민연금 사업장 / 관세환율 조회",
+        "name": "공공데이터포털(국세청·실거래가) API",
+        "org_name": "공공데이터포털 (국세청 · 국토교통부)",
+        "api_info": "사업자등록 상태·진위확인 및 부동산 실거래가 조회",
         "key_names": ["NTS_API_KEY", "DATA_GO_KR_KEY", "PUBLIC_DATA_KEY", "MOLIT_API_KEY"],
         "secret_key": "DATA_GO_KR_EXPIRY_DATE",
         "default_date": "2028-10-20",
@@ -1502,16 +1502,16 @@ def _sanitize_math_text(text: str) -> str:
         return ""
     s = text
     s = re.sub(
-        r"\[(판례|심판례|해석례|예규|조문)(?:\s*[:：]\s*|\s+)(?=[가-힣A-Za-z0-9「])([^\]]+)\]",
+        r"\[(판례|심판례|헌재|헌재결정례|해석례|예규|조문|부칙|별표)(?:\s*[:：]\s*|\s+)(?=[가-힣A-Za-z0-9「])([^\]]+)\]",
         r"[\1: \2]",
         s
     )
     s = re.sub(
-        r"\[(판례|심판례|해석례|예규|조문)(?=[가-힣A-Za-z0-9「])([^\]:：\n]+)\]",
+        r"\[(판례|심판례|헌재|헌재결정례|해석례|예규|조문|부칙|별표)(?=[가-힣A-Za-z0-9「])([^\]:：\n]+)\]",
         r"[\1: \2]",
         s
     )
-    s = re.sub(rf"\[(\[(?:판례|심판례|해석례|예규|조문)\s*:\s*[^\]]+\])\]\((https?://{_URL_BODY_PAT})\)", r"\1", s)
+    s = re.sub(rf"\[(\[(?:판례|심판례|헌재|헌재결정례|해석례|예규|조문|부칙|별표)\s*:\s*[^\]]+\])\]\((https?://{_URL_BODY_PAT})\)", r"\1", s)
     s = re.sub(rf"\[([^\n]+?)\]\((https?://(?:www\.)?law\.go\.kr/{_URL_BODY_PAT})\)", r"\1", s)
 
     s = re.sub(r"\$\$(.*?)\$\$", r"\1", s, flags=re.DOTALL)
@@ -1593,6 +1593,22 @@ def _set_malgun_font(run):
     run.font.name = "Malgun Gothic"
     run._element.rPr.rFonts.set(qn("w:eastAsia"), "Malgun Gothic")
 
+def _add_md_runs_to_paragraph(p, text: str, force_bold: bool = False) -> None:
+    """마크다운 **굵게** 구문을 파싱하여 워드(docx) Run 단위로 실제 굵은 글씨(run.bold = True)를 적용합니다."""
+    parts = re.split(r"(\*\*[^*]+?\*\*)", text or "")
+    for part in parts:
+        if not part:
+            continue
+        if part.startswith("**") and part.endswith("**") and len(part) > 4:
+            run = p.add_run(part[2:-2])
+            _set_malgun_font(run)
+            run.bold = True
+        else:
+            run = p.add_run(part.replace("**", ""))
+            _set_malgun_font(run)
+            if force_bold:
+                run.bold = True
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def create_word_docx(report_text: str) -> bytes:
     report_text = _sanitize_math_text(report_text)
@@ -1618,7 +1634,7 @@ def create_word_docx(report_text: str) -> bytes:
                 if not (row_s.startswith("|") and row_s.endswith("|")):
                     break
                 if not re.match(r"^\|[\s\-:|]+\|$", row_s):
-                    cells = [re.sub(r"\*\*(.*?)\*\*", r"\1", c.strip()) for c in row_s.strip("|").split("|")]
+                    cells = [c.strip() for c in row_s.strip("|").split("|")]
                     table_rows.append(cells)
                 i += 1
             if table_rows:
@@ -1628,12 +1644,9 @@ def create_word_docx(report_text: str) -> bytes:
                 for r_idx, r_data in enumerate(table_rows):
                     for c_idx, val in enumerate(r_data):
                         cell = t.cell(r_idx, c_idx)
-                        cell.text = val
-                        for p in cell.paragraphs:
-                            for run in p.runs:
-                                _set_malgun_font(run)
-                                if r_idx == 0:
-                                    run.bold = True
+                        cell.text = ""
+                        p = cell.paragraphs[0]
+                        _add_md_runs_to_paragraph(p, val, force_bold=(r_idx == 0))
             continue
 
         clean_line = re.sub(r"\*\*(.*?)\*\*", r"\1", stripped)
@@ -1648,10 +1661,12 @@ def create_word_docx(report_text: str) -> bytes:
             for run in h.runs:
                 _set_malgun_font(run)
         elif stripped.startswith("- ") or stripped.startswith("* "):
-            p = doc.add_paragraph(clean_line[2:], style="List Bullet")
+            p = doc.add_paragraph(style="List Bullet")
+            _add_md_runs_to_paragraph(p, stripped[2:])
             p.paragraph_format.space_after = Pt(4)
         elif not re.match(r"^-{3,}$", stripped):
-            p = doc.add_paragraph(clean_line)
+            p = doc.add_paragraph()
+            _add_md_runs_to_paragraph(p, stripped)
             p.paragraph_format.space_after = Pt(6)
         i += 1
             
@@ -1818,25 +1833,55 @@ def create_pdf_report(report_text: str) -> bytes:
 
             if rows_data:
                 max_cols = max(len(r) for r in rows_data)
+                padded_rows = [r + [""] * (max_cols - len(r)) for r in rows_data]
+
+                # 열 개수에 따라 폰트 크기·패딩을 자동 조절하고, 각 열의 텍스트 길이에 비례하여 열 너비를 동적 배분
+                if max_cols >= 8:
+                    cur_th = ParagraphStyle("DocTH_Wide8", parent=style_th, fontSize=7.4, leading=10.5)
+                    cur_td = ParagraphStyle("DocTD_Wide8", parent=style_td, fontSize=7.2, leading=10.5)
+                    h_pad, v_pad = 3.5, 4.5
+                elif max_cols >= 6:
+                    cur_th = ParagraphStyle("DocTH_Wide6", parent=style_th, fontSize=8.0, leading=11.5)
+                    cur_td = ParagraphStyle("DocTD_Wide6", parent=style_td, fontSize=7.8, leading=11.5)
+                    h_pad, v_pad = 4.5, 5.0
+                else:
+                    cur_th, cur_td = style_th, style_td
+                    h_pad, v_pad = 6.0, 6.0
+
+                col_weights = []
+                for c_idx in range(max_cols):
+                    col_lens = [
+                        len(re.sub(r"\*\*|`", "", str(pr[c_idx] or "")).strip())
+                        for pr in padded_rows
+                    ]
+                    max_l = max(col_lens) if col_lens else 4
+                    avg_l = (sum(col_lens) / len(col_lens)) if col_lens else 4
+                    eff_len = max(4.0, min(float(max_l) * 0.65 + float(avg_l) * 0.35, 52.0))
+                    col_weights.append(eff_len ** 0.72)
+
+                total_w = sum(col_weights) or 1.0
+                min_col_w = max(24.0, usable_width * (0.055 if max_cols >= 8 else 0.075))
+                raw_widths = [max(min_col_w, usable_width * (w / total_w)) for w in col_weights]
+                scale_factor = usable_width / (sum(raw_widths) or usable_width)
+                col_widths = [w * scale_factor for w in raw_widths]
+
                 pdf_table_data = []
-                for r_idx, r in enumerate(rows_data):
-                    padded_r = r + [""] * (max_cols - len(r))
+                for r_idx, padded_r in enumerate(padded_rows):
                     row_paras = []
                     for c_text in padded_r:
                         cell_xml = _md_to_rl_xml(c_text, bold_font)
-                        row_paras.append(Paragraph(cell_xml, style_th if r_idx == 0 else style_td))
+                        row_paras.append(Paragraph(cell_xml, cur_th if r_idx == 0 else cur_td))
                     pdf_table_data.append(row_paras)
 
-                col_w = usable_width / max_cols
-                pdf_table = Table(pdf_table_data, colWidths=[col_w] * max_cols, repeatRows=1)
+                pdf_table = Table(pdf_table_data, colWidths=col_widths, repeatRows=1)
                 t_style = [
                     ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e2e8f0")),
                     ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
                     ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("TOPPADDING", (0, 0), (-1, -1), 6),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 6),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                    ("TOPPADDING", (0, 0), (-1, -1), v_pad),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), v_pad),
+                    ("LEFTPADDING", (0, 0), (-1, -1), h_pad),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), h_pad),
                 ]
                 for r_idx in range(1, len(pdf_table_data)):
                     if r_idx % 2 == 0:
@@ -1913,7 +1958,7 @@ def _trigger_agent_task(
             effective_prompt.startswith("[프로]") or (has_attached_file and len(current_file_info["text"]) >= 15000)
         )
     )
-    msg_char_cap = 24000 if is_pro_request else 8000
+    msg_char_cap = 28000 if is_pro_request else 12000
 
     history_context = ""
     if current_messages:
@@ -1923,7 +1968,14 @@ def _trigger_agent_task(
         ]
         for m in recent_msgs:
             role_label = "사용자" if m["role"] == "user" else "에이전트"
-            history_lines.append(f"- {role_label}: {m['content'][:msg_char_cap]}")
+            raw_c = m.get("content", "") or ""
+            if len(raw_c) > msg_char_cap:
+                head_n = int(msg_char_cap * 0.6)
+                tail_n = msg_char_cap - head_n
+                clipped_c = raw_c[:head_n] + "\n...(중간 생략)...\n" + raw_c[-tail_n:]
+            else:
+                clipped_c = raw_c
+            history_lines.append(f"- {role_label}: {clipped_c}")
         history_context = "\n".join(history_lines) + "\n\n"
 
     current_messages.append({"role": "user", "content": display_prompt})
@@ -2326,7 +2378,7 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
         },
         {
             "site_org": "2. 법제처 국가법령정보센터 (MOLEG)",
-            "api_info": "현행법령(조문·부칙) · 연혁법령(구법) · 대법원판례 · 헌재결정례 · 심판례 · 예규 · 별표/서식 · 개정이유서",
+            "api_info": "현행법령 · 연혁법령(구법) · 대법원판례 · 심판례 · 예규 · 개정이유서",
             "api_code": f"`{_format_api_code_display(law_raw, show_full_code)}`" if law_raw else "`미설정 (LAW_OPEN_API_KEY)`",
             "led_status": "🟢 정상 연동 (무기한)" if (law_raw or law_prom_map) else "⚪ 미설정",
             "link_md": "[🔗 사이트 이동](https://open.law.go.kr/LSO/openApi/guideList.do)"
@@ -2567,121 +2619,108 @@ with st.sidebar:
                 st.session_state.ws_widget_ver = ws_widget_ver + 1
                 st.rerun()
 
-    # 📦 [통합고용세액공제 모드 전용] 귀속사업연도 · 사업자정보 (내 작업공간 바로 아래)
-    if st.session_state.app_top_mode == "CREDIT_CALC":
-        import employment_credit
-        employment_credit.render_credit_sidebar()
-
     # 📦 [카드 3] 멀티 대화방 (입체 비우기 버튼 + 1~10번 좌측 정렬 리스트 + 옵션 C 제미나이 오로라 로딩 LED)
-    # 방 선택값은 다른 화면에서도 쓰므로 카드 밖에서 먼저 정함
-    if "current_room" not in st.session_state or st.session_state.current_room not in ROOM_IDS:
-        st.session_state.current_room = ROOM_IDS[0]
-    selected_room = st.session_state.current_room
-    active_room_key = f"{effective_ws_id}::{selected_room}"
+    with st.container(border=True):
+        if "current_room" not in st.session_state or st.session_state.current_room not in ROOM_IDS:
+            st.session_state.current_room = ROOM_IDS[0]
+        selected_room = st.session_state.current_room
+        active_room_key = f"{effective_ws_id}::{selected_room}"
 
-    # 통합고용세액공제 모드에서는 멀티 대화방 카드를 숨김
-    if st.session_state.app_top_mode != "CREDIT_CALC":
-        with st.container(border=True):
-            if "current_room" not in st.session_state or st.session_state.current_room not in ROOM_IDS:
-                st.session_state.current_room = ROOM_IDS[0]
-            selected_room = st.session_state.current_room
-            active_room_key = f"{effective_ws_id}::{selected_room}"
+        rooms_with_rev_cnt = sum(
+            1 for r_id in ROOM_IDS
+            if get_room_revision_alerts(effective_ws_id, r_id, st.session_state.chat_rooms.get(r_id, []), law_prom_map)[0]
+        )
+        rev_header_pill = (
+            f"<span class='sb-badge-amber'>🔄 {rooms_with_rev_cnt}개방 개정</span>"
+            if rooms_with_rev_cnt > 0 else ""
+        )
+        st.markdown(f"<div class='sb-card-title'><span>🗂️ 멀티 대화방 (1~10번)</span>{rev_header_pill}</div>", unsafe_allow_html=True)
 
-            rooms_with_rev_cnt = sum(
-                1 for r_id in ROOM_IDS
-                if get_room_revision_alerts(effective_ws_id, r_id, st.session_state.chat_rooms.get(r_id, []), law_prom_map)[0]
-            )
-            rev_header_pill = (
-                f"<span class='sb-badge-amber'>🔄 {rooms_with_rev_cnt}개방 개정</span>"
-                if rooms_with_rev_cnt > 0 else ""
-            )
-            st.markdown(f"<div class='sb-card-title'><span>🗂️ 멀티 대화방 (1~10번)</span>{rev_header_pill}</div>", unsafe_allow_html=True)
-
-            room_search_kw = st.text_input(
-                "전체 대화방 통합 검색",
-                placeholder="🔎 1~10번 방 통합 키워드 검색",
-                label_visibility="collapsed",
-                key=f"room_search_{effective_ws_id}"
-            )
-            if room_search_kw.strip():
-                kw_lower = room_search_kw.strip().lower()
-                matched_rooms = []
-                for r_id in ROOM_IDS:
-                    r_title = st.session_state.room_titles.get(r_id, "")
-                    r_fname = st.session_state.room_files[r_id].get("name") or ""
-                    r_msgs = st.session_state.chat_rooms.get(r_id, [])
-                    hit_cnt = sum(1 for m in r_msgs if kw_lower in m.get("content", "").lower())
-                    if kw_lower in r_title.lower() or kw_lower in r_fname.lower():
-                        hit_cnt += 1
-                    if hit_cnt > 0:
-                        matched_rooms.append((r_id, r_title, hit_cnt))
-                if matched_rooms:
-                    for m_rid, m_title, m_cnt in matched_rooms:
-                        if st.button(f"👉 {m_rid} [{m_title}] ({m_cnt}건 일치)", key=f"jump_{m_rid}", use_container_width=True):
-                            st.session_state.current_room = m_rid
-                            st.rerun()
-                else:
-                    st.caption(f"'{room_search_kw}' 검색 결과가 없습니다.")
-
-            title_widget_key = f"title_input_{effective_ws_id}_{selected_room}"
-            # 위젯(st.text_input)이 렌더링되기 전에만 상태 동기화를 수행합니다.
-            if (
-                title_widget_key in st.session_state
-                and st.session_state[title_widget_key] in ("빈 대화방", "메인 대화")
-                and st.session_state.room_titles[selected_room] not in ("빈 대화방", "메인 대화")
-                and st.session_state.chat_rooms.get(selected_room)
-            ):
-                st.session_state[title_widget_key] = st.session_state.room_titles[selected_room]
-
-            new_title = st.text_input(
-                "방 주제 메모",
-                value=st.session_state.room_titles[selected_room],
-                placeholder="✏️ 현재 방 주제 메모 (예: A사 세무조사)",
-                label_visibility="collapsed",
-                key=title_widget_key
-            )
-            if new_title != st.session_state.room_titles[selected_room]:
-                st.session_state.room_titles[selected_room] = new_title
-                save_workspace_to_disk(effective_ws_id)
-                st.rerun()
-
-            if st.button(f"🗑️ [{selected_room}] 현재 방 비우기", key="btn_clear_current_room", use_container_width=True):
-                with task_mgr["lock"]:
-                    task_mgr["tasks"].pop(active_room_key, None)
-                st.session_state.chat_rooms[selected_room] = []
-                st.session_state.room_files[selected_room] = {"name": None, "text": "", "items": []}
-                st.session_state.room_titles[selected_room] = "빈 대화방"
-                # 이미 인스턴스화된 위젯 키는 값을 대입하지 않고 pop()으로 제거하여 StreamlitAPIException 원천 방지
-                st.session_state.pop(title_widget_key, None)
-                st.session_state.setdefault("room_diff_banners", {})[selected_room] = ""
-                st.session_state[f"diff_banner_open_{effective_ws_id}_{selected_room}"] = False
-                if hasattr(agent, "reset_room_usage"):
-                    agent.reset_room_usage(active_room_key)
-                st.session_state[f"reset_cnt_{selected_room}"] = st.session_state.get(f"reset_cnt_{selected_room}", 0) + 1
-                save_workspace_to_disk(effective_ws_id, force_overwrite_room=selected_room)
-                st.rerun()
-
-            for idx_r, r_id in enumerate(ROOM_IDS, start=1):
-                r_title = (st.session_state.room_titles.get(r_id, "빈 대화방") or "빈 대화방").strip()
-                short_title = r_title[:14] + ("…" if len(r_title) > 14 else "")
+        room_search_kw = st.text_input(
+            "전체 대화방 통합 검색",
+            placeholder="🔎 1~10번 방 통합 키워드 검색",
+            label_visibility="collapsed",
+            key=f"room_search_{effective_ws_id}"
+        )
+        if room_search_kw.strip():
+            kw_lower = room_search_kw.strip().lower()
+            matched_rooms = []
+            for r_id in ROOM_IDS:
+                r_title = st.session_state.room_titles.get(r_id, "")
+                r_fname = st.session_state.room_files[r_id].get("name") or ""
                 r_msgs = st.session_state.chat_rooms.get(r_id, [])
-                q_cnt = (len(r_msgs) + 1) // 2
-                f_cnt = len(st.session_state.room_files[r_id].get("items", []))
-                t_info = task_mgr["tasks"].get(f"{effective_ws_id}::{r_id}")
-                is_run = bool(t_info and t_info.get("status") == "running")
-                rev_alerts, _ = get_room_revision_alerts(effective_ws_id, r_id, r_msgs, law_prom_map)
-
-                base_state = "active" if r_id == selected_room else ("hasmsg" if q_cnt > 0 else "empty")
-                run_suffix = "_running" if is_run else ""
-                btn_key = f"room_btn_{idx_r}_{base_state}{run_suffix}"
-
-                extra_badges = (" 📎" if f_cnt else "") + (" 🔄" if rev_alerts else "") + (" (작성중)" if is_run else "")
-                btn_label = f"{idx_r}. {short_title} ({q_cnt}건){extra_badges}"
-
-                if st.button(btn_label, key=btn_key, use_container_width=True):
-                    if r_id != selected_room:
-                        st.session_state.current_room = r_id
+                hit_cnt = sum(1 for m in r_msgs if kw_lower in m.get("content", "").lower())
+                if kw_lower in r_title.lower() or kw_lower in r_fname.lower():
+                    hit_cnt += 1
+                if hit_cnt > 0:
+                    matched_rooms.append((r_id, r_title, hit_cnt))
+            if matched_rooms:
+                for m_rid, m_title, m_cnt in matched_rooms:
+                    if st.button(f"👉 {m_rid} [{m_title}] ({m_cnt}건 일치)", key=f"jump_{m_rid}", use_container_width=True):
+                        st.session_state.current_room = m_rid
                         st.rerun()
+            else:
+                st.caption(f"'{room_search_kw}' 검색 결과가 없습니다.")
+
+        title_widget_key = f"title_input_{effective_ws_id}_{selected_room}"
+        # 위젯(st.text_input)이 렌더링되기 전에만 상태 동기화를 수행합니다.
+        if (
+            title_widget_key in st.session_state
+            and st.session_state[title_widget_key] in ("빈 대화방", "메인 대화")
+            and st.session_state.room_titles[selected_room] not in ("빈 대화방", "메인 대화")
+            and st.session_state.chat_rooms.get(selected_room)
+        ):
+            st.session_state[title_widget_key] = st.session_state.room_titles[selected_room]
+
+        new_title = st.text_input(
+            "방 주제 메모",
+            value=st.session_state.room_titles[selected_room],
+            placeholder="✏️ 현재 방 주제 메모 (예: A사 세무조사)",
+            label_visibility="collapsed",
+            key=title_widget_key
+        )
+        if new_title != st.session_state.room_titles[selected_room]:
+            st.session_state.room_titles[selected_room] = new_title
+            save_workspace_to_disk(effective_ws_id)
+            st.rerun()
+
+        if st.button(f"🗑️ [{selected_room}] 현재 방 비우기", key="btn_clear_current_room", use_container_width=True):
+            with task_mgr["lock"]:
+                task_mgr["tasks"].pop(active_room_key, None)
+            st.session_state.chat_rooms[selected_room] = []
+            st.session_state.room_files[selected_room] = {"name": None, "text": "", "items": []}
+            st.session_state.room_titles[selected_room] = "빈 대화방"
+            # 이미 인스턴스화된 위젯 키는 값을 대입하지 않고 pop()으로 제거하여 StreamlitAPIException 원천 방지
+            st.session_state.pop(title_widget_key, None)
+            st.session_state.setdefault("room_diff_banners", {})[selected_room] = ""
+            st.session_state[f"diff_banner_open_{effective_ws_id}_{selected_room}"] = False
+            if hasattr(agent, "reset_room_usage"):
+                agent.reset_room_usage(active_room_key)
+            st.session_state[f"reset_cnt_{selected_room}"] = st.session_state.get(f"reset_cnt_{selected_room}", 0) + 1
+            save_workspace_to_disk(effective_ws_id, force_overwrite_room=selected_room)
+            st.rerun()
+
+        for idx_r, r_id in enumerate(ROOM_IDS, start=1):
+            r_title = (st.session_state.room_titles.get(r_id, "빈 대화방") or "빈 대화방").strip()
+            short_title = r_title[:14] + ("…" if len(r_title) > 14 else "")
+            r_msgs = st.session_state.chat_rooms.get(r_id, [])
+            q_cnt = (len(r_msgs) + 1) // 2
+            f_cnt = len(st.session_state.room_files[r_id].get("items", []))
+            t_info = task_mgr["tasks"].get(f"{effective_ws_id}::{r_id}")
+            is_run = bool(t_info and t_info.get("status") == "running")
+            rev_alerts, _ = get_room_revision_alerts(effective_ws_id, r_id, r_msgs, law_prom_map)
+
+            base_state = "active" if r_id == selected_room else ("hasmsg" if q_cnt > 0 else "empty")
+            run_suffix = "_running" if is_run else ""
+            btn_key = f"room_btn_{idx_r}_{base_state}{run_suffix}"
+
+            extra_badges = (" 📎" if f_cnt else "") + (" 🔄" if rev_alerts else "") + (" (작성중)" if is_run else "")
+            btn_label = f"{idx_r}. {short_title} ({q_cnt}건){extra_badges}"
+
+            if st.button(btn_label, key=btn_key, use_container_width=True):
+                if r_id != selected_room:
+                    st.session_state.current_room = r_id
+                    st.rerun()
 
     # 📦 [카드 4 — 최하단 고정: [💳 결제] 및 [🔑 API키] 버튼]
     with st.container(border=True):
@@ -2716,9 +2755,11 @@ if st.session_state.app_top_mode == "CREDIT_CALC":
             if st.button("✖️ API 관리창 닫기"):
                 st.session_state.show_inline_api_manager = False
                 st.rerun()
-    import employment_credit
-    employment_credit.render_credit_wizard(
+    import tax_credit_engine
+    tax_credit_engine.render_tax_credit_calculator_ui(
         extract_file_fn=extract_file_content,
+        create_pdf_fn=create_pdf_report,
+        create_docx_fn=create_word_docx,
         log_tokens_fn=_log_custom_tokens,
         active_room_key=current_task_key,
     )

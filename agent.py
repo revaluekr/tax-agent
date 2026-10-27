@@ -374,6 +374,7 @@ def _new_trace(unleash: bool = False) -> dict:
         "list": [],
         "detail": [],
         "articles": set(),
+        "fetched_laws": set(),
         "mentioned_articles": set(),
         "article_texts": {},
         "counts": {},
@@ -427,6 +428,8 @@ def _record_law_articles(text: str) -> None:
         return
     raw_header = m.group(1).split("|")[0].strip()
     title = _norm(raw_header)
+    if title:
+        trace.setdefault("fetched_laws", set()).add(title)
     starts = list(re.finditer(r"(?m)^\s*제\s*(\d+)\s*조(?:\s*의\s*(\d+))?(?:\s*\(|\s+)", text))
     for n, am in enumerate(starts):
         key = (title, int(am.group(1)), int(am.group(2) or 0))
@@ -439,8 +442,8 @@ def _record_law_articles(text: str) -> None:
         mentioned.add(m_ref)
 
 _CASE_NO_PATTERNS = [
-    re.compile(r"(?<!\d)((?:19|20)?\d{2})\s?(재두|재다|가합|가단|구합|구단|헌바|헌마|헌가|두|누|다|도|나|후|허|므|구|부|노|고단|고합)\s?(\d{2,6})(?!\d)"),
-    re.compile(r"(?:조심|국심)\s?((?:19|20)\d{2})\s?(서|중|부|광|전|구|인|경|지)\s?(\d{2,6})(?!\d)"),
+    re.compile(r"(?<!\d)((?:19|20)?\d{2})\s?(재두|재다|가합|가단|구합|구단|헌바|헌마|헌가|헌나|헌라|헌사|헌아|두|누|다|도|나|후|허|므|구|부|노|고단|고합)\s?(\d{1,6})(?!\d)"),
+    re.compile(r"(?:조심|국심)\s?((?:19|20)\d{2})\s?(서|중|부|광|전|구|인|경|지|관|조)\s?(\d{1,6})(?!\d)"),
 ]
 
 _ARTICLE_NO = re.compile(r"제\s*(\d+)\s*조(?:\s*의\s*(\d+))?")
@@ -448,13 +451,19 @@ _COMMON_LAWS = [
     "상속세및증여세법", "조세특례제한법", "국세기본법", "국세징수법", "법인세법", "소득세법", "부가가치세법",
     "지방세법", "지방세기본법", "지방세특례제한법", "종합부동산세법", "개별소비세법", "교육세법", "농어촌특별세법",
     "인지세법", "증권거래세법", "국제조세조정에관한법률", "조세범처벌법", "중소기업기본법", "근로기준법", "근로자퇴직급여보장법",
-    "국민연금법", "국민건강보험법", "노인장기요양보험법", "고용보험법", "고용보험및산업재해보상보험의보험료징수등에관한법률",
-    "주식회사등의외부감사에관한법률", "상법", "민법", "부동산등기법", "공익법인의설립ㆍ운영에관한법률",
+    "국민연금법", "국민건강보험법", "노인장기요양보험법", "고용보험법", "산업재해보상보험법",
+    "고용보험및산업재해보상보험의보험료징수등에관한법률", "관세법",
+    "수출용원재료에대한관세등환급에관한특례법", "자유무역협정의이행을위한관세법의특례에관한법률",
+    "주식회사등의외부감사에관한법률", "상법", "민법", "부동산등기법", "건축법",
+    "주택임대차보호법", "상가건물임대차보호법", "공익법인의설립ㆍ운영에관한법률",
 ]
 _LAW_ALIASES = {"상증법": "상속세및증여세법", "조특법": "조세특례제한법", "국기법": "국세기본법",
                 "국징법": "국세징수법", "부가세법": "부가가치세법", "지특법": "지방세특례제한법",
                 "국조법": "국제조세조정에관한법률", "종부세법": "종합부동산세법", "외감법": "주식회사등의외부감사에관한법률",
-                "고용산재보험료징수법": "고용보험및산업재해보상보험의보험료징수등에관한법률"}
+                "고용산재보험료징수법": "고용보험및산업재해보상보험의보험료징수등에관한법률",
+                "산재보험법": "산업재해보상보험법", "환급특례법": "수출용원재료에대한관세등환급에관한특례법",
+                "FTA관세특례법": "자유무역협정의이행을위한관세법의특례에관한법률",
+                "주임법": "주택임대차보호법", "상임법": "상가건물임대차보호법"}
 _REF_SKIP_SUFFIX = ("동법", "같은법", "이법", "본법", "당해법", "해당법", "동법시행령", "같은법시행령", "동법시행규칙")
 
 def _known_law_titles(trace: dict = None) -> list[str]:
@@ -463,6 +472,7 @@ def _known_law_titles(trace: dict = None) -> list[str]:
         titles.update({base, base + "시행령", base + "시행규칙"})
     if trace:
         titles.update(t for (t, _, _) in trace.get("articles", set()))
+        titles.update(trace.get("fetched_laws", set()))
     return sorted(titles, key=len, reverse=True)
 
 def _resolve_law_name(prefix: str, titles: list[str]):
@@ -549,20 +559,29 @@ def _find_case_numbers(text: str) -> list[str]:
                 cited.append(no)
     return cited
 
+_ADDENDUM_SUFFIX_RE = re.compile(
+    r"(?:\s*부칙(?:\s*<[^>]*>|\s*\([^)]*\)|\s*제\s*\d+\s*호|\s*\d{4}\.\s*\d{1,2}\.\s*\d{1,2}\.?)?)+[\s「」『』\[\]:(),·ㆍ]*$"
+)
+
 def _find_article_refs(text: str, trace: dict = None) -> list[tuple]:
     """
     조문 번호 앞의 법령명을 추출합니다.
-    '~법', '~령', '~규칙'뿐 아니라 '국제조세조정에 관한 법률', '주식회사 등의 외부감사에 관한 법률' 등
-    '~법률'(`률`)로 끝나는 모든 법률명을 누락 없이 인식합니다.
+    1) '~법', '~령', '~규칙'뿐 아니라 '국제조세조정에 관한 법률', '주식회사 등의 외부감사에 관한 법률' 등
+       '~법률'(`률`)로 끝나는 모든 법률명을 누락 없이 인식합니다.
+    2) '조세특례제한법 부칙 제2조', '법인세법 부칙(제21065호) 제1조'처럼 법령명과 조문번호 사이에
+       '부칙' 표기가 들어간 경우에도 부칙 수식어를 걷어내고 정식 법령명을 정확히 추출합니다.
     """
     text = text or ""
     titles = _known_law_titles(trace)
     refs = []
     last_end = 0
     for m in _ARTICLE_NO.finditer(text):
-        prefix = text[max(last_end, m.start() - 50):m.start()]
+        prefix = text[max(last_end, m.start() - 65):m.start()]
         last_end = m.end()
-        stripped = re.sub(r"[\s「」『』\[\]:(),·ㆍ]+$", "", prefix)
+        stripped = _ADDENDUM_SUFFIX_RE.sub("", prefix.rstrip())
+        stripped = re.sub(r"[\s「」『』\[\]:(),·ㆍ]+$", "", stripped)
+        stripped = _ADDENDUM_SUFFIX_RE.sub("", stripped)
+        stripped = re.sub(r"[\s「」『』\[\]:(),·ㆍ]+$", "", stripped)
         if not stripped or not re.search(r"(법률?|령|규칙)$", _norm(stripped)):
             continue
         name = _resolve_law_name(stripped, titles)
@@ -582,7 +601,9 @@ def _scan_violations(answer: str, trace: dict) -> list[tuple]:
     detail_blob = _norm(" ".join(trace["detail"]))
     list_blob = _norm(" ".join(trace["list"]))
     fetched = trace["articles"]
+    fetched_laws = trace.get("fetched_laws", set()) | {t for (t, _, _) in fetched}
     mentioned = trace.get("mentioned_articles", set())
+    known_titles = _known_law_titles(trace)
 
     violations = []
     in_refs_section = False
@@ -621,6 +642,8 @@ def _scan_violations(answer: str, trace: dict) -> list[tuple]:
         for ref in _find_article_refs(line, trace):
             if ref in fetched or (not in_refs_section and ref in mentioned):
                 verified_source = True
+            elif "부칙" in line and (ref[0] in fetched_laws or ref[0] in detail_blob):
+                verified_source = True
             else:
                 problems.append(f"{_article_label(ref)} (조문 원문 미조회)")
 
@@ -631,10 +654,29 @@ def _scan_violations(answer: str, trace: dict) -> list[tuple]:
                 problems.append(f"집행기준 {no} (원문 미조회)")
 
         for kind, val in _TAG.findall(line):
-            if kind == "조문":
+            if kind in ("조문", "부칙"):
                 refs = _find_article_refs(val, trace)
-                if not refs:
+                if refs:
+                    if any(r in fetched or r[0] in fetched_laws or r in mentioned for r in refs):
+                        verified_source = True
+                elif "부칙" in val or kind == "부칙":
+                    law_prefix = re.sub(r"부칙.*", "", val).strip()
+                    resolved_ln = _resolve_law_name(law_prefix, known_titles) if law_prefix else None
+                    if resolved_ln and (resolved_ln in fetched_laws or resolved_ln in detail_blob):
+                        verified_source = True
+                    elif _norm(val) in detail_blob:
+                        verified_source = True
+                    else:
+                        problems.append(f"[{kind}:{val}] (법령명이 빠져 검증 불가)")
+                else:
                     problems.append(f"[조문:{val}] (법령명이 빠져 검증 불가)")
+            elif kind == "별표":
+                law_prefix = re.sub(r"별표.*", "", val).strip()
+                resolved_ln = _resolve_law_name(law_prefix, known_titles) if law_prefix else None
+                if _norm(val) in detail_blob or (resolved_ln and (resolved_ln in fetched_laws or resolved_ln in detail_blob)):
+                    verified_source = True
+                else:
+                    problems.append(f"[별표:{val}] (원문 미조회)")
             else:
                 nos = _find_case_numbers(val)
                 if nos:
@@ -735,7 +777,7 @@ def _enforce_pure_kakao_text(text: str) -> str:
         return ""
     s = text
     # 1) 대괄호 출처 태그 및 마크다운 링크 제거
-    s = re.sub(r"\[(?:\[)?(?:판례|심판례|해석례|예규|조문)[^\]]*\](?:\([^)]*\))?", "", s)
+    s = re.sub(r"\[(?:\[)?(?:판례|심판례|헌재|헌재결정례|해석례|예규|조문|부칙|별표)[^\]]*\](?:\([^)]*\))?", "", s)
     s = re.sub(r"\[([^\]]+)\]\(https?://[^)]+\)", r"\1", s)
     # 2) 괄호로 묶인 법령·조문 표기 제거 (예: (조세특례제한법 제29조의8), (제29조의8 제1항))
     s = re.sub(r"\([^)\n]*제\s*\d+\s*조[^)\n]*\)", "", s)
@@ -873,10 +915,14 @@ def _extract_claims(answer: str, trace: dict, max_claims: int = 20) -> tuple[lis
 
         src_ids = []
         for kind, val in tags:
-            if kind == "조문":
+            if kind in ("조문", "부칙"):
                 for ref in _find_article_refs(val, trace):
                     if ref in art_texts:
                         src_ids.append(_src_id(_article_label(ref), art_texts[ref]))
+                if "부칙" in val or kind == "부칙":
+                    for d in details:
+                        if "부칙" in d:
+                            src_ids.append(_src_id(f"부칙 {val}", d))
             else:
                 nos = _find_case_numbers(val)
                 for d in details:
@@ -1438,6 +1484,11 @@ def search_law_for_gemini(keyword: str, target: str = "law") -> str:
                     meta[("admrul", _norm(rnm))] = str(rid).strip()
                 if rid and rno:
                     meta[("admrul", _norm(rno))] = str(rid).strip()
+            elif target == "licbyl":
+                rid = item.get("별표일련번호")
+                rnm = item.get("별표명")
+                if rid and rnm:
+                    meta[("licbyl", _norm(rnm))] = str(rid).strip()
     return _record("list", summary)
 
 def get_law_details_for_gemini(doc_id: str, target: str = "law", query_filter: str = "") -> str:
@@ -1688,7 +1739,7 @@ def search_dart_corp_for_gemini(corp_name: str, bsns_year: str = "2025") -> str:
     """DART 전자공시에서 기업개황·요약재무제표·최대주주 지분·배당 정보를 조회합니다. bsns_year는 '2025' 등 4자리 연도."""
     _emit_live_status(f"📊 1단계: DART 전자공시 재무·지분 조회 중 ('{corp_name}')...")
     print(f"\n[시스템] 📊 DART 전자공시 통합 조회 가동: '{corp_name}' ({bsns_year}년)")
-    cap = 12000 if _is_unleashed() else 4000
+    cap = 16000 if _is_unleashed() else 10000
     try:
         return _record("detail", law_api.get_dart_corp_info(corp_name, bsns_year)[:cap])
     except Exception as e:
@@ -1978,8 +2029,8 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
 - 법령 검색(search_law_for_gemini, target='law')의 keyword에는 **법령명만** 넣을 것 (예: '소득세법', '근로기준법', '소득세법 시행령'). 주제어는 넣지 말 것.
 - 조회한 원문에서 직접 확인하지 못한 금액·비율·연도는 단정하지 말고 **"(원문 미확인)"**이라고 표시할 것.
 - **[근거 표시 의무 (트랙 1 전용)]** 전문 검토 보고서(1. 결론 ~ 3. 관련법령)를 작성할 때 판례·심판례·해석례·예규·법령 조문을 근거로 쓰는 문장 끝에는 반드시 아래 형식의 근거 표시를 붙일 것(콜론 ':'과 닫는 대괄호 ']'가 누락되지 않도록 주의).
-  * 판례: [판례:2005두9415] / 조세심판: [심판례:조심2020서1234] / 법령해석례: [해석례:안건번호] / 예규·고시: [예규:문서명 또는 번호]
-  * 법령 조문: [조문:법인세법 시행령 제89조] (반드시 정식 법령명과 콜론 ':' 포함. '동법', '같은 법' 사용 금지)
+  * 판례: [판례:2005두9415] / 헌법재판소 결정례: [헌재:2021헌바123] / 조세심판: [심판례:조심2020서1234] / 법령해석례: [해석례:안건번호] / 예규·고시: [예규:문서명 또는 번호]
+  * 법령 조문·부칙·별표: [조문:법인세법 시행령 제89조] / [부칙:조세특례제한법 부칙 제2조] / [별표:소득세법 시행령 별표1] (반드시 정식 법령명과 콜론 ':' 포함. '동법', '같은 법' 사용 금지)
 - **판례·심판례·해석례 인용 규칙**: 판결요지·결정요지를 서술하는 사건은 반드시 get_law_details_for_gemini(target='prec' 등)로 **원문을 조회한 사건만** 쓸 것. 목록 검색에서만 본 사건은 사건번호·선고일만 적고 "(요지 미조회)"로 표시할 것. **도구로 조회하지 않은 사건번호를 기억으로 적지 말 것.**
 - **법령 조문 인용 규칙**: 전문 검토 보고서에 법령명과 함께 적는 조문(예: 「법인세법」 제52조)은 반드시 get_law_details_for_gemini 또는 search_historical_law_for_gemini로 **그 조문을 조회한 것만** 쓸 것. 조회하지 않은 조문이 필요하면 먼저 조회할 것.
 - **답변에 시스템·도구·검증 절차·삭제 여부에 대한 언급을 절대 쓰지 말 것**. 근거가 부족하면 "관련 원문을 확인하지 못했다"고만 쓸 것.
@@ -1995,7 +2046,7 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
 - 부동산 개별공시지가 및 공동주택 공시가격(기준시가) 확인: 'search_official_land_price_for_gemini' 호출.
 - 건축물대장 표제부·층별개요(겸용주택 주택/상가 면적 비율·주용도·위반건축물 여부) 확인: 'search_building_ledger_for_gemini' 호출.
 - 근로복지공단 고용·산재보험 사업장 상시인원(피보험자수)·성립일·업종 확인: 'search_comwel_workplace_for_gemini' 호출.
-- 국민연금 가입 사업장 월별·연간 보험료 고지액(당월고지금액·연간 고지총액·사업주 부담분·추정 인건비) 및 월별 가입자수(신규/상실) 확인: 'search_nps_workplace_for_gemini' 호출.
+- 4대보험(국민연금·건강보험·노인장기요양보험·고용보험·산재보험) 전체 월별 고지보험료, 연간 보험료 고지총액 합계, 사업주(회사)/근로자 부담분, 추정 인건비(과세보수총액) 및 월별 가입자수(신규/상실) 통합 확인: 'search_nps_workplace_for_gemini' 호출 (사업자등록번호 10자리를 알고 있으면 biz_no_prefix6에 함께 넣어 산재·고용보험 업종요율까지 자동 연계할 것).
 - 관세청 수출입 주간 과세환율(관세법 제18조 · 수입세금계산서 과세표준 검증) 확인: 'search_customs_exchange_rate_for_gemini' 호출.
 - 세액·공제액·수당·지분율 등 모든 숫자 계산: 반드시 'run_tax_calculator_for_gemini'를 호출하여 단 1원의 오차도 없이 정확히 계산할 것. (수식 내 숫자에는 천 단위 쉼표를 넣지 말고 `1500000 * 0.15`처럼 적으며, 함수 인자는 `min(1500000, 2000000)`처럼 쉼표+공백으로 구분할 것)
 
@@ -2040,8 +2091,9 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
   * 국가법령정보센터(법령·판례·심판례·조례·기본통칙): https://www.law.go.kr
   * 금융감독원 전자공시시스템(DART): https://dart.fss.or.kr
   * 국토교통부 실거래가 공개시스템 / 브이월드(공시가격): https://rt.molit.go.kr / https://www.vworld.kr
-  * 한국은행 경제통계시스템(ECOS): https://ecos.bok.or.kr
+  * 한국은행 경제통계시스템(ECOS) / 관세청 유니패스(과세환율): https://ecos.bok.or.kr / https://unipass.customs.go.kr
   * 국세청 홈택스(사업자상태/업종코드): https://www.hometax.go.kr
+  * 4대사회보험 정보연계센터 / 국민연금·근로복지공단: https://www.4insure.or.kr / https://www.nps.or.kr / https://www.comwel.or.kr
 """
 
 def _extract_and_strip_precheck(text: str) -> tuple[str, str]:
@@ -2084,16 +2136,45 @@ def _is_valid_report_body(text: str) -> bool:
 # ---------------------------------------------------------
 def _build_direct_law_url(kind: str, val: str, trace: dict, rev_id_map: dict, meta_map: dict) -> str:
     """검증된 태그 종류와 값으로부터 국가법령정보센터 공식 원문 직링크 URL을 생성합니다."""
-    if kind == "조문":
+    known_titles = _known_law_titles(trace)
+    if kind in ("조문", "부칙"):
         refs = _find_article_refs(val, trace)
         if refs:
             law_name, jo, gaji = refs[0]
+            if kind == "부칙" or "부칙" in val:
+                return f"https://www.law.go.kr/법령/{urllib.parse.quote(law_name)}"
             art_str = f"제{jo}조" + (f"의{gaji}" if gaji else "")
             return f"https://www.law.go.kr/법령/{urllib.parse.quote(law_name)}/{urllib.parse.quote(art_str)}"
+        law_prefix = re.sub(r"부칙.*", "", val).strip()
+        resolved_ln = _resolve_law_name(law_prefix, known_titles) if law_prefix else None
+        if resolved_ln:
+            return f"https://www.law.go.kr/법령/{urllib.parse.quote(resolved_ln)}"
+    elif kind == "별표":
+        seq_id = meta_map.get(("licbyl", _norm(val)))
+        if seq_id:
+            return f"https://www.law.go.kr/LSW/flDownload.do?flSeq={seq_id}"
+        law_prefix = re.sub(r"별표.*", "", val).strip()
+        resolved_ln = _resolve_law_name(law_prefix, known_titles) if law_prefix else None
+        if resolved_ln:
+            return f"https://www.law.go.kr/법령/{urllib.parse.quote(resolved_ln)}"
+        return f"https://www.law.go.kr/LSW/lsSc.do?query={urllib.parse.quote(val)}"
+    elif kind in ("헌재", "헌재결정례"):
+        nos = _find_case_numbers(val)
+        if nos:
+            c_no = nos[0]
+            seq_id = meta_map.get(("detc", _norm(c_no))) or rev_id_map.get(_norm(c_no))
+            if seq_id:
+                return f"https://www.law.go.kr/LSW/detcInfoP.do?detcSeq={seq_id}"
+            return f"https://www.law.go.kr/헌재결정례/%28{urllib.parse.quote(c_no)}%29"
     elif kind == "판례":
         nos = _find_case_numbers(val)
         if nos:
             c_no = nos[0]
+            if re.search(r"헌[가나다라마바사아]", c_no):
+                seq_id = meta_map.get(("detc", _norm(c_no))) or rev_id_map.get(_norm(c_no))
+                if seq_id:
+                    return f"https://www.law.go.kr/LSW/detcInfoP.do?detcSeq={seq_id}"
+                return f"https://www.law.go.kr/헌재결정례/%28{urllib.parse.quote(c_no)}%29"
             seq_id = meta_map.get(("prec", _norm(c_no))) or rev_id_map.get(_norm(c_no))
             if seq_id:
                 return f"https://www.law.go.kr/LSW/precInfoP.do?precSeq={seq_id}"
@@ -2122,8 +2203,8 @@ def _build_direct_law_url(kind: str, val: str, trace: dict, rev_id_map: dict, me
 
 def _inject_direct_law_links(text: str, trace: dict = None) -> str:
     """
-    1) 본문의 [조문:...], [판례:...], [심판례:...], [해석례:...], [예규:...] 태그(콜론 누락 포함)에 100% 검증된 법제처 원문 직링크를 결합합니다.
-    2) '### 3. 관련법령' 섹션의 모든 하위 조문 줄 및 기본통칙 줄을 클릭하면 즉시 해당 법제처 조문·기본통칙 원문 페이지로 이동하도록 글자 자체에 직링크를 걸어줍니다.
+    1) 본문의 [조문:...], [부칙:...], [별표:...], [판례:...], [헌재:...], [심판례:...], [해석례:...], [예규:...] 태그(콜론 누락 포함)에 100% 검증된 법제처 원문 직링크를 결합합니다.
+    2) '### 3. 관련법령' 섹션의 모든 하위 조문·부칙·판례·헌재결정례 줄 및 기본통칙 줄을 클릭하면 즉시 해당 법제처 원문 페이지로 이동하도록 글자 자체에 직링크를 걸어줍니다.
     """
     if not text:
         return ""
@@ -2161,7 +2242,7 @@ def _inject_direct_law_links(text: str, trace: dict = None) -> str:
 
         if not in_refs:
             linked_line = re.sub(
-                r"(?<!\[)\[(판례|심판례|해석례|예규|조문)(?:\s*[:：]\s*|\s*)(?=[가-힣A-Za-z0-9「])([^\]]+)\](?!\()",
+                r"(?<!\[)\[(판례|심판례|헌재|헌재결정례|해석례|예규|조문|부칙|별표)(?:\s*[:：]\s*|\s*)(?=[가-힣A-Za-z0-9「])([^\]]+)\](?!\()",
                 _replace_tag_with_link,
                 line
             )
@@ -2173,7 +2254,7 @@ def _inject_direct_law_links(text: str, trace: dict = None) -> str:
             if m_bullet and "](" not in line and "http://" not in line and "https://" not in line:
                 prefix_bullet, item_body = m_bullet.group(1), m_bullet.group(2).strip()
                 clean_item_body = re.sub(
-                    r"\s*\[(?:판례|심판례|해석례|예규|조문)(?:\s*[:：]\s*|\s*)(?=[가-힣A-Za-z0-9「])[^\]]+\]\s*$",
+                    r"\s*\[(?:판례|심판례|헌재|헌재결정례|해석례|예규|조문|부칙|별표)(?:\s*[:：]\s*|\s*)(?=[가-힣A-Za-z0-9「])[^\]]+\]\s*$",
                     "",
                     item_body
                 ).strip() or item_body
@@ -2199,8 +2280,11 @@ def _inject_direct_law_links(text: str, trace: dict = None) -> str:
                     art_refs = _find_article_refs(item_body, trace)
                     if art_refs:
                         law_name, jo, gaji = art_refs[0]
-                        art_str = f"제{jo}조" + (f"의{gaji}" if gaji else "")
-                        direct_url = f"https://www.law.go.kr/법령/{urllib.parse.quote(law_name)}/{urllib.parse.quote(art_str)}"
+                        if "부칙" in item_body:
+                            direct_url = f"https://www.law.go.kr/법령/{urllib.parse.quote(law_name)}"
+                        else:
+                            art_str = f"제{jo}조" + (f"의{gaji}" if gaji else "")
+                            direct_url = f"https://www.law.go.kr/법령/{urllib.parse.quote(law_name)}/{urllib.parse.quote(art_str)}"
 
                 if not direct_url:
                     case_nos = _find_case_numbers(item_body)
@@ -2212,6 +2296,12 @@ def _inject_direct_law_links(text: str, trace: dict = None) -> str:
                                 direct_url = f"https://www.law.go.kr/LSW/deccInfoP.do?deccSeq={seq_id}"
                             else:
                                 direct_url = f"https://www.law.go.kr/LSW/lsSc.do?query={urllib.parse.quote(c_no)}"
+                        elif re.search(r"헌[가나다라마바사아]", c_no) or ("헌재" in item_body) or ("헌법재판소" in item_body):
+                            seq_id = meta_map.get(("detc", _norm(c_no))) or rev_id_map.get(_norm(c_no))
+                            if seq_id:
+                                direct_url = f"https://www.law.go.kr/LSW/detcInfoP.do?detcSeq={seq_id}"
+                            else:
+                                direct_url = f"https://www.law.go.kr/헌재결정례/%28{urllib.parse.quote(c_no)}%29"
                         else:
                             seq_id = meta_map.get(("prec", _norm(c_no))) or rev_id_map.get(_norm(c_no))
                             if seq_id:
@@ -2229,7 +2319,7 @@ def _inject_direct_law_links(text: str, trace: dict = None) -> str:
                     line = f"{prefix_bullet}[{clean_item_body}]({direct_url})"
                 else:
                     line = re.sub(
-                        r"(?<!\[)\[(판례|심판례|해석례|예규|조문)(?:\s*[:：]\s*|\s*)(?=[가-힣A-Za-z0-9「])([^\]]+)\](?!\()",
+                        r"(?<!\[)\[(판례|심판례|헌재|헌재결정례|해석례|예규|조문|부칙|별표)(?:\s*[:：]\s*|\s*)(?=[가-힣A-Za-z0-9「])([^\]]+)\](?!\()",
                         _replace_tag_with_link,
                         line
                     )
@@ -2250,7 +2340,7 @@ def _clean_latex_for_export(text: str) -> str:
     s = s.replace(r"\%", "%").replace(r"\_", "_").replace(r"\,", ",")
     s = re.sub(r"\\(left|right|quad|qquad|mathrm|mathbf)\b", "", s)
     s = re.sub(
-        r"(\[(?:조문|판례|심판례|해석례|예규)(?:\s*[:：]\s*|\s+)(?=[가-힣A-Za-z0-9「])[^\]\n(]+?)\s+(\()(?![^\n\[]*\])",
+        r"(\[(?:조문|부칙|별표|판례|심판례|헌재|헌재결정례|해석례|예규)(?:\s*[:：]\s*|\s+)(?=[가-힣A-Za-z0-9「])[^\]\n(]+?)\s+(\()(?![^\n\[]*\])",
         r"\1] \2",
         s
     )
@@ -2289,6 +2379,7 @@ def _execute_with_key_and_model(
 ) -> tuple[str, int]:
     timeout_ms = 120000 if unleash else 60000
     max_remote_calls = 30 if unleash else 20
+    max_out_tokens = 32768 if unleash else 16384
 
     try:
         temp_client = genai.Client(api_key=api_key, http_options={"timeout": timeout_ms})
@@ -2301,6 +2392,7 @@ def _execute_with_key_and_model(
             tools=tools_list,
             system_instruction=dynamic_prompt,
             safety_settings=safety_settings,
+            max_output_tokens=max_out_tokens,
             automatic_function_calling=types.AutomaticFunctionCallingConfig(
                 maximum_remote_calls=max_remote_calls
             )
