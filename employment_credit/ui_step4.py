@@ -2,7 +2,8 @@
 """통합고용세액공제 계산기 화면 — 4단계 보고서: 보고서·PDF·CSV 내려받기
 
 (ui.py에서 나눈 파일. 현행 조특법 제29조의8·시행령 제26조의8 조문 정합성, 방식 2 보수적 비교인원 산정 근거,
-사원별 차이원인 정밀 분해[박소연·김우주 등 오판 원천 차단], 최저한세 검토, 법제처 API 직링크 자동 결합 반영)
+사원별 차이원인 정밀 분해[박소연·김우주 등 오판 원천 차단], 최저한세 검토, 법제처 API 직링크 자동 결합 반영,
+PDF 출력 시각 스타일을 자율 에이전트AI `create_pdf_report`와 100% 동일하게 일치)
 """
 from __future__ import annotations
 import io
@@ -22,7 +23,9 @@ from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, KeepTogether
+from reportlab.platypus import (
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, KeepTogether, HRFlowable
+)
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
@@ -58,26 +61,33 @@ _ROMAN_MAP = str.maketrans({
 def _format_citation_tag_for_pdf(m: re.Match) -> str:
     kind = m.group(1).strip()
     body = m.group(2).strip()
-    if kind in ("조문", "부칙", "별표"):
-        m_law = re.match(r"^(조세특례제한법\s*시행령|조세특례제한법\s*시행규칙|조세특례제한법|소득세법\s*시행령|소득세법|법인세법\s*시행령|법인세법|농어촌특별세법|근로기준법)\s*(.*)$", body)
-        if m_law:
-            law_nm, rest = m_law.group(1).strip(), m_law.group(2).strip()
-            return f"「{law_nm}」 {rest}" if rest else f"「{law_nm}」"
-        return body
     return f"[{kind}: {body}]"
 
 
 def _pdf_text(t: str) -> str:
-    """PDF 문단용: 폰트 미지원 전각 로마숫자(Ⅰ~Ⅳ)·유니코드 물결표(∼)·마이너스(−) 치환 및 마크다운 변환"""
+    """
+    PDF 문단용: 자율 에이전트AI `app.py`의 `_sanitize_math_text` 및 `_md_to_rl_xml`과 100% 동일한
+    텍스트·수식·법령 태그(`[조문: ...]`, `[부칙: ...]`) 및 마크다운 변환을 수행합니다.
+    """
     _, bold_font = _ensure_korean_pdf_font()
     s = str(t or "")
     s = s.translate(_ROMAN_MAP)
     s = s.replace("∼", "~").replace("〜", "~").replace("～", "~")
-    s = s.replace("−", "-").replace("–", "-").replace("—", "-")
-    s = re.sub(r"\[(조문|부칙|별표|판례|심판례|헌재|헌재결정례|해석례|예규)\s*:\s*([^\]]+)\]", _format_citation_tag_for_pdf, s)
+    s = s.replace("−", " - ").replace("–", " - ").replace("—", " - ")
+    s = s.replace("→", " -> ").replace("↔", " <-> ").replace("≧", ">=").replace("≦", "<=")
+    s = re.sub(
+        r"\[(조문|부칙|별표|판례|심판례|헌재|헌재결정례|해석례|예규)(?:\s*[:：]\s*|\s+)(?=[가-힣A-Za-z0-9「])([^\]]+)\]",
+        _format_citation_tag_for_pdf,
+        s,
+    )
+    s = re.sub(
+        r"\[(조문|부칙|별표|판례|심판례|헌재|헌재결정례|해석례|예규)(?=[가-힣A-Za-z0-9「])([^\]:：\n]+)\]",
+        _format_citation_tag_for_pdf,
+        s,
+    )
     s = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    s = re.sub(r"\*\*(.+?)\*\*", rf"<font name='{bold_font}'><b>\1</b></font>", s)
-    s = re.sub(r"`([^`]+)`", rf"<font name='{bold_font}'><b>\1</b></font>", s)
+    s = re.sub(r"\*\*(.+?)\*\*", rf'<font name="{bold_font}">\1</font>', s)
+    s = re.sub(r"`([^`]+)`", r'<font backColor="#f1f5f9">\1</font>', s)
     return s
 
 
@@ -916,10 +926,11 @@ def _build_report_markdown(s: dict, log_tokens_fn=None, room_key: str = "") -> s
 
 def _build_report_pdf_bytes(s: dict, log_tokens_fn=None, room_key: str = "") -> bytes:
     """
-    4단계 『보고서 PDF 다운』 전용 빌더:
-    - 화면의 대제목 / 중제목(I~IV) / 소제목 / 본문·표를 그대로 A4 세로(Portrait) 정식 PDF로 출력합니다.
-    - 전각 로마숫자(Ⅰ~Ⅳ) 및 유니코드 물결표(∼)·마이너스(−) 폰트 누락 방지, 소제목 고립(Orphan Heading) 방지,
-      표 숫자·금액 열 우측 정렬 및 합계 행 하이라이트, 하단 페이지 번호를 적용합니다.
+    4단계 『보고서 PDF 다운』 전용 빌더 — 자율 에이전트AI(`app.py`의 `create_pdf_report`)와
+    여백(좌우 40pt, 상 42pt, 하 48pt), 제목(DocH2 13pt #1f4e78), 소제목(DocH3 11pt #2e5cb8),
+    본문(DocBody 9.8pt / 줄간격 15.5pt / wordWrap='CJK'), 불릿(leftIndent=12, firstLineIndent=-8),
+    표(연회색 헤더 #e2e8f0 + 교차 행 #f8fafc + 얇은 테두리 #cbd5e1 + 상단 정렬),
+    법령 태그 표시(`[조문: ...]`, `[부칙: ...]`), 하단 면책문구 및 우측 페이지 번호까지 100% 일치시킵니다.
     """
     _ensure_built_for_tax_year(s)
     reg_font, bold_font = _ensure_korean_pdf_font()
@@ -927,268 +938,223 @@ def _build_report_pdf_bytes(s: dict, log_tokens_fn=None, room_key: str = "") -> 
     doc = SimpleDocTemplate(
         buf,
         pagesize=A4,
-        leftMargin=26,
-        rightMargin=26,
-        topMargin=26,
-        bottomMargin=32,
+        leftMargin=40,
+        rightMargin=40,
+        topMargin=42,
+        bottomMargin=48,
     )
-    avail_w = A4[0] - 52
+    usable_width = A4[0] - 80
 
     styles = getSampleStyleSheet()
-    st_h1 = ParagraphStyle(
-        "ECRepH1",
+    style_h2 = ParagraphStyle(
+        "DocH2",
         parent=styles["Normal"],
         fontName=bold_font,
-        fontSize=15.0,
-        leading=20.0,
-        textColor=colors.HexColor("#0f172a"),
+        fontSize=13,
+        leading=19,
+        textColor=colors.HexColor("#1f4e78"),
+        spaceBefore=12,
         spaceAfter=6,
         keepWithNext=True,
     )
-    st_meta = ParagraphStyle(
-        "ECRepMeta",
-        parent=styles["Normal"],
-        fontName=reg_font,
-        fontSize=9.0,
-        leading=13.5,
-        textColor=colors.HexColor("#334155"),
-        spaceAfter=8,
-    )
-    st_h2 = ParagraphStyle(
-        "ECRepH2",
+    style_h3 = ParagraphStyle(
+        "DocH3",
         parent=styles["Normal"],
         fontName=bold_font,
-        fontSize=11.8,
-        leading=16.5,
-        textColor=colors.HexColor("#1e3a8a"),
-        spaceBefore=11,
-        spaceAfter=6,
-        keepWithNext=True,
-    )
-    st_h3 = ParagraphStyle(
-        "ECRepH3",
-        parent=styles["Normal"],
-        fontName=bold_font,
-        fontSize=10.2,
-        leading=14.5,
-        textColor=colors.HexColor("#0f172a"),
-        spaceBefore=8,
+        fontSize=11,
+        leading=16,
+        textColor=colors.HexColor("#2e5cb8"),
+        spaceBefore=10,
         spaceAfter=4,
         keepWithNext=True,
     )
-    st_body = ParagraphStyle(
-        "ECRepBody",
+    style_body = ParagraphStyle(
+        "DocBody",
         parent=styles["Normal"],
         fontName=reg_font,
-        fontSize=9.2,
-        leading=14.2,
+        fontSize=9.8,
+        leading=15.5,
         textColor=colors.HexColor("#1e293b"),
+        spaceAfter=4,
+        wordWrap="CJK",
+    )
+    style_bullet = ParagraphStyle(
+        "DocBullet",
+        parent=style_body,
+        leftIndent=12,
+        firstLineIndent=-8,
         spaceAfter=3.5,
     )
-    st_tbl_hdr = ParagraphStyle(
-        "ECRepTblHdr",
-        parent=styles["Normal"],
+    style_th = ParagraphStyle(
+        "DocTH",
+        parent=style_body,
         fontName=bold_font,
-        fontSize=8.3,
-        leading=11.2,
-        alignment=1,
-        textColor=colors.white,
-    )
-    st_tbl_cell_l = ParagraphStyle(
-        "ECRepTblCellL",
-        parent=styles["Normal"],
-        fontName=reg_font,
-        fontSize=8.2,
-        leading=11.2,
+        fontSize=9.2,
+        leading=13.5,
+        textColor=colors.HexColor("#0f172a"),
         alignment=0,
-        textColor=colors.HexColor("#1e293b"),
     )
-    st_tbl_cell_c = ParagraphStyle(
-        "ECRepTblCellC",
-        parent=styles["Normal"],
+    style_td = ParagraphStyle(
+        "DocTD",
+        parent=style_body,
         fontName=reg_font,
-        fontSize=8.2,
-        leading=11.2,
-        alignment=1,
+        fontSize=9.0,
+        leading=13.5,
         textColor=colors.HexColor("#1e293b"),
-    )
-    st_tbl_cell_r = ParagraphStyle(
-        "ECRepTblCellR",
-        parent=styles["Normal"],
-        fontName=reg_font,
-        fontSize=8.2,
-        leading=11.2,
-        alignment=2,
-        textColor=colors.HexColor("#1e293b"),
+        alignment=0,
     )
 
     md_full = _build_report_markdown(s, log_tokens_fn=log_tokens_fn, room_key=room_key)
-    # PDF 출력 시 마크다운 링크 `[텍스트](https://...)`에서 URL 괄호를 벗기고 텍스트만 깔끔하게 표시
-    md_full = re.sub(r"\[(\[(?:조문|부칙|별표|판례|심판례|헌재|헌재결정례|해석례|예규)\s*:\s*[^\]]+\])\]\(https?://[^\s)]+\)", r"\1", md_full)
+    # 마크다운 링크 `[텍스트](https://...)`에서 URL 괄호를 벗기고 `[조문: ...]` 등 본문 텍스트만 깔끔하게 보존
+    md_full = re.sub(
+        r"\[(\[(?:조문|부칙|별표|판례|심판례|헌재|헌재결정례|해석례|예규)\s*:\s*[^\]]+\])\]\(https?://[^\s)]+\)",
+        r"\1",
+        md_full,
+    )
     md_full = re.sub(r"\[([^\]]+)\]\(https?://[^\s)]+\)", r"\1", md_full)
     story = []
 
-    lines = md_full.splitlines()
-    idx = 0
-    while idx < len(lines):
-        raw_ln = _strip_all_emojis(lines[idx]).strip()
-        if not raw_ln or raw_ln == "---":
-            idx += 1
+    raw_lines = md_full.splitlines()
+    i = 0
+    while i < len(raw_lines):
+        line = raw_lines[i]
+        stripped = _strip_all_emojis(line).strip()
+
+        if not stripped:
+            story.append(Spacer(1, 4))
+            i += 1
             continue
 
-        if "적용 모델:" in raw_ln or "적용모델:" in raw_ln:
-            idx += 1
+        if stripped.startswith(">") or "적용 모델:" in stripped or "적용모델:" in stripped:
+            i += 1
             continue
 
-        if raw_ln.startswith("|") and raw_ln.endswith("|"):
-            tbl_lines = []
-            while idx < len(lines):
-                cand = _strip_all_emojis(lines[idx]).strip()
-                if cand.startswith("|") and cand.endswith("|"):
-                    tbl_lines.append(cand)
-                    idx += 1
-                else:
+        if re.match(r"^-{3,}$", stripped):
+            story.append(Spacer(1, 4))
+            story.append(HRFlowable(width="100%", thickness=0.7, color=colors.HexColor("#cbd5e1")))
+            story.append(Spacer(1, 6))
+            i += 1
+            continue
+
+        if stripped.startswith("|") and stripped.endswith("|"):
+            table_lines = []
+            while i < len(raw_lines):
+                r_str = _strip_all_emojis(raw_lines[i]).strip()
+                if not (r_str.startswith("|") and r_str.endswith("|")):
                     break
-            col_aligns: list[str] = []
-            raw_rows: list[list[str]] = []
-            for t_ln in tbl_lines:
-                cells = [c.strip() for c in t_ln.strip("|").split("|")]
-                if all(re.match(r"^[:\-]+$", c.replace(" ", "")) for c in cells if c):
-                    col_aligns = []
-                    for c in cells:
-                        cs = c.replace(" ", "")
-                        if cs.startswith(":") and cs.endswith(":"):
-                            col_aligns.append("C")
-                        elif cs.endswith(":"):
-                            col_aligns.append("R")
-                        else:
-                            col_aligns.append("L")
+                table_lines.append(r_str)
+                i += 1
+
+            rows_data = []
+            for r_str in table_lines:
+                if re.match(r"^\|[\s\-:|]+\|$", r_str):
                     continue
-                raw_rows.append(cells)
+                cells = [c.strip() for c in r_str.strip("|").split("|")]
+                rows_data.append(cells)
 
-            parsed_rows = []
-            highlight_row_indices: list[tuple[int, str]] = []
-            for r_i, cells in enumerate(raw_rows):
-                is_hdr = r_i == 0
-                row_paras = []
-                first_cell_plain = re.sub(r"\*+", "", cells[0] if cells else "").strip()
-                if not is_hdr:
-                    if first_cell_plain.startswith("최종 실질 순절세액"):
-                        highlight_row_indices.append((r_i, "#dbeafe"))
-                    elif first_cell_plain.startswith("합계"):
-                        highlight_row_indices.append((r_i, "#f1f5f9"))
-                for c_i, c_txt in enumerate(cells):
-                    c_clean = c_txt.replace("<br>", "\n")
-                    if is_hdr:
-                        p_style = st_tbl_hdr
-                    else:
-                        al = col_aligns[c_i] if c_i < len(col_aligns) else "L"
-                        p_style = st_tbl_cell_r if al == "R" else (st_tbl_cell_c if al == "C" else st_tbl_cell_l)
-                    row_paras.append(Paragraph(_pdf_text(c_clean).replace("\n", "<br/>"), p_style))
-                parsed_rows.append(row_paras)
+            if rows_data:
+                max_cols = max(len(r) for r in rows_data)
+                padded_rows = [r + [""] * (max_cols - len(r)) for r in rows_data]
 
-            if parsed_rows:
-                n_cols = len(parsed_rows[0])
-                if n_cols == 3:
-                    col_w = [avail_w * 0.35, avail_w * 0.19, avail_w * 0.46]
-                elif n_cols == 4:
-                    col_w = [avail_w * 0.18, avail_w * 0.32, avail_w * 0.18, avail_w * 0.32]
-                elif n_cols == 5:
-                    col_w = [avail_w * 0.23, avail_w * 0.17, avail_w * 0.17, avail_w * 0.17, avail_w * 0.26]
-                elif n_cols == 7:
-                    col_w = [avail_w * 0.15, avail_w * 0.07, avail_w * 0.13, avail_w * 0.13, avail_w * 0.13, avail_w * 0.15, avail_w * 0.24]
+                if max_cols >= 8:
+                    cur_th = ParagraphStyle("DocTH_Wide8", parent=style_th, fontSize=7.4, leading=10.5)
+                    cur_td = ParagraphStyle("DocTD_Wide8", parent=style_td, fontSize=7.2, leading=10.5)
+                    h_pad, v_pad = 3.5, 4.5
+                elif max_cols >= 6:
+                    cur_th = ParagraphStyle("DocTH_Wide6", parent=style_th, fontSize=8.0, leading=11.5)
+                    cur_td = ParagraphStyle("DocTD_Wide6", parent=style_td, fontSize=7.8, leading=11.5)
+                    h_pad, v_pad = 4.5, 5.0
                 else:
-                    col_w = [avail_w / n_cols] * n_cols
-                t_obj = Table(parsed_rows, colWidths=col_w, repeatRows=1)
-                t_cmds = [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1e293b")),
-                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                    ("GRID", (0, 0), (-1, -1), 0.45, colors.HexColor("#cbd5e1")),
-                    ("BOX", (0, 0), (-1, -1), 0.9, colors.HexColor("#1e293b")),
-                    ("TOPPADDING", (0, 0), (-1, -1), 4.5),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4.5),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 5),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-                ]
-                for hr_idx, hex_bg in highlight_row_indices:
-                    t_cmds.append(("BACKGROUND", (0, hr_idx), (-1, hr_idx), colors.HexColor(hex_bg)))
-                t_obj.setStyle(TableStyle(t_cmds))
-                story.append(t_obj)
-                story.append(Spacer(1, 5))
-            continue
+                    cur_th, cur_td = style_th, style_td
+                    h_pad, v_pad = 6.0, 6.0
 
-        if raw_ln.startswith("# "):
-            story.append(Paragraph(_pdf_text(raw_ln[2:].strip()), st_h1))
-            idx += 1
-            continue
-
-        if raw_ln.startswith("## "):
-            h2_tbl = Table([[Paragraph(_pdf_text(raw_ln[3:].strip()), st_h2)]], colWidths=[avail_w], spaceBefore=6, spaceAfter=4)
-            h2_tbl.keepWithNext = True
-            h2_tbl.setStyle(
-                TableStyle(
-                    [
-                        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#eff6ff")),
-                        ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#bfdbfe")),
-                        ("TOPPADDING", (0, 0), (-1, -1), 4.5),
-                        ("BOTTOMPADDING", (0, 0), (-1, -1), 4.5),
-                        ("LEFTPADDING", (0, 0), (-1, -1), 8),
-                        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                col_weights = []
+                for c_idx in range(max_cols):
+                    col_lens = [
+                        len(re.sub(r"\*\*|`|<br\s*/?>", "", str(pr[c_idx] or "")).strip())
+                        for pr in padded_rows
                     ]
-                )
+                    max_l = max(col_lens) if col_lens else 4
+                    avg_l = (sum(col_lens) / len(col_lens)) if col_lens else 4
+                    eff_len = max(4.0, min(float(max_l) * 0.65 + float(avg_l) * 0.35, 52.0))
+                    col_weights.append(eff_len ** 0.72)
+
+                total_w = sum(col_weights) or 1.0
+                min_col_w = max(24.0, usable_width * (0.055 if max_cols >= 8 else 0.075))
+                raw_widths = [max(min_col_w, usable_width * (w / total_w)) for w in col_weights]
+                scale_factor = usable_width / (sum(raw_widths) or usable_width)
+                col_widths = [w * scale_factor for w in raw_widths]
+
+                pdf_table_data = []
+                for r_idx, padded_r in enumerate(padded_rows):
+                    row_paras = []
+                    for c_text in padded_r:
+                        c_clean = c_text.replace("<br>", "\n").replace("<br/>", "\n")
+                        cell_xml = _pdf_text(c_clean).replace("\n", "<br/>")
+                        row_paras.append(Paragraph(cell_xml, cur_th if r_idx == 0 else cur_td))
+                    pdf_table_data.append(row_paras)
+
+                pdf_table = Table(pdf_table_data, colWidths=col_widths, repeatRows=1)
+                t_style = [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e2e8f0")),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("TOPPADDING", (0, 0), (-1, -1), v_pad),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), v_pad),
+                    ("LEFTPADDING", (0, 0), (-1, -1), h_pad),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), h_pad),
+                ]
+                for r_idx in range(1, len(pdf_table_data)):
+                    if r_idx % 2 == 0:
+                        t_style.append(("BACKGROUND", (0, r_idx), (-1, r_idx), colors.HexColor("#f8fafc")))
+                pdf_table.setStyle(TableStyle(t_style))
+                story.append(Spacer(1, 4))
+                story.append(pdf_table)
+                story.append(Spacer(1, 8))
+            continue
+
+        if stripped.startswith("#### "):
+            story.append(Paragraph(_pdf_text(stripped[5:].strip()), style_h3))
+        elif stripped.startswith("### "):
+            story.append(Paragraph(_pdf_text(stripped[4:].strip()), style_h3))
+        elif stripped.startswith("## "):
+            story.append(Paragraph(_pdf_text(stripped[3:].strip()), style_h2))
+        elif stripped.startswith("# "):
+            story.append(Paragraph(_pdf_text(stripped[2:].strip()), style_h2))
+        elif stripped.startswith(("- ", "* ")):
+            indent_level = (len(line) - len(line.lstrip(" "))) // 2
+            b_style = ParagraphStyle(
+                f"Bullet_{indent_level}",
+                parent=style_bullet,
+                leftIndent=12 + (indent_level * 10),
             )
-            story.append(h2_tbl)
-            idx += 1
-            continue
-
-        if raw_ln.startswith("### ") or raw_ln.startswith("#### "):
-            sub_txt = re.sub(r"^#{3,4}\s*", "", raw_ln).strip()
-            p_h3 = Paragraph(_pdf_text(f"■ {sub_txt}"), st_h3)
-            p_h3.keepWithNext = True
-            story.append(p_h3)
-            idx += 1
-            continue
-
-        if raw_ln.startswith(">"):
-            q_txt = raw_ln.lstrip("> ").strip()
-            story.append(Paragraph(_pdf_text(q_txt), st_meta))
-            idx += 1
-            continue
-
-        if raw_ln.startswith("- ") or raw_ln.startswith("* "):
-            b_txt = "• " + raw_ln[2:].strip()
-            story.append(Paragraph(_pdf_text(b_txt), st_body))
+            story.append(Paragraph("• " + _pdf_text(stripped[2:].strip()), b_style))
         else:
-            story.append(Paragraph(_pdf_text(raw_ln), st_body))
-        idx += 1
+            story.append(Paragraph(_pdf_text(stripped), style_body))
 
-    # 중제목(h2_tbl) 및 소제목(p_h3)이 페이지 하단에 홀로 남지 않도록 바로 뒤 본문/표와 KeepTogether로 결합
-    grouped_story = []
-    s_i = 0
-    while s_i < len(story):
-        cur_f = story[s_i]
-        if getattr(cur_f, "keepWithNext", False) and s_i + 1 < len(story):
-            bundle = [cur_f]
-            s_i += 1
-            while s_i < len(story) and getattr(story[s_i], "keepWithNext", False):
-                bundle.append(story[s_i])
-                s_i += 1
-            if s_i < len(story):
-                bundle.append(story[s_i])
-                s_i += 1
-            grouped_story.append(KeepTogether(bundle))
-        else:
-            grouped_story.append(cur_f)
-            s_i += 1
-    story = grouped_story
+        i += 1
+
+    if not story:
+        story.append(Paragraph("내용 없음", style_body))
 
     def _draw_page_footer(canvas, doc_obj):
         canvas.saveState()
-        canvas.setFont(reg_font, 8.0)
+        canvas.setStrokeColor(colors.HexColor("#e2e8f0"))
+        canvas.setLineWidth(0.6)
+        canvas.line(40, 36, A4[0] - 40, 36)
+
+        canvas.setFont(reg_font, 6.2)
         canvas.setFillColor(colors.HexColor("#64748b"))
-        page_str = f"- {canvas.getPageNumber()} -"
-        canvas.drawCentredString(A4[0] / 2.0, 14, page_str)
+        disclaimer_str = (
+            "※ 본 보고서는 질의하신 사실관계와 현행 법령 기준의 참고자료이며, "
+            "사실관계 변동이나 과세관청·법원의 해석에 따라 판단이 달라질 수 있습니다."
+        )
+        canvas.drawString(40, 24, disclaimer_str)
+
+        canvas.setFont(reg_font, 8.2)
+        canvas.setFillColor(colors.HexColor("#475569"))
+        page_num_str = f"- {doc_obj.page} -"
+        canvas.drawRightString(A4[0] - 40, 24, page_num_str)
         canvas.restoreState()
 
     doc.build(story, onFirstPage=_draw_page_footer, onLaterPages=_draw_page_footer)

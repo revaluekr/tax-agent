@@ -265,13 +265,17 @@ def _get_gemini_models(prefer_pro: bool = False) -> list[str]:
     """
     - 일반 정형 보완 추출 시: 고속 Flash 모델 우선
     - `prefer_pro=True`(공제감면세액계산서 등 복합 서식 추출, 원천징수부 누락 행 정밀 복구, Pro 심층 진단) 또는
-      사이드바 `Pro 심층 모드(Argon 직결)`가 켜져 있을 때: Pro / Argon 모델을 1순위로 배치합니다.
+      사이드바 `Pro 심층 모드(Argon 직결)`가 켜져 있을 때: 자율 에이전트AI의 `PAID_PRO_MODEL_IDS` 체인
+      (`gemini-4-argon` -> `gemini-3.1-pro-preview-customtools` -> `gemini-3.1-pro-preview` -> `gemini-2.5-pro`)과 100% 일치시켜 가동합니다.
     """
     use_pro_first = prefer_pro or _is_pro_mode_enabled()
     pro_models: list[str] = []
     flash_models: list[str] = []
     try:
         import agent
+        for pm in getattr(agent, "PAID_PRO_MODEL_IDS", []) or []:
+            if pm and str(pm) not in pro_models:
+                pro_models.append(str(pm))
         for attr in ("ARGON_MODEL_ID", "PRO_MODEL_ID", "PRO_BACKUP_ID", "PRO_FALLBACK_ID"):
             m = getattr(agent, attr, None)
             if m and str(m) not in pro_models:
@@ -283,10 +287,10 @@ def _get_gemini_models(prefer_pro: bool = False) -> list[str]:
     except Exception:
         pass
 
-    for m in ("gemini-2.5-pro",):
+    for m in ("gemini-4-argon", "gemini-3.1-pro-preview-customtools", "gemini-3.1-pro-preview", "gemini-2.5-pro"):
         if m not in pro_models:
             pro_models.append(m)
-    for m in ("gemini-2.5-flash",):
+    for m in ("gemini-3.8-flash", "gemini-3.6-flash", "gemini-2.5-flash"):
         if m not in flash_models:
             flash_models.append(m)
 
@@ -427,10 +431,16 @@ def inject_verified_law_links(md_text: str, trace: dict | None = None) -> str:
 
 def call_pro_argon_audit_commentary(summary_context: str | dict, log_tokens_fn=None, room_key: str = "") -> str:
     """
-    [Pro/Argon 심층 세무진단 의견 생성 — 법제처 API 실시간 조문 연동 · 미검증 인용 원천 차단 · 직링크 자동 부착]
-    - 그림문자(왕관·돋보기·방패·느낌표 등) 없이 깔끔한 소제목(`#### (1) ...`)과 본문 불릿 구조로 생성합니다.
-    - 자율 에이전트AI(`agent.py`)의 법제처 API 조회기 및 `_scan_violations`/`_inject_direct_law_links`와 직결되어
-      미검증 예규나 구법 항 번호 오인용을 원천 차단하고 클릭 가능한 법령 직링크를 부여합니다.
+    [Pro/Argon 심층 세무진단 의견 생성 — 3번 실속형 하이브리드 아키텍처]
+    1) **기본 법령 4종 파이썬 고속 사전조회(0토큰)**: `조세특례제한법`, `조세특례제한법 시행령`, `농어촌특별세법`, `국세기본법` 핵심 조문과 부칙을
+       파이썬이 먼저 1회 일괄 조회하여 프롬프트와 `_TOOL_TRACE`에 주입합니다.
+    2) **선택적 도구 호출 개방(최대 2회)**: `PAID_PRO_MODEL_IDS`(`gemini-4-argon` -> `gemini-3.1-pro-preview-customtools` -> `gemini-3.1-pro-preview` -> `gemini-2.5-pro`)
+       체인으로 `chats.create`를 가동하며, 기본 4개 법령 외에 특수 쟁점(예규·심판례·판례·구법) 확인이 추가로 필요할 때만
+       최대 2회(`maximum_remote_calls=2`) 법제처 API 도구를 자율 호출하도록 허용합니다.
+    3) **자율 에이전트AI 동일 사후검증 파이프라인**:
+       - `agent._scan_violations` & `agent._redact_lines` (미조회 사건번호·조문 즉시 차단)
+       - `agent._extract_claims` & `agent._semantic_verify` & `agent._apply_semantic_results` (Flash 감수 모델로 수치·법리 정합성 2중 검증)
+       - `agent._inject_direct_law_links` (국가법령정보센터 원문 직링크 자동 결합)
     """
     ctx_dict = summary_context if isinstance(summary_context, dict) else {}
     if not isinstance(summary_context, str):
@@ -445,14 +455,15 @@ def call_pro_argon_audit_commentary(summary_context: str | dict, log_tokens_fn=N
     prompt = (
         "당신은 대한민국 조세특례제한법 제29조의8(통합고용세액공제) 및 사후관리 전문 세무사·감사관입니다.\n"
         "아래는 파이썬 정밀 계산 엔진이 산출한 해당 사업장의 연도별 상시근로자 명세·사원별 변동 원인 분석 데이터와, "
-        "법제처 국가법령정보센터 Open API에서 실시간으로 조회한 현행 법령·시행령·부칙 원문입니다.\n\n"
+        "법제처 국가법령정보센터 Open API에서 실시간으로 사전 조회한 현행 법령·시행령·부칙 원문입니다.\n"
+        "(※ 기본 법령 4종은 이미 아래에 제공되어 있으므로 중복 조회하지 마시고, 특수 쟁점에 대해 추가 법령해석례·조세심판례·판례나 타 법령 조문 확인이 꼭 필요한 경우에만 제공된 법제처 검색 도구를 최대 2회 이내로 호출하세요.)\n\n"
         "[절대 준수 법령 정합성 및 할루시네이션 금지 규칙]\n"
         "1. **현행 조문 및 구법 경과조치 항 번호 엄격 준수**:\n"
         "   - `[조문:조세특례제한법 제29조의8 제1항]`: 기본공제 (2026년 이후 신법은 직전 3개 과세연도[2024.12.31. 이전 개시 과세연도 제외] 중 1개 이상 대비 증가 시 A[1년차]+B[2년차]+C[3년차] 구조이며, 2026년 귀속은 비교 대상이 2025년[A]뿐이므로 A만 적용됨. 또한 **청년등 상시근로자 증가인원이 전체 상시근로자 증가인원을 한도(Cap)로 한다는 규정은 반드시 법률 본문인 `[조문:조세특례제한법 제29조의8 제1항]` 제1호 괄호 규정**으로 인용할 것! 시행령 제26조의8 제4항을 한도 근거로 쓰지 말 것).\n"
         "   - `[조문:조세특례제한법 제29조의8 제2항]`: 경력단절 근로자의 요건 정의(별도 추가공제가 아니라 제1항 제1호의 청년등 상시근로자에 포함되는 우대 대상 정의 조항임).\n"
         "   - **2024·2025년 귀속분의 연속공제와 사후관리 추가납부 근거 구분**: 2025.12.23. 법률 제21223호 개정으로 구 제3항(추징)이 삭제되었으나 **법률 제21223호 부칙 제34조(통합고용세액공제에 관한 경과조치)**에 따라 2024·2025년 증가분은 종전 규정을 적용함. 이때 **2·3차년도 연속공제의 근거는 `구 조세특례제한법(법률 제21223호 개정 전) 제29조의8 제1항 및 법률 제21223호 부칙 제34조`**로, **고용 감소 시 추가납부(추징)의 근거는 `구 조세특례제한법 제29조의8 제3항(구 시행령 제26조의8 제6항) 및 법률 제21223호 부칙 제34조`**로 명확히 구분하여 서술할 것(2026년 신법 공제분은 추징 규정이 없으므로 추징 리스크는 2024·2025년 귀속분에 한정).\n"
         "   - `[조문:조세특례제한법 제29조의8 제4항]`(정규직 전환 추가공제 — 2024.12.31. 이전 전환분까지만 적용되므로 2026년에는 해당 없음) 및 `[조문:조세특례제한법 제29조의8 제5항]`(육아휴직 복귀자 추가공제).\n"
-        "   - `[조문:조세특례제한법 시행령 제26조의8 제2항]`: 상시근로자 정의('내국인 근로자'란 `[조문:조세특례제한법 제2조]` 제1항 제1호 및 시행규칙 별지 제10호의10서식 작성방법, 국세청 사전-2020-법령해석소득-0239에 따라 국적과 무관하게 소득세법상 거주자인 외국인 근로자를 포함하며 비거주자만 제외함) 및 각 호 제외대상(제1호 근로기간 1년 미만인 근로자, 제2호 월평균 60시간 미만 단시간근로자, 제3호 법인세법 시행령 제40조 제1항 임원, 제4호·제5호 최대주주·배우자·직계존비속·친족, 제6호 원천징수·4대보험 미확인자 — 임원·최대주주 제외는 현행 제26조의8 제2항 제3호~제5호에 직접 규정되어 있음).\n"
+        "   - `[조문:조세특례제한법 시행령 제26조의8 제2항]`: 상시근로자 정의('내국인 근로자'란 `[조문:조세특례제한법 제2조]` 제1항 제1호 및 `[조문:소득세법 제1조의2]` 제1항 제1호, 시행규칙 별지 제10호의10서식 작성방법, 국세청 사전-2020-법령해석소득-0239에 따라 국적과 무관하게 소득세법상 거주자인 외국인 근로자를 포함하며 비거주자만 제외함) 및 각 호 제외대상(제1호 근로기간 1년 미만인 근로자, 제2호 월평균 60시간 미만 단시간근로자, 제3호 법인세법 시행령 제40조 제1항 임원, 제4호·제5호 최대주주·배우자·직계존비속·친족, 제6호 원천징수·4대보험 미확인자 — 임원·최대주주 제외는 현행 제26조의8 제2항 제3호~제5호에 직접 규정되어 있음).\n"
         "   - `[조문:조세특례제한법 시행령 제26조의8 제3항]`(최소고용증가인원수), `[조문:조세특례제한법 시행령 제26조의8 제4항]`(청년등 상시근로자의 범위: 제1호 만 15~34세 및 병역 최대 6년 차감, 계약체결일부터 4년[대기업 3년] 청년 간주), `[조문:조세특례제한법 시행령 제26조의8 제6항]` 및 `[조문:조세특례제한법 시행령 제11조의2 제8항]` 준용(매월 말 현재 상시근로자 수의 합을 개월 수로 나눈 뒤 100분의 1 미만 버림 — 합산 후 절사), `[조문:조세특례제한법 시행령 제26조의8 제7항]`(출산전후휴가 대체인력 특례), `[조문:조세특례제한법 시행령 제26조의8 제8항]` 및 `[조문:조세특례제한법 시행령 제23조 제13항]` 준용(창업·합병·분할·사업 포괄양수 등 고용승계 특례).\n"
         "2. **사후관리 청년 인원과 당해 공제 청년 인원 차이 원인 및 병역 차감 대상 구분**:\n"
         "   - 2026년 중도퇴사(총 근속 1년 미만, 예: 박소연 등)로 인해 구법 사후관리(계약기간 1년 이상 포함, 시행령 부칙 경과조치)에는 산입되고 신법 당해공제(실제 근로기간 1년 미만 제외, 시행령 제26조의8 제2항 제1호)에서 제외되어 발생한 인원 차이를 절대 '청년 연령경과 간주 규정' 때문이라고 잘못 설명하지 말 것! 또한 단시간근로자(0.5명, 청년 제외)에서 정규직(1.0명, 청년 편입)으로 고용형태가 변경된 사원(예: 김우주 등)도 고용형태 전환 사례로만 설명할 것.\n"
@@ -475,33 +486,118 @@ def call_pro_argon_audit_commentary(summary_context: str | dict, log_tokens_fn=N
     if keys:
         try:
             from google import genai
+            from google.genai import types
+            import agent as _ag
+
+            if trace is None:
+                trace = _ag._new_trace(unleash=True)
+
+            hybrid_tools = [
+                _ag.search_law_for_gemini,
+                _ag.get_law_details_for_gemini,
+                _ag.search_historical_law_for_gemini,
+                _ag.run_tax_calculator_for_gemini,
+            ]
+            safety_settings = [
+                types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
+                types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
+                types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
+                types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
+            ]
+
             for api_key in keys:
-                client = genai.Client(api_key=api_key)
+                try:
+                    client = genai.Client(api_key=api_key, http_options={"timeout": 75000})
+                except Exception:
+                    client = genai.Client(api_key=api_key)
+
                 for model_id in models:
+                    tok_trace = _ag._TOOL_TRACE.set(trace)
                     try:
-                        resp = client.models.generate_content(model=model_id, contents=prompt)
+                        before_tool_cnt = sum((trace.get("counts") or {}).values())
+                        before_detail_chars = sum(len(x) for x in (trace.get("list") or [])) + sum(len(x) for x in (trace.get("detail") or []))
+
+                        try:
+                            chat = client.chats.create(
+                                model=model_id,
+                                config=types.GenerateContentConfig(
+                                    tools=hybrid_tools,
+                                    safety_settings=safety_settings,
+                                    temperature=0.1,
+                                    max_output_tokens=8192,
+                                    automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                                        maximum_remote_calls=2
+                                    ),
+                                ),
+                            )
+                            resp = chat.send_message(prompt)
+                        except Exception:
+                            resp = client.models.generate_content(model=model_id, contents=prompt)
+
+                        raw_txt = _ag.extract_safe_text(resp) if hasattr(_ag, "extract_safe_text") else (resp.text or "")
+                        txt = _strip_report_icons(raw_txt.strip())
+                        if not txt:
+                            continue
+
+                        after_tool_cnt = sum((trace.get("counts") or {}).values())
+                        after_detail_chars = sum(len(x) for x in (trace.get("list") or [])) + sum(len(x) for x in (trace.get("detail") or []))
+                        new_tool_calls = max(0, after_tool_cnt - before_tool_cnt)
+                        new_tool_chars = max(0, after_detail_chars - before_detail_chars)
+
                         um = getattr(resp, "usage_metadata", None)
-                        if log_tokens_fn and um:
-                            in_tok = int(getattr(um, "prompt_token_count", 0) or 0)
-                            out_tok = int(getattr(um, "candidates_token_count", 0) or 0)
+                        in_tok = int(getattr(um, "prompt_token_count", 0) or int(len(prompt) * 0.7))
+                        out_tok = (
+                            int(getattr(um, "candidates_token_count", 0) or int(len(txt) * 0.7))
+                            + int(getattr(um, "thoughts_token_count", 0) or 0)
+                        )
+                        if new_tool_calls > 0:
+                            base_p_tok = int(len(prompt) * 0.7)
+                            avg_t_tok = int((new_tool_chars * 0.7) / max(1, new_tool_calls))
+                            in_tok += sum(base_p_tok + (avg_t_tok * step) for step in range(new_tool_calls))
+                            out_tok += new_tool_calls * 200
+
+                        if log_tokens_fn:
                             try:
                                 log_tokens_fn(model_id, in_tok, out_tok, True, room_key)
-                            except Exception:
-                                pass
-                        txt = _strip_report_icons((resp.text or "").strip())
-                        if txt:
+                            except TypeError:
+                                try:
+                                    log_tokens_fn(model_id, in_tok, out_tok, room_key=room_key)
+                                except Exception:
+                                    pass
+                        elif hasattr(_ag, "_record_token_usage"):
                             try:
-                                import agent
-                                if trace is not None and hasattr(agent, "_scan_violations"):
-                                    viols = agent._scan_violations(txt, trace)
-                                    if viols:
-                                        txt = agent._redact_lines(txt, viols)
+                                _ag._record_token_usage(model_id, in_tok, out_tok, count_call=True, room_key=room_key)
                             except Exception:
                                 pass
-                            txt = inject_verified_law_links(txt, trace)
-                            return f"[적용 모델: {model_id}]\n\n{txt}"
+
+                        # 1단계: 미조회 조문·사건번호 강제 스캔 및 차단 (_scan_violations + _redact_lines)
+                        if hasattr(_ag, "_scan_violations"):
+                            viols = _ag._scan_violations(txt, trace)
+                            if viols:
+                                txt = _ag._redact_lines(txt, viols)
+
+                        # 2단계: Flash 감수 모델을 통한 의미·수치 정합성 2중 검증 (_semantic_verify)
+                        if getattr(_ag, "SEMANTIC_VERIFY_ON", True) and hasattr(_ag, "_extract_claims") and hasattr(_ag, "_semantic_verify"):
+                            try:
+                                claims, sources = _ag._extract_claims(txt, trace, max_claims=14)
+                                if claims and sources:
+                                    rk_tok = _ag.set_active_room_key(room_key) if (room_key and hasattr(_ag, "set_active_room_key")) else None
+                                    try:
+                                        verdicts = _ag._semantic_verify(api_key, claims, sources, summary_context_str[:3000])
+                                        txt, _ = _ag._apply_semantic_results(txt, claims, verdicts, sources)
+                                    finally:
+                                        if rk_tok is not None:
+                                            _ag._ACTIVE_ROOM_KEY.reset(rk_tok)
+                            except Exception:
+                                pass
+
+                        # 3단계: 국가법령정보센터 원문 직링크 결합 (_inject_direct_law_links)
+                        txt = inject_verified_law_links(txt, trace)
+                        return f"[적용 모델: {model_id}]\n\n{txt}"
                     except Exception:
                         continue
+                    finally:
+                        _ag._TOOL_TRACE.reset(tok_trace)
         except Exception:
             pass
 
