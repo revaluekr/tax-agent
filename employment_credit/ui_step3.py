@@ -856,6 +856,12 @@ def _page_calculation():
         f"{cap_notice_html}",
         unsafe_allow_html=True,
     )
+    if prev_s.get("old_rule_regular") is not None and abs(prev_s["old_rule_regular"] - prv_reg_disp) > 1e-9:
+        st.caption(
+            f"ℹ️ 직전 과세연도({tax_yr - 1}년) 인원은 개정 규정(실제 근로기간 1년 미만 제외)으로 다시 센 {prv_reg_disp:.2f}명입니다. "
+            f"2단계 {tax_yr - 1}년 표의 {prev_s['old_rule_regular']:.2f}명은 {tax_yr - 1}년 귀속분과 그 사후관리에 쓰는 종전 규정"
+            f"(근로계약기간 1년 미만 제외, 대통령령 제35999호 부칙 제2조) 인원입니다."
+        )
 
     # ── (2) 1차년도 세액공제액 계산 (기업구분, 수도권/비수도권) ──
     st.markdown(

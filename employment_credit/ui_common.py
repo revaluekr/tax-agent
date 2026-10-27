@@ -427,6 +427,10 @@ def _adjusted_prev_totals(s: dict, prev_t: dict) -> tuple[dict, float, float]:
         adj["상시_합계"] = round(float(adj.get("상시_합계") or 0.0) + (suc_reg - ded_reg) * m1, 2)
         adj["청년등_합계"] = round(float(adj.get("청년등_합계") or 0.0) + (suc_yth - ded_yth) * m1, 2)
         adj["청년외_합계"] = round(max(0.0, adj["상시_합계"] - adj["청년등_합계"]), 2)
+        if adj.get("nr_상시_평균") is not None:
+            adj["nr_상시_평균"] = round(float(adj["nr_상시_평균"]) + suc_reg - ded_reg, 2)
+            adj["nr_청년등_평균"] = round(float(adj.get("nr_청년등_평균") or 0.0) + suc_yth - ded_yth, 2)
+            adj["nr_청년외_평균"] = round(max(0.0, adj["nr_상시_평균"] - adj["nr_청년등_평균"]), 2)
         adj["has_data"] = True
     return adj, suc_reg, ded_reg
 
@@ -471,6 +475,7 @@ def _ctx(s: dict, year: int) -> dict:
         "wht_years": sorted(_uploaded_wht_years(s)),
         "succession_map": _succession_map(s, year),
         "transfer_out_map": _transfer_out_map(s, year),
+        "old_tenure_rule": int(year) < H.NEW_TENURE_RULE_FROM,   # 2025년 이전 연도 표는 종전 규정(근로계약기간 1년 미만)
     }
 
 
@@ -2432,7 +2437,53 @@ def _build_year_rows_uncached(s: dict, year: int) -> tuple[list[dict], dict, dic
         rows.append(row)
     totals = H.year_totals(list(computed.values()), ctx["months_in_year"], year=year)
     totals["has_data"] = len(rows) > 0
+    _apply_tenure_transition(s, year, ctx, people, recs, computed, rows, totals)
     return rows, computed, totals
+
+
+def _apply_tenure_transition(s, year, ctx, people, recs, computed, rows, totals) -> None:
+    """
+    근로기간 1년 미만 경과조치(대통령령 제35999호 부칙 제2조): 2024·2025년 최초공제분과 그 연속공제·사후관리 연도는
+    종전 규정(근로계약기간 1년 미만), 2026년 이후 최초공제분은 개정 규정(실제 근로기간 1년 미만)을 적용합니다.
+    · 2026년 이후 연도 표(개정 규정): 2025·2024분 사후관리 블록(b2·b3)만 종전 규정으로 다시 센 값으로 바꿉니다.
+    · 2025년 표(종전 규정): 2026년 신규공제의 직전연도 비교용으로 개정 규정 인원(nr_)을 따로 계산합니다.
+    """
+    NEW = H.NEW_TENURE_RULE_FROM
+    y = int(year)
+    if y >= NEW and ((y - 1) < NEW or (y - 2) < NEW):
+        ctx_old = dict(ctx, old_tenure_rule=True)
+        alt = {}
+        for pid, c in computed.items():
+            yrec = recs.get(pid) or {}
+            if c["제외사유"] == R.EXCL_UNDER_1Y and "제외사유" not in (yrec.get("_user_set") or []):
+                alt[pid] = H.compute_row(people[pid], yrec, y, ctx_old)
+        if not alt:
+            return
+        t_old = H.year_totals([alt.get(pid, c) for pid, c in computed.items()], ctx["months_in_year"], year=y)
+        for blk, cohort in (("b2", y - 1), ("b3", y - 2)):
+            if cohort >= NEW:
+                continue
+            for k in ("yth", "gen", "reg", "yth_act"):
+                totals[f"{blk}_{k}"] = t_old[f"{blk}_{k}"]
+            for k in ("청년등_합계", "청년외_합계"):
+                totals[f"{blk}_{k}"] = t_old[f"{blk}_{k}"]
+            for r in rows:
+                c_old = alt.get(r["pid"])
+                if c_old:
+                    r[f"{blk}_yth"], r[f"{blk}_gen"], r[f"{blk}_reg"] = c_old[f"{blk}_yth"], c_old[f"{blk}_gen"], c_old[f"{blk}_reg"]
+        totals["old_rule_pm_names"] = sorted(people[pid].get("성명", "") for pid in alt)
+    elif y == NEW - 1 and int(s.get("tax_year") or 0) >= NEW:
+        ctx_new = dict(ctx, old_tenure_rule=False)
+        alt = {}
+        for pid, c in computed.items():
+            yrec = recs.get(pid) or {}
+            if c["상시"] == "O" and "제외사유" not in (yrec.get("_user_set") or []) and H.tenure_under_1y(people[pid], y):
+                alt[pid] = H.compute_row(people[pid], yrec, y, ctx_new)
+        t_new = H.year_totals([alt.get(pid, c) for pid, c in computed.items()], ctx["months_in_year"], year=y) if alt else totals
+        totals["nr_상시_평균"] = t_new["상시_평균"]
+        totals["nr_청년등_평균"] = t_new["청년등_평균"]
+        totals["nr_청년외_평균"] = t_new["청년외_평균"]
+        totals["nr_names"] = sorted(people[pid].get("성명", "") for pid in alt)
 
 
 # ══════════════════════════════════════════════════════════════════

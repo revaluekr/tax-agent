@@ -391,7 +391,16 @@ def youth_options(emp_type: str) -> list[str]:
     return list(R.YOUTH_TYPES)
 
 
-def suggest_exclusion(person: dict, yrec: dict, year: int | None = None) -> str:
+NEW_TENURE_RULE_FROM = 2026   # '근로기간 1년 미만' 제외는 2026년 이후 최초공제분부터 (대통령령 제35999호 부칙 제2조)
+
+
+def suggest_exclusion(person: dict, yrec: dict, year: int | None = None, old_rule: bool = False) -> str:
+    """
+    old_rule=True: 종전 규정(2024·2025년 최초공제분과 그 사후관리) — '근로계약기간 1년 미만'만 제외.
+      원천징수부로는 계약기간을 알 수 없으므로 기간 정함 없는 계약으로 보아 자동 제외하지 않고,
+      1년 미만 기간제는 사용자가 제외사유 '근로계약 1년미만'을 직접 선택해 제외합니다.
+    old_rule=False: 개정 규정 — 실제 근로기간 1년 미만 제외(과세연도 말 기준).
+    """
     emp_type = yrec.get("고용유형") or R.EMP_REGULAR
     if emp_type in R.EMP_AUTO_EXCLUDE:
         return R.EMP_AUTO_EXCLUDE[emp_type]
@@ -401,7 +410,7 @@ def suggest_exclusion(person: dict, yrec: dict, year: int | None = None) -> str:
     # ※ 외국인 표시만으로 자동 제외하지 않음: 상시근로자의 '내국인'은 국적과 무관하게
     #   국내에 주소를 두거나 183일 이상 거소를 둔 개인(통합고용세액공제 상시근로자 명세서 작성방법 10).
     #   비거주자인 경우에만 사용자가 제외사유 '외국인 근로자'를 직접 선택 → 오류 검토에서 확인 안내.
-    if tenure_under_1y(person, year):
+    if not old_rule and tenure_under_1y(person, year):
         return R.EXCL_UNDER_1Y
     return R.EXCL_NONE
 
@@ -472,7 +481,7 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
             person = dict(person, 입사일=succ_date.isoformat(), 계약체결일=succ_date.isoformat())
 
     emp_type = yrec.get("고용유형") or R.EMP_REGULAR
-    sug_excl = suggest_exclusion(person, yrec, year)
+    sug_excl = suggest_exclusion(person, yrec, year, old_rule=bool(ctx.get("old_tenure_rule")))
     excl = _pick(yrec, "제외사유", sug_excl)
     excl_locked = emp_type in R.EMP_AUTO_EXCLUDE
 
@@ -609,7 +618,16 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
             #  · 2024년 이전 최초공제분: 추가납부는 최초연도 청년 간주(구 제5항), 연속공제 판정은 종전 정의의 실제 청년
             def _cohort_flags(cy: int, was):
                 if cy >= NEW_YOUTH_DEF_FROM_COHORT:
-                    return yf1, yf1
+                    claw = yf1
+                    # 2024년 이전 계약자 보호: 계약일 유예(2025년 이후 계약자만)를 못 받고 제5항 간주도 삭제돼
+                    # 보호 공백이 생기므로, 추가납부 계산에서는 최초공제연도에 청년이었으면 계속 청년으로 봄
+                    # (2025.12.31. 개정 부칙 제2조 종전규정 취지에 따른 납세자 보호 해석 — 연속공제 판정에는 적용 안 함)
+                    if not claw and youth not in (R.YOUTH_SENIOR, R.YOUTH_DISABLED, R.YOUTH_CAREER, R.YOUTH_NK):
+                        cdt = contract_date(person)
+                        if cdt is not None and cdt.year <= 2024 and parse_date(person.get("생년월일")):
+                            w = was if was is not None else was_youth_in_year_by_age(person, cy, corp_size)
+                            claw = bool(w)
+                    return claw, yf1
                 claw = is_youth_month_for_cohort(person, year, m, cy, corp_size, youth, was)
                 act = youth_flag_old_def(person, year, m, corp_size, youth)
                 return claw, act
@@ -1431,11 +1449,18 @@ def calculate_tax_year_package(
 
     cur_s = _s(t)
     prev_s = _s(t - 1)
+    # 직전연도가 종전 규정 연도(≤2025)이고 당해가 개정 규정(≥2026)이면, 신규공제 비교는 개정 규정으로 다시 센 인원 사용
+    _pd = summaries.get(t - 1) or {}
+    prev_cmp = prev_s            # 신규공제(1차년도)·추가공제 요건 비교용 직전연도. 사후관리(최초공제연도 인원)는 prev_s(종전 규정) 그대로
+    if t >= NEW_TENURE_RULE_FROM and _pd.get("nr_상시_평균") is not None:
+        _nr_reg = float(_pd["nr_상시_평균"]); _nr_yth = float(_pd.get("nr_청년등_평균") or 0.0)
+        prev_cmp = dict(prev_s, regular=_nr_reg, youth=_nr_yth, non_youth=round(max(0.0, _nr_reg - _nr_yth), 2),
+                      old_rule_regular=float(_pd.get("상시_평균") or 0.0), old_rule_youth=float(_pd.get("청년등_평균") or 0.0))
     prev2_s = _s(t - 2)
     prev3_s = _s(t - 3)
 
     # ── 1) 당해(T) 신규 고용증가분 계산 (신법 A+B+C vs 구법) ──
-    cur_inc = calc_increase_with_cap(cur_s["regular"], cur_s["youth"], prev_s["regular"], prev_s["youth"])
+    cur_inc = calc_increase_with_cap(cur_s["regular"], cur_s["youth"], prev_cmp["regular"], prev_cmp["youth"])
     rates_legacy = get_unit_rates(corp_size, is_capital, scheme="legacy", retention_year=1)
     rates_new_y1 = get_unit_rates(corp_size, is_capital, scheme="new_2026", retention_year=1)
 
@@ -1447,7 +1472,7 @@ def calculate_tax_year_package(
         tax_year=t,
         corp_size=corp_size,
         is_capital=is_capital,
-        summaries_by_year={t: cur_s, t - 1: prev_s, t - 2: prev2_s, t - 3: prev3_s},
+        summaries_by_year={t: cur_s, t - 1: prev_cmp, t - 2: prev2_s, t - 3: prev3_s},
     )
     hurdle_res = abc_res["tiers"]["A"]["hurdle"]
     cur_new_yth_won = abc_res["tiers"]["A"]["item1_youth_won"]
@@ -1568,7 +1593,7 @@ def calculate_tax_year_package(
     maternity_rep_cnt = float(add_in.get("maternity_replacement_count", 0.0) or 0.0)      # 당해 제외 인원(연평균)
     maternity_prev_cnt = float(add_in.get("maternity_prev_count", 0.0) or 0.0)            # 직전 제외 인원(연평균)
 
-    non_decrease_ok = (cur_s["regular"] - maternity_rep_cnt + 1e-9) >= (prev_s["regular"] - maternity_prev_cnt)
+    non_decrease_ok = (cur_s["regular"] - maternity_rep_cnt + 1e-9) >= (prev_cmp["regular"] - maternity_prev_cnt)
     additional_credit_won = (
         int((parental_ret_cnt + reg_conv_cnt) * add_unit_man * 10_000) if non_decrease_ok else 0
     )
@@ -1604,7 +1629,8 @@ def calculate_tax_year_package(
         "base_y1": base_y1,
         "base_y2": base_y2,
         "cur_s": cur_s,
-        "prev_s": prev_s,
+        "prev_s": prev_cmp,
+        "prev_s_pm": prev_s,
         "prev2_s": prev2_s,
         "cur_inc": cur_inc,
         "hurdle_res": hurdle_res,
@@ -1788,10 +1814,12 @@ def review(
                     (
                         "확인",
                         (f"[{y}년 · {nm_disp}] 총 근로기간이 {tenure_days}일({hire_dt} ~ {ret_dt})로 1년 미만인데 상시근로자('O')로 산입되어 있습니다. "
-                         f"2025년 귀속부터는 계약기간과 무관하게 실제 근로기간 1년 미만이면 제외됩니다(조특령 제26조의8 제2항 제1호). 상시(O/X)를 확인하세요.")
-                        if y >= 2025 else
-                        (f"[{y}년 · {nm_disp}] 총 재직기간이 {tenure_days}일({hire_dt} ~ {ret_dt})로 1년 미만이나 현재 상시근로자('O')로 산입되어 있습니다. "
-                         f"{y}년 귀속은 종전 규정(근로계약기간 1년 미만 제외)이 적용되므로, 계약기간 자체가 1년 미만이었다면 제외사유를 변경하세요."),
+                         f"2026년 이후 최초공제분은 계약기간과 무관하게 실제 근로기간 1년 미만이면 제외됩니다(조특령 제26조의8 제2항 제1호). 상시(O/X)를 확인하세요.")
+                        if y >= NEW_TENURE_RULE_FROM else
+                        (f"[{y}년 · {nm_disp}] 실제 근로기간이 {tenure_days}일({hire_dt} ~ {ret_dt})로 1년 미만이지만, {y}년 표는 종전 규정"
+                         f"(근로계약기간 1년 미만만 제외, 대통령령 제35999호 부칙 제2조)이라 기간 정함 없는 계약으로 보아 포함했습니다. "
+                         f"근로계약기간 자체가 1년 미만인 기간제였다면 제외사유를 '근로계약 1년미만'으로 바꾸세요."
+                         + (f" 2026년 신규공제의 직전연도 비교에서는 개정 규정에 따라 제외됩니다." if y == NEW_TENURE_RULE_FROM - 1 else "")),
                     )
                 )
 
