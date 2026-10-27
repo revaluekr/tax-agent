@@ -48,7 +48,7 @@ def get_live_gemini_key_pool() -> list[tuple[str, str]]:
     """
     pool = []
     seen = set()
-    for env_name, lbl in [("GEMINI_PAID_KEY", "💳 유료키"), ("GEMINI_API_KEY", "💳 유료키(예비)")]:
+    for env_name, lbl in [("GEMINI_PAID_KEY", "💳 유료키"), ("GEMINI_API_KEY", "💳 유료키(예비)"), ("GOOGLE_API_KEY", "💳 유료키(GOOGLE)")]:
         k = _get_secret_or_env(env_name)
         if k and k not in seen:
             pool.append((lbl if pool or env_name == "GEMINI_PAID_KEY" else "💳 유료키", k))
