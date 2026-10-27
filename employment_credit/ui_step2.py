@@ -54,6 +54,7 @@ from .ui_common import (  # noqa: F401
     _default_workplace_label,
     _ensure_built_for_tax_year,
     _ensure_korean_pdf_font,
+    _ensure_totals_snapshot,
     _has_year_data,
     _save_ec_to_disk,
     _trigger_scroll_to_top,
@@ -211,7 +212,7 @@ def _build_schedule_pdf_bytes(s: dict, target_years: list[int], include_summary:
                 str(r["퇴사일"]).replace("-", "."),
                 str(r["취업연령"]),
                 str(r["고용유형"]).replace("근로자", "").replace("시간 이상", "h↑").replace("시간 미만", "h↓"),
-                str(r["제외사유"])[:11],
+                ("실제근로 1년미만" if (y >= 2026 and str(r["제외사유"]) == R.EXCL_UNDER_1Y) else str(r["제외사유"]))[:11],
                 str(r["청년등"])[:11],
                 str(r["상시"]),
                 *m_cells,
@@ -302,17 +303,19 @@ def _build_schedule_pdf_bytes(s: dict, target_years: list[int], include_summary:
 
     if include_summary and tax_yr in totals_by_yr and (tax_yr - 1) in totals_by_yr:
         story.append(Spacer(1, 10))
-        cur_t = totals_by_yr[tax_yr]
-        adj_prv, _, _ = _adjusted_prev_totals(s, totals_by_yr[tax_yr - 1])
-        eff_prv_reg = round(adj_prv["상시_평균"], 2)
-        eff_prv_yth = round(adj_prv["청년등_평균"], 2)
+        snap_all = _ensure_totals_snapshot(s)
+        cur_t = snap_all.get(tax_yr) or totals_by_yr[tax_yr]
+        prv_snap = snap_all.get(tax_yr - 1) or totals_by_yr[tax_yr - 1]
+        eff_prv_reg = round(float(prv_snap.get("상시_평균", prv_snap.get("b1_reg", 0.0)) or 0.0), 2)
+        eff_prv_yth = round(float(prv_snap.get("청년등_평균", prv_snap.get("b1_yth", 0.0)) or 0.0), 2)
         eff_prv_gen = round(max(0.0, eff_prv_reg - eff_prv_yth), 2)
         inc = H.calc_increase_with_cap(
             cur_t["상시_평균"], cur_t["청년등_평균"], cur_t["청년외_평균"], eff_prv_reg, eff_prv_yth, eff_prv_gen
         )
+        prv_basis_note = f" (직전연도 신법 비교인원 {eff_prv_reg:.2f}명 기준)" if tax_yr >= 2026 else ""
         story.append(
             Paragraph(
-                f"■ [{tax_yr}년 vs {tax_yr-1}년 신규공제 고용증가 요약]  "
+                f"■ [{tax_yr}년 vs {tax_yr-1}년 신규공제 고용증가 요약{prv_basis_note}]  "
                 f"전체 상시 증가: +{inc['전체_증가']:.2f}명  |  "
                 f"청년등 인정 증가: +{inc['청년등_증가']:.2f}명  |  "
                 f"청년등 외 인정 증가: +{inc['청년등외_증가']:.2f}명",
@@ -564,7 +567,7 @@ def _grid_options(
             "editable": JS_LOCKED,
             "cellStyle": JS_STYLE_EXCL,
             "cellEditor": "agSelectCellEditor",
-            "cellEditorParams": {"values": R.EXCL_REASONS},
+            "cellEditorParams": {"values": [("실제근로 1년미만" if (year >= 2026 and x == R.EXCL_UNDER_1Y) else x) for x in R.EXCL_REASONS]},
         },
         {
             "field": "병역개월",
@@ -803,7 +806,10 @@ def _apply_changes(s: dict, year: int, sent: list[dict], back: pd.DataFrame) -> 
             changed = True
 
         nv = _norm(nr.get("제외사유"))
-        if nv and nv != _norm(old.get("제외사유")):
+        if nv == "실제근로 1년미만":
+            nv = R.EXCL_UNDER_1Y
+        old_excl = R.EXCL_UNDER_1Y if _norm(old.get("제외사유")) == "실제근로 1년미만" else _norm(old.get("제외사유"))
+        if nv and nv != old_excl:
             yrec["제외사유"] = nv
             yrec["_user_set"] = [x for x in us if x != "청년등"] + (["제외사유"] if "제외사유" not in us else [])
             us = yrec["_user_set"]
@@ -906,6 +912,9 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
         st.info(f"{year}년에 근무한 근로자가 없습니다. {year}년 원천징수부를 올렸는지 확인하거나 아래 [➕ 사원 추가]로 입력하세요.")
         return computed, totals
 
+    for _r in rows:
+        if year >= 2026 and _r.get("제외사유") == R.EXCL_UNDER_1Y:
+            _r["제외사유"] = "실제근로 1년미만"
     df = pd.DataFrame(rows)
     for _mc in MONTH_COLS:
         if _mc in df.columns:
@@ -1197,10 +1206,12 @@ def _page_employees(room_key: str, log_tokens_fn=None):
     _render_prev_filing_summary_card(s, shown_years)
 
     if tax_yr in totals_all and (tax_yr - 1) in totals_all:
-        cur_t = totals_all[tax_yr]
-        adj_prv, suc_reg, ded_reg = _adjusted_prev_totals(s, totals_all[tax_yr - 1])
-        eff_prv_reg = round(adj_prv["상시_평균"], 2)
-        eff_prv_yth = round(adj_prv["청년등_평균"], 2)
+        snap_all = _ensure_totals_snapshot(s)
+        cur_t = snap_all.get(tax_yr) or totals_all[tax_yr]
+        _, suc_reg, ded_reg = _adjusted_prev_totals(s, totals_all[tax_yr - 1])
+        prv_snap = snap_all.get(tax_yr - 1) or totals_all[tax_yr - 1]
+        eff_prv_reg = round(float(prv_snap.get("상시_평균", prv_snap.get("b1_reg", 0.0)) or 0.0), 2)
+        eff_prv_yth = round(float(prv_snap.get("청년등_평균", prv_snap.get("b1_yth", 0.0)) or 0.0), 2)
         eff_prv_gen = round(max(0.0, eff_prv_reg - eff_prv_yth), 2)
         inc = H.calc_increase_with_cap(
             cur_t["상시_평균"],

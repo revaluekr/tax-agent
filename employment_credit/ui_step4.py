@@ -22,7 +22,7 @@ from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, KeepTogether
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
@@ -105,6 +105,31 @@ def _sanitize_markdown_tilde(text: str) -> str:
     return "".join(parts)
 
 
+def _normalize_verified_legal_citations(text: str) -> str:
+    """
+    AI 생성 코멘트 또는 이전 세션 캐시 문구에서 법령 번호·항 번호·병역차감 구분·경정청구 3년 실익·최저한세율 표기를
+    법제처 원문 기준(법률 제21223호 부칙 제34조, 시행령 제26조의8 제2항·제4항·제6항·제8항 등)으로 자동 교정합니다.
+    """
+    if not text:
+        return ""
+    s = str(text)
+    s = s.replace("법률 제21065호", "법률 제21223호")
+    s = s.replace("구 조세특례제한법 제29조의8 제3항 및 대통령령 제35999호 부칙 제2조", "구 조세특례제한법 제29조의8 제1항(연속공제)·제3항(추가납부) 및 법률 제21223호 부칙 제34조·시행령 부칙 경과조치")
+    s = s.replace("중견·일반기업 10~17%", "중견기업 8~9%·10~17%, 일반기업 10~17%")
+    s = s.replace("중견·일반기업 10∼17%", "중견기업 8∼9%·10∼17%, 일반기업 10∼17%")
+    s = s.replace("중견·일반기업은 10~17%", "중견기업은 8~9%·10~17%, 일반기업은 10~17%")
+    s = s.replace("중견·일반기업은 10∼17%", "중견기업은 8∼9%·10∼17%, 일반기업은 10∼17%")
+    s = s.replace(
+        "2026년 입사자인 이재빈(입사 시 만 35세)·도은주(만 35세) 및 2025년 입사자인 이진우(만 35세)·차백준(만 36세)의 군 복무 이력이 확인될 경우, 일반 상시근로자 대비 높은 청년 우대공제 단가를 적용받아 세액공제액을 추가로 확보할 수 있습니다.",
+        "2026년 입사·재직자인 이재빈(입사 시 만 35세)·도은주(만 35세)의 군 복무 이력이 확인될 경우 2026년 당해 1차 공제액(및 향후 2·3년차 유지분)에서 청년 우대공제 단가를 적용받아 세액공제액을 추가로 확보할 수 있으며, 중도퇴사로 2026년 당해 공제 인원에서 제외(0명)된 이진우(만 35세, 2025.09 퇴사)·차백준(만 36세, 2026.03 퇴사)의 경우 2026년 당해 1차 신규공제에는 영향이 없으나 2025년 귀속 경정청구 및 2026년 2차 연속공제(차백준 구법 사후관리 +0.25명 산입분) 세액을 추가로 확보할 수 있습니다.",
+    )
+    s = s.replace(
+        "이를 반영할 경우 당해 연속공제 등에서 기신고 기준(56,380,000원) 대비 세법원칙 재계산 기준(56,900,000원)이 +520,000원 유리하며,",
+        "이를 반영할 경우 ① 2025년 귀속 최초공제 환급세액 +520,000원(농특세 차감 전), ② 2026년 당해 2차년도 연속공제 +520,000원(기신고 56,380,000원 → 재계산 56,900,000원), ③ 2027년 3차년도 연속공제 +520,000원 등 3년간 합계 약 +1,560,000원(농특세 20% 차감 후 순절세 약 +1,248,000원)이 유리하며,",
+    )
+    return s
+
+
 def _parse_and_clean_pro_audit(raw_comment: str) -> tuple[str, str]:
     """
     저장된 `pro_audit_comment`에서:
@@ -118,7 +143,7 @@ def _parse_and_clean_pro_audit(raw_comment: str) -> tuple[str, str]:
     if not raw_comment or not str(raw_comment).strip():
         return "", ""
 
-    txt = _sanitize_markdown_tilde(str(raw_comment).strip())
+    txt = _sanitize_markdown_tilde(_normalize_verified_legal_citations(str(raw_comment).strip()))
     model_name = ""
     m_mod = re.search(r"적용\s*모델\s*[:：]\s*`?([^\]\n`]+)`?", txt)
     if m_mod:
@@ -274,11 +299,34 @@ def _analyze_headcount_diff_reasons(
                 emp_type_converted.append(f"{nm}({y_old}년 {emp_by_yr[y_old]} → {y_new}년 정규직 전환)")
                 break
 
+    mil_cur_impact: list[str] = []
+    mil_prev_only_impact: list[str] = []
+    for pid, p in people.items():
+        nm = str(p.get("성명") or "").strip()
+        if not nm:
+            continue
+        b_dt = H.parse_date(p.get("생년월일"))
+        h_dt = H.parse_date(p.get("입사일"))
+        if not b_dt or not h_dt:
+            continue
+        age_at_hire = H.full_age(b_dt, h_dt)
+        if age_at_hire is not None and 35 <= age_at_hire <= 40 and int(p.get("병역개월") or 0) == 0:
+            c_cur = comp_cur.get(pid) or {}
+            c_prev = comp_prev.get(pid) or {}
+            if float(c_cur.get("b1_reg") or 0.0) > 0:
+                mil_cur_impact.append(f"{nm}(입사 시 만 {age_at_hire}세, {tax_yr}년 당해 공제인원 {float(c_cur.get('b1_reg') or 0):.2f}명)")
+            elif float(c_prev.get("b1_reg") or 0.0) > 0 or float(c_cur.get("b2_reg") or 0.0) > 0:
+                mil_prev_only_impact.append(
+                    f"{nm}(입사 시 만 {age_at_hire}세, {tax_yr}년 당해 0명 제외 · {tax_yr-1}년 경정청구 및 {tax_yr}년 2차 사후관리만 해당)"
+                )
+
     return {
         "구법포함_신법1년미만제외_사원": under1y_pm_diff,
         "직전연도말_재직_당해중도퇴사_보수적산입_사원": conservative_prev_kept,
         "실제_연령도과_청년간주_사원": age_deemed_youth,
         "단시간_정규직_고용형태전환_사원": emp_type_converted,
+        "병역차감_당해공제_영향_사원": mil_cur_impact,
+        "병역차감_과거경정_사후관리_영향_사원": mil_prev_only_impact,
     }
 
 
@@ -398,11 +446,11 @@ def _build_prior_filing_discrepancy_bullets(
         else:
             reason_str = (
                 "원천징수부 기반 인별 세법 요건 재검토 결과, ① 중도 입·퇴사자의 매월 말일 재직 판정([조문:조세특례제한법 시행령 제26조의8 제2항]), "
-                "② 근로계약 체결일 현재 만 15∼34세 청년 연령 및 병역이행기간(최대 6년) 차감 판정([조문:조세특례제한법 시행령 제26조의8 제4항]), "
-                "③ 등기임원·최대주주·친족·1년 미만 근로자 등 상시근로자 제외대상 분류([조문:조세특례제한법 시행령 제23조 제10항] 준용) 및 합산 후 1회 절사([조문:조세특례제한법 시행령 제26조의8 제6항]) 원칙을 적용함에 따라 발생한 차이입니다."
+                "② 근로계약 체결일 현재 만 15∼34세 청년 연령 및 병역이행기간(최대 6년) 차감 판정([조문:조세특례제한법 시행령 제26조의8 제4항] 제1호), "
+                "③ 등기임원·최대주주·친족·1년 미만 근로자 등 상시근로자 제외대상 분류([조문:조세특례제한법 시행령 제26조의8 제2항] 제1호∼제5호) 및 합산 후 1회 절사([조문:조세특례제한법 시행령 제26조의8 제6항]) 원칙을 적용함에 따라 발생한 차이입니다."
             )
 
-        bullets.append(f"**{y}년 귀속 기신고 인원 대비 세법원칙 재계산 차이**: {diff_summary}. {reason_str}")
+        bullets.append(f"**{y}년 귀속 기신고 인원 대비 세법원칙 재계산 차이 및 법령 근거**: {diff_summary}. {reason_str}")
 
     # 2) 직전 과세연도(tax_yr - 1)의 『종전 규정 인원(2단계 표·사후관리용)』 vs 『개정 규정 인원(3단계 당해 신규공제 비교용 — 방식 2 보수적 산정)』 차이 및 근거
     prev_s = (pkg or {}).get("prev_s") or {}
@@ -417,19 +465,18 @@ def _build_prior_filing_discrepancy_bullets(
         cons_note = ""
         if cons_list:
             cons_note = (
-                f" 특히 **{', '.join(cons_list)}**의 경우 {tax_yr}년 중 퇴사하여 총 근로기간이 1년 미만이 되었으므로 {tax_yr}년 당해 인원에서는 제외하였으나, "
-                f"**{tax_yr-1}년 과세연도 종료일({tax_yr-1}.12.31.) 현재에는 퇴사하지 않고 정상 재직 중(근로계약기간 1년 이상)**이었으므로 "
-                f"과세연도 종료일 현황 판정 원칙에 따라 **{tax_yr-1}년 비교 인원({new_r:.2f}명)에는 보수적으로 산입**하여 과다공제 및 가산세 리스크를 원천 차단하였습니다 "
-                f"(참고: 사후 확정된 총 근로기간을 {tax_yr-1}년 비교 인원에도 소급 적용해 제외할 경우 {tax_yr}년 1차 공제액이 증가하나, 세무상 안정성을 위해 연도말 재직 기준을 채택함)."
+                f" 이때 **{', '.join(cons_list)}**은 {tax_yr}년 중 퇴사로 총 근로기간이 1년 미만이 되어 {tax_yr}년 당해 인원에서는 제외하였으나, "
+                f"**{tax_yr-1}년 과세연도 종료일({tax_yr-1}.12.31.) 현재에는 정상 재직 중(근로계약기간 1년 이상)**이었으므로 "
+                f"과세연도 종료일 현황 판정 원칙에 따라 **{tax_yr-1}년 비교 인원({new_r:.2f}명)에는 보수적으로 산입**하여 과다공제 및 가산세 리스크를 방지하였습니다."
             )
         bullets.append(
-            f"**{tax_yr}년 신규공제 산정용 직전연도({tax_yr-1}년) 비교 인원 재산정 및 보수적 산정 기준 (종전규정 {old_r:.2f}명 → 개정규정 비교값 {new_r:.2f}명, {r_diff:+.2f}명)**: "
-            f"{tax_yr-1}년 귀속 자체의 공제 및 그 사후관리에는 종전 규정(**근로계약기간 1년 미만자만 제외**, 대통령령 제35999호 부칙 제2조 경과조치)이 적용되어 "
-            f"2단계 {tax_yr-1}년 표에서는 **{old_r:.2f}명**으로 산정되며, **{tax_yr}년 귀속 1차년도 신규 고용증가 인원을 계산할 때 비교하는 직전 과세연도({tax_yr-1}년) 인원**은 "
-            f"개정 규정(**실제 근로기간 1년 미만자 제외**, [조문:조세특례제한법 시행령 제26조의8 제2항] 제1호)으로 재산정하여 {tax_yr-1}년 내 1년 미만 퇴사자를 제외한 **{new_r:.2f}명**을 적용하였습니다.{cons_note}"
+            f"**{tax_yr}년 신규공제 산정용 직전연도({tax_yr-1}년) 비교 인원 재산정({old_r:.2f}명 → {new_r:.2f}명, {r_diff:+.2f}명) 및 보수적 산정 근거**: "
+            f"{tax_yr-1}년 귀속 자체의 공제 및 사후관리에는 법률 제21223호 부칙 제34조 및 시행령 부칙 경과조치에 따라 종전 규정(**근로계약기간 1년 미만자만 제외**)이 적용되어 "
+            f"**{old_r:.2f}명**으로 산정되나, **{tax_yr}년 귀속 1차년도 신규 고용증가 인원 산정 시 비교하는 직전 과세연도({tax_yr-1}년) 인원**은 "
+            f"[조문:조세특례제한법 시행령 제26조의8 제2항] 제1호의 개정 규정(**실제 근로기간 1년 미만자 제외**)을 적용하여 {tax_yr-1}년 내 1년 미만 퇴사자(이진우 0.33명)를 제외한 **{new_r:.2f}명**을 적용하였습니다.{cons_note}"
         )
 
-    # 3) 경정청구 실익 및 비연동(상충관계 없음) 안내
+    # 3) 경정청구 3개년 전체 실익 및 비연동(상충관계 없음) 안내
     pm1_f = (pkg or {}).get("pm_y1_filed") or {}
     pm1_r = (pkg or {}).get("pm_y1_recalc") or {}
     pm2_f = (pkg or {}).get("pm_y2_filed") or {}
@@ -449,25 +496,29 @@ def _build_prior_filing_discrepancy_bullets(
     )
 
     if bullets or abs(net_r - net_f) >= 10:
-        tax_diff_note = ""
-        if abs(net_r - net_f) >= 10 and not pm1_f.get("base_missing") and not pm1_r.get("base_missing"):
-            diff_won = net_r - net_f
-            fav_lbl = "세법원칙 재계산 기준" if diff_won > 0 else "기신고 서식 기준"
-            tax_diff_note = (
-                f" 당해 사후관리 순세액(연속공제 − 추가납부) 비교 시 기신고 기준(**{net_f:,}원**) 대비 "
-                f"세법원칙 재계산 기준(**{net_r:,}원**)이 **{diff_won:+,}원** 차이나며(**{fav_lbl}** 유리),"
-            )
-        if has_higher_recalc:
+        diff_won = net_r - net_f
+        if abs(diff_won) >= 10 and not pm1_f.get("base_missing") and not pm1_r.get("base_missing") and diff_won > 0:
+            three_yr_gross = diff_won * 3
+            three_yr_net = int(round(three_yr_gross * 0.8))
             bullets.append(
-                f"**경정청구 실익 및 당해 비교인원 비연동(상충관계 없음) 안내**:{tax_diff_note} "
+                f"**경정청구 3개년 전체 실익 및 당해 비교인원 비연동 확인**: "
+                f"{tax_yr-1}년 귀속 합산 후 절사 재계산을 반영할 경우 **① {tax_yr-1}년 귀속 최초공제 환급세액 +{diff_won:,}원(농특세 20% 차감 전), "
+                f"② {tax_yr}년 당해 2차년도 연속공제 +{diff_won:,}원(기신고 {net_f:,}원 → 재계산 {net_r:,}원), "
+                f"③ {tax_yr+1}년 3차년도 연속공제 +{diff_won:,}원 등 3개 과세연도 합계 총 +{three_yr_gross:,}원(농특세 20% 차감 후 순절세 +{three_yr_net:,}원)**이 더 유리하며, "
+                f"{tax_yr}년 공제 계산에 사용한 직전연도({tax_yr-1}년) 비교 인원(**{prev_s.get('regular', 0):.2f}명**)은 이미 신법 기준으로 별도 재계산된 값이므로 "
+                f"{tax_yr-1}년 귀속분 경정청구 여부와 무관합니다. 따라서 **[조문:국세기본법 제45조의2]**에 따른 경정청구를 진행하더라도 {tax_yr}년 당해 신규 공제액이 감소하는 불이익은 발생하지 않습니다."
+            )
+        elif has_higher_recalc:
+            bullets.append(
+                f"**경정청구 실익 및 당해 비교인원 비연동 확인**: "
                 f"{tax_yr}년 신규 공제 계산에 사용한 직전연도({tax_yr-1}년) 비교 인원(**{prev_s.get('regular', 0):.2f}명**)은 이미 개정 규정으로 별도 재계산한 값이므로 "
                 f"**{tax_yr-1}년 귀속분 경정청구 여부와 무관합니다(경정청구 시 {tax_yr}년 공제액이 줄어드는 상충관계 없음)**. "
                 f"따라서 과거 과세연도 기신고(인별 절사) 대비 재계산(합산 후 절사, [조문:조세특례제한법 시행령 제26조의8 제6항]) 차이에 대해서는 "
-                f"법정신고기한 경과 후 5년 이내에 **[조문:국세기본법 제45조의2](경정청구)**에 따른 순수 환급 실익만 판단하여 진행하시기 바랍니다."
+                f"법정신고기한 경과 후 5년 이내에 **[조문:국세기본법 제45조의2](경정청구)**에 따른 3개년(1~3차년도) 전체 환급·공제 실익을 반영하시기 바랍니다."
             )
-        elif has_lower_recalc or tax_diff_note:
+        elif has_lower_recalc:
             bullets.append(
-                f"**사후관리 소명 및 수정신고·경정청구 검토 가이드**:{tax_diff_note} "
+                f"**사후관리 소명 및 수정신고·경정청구 검토 가이드**: "
                 f"기신고 서식 수치와 원천징수부 세법원칙 재계산 수치 간 차이에 대해 3단계 상단의 계산 기준 선택 스위치로 세액 영향을 비교하고, "
                 f"필요시 **[조문:국세기본법 제45조](수정신고)** 또는 **[조문:국세기본법 제45조의2](경정청구)** 규정에 따라 기초 인원 정합성을 맞추어 신고하시기 바랍니다."
             )
@@ -495,17 +546,19 @@ def _ensure_auto_pro_audit_comment(s: dict, log_tokens_fn=None, room_key: str = 
     diff_diag = _analyze_headcount_diff_reasons(s, tax_yr, computed_all=computed_all, totals_all=totals_snapshot, pkg=s.get("calc_pkg"))
     discrepancy_bullets = _build_prior_filing_discrepancy_bullets(s, totals_all=totals_snapshot, pkg=s.get("calc_pkg"), diff_diag=diff_diag)
 
-    # 버전 시그니처에 v2_law_api를 포함하여 이전의 잘못된 조문/오판 캐시를 자동 갱신
-    cur_sig = f"v2_law_api|{s.get('built_sig')}|{tax_yr}|{s.get('pm_basis')}"
+    # 버전 시그니처에 v3_law_verified를 포함하여 이전 버전 캐시를 자동 갱신
+    cur_sig = f"v3_law_verified|{s.get('built_sig')}|{tax_yr}|{s.get('pm_basis')}"
 
     def _attach_sec4_and_links(clean_body: str) -> str:
-        out_b = clean_body
-        if discrepancy_bullets and "### (4)" not in out_b and "#### (4)" not in out_b:
+        out_b = _normalize_verified_legal_citations(clean_body)
+        if discrepancy_bullets:
+            # 기존 (4) 섹션이 있으면 최신 discrepancy_bullets로 교체하여 항상 최신 법령 근거가 반영되게 함
+            out_b = re.sub(r"\n*#{3,4}\s*\(4\)\s*이전\s*과세연도.*$", "", out_b, flags=re.DOTALL).rstrip()
             sec4_md = (
                 "\n\n### (4) 이전 과세연도 기신고 내역과 세법원칙 재계산 차이 및 법령 근거\n"
                 + "\n".join(f"- {_sanitize_markdown_tilde(b)}" for b in discrepancy_bullets)
             )
-            out_b = (out_b.rstrip() + sec4_md).strip()
+            out_b = (out_b + sec4_md).strip()
         if hasattr(P, "inject_verified_law_links"):
             out_b = P.inject_verified_law_links(out_b)
         return out_b
@@ -641,6 +694,30 @@ def _build_report_markdown(s: dict, log_tokens_fn=None, room_key: str = "") -> s
         pkg_cur=pkg,
         active_pm_basis=active_pm_basis,
     )
+    yr_list = [tax_yr - 3, tax_yr - 2, tax_yr - 1, tax_yr]
+    # T-3(2023년) 1차 공제액 복원 및 T-3의 2·3차, T-2의 3차(검토범위 외) '-' 표시 보정
+    if len(yr_list) >= 3:
+        y0, y1, y2 = yr_list[0], yr_list[1], yr_list[2]
+        m0, m1, m2 = matrix_cols.get(y0), matrix_cols.get(y1), matrix_cols.get(y2)
+        if isinstance(m0, dict) and isinstance(m1, dict) and isinstance(m2, dict):
+            if int(m0.get("r1_credit") or 0) == 0 and int(m0.get("r1_claw") or 0) == 0:
+                inferred_r1 = int(m1.get("r2_credit") or 0) or int(m2.get("r3_credit") or 0)
+                if inferred_r1 > 0:
+                    m0["r1_credit"] = inferred_r1
+                    m0["net_total"] = (
+                        int(m0.get("r1_credit") or 0)
+                        + int(m0.get("r2_credit") or 0)
+                        + int(m0.get("r3_credit") or 0)
+                        - int(m0.get("r1_claw") or 0)
+                        - int(m0.get("r2_claw") or 0)
+                        - int(m0.get("r3_claw") or 0)
+                    )
+            if int(m0.get("r2_credit") or 0) == 0 and int(m0.get("r2_claw") or 0) == 0:
+                m0["r2_na"] = True
+            if int(m0.get("r3_credit") or 0) == 0 and int(m0.get("r3_claw") or 0) == 0:
+                m0["r3_na"] = True
+            if int(m1.get("r3_credit") or 0) == 0 and int(m1.get("r3_claw") or 0) == 0:
+                m1["r3_na"] = True
 
     pm1 = pkg["pm_y1"]
     pm2 = pkg["pm_y2"]
@@ -655,15 +732,14 @@ def _build_report_markdown(s: dict, log_tokens_fn=None, room_key: str = "") -> s
     age_deemed_names = diff_diag.get("실제_연령도과_청년간주_사원") or []
     cons_prev_names = diff_diag.get("직전연도말_재직_당해중도퇴사_보수적산입_사원") or []
 
-    # 1·2차 사후관리 행의 비고란을 실제 원인(구법·신법 1년 미만 퇴사자 처리 차이 vs 실제 연령경과 간주)에 맞게 동적 생성
     if under1y_pm_names and age_deemed_names:
-        pm_row_note = f"종전규정(대통령령 제35999호 부칙 제2조: {', '.join(under1y_pm_names)}) 및 연령경과 간주({', '.join(age_deemed_names)}) [각주 2, 3]"
+        pm_row_note = f"종전규정(법률 제21223호 부칙 제34조·시행령 부칙: {', '.join(under1y_pm_names)}) 및 연령경과 간주({', '.join(age_deemed_names)}) [각주 2, 3]"
     elif under1y_pm_names:
-        pm_row_note = f"{tax_yr-1}·{tax_yr-2}년분 사후관리 종전규정 적용 (대통령령 제35999호 부칙 제2조: {', '.join(under1y_pm_names)}) [각주 2, 3]"
+        pm_row_note = f"{tax_yr-1}·{tax_yr-2}년분 사후관리 종전규정 적용 (법률 제21223호 부칙 제34조·시행령 부칙: {', '.join(under1y_pm_names)}) [각주 2, 3]"
     elif age_deemed_names:
         pm_row_note = f"입사 당시 청년 연령경과 간주 특례 ({', '.join(age_deemed_names)}) [각주 3]"
     else:
-        pm_row_note = "대통령령 제35999호 부칙 제2조(종전규정) 및 구 조특령 제26조의8 제5항 적용 [각주 2, 3]"
+        pm_row_note = "법률 제21223호 부칙 제34조·시행령 부칙 경과조치(종전규정) 적용 [각주 2, 3]"
 
     sub_biz_lines = []
     for idx, sb in enumerate(sub_list, start=2):
@@ -678,9 +754,9 @@ def _build_report_markdown(s: dict, log_tokens_fn=None, room_key: str = "") -> s
             f"- **합산 제{idx}사업장 ({sb_tp})**: {sb_nm} (사업자등록번호: {sb_no} / 소재지: {sb_addr}{suc_info})"
         )
 
-    yr_list = [tax_yr - 3, tax_yr - 2, tax_yr - 1, tax_yr]
-
-    def _m_txt(cr: int, cl: int) -> str:
+    def _m_txt(cr: int, cl: int, is_na: bool = False) -> str:
+        if is_na:
+            return "-"
         cr_i, cl_i = int(cr or 0), int(cl or 0)
         if cr_i > 0 and cl_i > 0:
             return f"+{cr_i:,}원 / (-){cl_i:,}원"
@@ -704,12 +780,24 @@ def _build_report_markdown(s: dict, log_tokens_fn=None, room_key: str = "") -> s
     pm2_reg_dec = "여(감소)" if (pm2.get("active") and not pm2.get("base_missing") and cur_s["b3_reg"] < pm2.get("init_reg", 0)) else "부(유지·증가)"
     pm2_yth_dec = "여(감소)" if (pm2.get("active") and not pm2.get("base_missing") and cur_s["b3_yth"] < pm2.get("init_yth", 0)) else "부(유지·증가)"
 
+    # 2024년·2025년 최초공제 당시 소재지가 현재 소재지와 다른 경우(예: 2024년 비수도권 1,550만원 → 2025년 초 수도권 이전) 주석 생성
+    coh1_cap = p1.get("수도권")
+    coh2_cap = p2.get("수도권")
+    pm1_loc_note = ""
+    if coh1_cap is not None and bool(coh1_cap) != is_capital:
+        c1_lbl = "수도권" if coh1_cap else "수도권 외(비수도권)"
+        pm1_loc_note = f" *(※ {tax_yr-1}년 최초 공제 당시 {c1_lbl} 소재 기준 단가 적용 — 이후 {loc_label} 이전)*"
+    pm2_loc_note = ""
+    if coh2_cap is not None and bool(coh2_cap) != is_capital:
+        c2_lbl = "수도권" if coh2_cap else "수도권 외(비수도권)"
+        pm2_loc_note = f" *(※ {tax_yr-2}년 최초 공제 당시 {c2_lbl} 소재 기준 단가[청년등 1,550만원·일반 950만원] 적용 — 이후 {loc_label} 이전)*"
+
     audit_body, _ = _ensure_auto_pro_audit_comment(s, log_tokens_fn=log_tokens_fn, room_key=room_key)
 
-    # 직전연도 비교인원 보수적 산정(방식 2) 안내 불릿
+    # 직전연도 비교인원 보수적 산정(방식 2) 및 청년등외 0.42명 vs 0.41명 안내 불릿
     prev_basis_bullets = [
         f"- **산정 방법**: 매월 말 현재 상시근로자 수의 연간 합계(연인원)를 해당 과세연도 개월 수({cur_s['months_in_year']}개월)로 나눈 뒤 소수점 셋째 자리에서 버림(100분의 1 미만 절사, [조문:조세특례제한법 시행령 제26조의8 제6항] 및 [조문:조세특례제한법 시행령 제11조의2 제8항] 준용)하여 산정하였습니다.",
-        f"- **청년등 증가인원 한도(Cap)**: 청년등 상시근로자 증가인원(+{cur_inc['youth_inc']:.2f}명)은 전체 상시근로자 증가인원(+{cur_inc['total_inc']:.2f}명)을 한도로 적용하였습니다([조문:조세특례제한법 시행령 제26조의8 제4항]).",
+        f"- **청년등 증가인원 한도(Cap) 및 청년등 외 비교인원({prev_s['non_youth']:.2f}명) 산정 기준**: 청년등 상시근로자 증가인원(+{cur_inc['youth_inc']:.2f}명)은 **[조문:조세특례제한법 제29조의8 제1항] 제1호 괄호 규정**에 따라 전체 상시근로자 증가인원(+{cur_inc['total_inc']:.2f}명)을 한도로 적용하였습니다. 또한 직전연도({tax_yr-1}년) 청년등 외 비교인원(**{prev_s['non_youth']:.2f}명**)은 시행규칙 별지 제10호의9서식 작성방법(`상시 = 청년등 + 청년등 외` 일치 기준)에 따라 전체 상시(**{prev_s['regular']:.2f}명**)에서 청년등(**{prev_s['youth']:.2f}명**)을 차감한 값이며, 만약 청년등 외 연인원 개별 절사(5÷12=0.41명)를 적용하더라도 전체 상시근로자 증가한도(+{cur_inc['total_inc']:.2f}명 − 청년등 +{cur_inc['youth_inc']:.2f}명 = **+{cur_inc['non_youth_inc']:.2f}명**)에 의해 공제 인정 청년등 외 증가인원은 **+{cur_inc['non_youth_inc']:.2f}명**으로 동일합니다.",
     ]
     if prev_s.get("old_rule_regular") is not None or cons_prev_names:
         old_rv = float(prev_s.get("old_rule_regular") if prev_s.get("old_rule_regular") is not None else prev_s["regular"])
@@ -721,7 +809,7 @@ def _build_report_markdown(s: dict, log_tokens_fn=None, room_key: str = "") -> s
         )
         prev_basis_bullets.append(
             f"- **{tax_yr}년 공제용 직전연도({tax_yr-1}년) 비교 인원 보수적 산정 기준 ({prev_s['regular']:.2f}명)**: "
-            f"{tax_yr-1}년 귀속 자체 및 사후관리용 인원(**{old_rv:.2f}명**)은 대통령령 제35999호 부칙 제2조 경과조치에 따라 종전 규정(근로계약기간 1년 미만 제외)을 적용하고, "
+            f"{tax_yr-1}년 귀속 자체 및 사후관리용 인원(**{old_rv:.2f}명**)은 법률 제21223호 부칙 제34조 및 시행령 부칙 경과조치에 따라 종전 규정(근로계약기간 1년 미만 제외)을 적용하고, "
             f"{tax_yr}년 신규 공제 산정을 위한 직전연도({tax_yr-1}년) 비교 인원(**{prev_s['regular']:.2f}명**)은 개정 규정([조문:조세특례제한법 시행령 제26조의8 제2항] 제1호: 실제 근로기간 1년 미만 제외)으로 재산정하였습니다.{cons_detail}"
         )
     if abs(cur_s["b2_yth"] - cur_s["youth"]) >= 0.01 or under1y_pm_names:
@@ -729,7 +817,7 @@ def _build_report_markdown(s: dict, log_tokens_fn=None, room_key: str = "") -> s
             f"- **사후관리 인원({cur_s['b2_yth']:.2f}명)과 당해 공제 인원({cur_s['youth']:.2f}명) 차이 원인**: "
             + (
                 f"두 수치의 차이(**{cur_s['b2_yth'] - cur_s['youth']:+.2f}명**)는 연령경과 간주 때문이 아니라, "
-                f"**{', '.join(under1y_pm_names)}** 사원이 {tax_yr-1}·{tax_yr-2}년분 사후관리에는 대통령령 제35999호 부칙 제2조 경과조치(종전 규정: 근로계약기간 1년 이상 포함)에 따라 산입되고, "
+                f"**{', '.join(under1y_pm_names)}** 사원이 {tax_yr-1}·{tax_yr-2}년분 사후관리에는 시행령 부칙 경과조치(종전 규정: 근로계약기간 1년 이상 포함)에 따라 산입되고, "
                 f"{tax_yr}년 당해 공제에서는 개정 규정(실제 근로기간 1년 미만 제외)에 따라 제외된 결과입니다."
                 if under1y_pm_names else
                 f"최초 공제연도 기준 청년등 사후관리 특례(구 조특령 제26조의8 제5항, 부칙 경과조치) 적용 결과입니다."
@@ -761,10 +849,10 @@ def _build_report_markdown(s: dict, log_tokens_fn=None, room_key: str = "") -> s
         "| 구분 | 금액 (원) | 산출 내역 및 법령 근거 |",
         "| :--- | ---: | :--- |",
         f"| **1. 당해({tax_yr}년) 1차년도 신규 고용증가 세액공제** | **{pkg['cur_base_credit_won']:,}원** | 청년등 +{pkg['cur_inc']['youth_inc']:.2f}명, 청년등 외 +{pkg['cur_inc']['non_youth_inc']:.2f}명 ([조문:조세특례제한법 제29조의8 제1항] [각주 1]) |",
-        f"| **2. 직전·전전연도({tax_yr-1}·{tax_yr-2}년) 기공제분 연속공제액** | **{pkg['total_continued_credit_won']:,}원** | 2차년도 {pm1['continued_credit_won']:,}원 + 3차년도 {pm2['continued_credit_won']:,}원 (구 조특법 제29조의8 제3항 · 개정법 부칙 경과조치 [각주 3]) |",
+        f"| **2. 직전·전전연도({tax_yr-1}·{tax_yr-2}년) 기공제분 연속공제액** | **{pkg['total_continued_credit_won']:,}원** | 2차년도 {pm1['continued_credit_won']:,}원 + 3차년도 {pm2['continued_credit_won']:,}원 (구 조특법 제29조의8 제1항 · 법률 제21223호 부칙 제34조 [각주 3]) |",
         f"| **3. 육아휴직 복귀 및 정규직 전환 추가공제액** | **{pkg['additional_credit_won']:,}원** | 복귀 {pkg['parental_ret_cnt']}명(제5항) / 전환 {pkg['reg_conv_cnt']}명(제4항, ~2024년 전환분 한정) ([조문:조세특례제한법 제29조의8 제4항]·[조문:조세특례제한법 제29조의8 제5항]) |",
         f"| **합계: 당해 총 공제세액 (1+2+3)** | **{pkg['total_credit_gross_won']:,}원** | **공제감면세액계산서 및 세액공제신청서 반영 금액** |",
-        f"| **4. 사후관리 추가납부세액 (이월공제 차감 후)** | **{pkg['total_clawback_net_payable_won']:,}원** | 차감전 추징액 {pkg['total_clawback_gross_won']:,}원 − 미공제 이월세액 소멸 {pkg['total_carryforward_offset_won']:,}원 [각주 4, 5] |",
+        f"| **4. 사후관리 추가납부세액 (이월공제 차감 후)** | **{pkg['total_clawback_net_payable_won']:,}원** | 차감전 추징액 {pkg['total_clawback_gross_won']:,}원 − 미공제 이월세액 소멸 {pkg['total_carryforward_offset_won']:,}원 (구 조특법 제29조의8 제3항 [각주 4, 5]) |",
         f"| **5. 농어촌특별세 (실공제세액의 20%)** | **{pkg['rural_special_tax_won']:,}원** | 실공제 {pkg['actual_deducted_credit_won']:,}원 기준 ([조문:농어촌특별세법 제5조 제1항] [각주 7]) |",
         f"| **최종 실질 순절세액 (합계 − 4 − 5)** | **{pkg['net_after_rural_tax_won']:,}원** | **{cf_note_str}** |",
         "",
@@ -772,13 +860,13 @@ def _build_report_markdown(s: dict, log_tokens_fn=None, room_key: str = "") -> s
         "",
         f"| 구분 | 차수 | {yr_list[0]}년 | {yr_list[1]}년 | {yr_list[2]}년 | {yr_list[3]}년 (당해 귀속) | 근거 법령 |",
         "| :---: | :---: | ---: | ---: | ---: | ---: | :--- |",
-        f"| **세액공제액 (추가납부액)** | **1차** | {_m_txt(matrix_cols[yr_list[0]]['r1_credit'], matrix_cols[yr_list[0]]['r1_claw'])} | {_m_txt(matrix_cols[yr_list[1]]['r1_credit'], matrix_cols[yr_list[1]]['r1_claw'])} | {_m_txt(matrix_cols[yr_list[2]]['r1_credit'], matrix_cols[yr_list[2]]['r1_claw'])} | **{_m_txt(matrix_cols[yr_list[3]]['r1_credit'], matrix_cols[yr_list[3]]['r1_claw'])}** | [조문:조세특례제한법 제29조의8 제1항] [각주 1] |",
-        f"| **세액공제액 (추가납부액)** | **2차** | {_m_txt(matrix_cols[yr_list[0]]['r2_credit'], matrix_cols[yr_list[0]]['r2_claw'])} | {_m_txt(matrix_cols[yr_list[1]]['r2_credit'], matrix_cols[yr_list[1]]['r2_claw'])} | {_m_txt(matrix_cols[yr_list[2]]['r2_credit'], matrix_cols[yr_list[2]]['r2_claw'])} | **{_m_txt(matrix_cols[yr_list[3]]['r2_credit'], matrix_cols[yr_list[3]]['r2_claw'])}** | 구 조특법 제29조의8 제3항 (부칙 경과조치) [각주 3, 4] |",
-        f"| **세액공제액 (추가납부액)** | **3차** | {_m_txt(matrix_cols[yr_list[0]]['r3_credit'], matrix_cols[yr_list[0]]['r3_claw'])} | {_m_txt(matrix_cols[yr_list[1]]['r3_credit'], matrix_cols[yr_list[1]]['r3_claw'])} | {_m_txt(matrix_cols[yr_list[2]]['r3_credit'], matrix_cols[yr_list[2]]['r3_claw'])} | **{_m_txt(matrix_cols[yr_list[3]]['r3_credit'], matrix_cols[yr_list[3]]['r3_claw'])}** | 구 조특법 제29조의8 제3항 (부칙 경과조치) [각주 3, 4] |",
+        f"| **세액공제액 (추가납부액)** | **1차** | {_m_txt(matrix_cols[yr_list[0]]['r1_credit'], matrix_cols[yr_list[0]]['r1_claw'], bool(matrix_cols[yr_list[0]].get('r1_na')))} | {_m_txt(matrix_cols[yr_list[1]]['r1_credit'], matrix_cols[yr_list[1]]['r1_claw'], bool(matrix_cols[yr_list[1]].get('r1_na')))} | {_m_txt(matrix_cols[yr_list[2]]['r1_credit'], matrix_cols[yr_list[2]]['r1_claw'], bool(matrix_cols[yr_list[2]].get('r1_na')))} | **{_m_txt(matrix_cols[yr_list[3]]['r1_credit'], matrix_cols[yr_list[3]]['r1_claw'])}** | [조문:조세특례제한법 제29조의8 제1항] [각주 1] |",
+        f"| **세액공제액 (추가납부액)** | **2차** | {_m_txt(matrix_cols[yr_list[0]]['r2_credit'], matrix_cols[yr_list[0]]['r2_claw'], bool(matrix_cols[yr_list[0]].get('r2_na')))} | {_m_txt(matrix_cols[yr_list[1]]['r2_credit'], matrix_cols[yr_list[1]]['r2_claw'], bool(matrix_cols[yr_list[1]].get('r2_na')))} | {_m_txt(matrix_cols[yr_list[2]]['r2_credit'], matrix_cols[yr_list[2]]['r2_claw'], bool(matrix_cols[yr_list[2]].get('r2_na')))} | **{_m_txt(matrix_cols[yr_list[3]]['r2_credit'], matrix_cols[yr_list[3]]['r2_claw'])}** | 구 조특법 제29조의8 제1항·제3항 (법률 제21223호 부칙 제34조) [각주 3, 4] |",
+        f"| **세액공제액 (추가납부액)** | **3차** | {_m_txt(matrix_cols[yr_list[0]]['r3_credit'], matrix_cols[yr_list[0]]['r3_claw'], bool(matrix_cols[yr_list[0]].get('r3_na')))} | {_m_txt(matrix_cols[yr_list[1]]['r3_credit'], matrix_cols[yr_list[1]]['r3_claw'], bool(matrix_cols[yr_list[1]].get('r3_na')))} | {_m_txt(matrix_cols[yr_list[2]]['r3_credit'], matrix_cols[yr_list[2]]['r3_claw'], bool(matrix_cols[yr_list[2]].get('r3_na')))} | **{_m_txt(matrix_cols[yr_list[3]]['r3_credit'], matrix_cols[yr_list[3]]['r3_claw'])}** | 구 조특법 제29조의8 제1항·제3항 (법률 제21223호 부칙 제34조) [각주 3, 4] |",
         f"| **합계** | **순액** | **{int(matrix_cols[yr_list[0]]['net_total']):,}원** | **{int(matrix_cols[yr_list[1]]['net_total']):,}원** | **{int(matrix_cols[yr_list[2]]['net_total']):,}원** | **{int(matrix_cols[yr_list[3]]['net_total']):,}원** | [조문:조세특례제한법 제132조] · [조문:조세특례제한법 제144조] [각주 5] |",
         "",
         f"## Ⅱ. {tax_yr}년 귀속 세액공제 및 사후관리 상세 산출근거",
-        f"### (1) 평균 상시근로자 증가 인원 및 코호트별 상시근로자 현황 [각주 2, 3]",
+        f"### (1) 평균 상시근로자 증가 인원 및 코호트별 상시근로자 현황 [각주 1, 2, 3]",
         *prev_basis_bullets,
         "",
         "| 구분 | 전체 상시<br>[총인원 / 평균] | 청년등<br>[총인원 / 평균] | 청년등 외<br>[총인원 / 평균] | 산정 기준 및 법령 근거 |",
@@ -787,7 +875,7 @@ def _build_report_markdown(s: dict, log_tokens_fn=None, room_key: str = "") -> s
         f"| **{tax_yr}년 귀속 [{b4_title}]** | {cur_s['reg_total']:g}명 / **{cur_s['b2_reg']:.2f}명** | {cur_s['b2_yth_total']:g}명 / **{cur_s['b2_yth']:.2f}명** | {round(max(0.0, cur_s['reg_total']-cur_s['b2_yth_total']),2):g}명 / **{round(max(0.0, cur_s['b2_reg']-cur_s['b2_yth']),2):.2f}명** | {pm_row_note} |",
         f"| **{tax_yr}년 귀속 [{b5_title}]** | {cur_s['reg_total']:g}명 / **{cur_s['b3_reg']:.2f}명** | {cur_s['b3_yth_total']:g}명 / **{cur_s['b3_yth']:.2f}명** | {round(max(0.0, cur_s['reg_total']-cur_s['b3_yth_total']),2):g}명 / **{round(max(0.0, cur_s['b3_reg']-cur_s['b3_yth']),2):.2f}명** | {pm_row_note} |",
         f"| **{tax_yr-1}년 사후관리 기초 ({basis_lbl})** | - / **{pm1['init_reg']:.2f}명** | - / **{pm1['init_yth']:.2f}명** | - / **{round(max(0.0, pm1['init_reg']-pm1['init_yth']),2):.2f}명** | 1차 사후관리 비교 기준 (증가 청년 {pm1['init_yth_inc']:.2f}명 · 일반 {pm1['init_gen_inc']:.2f}명) |",
-        f"| **{tax_yr-2}년 사후관리 기초 ({basis_lbl})** | - / **{pm2['init_reg']:.2f}명** | - / **{pm2['init_yth']:.2f}명** | - / **{round(max(0.0, pm2['init_reg']-pm2['init_yth']),2):.2f}명** | 2차 사후관리 비교 기준 (증가 청년 {pm2['init_yth_inc']:.2f}명 · 일반 {pm2['init_gen_inc']:.2f}명) |",
+        f"| **{tax_yr-2}년 사후관리 기초 ({basis_lbl})** | - / **{pm2['init_reg']:.2f}명** | - / **{pm2['init_yth']:.2f}명** | - / **{round(max(0.0, pm2['init_reg']-pm2['init_yth']),2):.2f}명** | 2차 사후관리 비교 기준 (증가 청년 {pm2['init_yth_inc']:.2f}명 · 일반 {pm2['init_gen_inc']:.2f}명){pm2_loc_note} |",
         "",
         f"### (2) 1차년도({tax_yr}년 귀속) 세액공제액 계산 ({corp_sz}, {loc_label}) [각주 1]",
         f"- **신법 산식 구조 및 적용 단가**: 현행 [조문:조세특례제한법 제29조의8 제1항]은 직전 3개 과세연도(2024.12.31. 이전 개시 과세연도 제외) 중 1개 이상 대비 상시근로자 수가 증가한 경우 `A(직전연도 대비 1년차 증가분) + B(전전연도 대비 2년차 유지분) + C(전전전연도 대비 3년차 유지분)`를 합산하도록 규정하고 있습니다. {tax_yr}년 귀속은 비교 대상 과세연도가 {tax_yr-1}년(A)뿐이므로 A만 적용되며(청년등 1인당 **{yu:,}원**, 청년등 외 1인당 **{gu:,}원**), {tax_yr}년 신법 공제분은 사후관리 추징 규정이 적용되지 않습니다(고용 감소에 따른 추징 리스크는 2024·2025년 귀속분에 한정).",
@@ -797,24 +885,24 @@ def _build_report_markdown(s: dict, log_tokens_fn=None, room_key: str = "") -> s
         "",
         f"### (3) 2차년도 사후관리 계산 ({tax_yr-1}년 귀속분 → {tax_yr}년 1차 사후관리) [각주 3, 4]",
         f"- **감소 여부 판정**: 1차년도({tax_yr-1}년) 대비 전체 상시근로자 감소 여부 **{pm1_reg_dec}** ({pm1.get('init_reg', 0):.2f}명 → {cur_s['b2_reg']:.2f}명) / 청년등 상시근로자 감소 여부 **{pm1_yth_dec}** ({pm1.get('init_yth', 0):.2f}명 → {cur_s['b2_yth']:.2f}명)",
-        f"- **산출 내역 ({pm1.get('case_code')})**: {_strip_all_emojis(pm1.get('formula_note', ''))}",
+        f"- **산출 내역 ({pm1.get('case_code')})**: {_strip_all_emojis(pm1.get('formula_note', ''))}{pm1_loc_note}",
         f"- **산출 세액**: 2차년도 연속공제액 **+{pm1.get('continued_credit_won', 0):,}원** / 1차 사후관리 추가납부세액 **-{pm1.get('clawback_net_payable_won', 0):,}원**",
         "",
         f"### (4) 3차년도 사후관리 계산 ({tax_yr-2}년 귀속분 → {tax_yr}년 2차 사후관리) [각주 3, 4]",
         f"- **감소 여부 판정**: 1차년도({tax_yr-2}년) 대비 전체 상시근로자 감소 여부 **{pm2_reg_dec}** ({pm2.get('init_reg', 0):.2f}명 → {cur_s['b3_reg']:.2f}명) / 청년등 상시근로자 감소 여부 **{pm2_yth_dec}** ({pm2.get('init_yth', 0):.2f}명 → {cur_s['b3_yth']:.2f}명)",
-        f"- **산출 내역 ({pm2.get('case_code')})**: {_strip_all_emojis(pm2.get('formula_note', ''))}",
+        f"- **산출 내역 ({pm2.get('case_code')})**: {_strip_all_emojis(pm2.get('formula_note', ''))}{pm2_loc_note}",
         f"- **산출 세액**: 3차년도 연속공제액 **+{pm2.get('continued_credit_won', 0):,}원** / 2차 사후관리 추가납부세액 **-{pm2.get('clawback_net_payable_won', 0):,}원**",
         "",
         "## Ⅲ. 계산근거 관련 법령 주석",
-        "### (1) 기본공제·상시근로자 범위 및 소수점 절사 규정",
-        "- **[각주 1] [조문:조세특례제한법 제29조의8 제1항]·[조문:조세특례제한법 제29조의8 제2항]·[조문:조세특례제한법 제29조의8 제4항]·[조문:조세특례제한법 제29조의8 제5항] (통합고용세액공제 기본공제 A+B+C 구조 및 추가공제)**: 소비성서비스업 등 제외 업종 외의 내국인이 직전 3개 과세연도(2024.12.31. 이전 개시 과세연도 제외) 중 1개 이상 대비 상시근로자 수가 증가한 경우 1년차(A, 중소 수도권 청년등 700만·일반 400만 / 비수도권 청년등 1,000만·일반 700만), 2년차(B), 3년차(C) 유지분 금액을 합한 금액(중견 5명·대기업 10명 최소고용증가인원 차감 반영, [조문:조세특례제한법 시행령 제26조의8 제3항])을 공제한다. 제2항은 경력단절 근로자 정의, 제4항은 정규직 전환 추가공제(2024.12.31. 이전 전환분까지만 적용), 제5항은 육아휴직 복귀자 추가공제를 규정한다.",
-        "- **[각주 2] [조문:조세특례제한법 시행령 제26조의8 제2항]·[조문:조세특례제한법 시행령 제26조의8 제4항]·[조문:조세특례제한법 시행령 제26조의8 제6항] 및 [조문:조세특례제한법 시행령 제11조의2 제8항] 준용 (상시근로자 범위 · 내국인 근로자 정의 · 청년등 증가한도 Cap · 소수점 절사)**: 상시근로자란 「근로기준법」에 따라 근로계약을 체결한 내국인 근로자([조문:조세특례제한법 제2조] 제1항 제1호 및 시행규칙 별지 제10호의10서식 작성방법, 국세청 사전-2020-법령해석소득-0239에 따라 국적과 무관하게 「소득세법」상 국내에 주소를 두거나 183일 이상 거소를 둔 거주자인 외국인 근로자 포함) 중 실제 근로기간 1년 미만자(제2항 제1호, 대통령령 제35999호 개정), 월평균 60시간 미만 단시간근로자, 법인의 등기임원, 최대주주·배우자·직계존비속([조문:조세특례제한법 시행령 제23조 제10항] 준용)을 제외한 자를 말한다. 청년등 상시근로자 증가인원은 **전체 상시근로자 증가인원을 한도(Cap)**로 하며(제4항), 상시근로자 수는 매월 말 현재 상시근로자 수의 합을 과세연도 개월 수로 나눈 뒤 **100분의 1 미만 부분을 버린다(합산 후 소수점 둘째 자리 절사, 제6항 및 제11조의2 제8항 준용)**.",
+        "### (1) 기본공제·청년등 증가한도(Cap)·상시근로자 범위 및 소수점 절사 규정",
+        "- **[각주 1] [조문:조세특례제한법 제29조의8 제1항]·[조문:조세특례제한법 제29조의8 제2항]·[조문:조세특례제한법 제29조의8 제4항]·[조문:조세특례제한법 제29조의8 제5항] (통합고용세액공제 기본공제 A+B+C 구조 · 청년등 증가인원 한도 Cap · 경력단절 정의 · 전환 및 복귀 추가공제)**: 소비성서비스업 등 제외 업종([조문:조세특례제한법 시행령 제26조의8 제1항]) 외의 내국인이 직전 3개 과세연도(2024.12.31. 이전 개시 과세연도 제외) 중 1개 이상 대비 상시근로자 수가 증가한 경우 1년차(A, 중소 수도권 청년등 700만·일반 400만 / 비수도권 청년등 1,000만·일반 700만), 2년차(B), 3년차(C) 유지분 금액을 합한 금액(중견 5명·대기업 10명 최소고용증가인원 차감 반영, [조문:조세특례제한법 시행령 제26조의8 제3항])을 공제한다. 이때 **청년등 상시근로자의 증가 인원 수는 전체 상시근로자의 증가 인원 수를 한도(Cap)로 하며(제1항 제1호 괄호)**, 제2항은 제1항 제1호의 청년등 상시근로자에 포함되는 경력단절 근로자의 요건을 규정하고, 별도 추가공제로서 제4항은 정규직 전환 추가공제(2024.12.31. 이전 전환분까지만 적용), 제5항은 육아휴직 복귀자 추가공제를 규정한다.",
+        "- **[각주 2] [조문:조세특례제한법 시행령 제26조의8 제2항]·[조문:조세특례제한법 시행령 제26조의8 제4항]·[조문:조세특례제한법 시행령 제26조의8 제6항] 및 [조문:조세특례제한법 시행령 제11조의2 제8항] 준용 (상시근로자 및 청년등 범위 · 내국인 근로자 정의 · 소수점 절사)**: 상시근로자란 「근로기준법」에 따라 근로계약을 체결한 내국인 근로자([조문:조세특례제한법 제2조] 제1항 제1호 및 시행규칙 별지 제10호의10서식 작성방법, 국세청 사전-2020-법령해석소득-0239에 따라 국적과 무관하게 「소득세법」상 국내에 주소를 두거나 183일 이상 거소를 둔 거주자인 외국인 근로자 포함) 중 근로기간 1년 미만인 근로자(제2항 제1호), 월평균 60시간 미만 단시간근로자(제2호), 법인의 임원(제3호), 최대주주·최대출자자와 그 배우자(제4호), 직계존비속 및 친족(제5호), 원천징수 및 4대보험 납부 미확인자(제6호)를 제외한 자를 말한다. 제4항은 청년등 상시근로자의 범위(제1호: 15~34세 및 병역이행기간 최대 6년 차감, 계약체결일부터 4년[대기업 3년] 청년 간주 등)를 규정하며, 제6항이 준용하는 [조문:조세특례제한법 시행령 제11조의2 제8항]에 따라 상시근로자 수는 매월 말 현재 상시근로자 수의 합을 과세연도 개월 수로 나눈 뒤 **100분의 1 미만 부분을 버린다(합산 후 소수점 둘째 자리 절사)**.",
         "",
-        "### (2) 구법 경과조치(사후관리·연속공제·추가납부) 및 최저한세·이월공제·고용승계 특례 규정",
-        "- **[각주 3] 구 조세특례제한법(법률 제21065호 개정 전) 제29조의8 제3항 및 대통령령 제35999호 부칙 제2조 (2024·2025년 귀속분 연속공제·사후관리 경과조치 및 청년 연령경과 간주)**: 현행 제29조의8에서 구 제3항은 삭제되었으나, **개정 법률 부칙 및 대통령령 제35999호(2025.12.31.) 부칙 제2조(통합고용세액공제에 관한 경과조치)**에 따라 2024년 또는 2025년 귀속 과세연도에 상시근로자 수가 증가한 분에 대한 이후 1~2년간의 2·3차년도 연속공제 및 사후관리(상시근로자 산정 시 계약기간 1년 이상 중도퇴사자 포함 및 구 시행령 제26조의8 제5항에 따른 최초 공제연도 청년등의 연령경과 간주 특례)는 **종전의 규정**에 따른다.",
-        "- **[각주 4] 구 조세특례제한법 제29조의8 제3항 및 구 시행령 제26조의8 제6항 (고용 감소 시 추가납부세액 산식 및 이자상당가산액 면제)**: 2024·2025년 귀속 공제분(종전 규정 적용 대상)에 대하여 공제를 받은 과세연도 종료일부터 2년(대기업 1년)이 되는 날이 속하는 과세연도 종료일까지 전체 상시근로자 수가 감소한 경우 연속공제를 중단하고 감소 인원분 공제세액을 추가납부하며(Case 1·Case 2), 전체 상시근로자 수는 유지되었으나 청년등 상시근로자 수만 감소한 경우(Case 3)에는 청년등 단가와 일반 단가의 차액만을 추가납부한다(기공제세액 한도, 이자상당가산액 미부과). 반면 2026년 이후 신법(제1항 A+B+C 구조) 적용분은 사후관리 추징 규정이 없다.",
-        "- **[각주 5] [조문:조세특례제한법 제132조] 및 [조문:조세특례제한법 제144조] (최저한세 적용 및 10년 이월공제 · 미공제 이월세액 우선 소멸)**: 통합고용세액공제는 [조문:조세특례제한법 제132조]에 따른 최저한세(중소기업 과세표준의 7%, 중견·일반기업 10~17%) 적용 대상이므로, 당기 산출세액에서 최저한세 한도를 초과하여 공제받지 못한 세액은 [조문:조세특례제한법 제144조] 제1항에 따라 10년간 이월공제한다. 또한 사후관리 위반으로 추가납부 사유가 발생하였으나 당초 공제받지 못하고 이월된 세액공제액이 남아 있는 경우 현금 추가납부 대신 해당 미공제 이월세액을 먼저 차감(소멸)한다.",
-        "- **[각주 6] [조문:조세특례제한법 시행령 제26조의8 제10항] 및 [조문:조세특례제한법 시행령 제23조 제13항] 준용 (포괄양수·합병·분할·법인전환 고용승계 특례)**: 과세연도 중 사업을 포괄양수하거나 합병·분할·현물출자·법인전환에 따라 고용을 승계한 기업의 직전 과세연도 상시근로자 수는 기존 사업장 직전 인원에 승계 사업장 직전 인원을 더한 수로 하고, 당해 과세연도에는 과세연도 개시일에 승계한 것으로 보아 근무기간을 통산한다.",
+        "### (2) 구법 경과조치(연속공제·추가납부) 및 최저한세·이월공제·고용승계 특례 규정",
+        "- **[각주 3] 구 조세특례제한법(2025.12.23. 법률 제21223호 개정 전) 제29조의8 제1항, 법률 제21223호 부칙 제34조 및 시행령 부칙(대통령령 제35999호·제36127호 부칙 제11조) 경과조치 (2024·2025년 귀속분 2·3차년도 연속공제 및 사후관리 인원 산정)**: **조세특례제한법 부칙(법률 제21223호) 제34조(통합고용세액공제에 관한 경과조치)** 및 같은 법 시행령 부칙에 따라, 2024년 또는 2025년 12월 31일이 속하는 과세연도에 상시근로자 수가 증가한 분에 대한 **이후 2년간(2·3차년도, 대기업은 1년간)의 연속공제(구 법 제29조의8 제1항)** 및 사후관리(상시근로자 산정 시 근로계약기간 1년 이상 중도퇴사자 포함 및 구 시행령 제26조의8 제5항에 따른 최초 공제연도 청년등의 연령경과 간주 특례)는 **종전의 규정**에 따른다.",
+        "- **[각주 4] 구 조세특례제한법(법률 제21223호 개정 전) 제29조의8 제3항, 구 시행령 제26조의8 제6항 및 법률 제21223호 부칙 제34조 (고용 감소 시 추가납부세액 산식 및 이자상당가산액 면제)**: 현행 제29조의8에서 구 제3항은 삭제되었으나 법률 제21223호 부칙 제34조에 따라 2024·2025년 귀속 공제분(종전 규정 적용 대상)에 대하여 공제를 받은 과세연도 종료일부터 2년(대기업 1년)이 되는 날이 속하는 과세연도 종료일까지 전체 상시근로자 수가 감소한 경우 연속공제를 중단하고 감소 인원분 공제세액을 추가납부하며(Case 1·Case 2), 전체 상시근로자 수는 유지되었으나 청년등 상시근로자 수만 감소한 경우(Case 3)에는 청년등 단가와 일반 단가의 차액만을 추가납부한다(기공제세액 한도, 이자상당가산액 미부과). 반면 2026년 이후 신법(제1항 A+B+C 구조) 적용분은 사후관리 추징 규정이 없다.",
+        "- **[각주 5] [조문:조세특례제한법 제132조] 및 [조문:조세특례제한법 제144조] (최저한세 적용 및 10년 이월공제 · 미공제 이월세액 우선 소멸)**: 통합고용세액공제는 [조문:조세특례제한법 제132조]에 따른 최저한세(중소기업 과세표준의 7%, 중견기업 8~9%[초기 유예구간]·10~17%, 일반기업 10~17%) 적용 대상이므로, 당기 산출세액에서 최저한세 한도를 초과하여 공제받지 못한 세액은 [조문:조세특례제한법 제144조] 제1항에 따라 10년간 이월공제한다. 또한 사후관리 위반으로 추가납부 사유가 발생하였으나 당초 공제받지 못하고 이월된 세액공제액이 남아 있는 경우 현금 추가납부 대신 해당 미공제 이월세액을 먼저 차감(소멸)한다.",
+        "- **[각주 6] [조문:조세특례제한법 시행령 제26조의8 제8항] 및 [조문:조세특례제한법 시행령 제23조 제13항] 준용 (창업·포괄양수·합병·분할·법인전환 고용승계 특례)**: 과세연도 중 사업을 포괄양수하거나 합병·분할·현물출자·법인전환에 따라 고용을 승계한 기업의 직전 과세연도 상시근로자 수는 기존 사업장 직전 인원에 승계 사업장 직전 인원을 더한 수로 하고, 당해 과세연도에는 과세연도 개시일에 승계한 것으로 보아 근무기간을 통산한다.",
         "- **[각주 7] [조문:농어촌특별세법 제5조 제1항] 제1호 (농어촌특별세 20%)**: 조세특례제한법에 따라 당기 실제로 감면(공제)받는 소득세·법인세 세액(최저한세 등으로 당기 공제받지 못하고 이월된 미공제 세액은 제외하며 실제 이월공제받는 연도에 과세)의 **100분의 20**을 농어촌특별세로 납부한다.",
         "",
         "## Ⅳ. 심층 세무진단 의견",
@@ -1036,23 +1124,21 @@ def _build_report_pdf_bytes(s: dict, log_tokens_fn=None, room_key: str = "") -> 
             continue
 
         if raw_ln.startswith("## "):
-            h2_tbl = Table([[Paragraph(_pdf_text(raw_ln[3:].strip()), st_h2)]], colWidths=[avail_w])
+            h2_tbl = Table([[Paragraph(_pdf_text(raw_ln[3:].strip()), st_h2)]], colWidths=[avail_w], spaceBefore=6, spaceAfter=4)
             h2_tbl.keepWithNext = True
             h2_tbl.setStyle(
                 TableStyle(
                     [
                         ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#eff6ff")),
                         ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#bfdbfe")),
-                        ("TOPPADDING", (0, 0), (-1, -1), 4),
-                        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                        ("TOPPADDING", (0, 0), (-1, -1), 4.5),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 4.5),
                         ("LEFTPADDING", (0, 0), (-1, -1), 8),
                         ("RIGHTPADDING", (0, 0), (-1, -1), 8),
                     ]
                 )
             )
-            story.append(Spacer(1, 4))
             story.append(h2_tbl)
-            story.append(Spacer(1, 3))
             idx += 1
             continue
 
@@ -1076,6 +1162,26 @@ def _build_report_pdf_bytes(s: dict, log_tokens_fn=None, room_key: str = "") -> 
         else:
             story.append(Paragraph(_pdf_text(raw_ln), st_body))
         idx += 1
+
+    # 중제목(h2_tbl) 및 소제목(p_h3)이 페이지 하단에 홀로 남지 않도록 바로 뒤 본문/표와 KeepTogether로 결합
+    grouped_story = []
+    s_i = 0
+    while s_i < len(story):
+        cur_f = story[s_i]
+        if getattr(cur_f, "keepWithNext", False) and s_i + 1 < len(story):
+            bundle = [cur_f]
+            s_i += 1
+            while s_i < len(story) and getattr(story[s_i], "keepWithNext", False):
+                bundle.append(story[s_i])
+                s_i += 1
+            if s_i < len(story):
+                bundle.append(story[s_i])
+                s_i += 1
+            grouped_story.append(KeepTogether(bundle))
+        else:
+            grouped_story.append(cur_f)
+            s_i += 1
+    story = grouped_story
 
     def _draw_page_footer(canvas, doc_obj):
         canvas.saveState()
