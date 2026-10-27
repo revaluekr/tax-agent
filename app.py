@@ -2619,108 +2619,121 @@ with st.sidebar:
                 st.session_state.ws_widget_ver = ws_widget_ver + 1
                 st.rerun()
 
+    # 📦 [통합고용세액공제 모드 전용] 귀속사업연도 · 사업자정보 (내 작업공간 바로 아래)
+    if st.session_state.app_top_mode == "CREDIT_CALC":
+        import employment_credit
+        employment_credit.render_credit_sidebar()
+
     # 📦 [카드 3] 멀티 대화방 (입체 비우기 버튼 + 1~10번 좌측 정렬 리스트 + 옵션 C 제미나이 오로라 로딩 LED)
-    with st.container(border=True):
-        if "current_room" not in st.session_state or st.session_state.current_room not in ROOM_IDS:
-            st.session_state.current_room = ROOM_IDS[0]
-        selected_room = st.session_state.current_room
-        active_room_key = f"{effective_ws_id}::{selected_room}"
+    # 방 선택값은 다른 화면에서도 쓰므로 카드 밖에서 먼저 정함
+    if "current_room" not in st.session_state or st.session_state.current_room not in ROOM_IDS:
+        st.session_state.current_room = ROOM_IDS[0]
+    selected_room = st.session_state.current_room
+    active_room_key = f"{effective_ws_id}::{selected_room}"
 
-        rooms_with_rev_cnt = sum(
-            1 for r_id in ROOM_IDS
-            if get_room_revision_alerts(effective_ws_id, r_id, st.session_state.chat_rooms.get(r_id, []), law_prom_map)[0]
-        )
-        rev_header_pill = (
-            f"<span class='sb-badge-amber'>🔄 {rooms_with_rev_cnt}개방 개정</span>"
-            if rooms_with_rev_cnt > 0 else ""
-        )
-        st.markdown(f"<div class='sb-card-title'><span>🗂️ 멀티 대화방 (1~10번)</span>{rev_header_pill}</div>", unsafe_allow_html=True)
+    # 통합고용세액공제 모드에서는 멀티 대화방 카드를 숨김
+    if st.session_state.app_top_mode != "CREDIT_CALC":
+        with st.container(border=True):
+            if "current_room" not in st.session_state or st.session_state.current_room not in ROOM_IDS:
+                st.session_state.current_room = ROOM_IDS[0]
+            selected_room = st.session_state.current_room
+            active_room_key = f"{effective_ws_id}::{selected_room}"
 
-        room_search_kw = st.text_input(
-            "전체 대화방 통합 검색",
-            placeholder="🔎 1~10번 방 통합 키워드 검색",
-            label_visibility="collapsed",
-            key=f"room_search_{effective_ws_id}"
-        )
-        if room_search_kw.strip():
-            kw_lower = room_search_kw.strip().lower()
-            matched_rooms = []
-            for r_id in ROOM_IDS:
-                r_title = st.session_state.room_titles.get(r_id, "")
-                r_fname = st.session_state.room_files[r_id].get("name") or ""
+            rooms_with_rev_cnt = sum(
+                1 for r_id in ROOM_IDS
+                if get_room_revision_alerts(effective_ws_id, r_id, st.session_state.chat_rooms.get(r_id, []), law_prom_map)[0]
+            )
+            rev_header_pill = (
+                f"<span class='sb-badge-amber'>🔄 {rooms_with_rev_cnt}개방 개정</span>"
+                if rooms_with_rev_cnt > 0 else ""
+            )
+            st.markdown(f"<div class='sb-card-title'><span>🗂️ 멀티 대화방 (1~10번)</span>{rev_header_pill}</div>", unsafe_allow_html=True)
+
+            room_search_kw = st.text_input(
+                "전체 대화방 통합 검색",
+                placeholder="🔎 1~10번 방 통합 키워드 검색",
+                label_visibility="collapsed",
+                key=f"room_search_{effective_ws_id}"
+            )
+            if room_search_kw.strip():
+                kw_lower = room_search_kw.strip().lower()
+                matched_rooms = []
+                for r_id in ROOM_IDS:
+                    r_title = st.session_state.room_titles.get(r_id, "")
+                    r_fname = st.session_state.room_files[r_id].get("name") or ""
+                    r_msgs = st.session_state.chat_rooms.get(r_id, [])
+                    hit_cnt = sum(1 for m in r_msgs if kw_lower in m.get("content", "").lower())
+                    if kw_lower in r_title.lower() or kw_lower in r_fname.lower():
+                        hit_cnt += 1
+                    if hit_cnt > 0:
+                        matched_rooms.append((r_id, r_title, hit_cnt))
+                if matched_rooms:
+                    for m_rid, m_title, m_cnt in matched_rooms:
+                        if st.button(f"👉 {m_rid} [{m_title}] ({m_cnt}건 일치)", key=f"jump_{m_rid}", use_container_width=True):
+                            st.session_state.current_room = m_rid
+                            st.rerun()
+                else:
+                    st.caption(f"'{room_search_kw}' 검색 결과가 없습니다.")
+
+            title_widget_key = f"title_input_{effective_ws_id}_{selected_room}"
+            # 위젯(st.text_input)이 렌더링되기 전에만 상태 동기화를 수행합니다.
+            if (
+                title_widget_key in st.session_state
+                and st.session_state[title_widget_key] in ("빈 대화방", "메인 대화")
+                and st.session_state.room_titles[selected_room] not in ("빈 대화방", "메인 대화")
+                and st.session_state.chat_rooms.get(selected_room)
+            ):
+                st.session_state[title_widget_key] = st.session_state.room_titles[selected_room]
+
+            new_title = st.text_input(
+                "방 주제 메모",
+                value=st.session_state.room_titles[selected_room],
+                placeholder="✏️ 현재 방 주제 메모 (예: A사 세무조사)",
+                label_visibility="collapsed",
+                key=title_widget_key
+            )
+            if new_title != st.session_state.room_titles[selected_room]:
+                st.session_state.room_titles[selected_room] = new_title
+                save_workspace_to_disk(effective_ws_id)
+                st.rerun()
+
+            if st.button(f"🗑️ [{selected_room}] 현재 방 비우기", key="btn_clear_current_room", use_container_width=True):
+                with task_mgr["lock"]:
+                    task_mgr["tasks"].pop(active_room_key, None)
+                st.session_state.chat_rooms[selected_room] = []
+                st.session_state.room_files[selected_room] = {"name": None, "text": "", "items": []}
+                st.session_state.room_titles[selected_room] = "빈 대화방"
+                # 이미 인스턴스화된 위젯 키는 값을 대입하지 않고 pop()으로 제거하여 StreamlitAPIException 원천 방지
+                st.session_state.pop(title_widget_key, None)
+                st.session_state.setdefault("room_diff_banners", {})[selected_room] = ""
+                st.session_state[f"diff_banner_open_{effective_ws_id}_{selected_room}"] = False
+                if hasattr(agent, "reset_room_usage"):
+                    agent.reset_room_usage(active_room_key)
+                st.session_state[f"reset_cnt_{selected_room}"] = st.session_state.get(f"reset_cnt_{selected_room}", 0) + 1
+                save_workspace_to_disk(effective_ws_id, force_overwrite_room=selected_room)
+                st.rerun()
+
+            for idx_r, r_id in enumerate(ROOM_IDS, start=1):
+                r_title = (st.session_state.room_titles.get(r_id, "빈 대화방") or "빈 대화방").strip()
+                short_title = r_title[:14] + ("…" if len(r_title) > 14 else "")
                 r_msgs = st.session_state.chat_rooms.get(r_id, [])
-                hit_cnt = sum(1 for m in r_msgs if kw_lower in m.get("content", "").lower())
-                if kw_lower in r_title.lower() or kw_lower in r_fname.lower():
-                    hit_cnt += 1
-                if hit_cnt > 0:
-                    matched_rooms.append((r_id, r_title, hit_cnt))
-            if matched_rooms:
-                for m_rid, m_title, m_cnt in matched_rooms:
-                    if st.button(f"👉 {m_rid} [{m_title}] ({m_cnt}건 일치)", key=f"jump_{m_rid}", use_container_width=True):
-                        st.session_state.current_room = m_rid
+                q_cnt = (len(r_msgs) + 1) // 2
+                f_cnt = len(st.session_state.room_files[r_id].get("items", []))
+                t_info = task_mgr["tasks"].get(f"{effective_ws_id}::{r_id}")
+                is_run = bool(t_info and t_info.get("status") == "running")
+                rev_alerts, _ = get_room_revision_alerts(effective_ws_id, r_id, r_msgs, law_prom_map)
+
+                base_state = "active" if r_id == selected_room else ("hasmsg" if q_cnt > 0 else "empty")
+                run_suffix = "_running" if is_run else ""
+                btn_key = f"room_btn_{idx_r}_{base_state}{run_suffix}"
+
+                extra_badges = (" 📎" if f_cnt else "") + (" 🔄" if rev_alerts else "") + (" (작성중)" if is_run else "")
+                btn_label = f"{idx_r}. {short_title} ({q_cnt}건){extra_badges}"
+
+                if st.button(btn_label, key=btn_key, use_container_width=True):
+                    if r_id != selected_room:
+                        st.session_state.current_room = r_id
                         st.rerun()
-            else:
-                st.caption(f"'{room_search_kw}' 검색 결과가 없습니다.")
-
-        title_widget_key = f"title_input_{effective_ws_id}_{selected_room}"
-        # 위젯(st.text_input)이 렌더링되기 전에만 상태 동기화를 수행합니다.
-        if (
-            title_widget_key in st.session_state
-            and st.session_state[title_widget_key] in ("빈 대화방", "메인 대화")
-            and st.session_state.room_titles[selected_room] not in ("빈 대화방", "메인 대화")
-            and st.session_state.chat_rooms.get(selected_room)
-        ):
-            st.session_state[title_widget_key] = st.session_state.room_titles[selected_room]
-
-        new_title = st.text_input(
-            "방 주제 메모",
-            value=st.session_state.room_titles[selected_room],
-            placeholder="✏️ 현재 방 주제 메모 (예: A사 세무조사)",
-            label_visibility="collapsed",
-            key=title_widget_key
-        )
-        if new_title != st.session_state.room_titles[selected_room]:
-            st.session_state.room_titles[selected_room] = new_title
-            save_workspace_to_disk(effective_ws_id)
-            st.rerun()
-
-        if st.button(f"🗑️ [{selected_room}] 현재 방 비우기", key="btn_clear_current_room", use_container_width=True):
-            with task_mgr["lock"]:
-                task_mgr["tasks"].pop(active_room_key, None)
-            st.session_state.chat_rooms[selected_room] = []
-            st.session_state.room_files[selected_room] = {"name": None, "text": "", "items": []}
-            st.session_state.room_titles[selected_room] = "빈 대화방"
-            # 이미 인스턴스화된 위젯 키는 값을 대입하지 않고 pop()으로 제거하여 StreamlitAPIException 원천 방지
-            st.session_state.pop(title_widget_key, None)
-            st.session_state.setdefault("room_diff_banners", {})[selected_room] = ""
-            st.session_state[f"diff_banner_open_{effective_ws_id}_{selected_room}"] = False
-            if hasattr(agent, "reset_room_usage"):
-                agent.reset_room_usage(active_room_key)
-            st.session_state[f"reset_cnt_{selected_room}"] = st.session_state.get(f"reset_cnt_{selected_room}", 0) + 1
-            save_workspace_to_disk(effective_ws_id, force_overwrite_room=selected_room)
-            st.rerun()
-
-        for idx_r, r_id in enumerate(ROOM_IDS, start=1):
-            r_title = (st.session_state.room_titles.get(r_id, "빈 대화방") or "빈 대화방").strip()
-            short_title = r_title[:14] + ("…" if len(r_title) > 14 else "")
-            r_msgs = st.session_state.chat_rooms.get(r_id, [])
-            q_cnt = (len(r_msgs) + 1) // 2
-            f_cnt = len(st.session_state.room_files[r_id].get("items", []))
-            t_info = task_mgr["tasks"].get(f"{effective_ws_id}::{r_id}")
-            is_run = bool(t_info and t_info.get("status") == "running")
-            rev_alerts, _ = get_room_revision_alerts(effective_ws_id, r_id, r_msgs, law_prom_map)
-
-            base_state = "active" if r_id == selected_room else ("hasmsg" if q_cnt > 0 else "empty")
-            run_suffix = "_running" if is_run else ""
-            btn_key = f"room_btn_{idx_r}_{base_state}{run_suffix}"
-
-            extra_badges = (" 📎" if f_cnt else "") + (" 🔄" if rev_alerts else "") + (" (작성중)" if is_run else "")
-            btn_label = f"{idx_r}. {short_title} ({q_cnt}건){extra_badges}"
-
-            if st.button(btn_label, key=btn_key, use_container_width=True):
-                if r_id != selected_room:
-                    st.session_state.current_room = r_id
-                    st.rerun()
 
     # 📦 [카드 4 — 최하단 고정: [💳 결제] 및 [🔑 API키] 버튼]
     with st.container(border=True):
@@ -2755,11 +2768,9 @@ if st.session_state.app_top_mode == "CREDIT_CALC":
             if st.button("✖️ API 관리창 닫기"):
                 st.session_state.show_inline_api_manager = False
                 st.rerun()
-    import tax_credit_engine
-    tax_credit_engine.render_tax_credit_calculator_ui(
+    import employment_credit
+    employment_credit.render_credit_wizard(
         extract_file_fn=extract_file_content,
-        create_pdf_fn=create_pdf_report,
-        create_docx_fn=create_word_docx,
         log_tokens_fn=_log_custom_tokens,
         active_room_key=current_task_key,
     )
@@ -2874,10 +2885,11 @@ if st.session_state.get("show_inline_api_manager"):
             st.rerun()
 
 # ---------------------------------------------------------
-# 4. 대화방 메시지 목록 렌더링 (방 전환 시 이전 방의 고스트 잔상 원천 차단용 고유 키 컨테이너)
+# 4. 대화방 메시지 목록 렌더링 (방 전환 시 잔상 차단 + 2·3번째 답변 완료 시 해당 결론 시작점으로 자동 스크롤)
 # ---------------------------------------------------------
-room_view_Slot = st.empty()
-with room_view_Slot.container(key=f"room_main_view_{effective_ws_id}_{selected_room}"):
+import streamlit.components.v1 as components
+
+with st.container(key=f"room_main_view_{effective_ws_id}_{selected_room}"):
     if not current_messages and not is_current_room_running:
         st.markdown(
             f"<div style='padding: 18px 20px; background-color: #f8fafc; border: 1px dashed #cbd5e1; "
@@ -2889,6 +2901,10 @@ with room_view_Slot.container(key=f"room_main_view_{effective_ws_id}_{selected_r
         )
 
     for idx, message in enumerate(current_messages):
+        st.markdown(
+            f"<div id='chat-msg-anchor-{idx}' style='scroll-margin-top: 68px;'></div>",
+            unsafe_allow_html=True
+        )
         with st.chat_message(message["role"]):
             display_content = message["content"]
             if message["role"] == "assistant" and hasattr(agent, "_inject_direct_law_links"):
@@ -2988,6 +3004,46 @@ with room_view_Slot.container(key=f"room_main_view_{effective_ws_id}_{selected_r
 
                 with st.expander("📋 카톡·이메일 전송용 텍스트 원클릭 복사 (우측 상단 복사 아이콘 클릭)"):
                     st.code(_extract_clean_copy_text(message["content"]), language="markdown")
+
+    # 🎯 [자동 스크롤 엔진] 2번째·3번째 이후 새 질문 등록 시 또는 새 답변 완료 시
+    #    맨 처음(1번 질문)으로 돌아가지 않고 방금 나온 최신 질문/답변(결론 시작점)으로 즉시 포커스합니다.
+    st.markdown("<div id='chat-live-running-anchor' style='scroll-margin-top: 68px;'></div>", unsafe_allow_html=True)
+    _scroll_state_key = f"_last_scroll_sig_{effective_ws_id}_{selected_room}"
+    _msg_cnt = len(current_messages)
+    _cur_scroll_sig = f"{_msg_cnt}_{is_current_room_running}"
+    _prev_scroll_sig = st.session_state.get(_scroll_state_key)
+
+    if _prev_scroll_sig != _cur_scroll_sig:
+        st.session_state[_scroll_state_key] = _cur_scroll_sig
+        if _msg_cnt >= 2:
+            # 직전 상태가 작성중(running)이었다가 완료된 순간이거나, 2번째 이상 대화가 추가된 경우
+            # 최신 답변(assistant)의 시작점(결론 바로 위 질문/답변 경계) 또는 진행중 상태창으로 스크롤
+            if is_current_room_running:
+                _target_anchor_id = f"chat-msg-anchor-{_msg_cnt - 1}"
+            else:
+                _last_role = current_messages[-1].get("role", "")
+                _target_anchor_id = f"chat-msg-anchor-{_msg_cnt - 1}" if _last_role == "assistant" else f"chat-msg-anchor-{max(0, _msg_cnt - 1)}"
+            components.html(
+                f"""
+                <script>
+                (function() {{
+                    const targetId = "{_target_anchor_id}";
+                    function scrollToTarget() {{
+                        try {{
+                            const parentDoc = window.parent.document;
+                            const el = parentDoc.getElementById(targetId);
+                            if (el) {{
+                                el.scrollIntoView({{ behavior: "smooth", block: "start" }});
+                            }}
+                        }} catch (e) {{}}
+                    }}
+                    setTimeout(scrollToTarget, 80);
+                    setTimeout(scrollToTarget, 280);
+                }})();
+                </script>
+                """,
+                height=0,
+            )
 
 # ---------------------------------------------------------
 # 5. 메인 화면 최하단 고정: Gemini 스타일 올인원 통합 채팅 입력창 (드래그 앤 드롭 파일 첨부 통합)
