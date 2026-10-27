@@ -124,6 +124,7 @@ from .ui_common import (  # noqa: F401
 )
 from .ui_sidebar import (  # noqa: F401
     _dlg_industry,
+    _dlg_nts_dart_check,
     _int,
     _render_backup_card,
     _restore_from_backup,

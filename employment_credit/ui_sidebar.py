@@ -52,6 +52,105 @@ def _dlg_industry(text: str):
         st.rerun()
 
 
+@st.dialog("🔎 국세청 사업자상태 · 진위확인 · DART 주주/업종 대사", width="large")
+def _dlg_nts_dart_check():
+    s = _S()
+    b = s.get("biz") or {}
+    sub_list = s.get("sub_biz_list") or []
+    tax_yr = int(s.get("tax_year") or R.DEFAULT_TAX_YEAR)
+    ext_biz = (s.get("ext") or {}).get("biz_reg") or {}
+    default_ceo = str(ext_biz.get("대표자") or "").strip()
+
+    try:
+        import law_api as _law_api
+    except Exception:
+        _law_api = None
+
+    if _law_api is None:
+        st.error("프로젝트 루트의 `law_api.py` 모듈을 불러올 수 없습니다.")
+        return
+
+    tab_nts, tab_verify, tab_dart = st.tabs([
+        "🏛️ 1. 국세청 휴·폐업/과세유형 조회",
+        "🛡️ 2. 사업자등록 진위확인",
+        "📊 3. DART 최대주주 · 국세청 업종코드",
+    ])
+
+    with tab_nts:
+        st.caption("주사업장(본점) 및 합산 대상 추가 사업장의 사업자등록번호로 국세청 실시간 납세자상태(계속/휴·폐업일자) 및 과세유형을 일괄 조회합니다.")
+        all_bnos = []
+        if b.get("사업자번호"):
+            all_bnos.append(f"{b.get('상호') or '주사업장'}: {b.get('사업자번호')}")
+        for idx, sb in enumerate(sub_list):
+            if sb.get("사업자번호"):
+                all_bnos.append(f"{sb.get('상호') or f'제{idx+2}사업장'}: {sb.get('사업자번호')}")
+        default_bno_str = ", ".join(all_bnos) if all_bnos else str(b.get("사업자번호") or "")
+        bno_input = st.text_input(
+            "조회할 사업자등록번호 (복수 입력 시 쉼표로 구분)",
+            value=default_bno_str,
+            placeholder="예: 123-45-67890, 234-56-78901",
+            key="ec_nts_status_input",
+        )
+        if st.button("🔎 국세청 실시간 상태 조회 실행", type="primary", use_container_width=True, key="btn_run_ec_nts_status"):
+            with st.spinner("국세청 API로 사업자 상태 및 휴·폐업일자를 조회하고 있습니다..."):
+                st.session_state["ec_nts_status_res"] = _law_api.get_nts_biz_status(bno_input)
+        res_txt = st.session_state.get("ec_nts_status_res")
+        if res_txt:
+            st.code(res_txt, language="text")
+
+    with tab_verify:
+        st.caption("국세청 사업자등록정보 진위확인 API를 통해 사업자번호·개업일·대표자성명 일치 여부를 검증합니다.")
+        cv1, cv2 = st.columns(2)
+        v_bno = cv1.text_input("사업자등록번호 (10자리)", value=str(b.get("사업자번호") or ""), key="ec_v_bno")
+        v_dt = cv2.text_input("개업일/설립일 (YYYY-MM-DD)", value=str(b.get("설립일") or ""), key="ec_v_dt")
+        cv3, cv4 = st.columns(2)
+        v_ceo = cv3.text_input("대표자 성명 (필수)", value=default_ceo, placeholder="예: 홍길동", key="ec_v_ceo")
+        v_nm = cv4.text_input("상호(법인명, 선택)", value=str(b.get("상호") or ""), key="ec_v_nm")
+        if st.button("🛡️ 국세청 진위확인 실행", type="primary", use_container_width=True, key="btn_run_ec_nts_verify"):
+            with st.spinner("국세청 진위확인 API 호출 중..."):
+                st.session_state["ec_nts_verify_res"] = _law_api.verify_nts_biz_info(v_bno, v_dt, v_ceo, v_nm)
+        v_res = st.session_state.get("ec_nts_verify_res")
+        if v_res:
+            st.code(v_res, language="text")
+
+    with tab_dart:
+        st.caption("외감·상장법인의 Open DART 공시 최대주주·특수관계인 지분현황을 조회하여 2단계 사원표의 상시근로자 제외대상 누락 여부를 대사하고, 국세청 6자리 업종코드를 검색합니다.")
+        cd1, cd2, cd3 = st.columns([2.5, 1.2, 1.3])
+        d_corp = cd1.text_input("DART 조회 법인명", value=str(b.get("상호") or ""), key="ec_dart_corp_nm")
+        d_yr = cd2.text_input("사업보고서 연도", value=str(tax_yr - 1), key="ec_dart_yr")
+        if cd3.button("📊 DART 조회", type="primary", use_container_width=True, key="btn_run_ec_dart"):
+            with st.spinner("Open DART 전자공시 데이터를 조회하고 있습니다..."):
+                dart_txt = _law_api.get_dart_corp_info(d_corp, d_yr)
+                st.session_state["ec_dart_res"] = dart_txt
+        d_res = st.session_state.get("ec_dart_res")
+        if d_res:
+            emp_names = {
+                str(p.get("성명") or "").strip()
+                for p in (s.get("people") or {}).values()
+                if str(p.get("성명") or "").strip()
+            }
+            matched_emp = sorted(nm for nm in emp_names if len(nm) >= 2 and nm in d_res)
+            if matched_emp:
+                st.warning(
+                    f"⚠️ 현재 사원표 인원 중 DART 공시문서(대표자·최대주주·특수관계인)에 등장하는 성명이 감지되었습니다: "
+                    f"**{', '.join(matched_emp)}** → 2단계 사원표에서 임원·최대주주·배우자·직계존비속 제외사유를 확인하세요."
+                )
+            st.code(d_res, language="text")
+
+        st.markdown("---")
+        ci1, ci2 = st.columns([3.7, 1.3])
+        ind_kw = ci1.text_input(
+            "국세청 6자리 업종코드 검색어",
+            value=str(b.get("종목") or b.get("업태") or ""),
+            placeholder="예: 소프트웨어, 도소매, 음식점, 호스텔",
+            key="ec_ind_kw",
+        )
+        if ci2.button("🏢 업종코드 검색", use_container_width=True, key="btn_run_ec_ind"):
+            st.session_state["ec_ind_res"] = _law_api.search_industry_code(ind_kw)
+        if st.session_state.get("ec_ind_res"):
+            st.code(st.session_state["ec_ind_res"], language="text")
+
+
 # ══════════════════════════════════════════════════════════════════
 # 3. 사이드바: 귀속사업연도(2024~2028) · 주사업장 정보 + 하단 추가 합산 사업장(본·지점 / 양도·양수)
 # ══════════════════════════════════════════════════════════════════
@@ -294,6 +393,14 @@ def render_credit_sidebar():
             )
             _save_ec_to_disk(s)
             st.rerun()
+
+        if st.button(
+            "🔎 국세청 휴·폐업/진위 · DART 주주 조회",
+            use_container_width=True,
+            key="btn_open_nts_dart_modal",
+            help="국세청 API(사업자 휴·폐업일·과세유형·진위확인) 및 Open DART(최대주주·특수관계인 지분 공시)를 실시간 조회합니다.",
+        ):
+            _dlg_nts_dart_check()
 
     _save_ec_to_disk(s)
     _render_backup_card(s)
