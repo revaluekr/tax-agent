@@ -1552,3 +1552,294 @@ def get_building_ledger_info(address_or_pnu: str) -> str:
         pass
 
     return "\n".join(output)[:14000]
+# ---------------------------------------------------------
+# 9. 근로복지공단 고용·산재보험 가입 사업장 현황 조회 (사업자번호 기준 상시인원·성립일자·업종 대사)
+# ---------------------------------------------------------
+def get_comwel_workplace_info(biz_no: str, insurance_type: str = "all") -> str:
+    """
+    공공데이터포털 인증키(NTS_API_KEY)를 사용하여 근로복지공단 고용·산재보험 가입 사업장 상세정보(gySjbPstateInfoService)를 조회합니다.
+    - biz_no: 10자리 사업자등록번호 (예: '123-45-67890' 또는 '1234567890')
+    - insurance_type: 'all'(산재+고용 모두), '1'(산재), '2'(고용)
+    """
+    nts_key = _live_nts_key()
+    if not nts_key:
+        return "❌ NTS_API_KEY(공공데이터포털 인증키)가 설정되지 않았습니다."
+
+    cleaned = re.sub(r"(\d{3})-(\d{2})-(\d{5})", r"\1\2\3", biz_no or "")
+    b_nos = re.findall(r"\b\d{10}\b", cleaned)
+    if not b_nos:
+        digits = re.sub(r"\D", "", biz_no or "")
+        if len(digits) == 10:
+            b_nos = [digits]
+    if not b_nos:
+        return f"❌ 입력된 값('{biz_no}')에서 유효한 10자리 사업자등록번호를 찾을 수 없습니다."
+
+    encoded_key = nts_key if "%" in nts_key else urllib.parse.quote(nts_key, safe="")
+    fg_list = ["2", "1"] if str(insurance_type).lower() not in ("1", "2") else [str(insurance_type)]
+    fg_label_map = {"1": "산재보험", "2": "고용보험"}
+    saeop_fg_map = {"1": "계속", "3": "일괄계속", "4": "일괄유기", "7": "사업개시계속"}
+
+    output = [f"👷 [근로복지공단 고용·산재보험 가입 사업장 현황 조회 (총 {len(b_nos)}개 사업자번호)]"]
+    for bno in b_nos[:10]:
+        fmt_bno = f"{bno[:3]}-{bno[3:5]}-{bno[5:]}"
+        bno_lines = [f"\n■ 사업자등록번호: {fmt_bno}"]
+        found_any = False
+        for fg in fg_list:
+            ep = (
+                f"https://apis.data.go.kr/B490001/gySjbPstateInfoService/getGySjBoheomBsshItem"
+                f"?serviceKey={encoded_key}&v_saeopjaDrno={bno}&opaBoheomFg={fg}&pageNo=1&numOfRows=20"
+            )
+            try:
+                resp = requests.get(ep, timeout=15)
+                if resp.status_code != 200:
+                    return (
+                        f"❌ 근로복지공단 API 호출 실패 (HTTP {resp.status_code}): "
+                        "공공데이터포털(data.go.kr/data/15059256/openapi.do)에서 '근로복지공단_고용/산재보험 현황정보' 활용신청 여부를 확인해 주세요."
+                    )
+                root = ET.fromstring(resp.text)
+                res_code = (root.findtext(".//resultCode") or "").strip()
+                res_msg = (root.findtext(".//resultMsg") or "").strip()
+                if res_code not in ("00", "000", "0000", ""):
+                    bno_lines.append(f"  - [{fg_label_map.get(fg, fg)}] API 응답 오류 (코드 {res_code}): {res_msg}")
+                    continue
+                items = root.findall(".//item")
+                for it in items[:5]:
+                    found_any = True
+                    d = {c.tag: (c.text or "").strip() for c in it}
+                    s_nm = d.get("saeopjangNm") or "-"
+                    cnt = d.get("sangsiInwonCnt") or "0"
+                    dt = d.get("seongripDt") or "-"
+                    if len(dt) == 8 and dt.isdigit():
+                        dt = f"{dt[:4]}-{dt[4:6]}-{dt[6:]}"
+                    s_fg = saeop_fg_map.get(d.get("saeopFg", ""), d.get("saeopFg") or "-")
+                    addr = d.get("addr") or "-"
+                    up_cd = d.get("gyEopjongCd") or d.get("sjEopjongCd") or "-"
+                    up_nm = d.get("gyEopjongNm") or d.get("sjEopjongNm") or "-"
+                    bno_lines.append(
+                        f"  - [{fg_label_map.get(fg, '보험')}] 사업장명: {s_nm} | 상시인원(피보험자): {cnt}명 | "
+                        f"성립일자: {dt} | 가입상태: {s_fg} | 업종: {up_nm}({up_cd}) | 주소: {addr}"
+                    )
+            except Exception as e:
+                bno_lines.append(f"  - [{fg_label_map.get(fg, fg)}] 조회 오류: {e}")
+
+        if not found_any and len(bno_lines) == 1:
+            bno_lines.append("  - 조회된 고용·산재보험 성립 내역이 없습니다.")
+        output.extend(bno_lines)
+
+    return "\n".join(output)[:14000]
+
+
+# ---------------------------------------------------------
+# 10. 국민연금공단 가입 사업장 내역 조회 (월별 가입자수 · 당월고지금액 · 신규취득/상실 인원 대사)
+# ---------------------------------------------------------
+def get_nps_workplace_info(corp_name: str, biz_no_prefix6: str = "", region_keyword: str = "") -> str:
+    """
+    공공데이터포털 인증키(NTS_API_KEY)를 사용하여 국민연금공단_국민연금 가입 사업장 내역(NpsBplcInfoInqireServiceV2)을 조회합니다.
+    - corp_name: 사업장명(상호, 예: '삼성전자', '(주)세무법인')
+    - biz_no_prefix6: 사업자등록번호 앞 6자리 (선택, 입력 시 정밀 필터링)
+    - region_keyword: 주소 필터 키워드 (선택, 예: '강남구', '성남시')
+    """
+    nts_key = _live_nts_key()
+    if not nts_key:
+        return "❌ NTS_API_KEY(공공데이터포털 인증키)가 설정되지 않았습니다."
+
+    kw = (corp_name or "").strip()
+    bno6 = re.sub(r"\D", "", biz_no_prefix6 or "")[:6]
+    if not kw and not bno6:
+        return "❌ 조회할 사업장명(corp_name) 또는 사업자등록번호 앞 6자리(biz_no_prefix6)를 입력해 주세요."
+
+    encoded_key = nts_key if "%" in nts_key else urllib.parse.quote(nts_key, safe="")
+    base_urls = [
+        "https://apis.data.go.kr/B552015/NpsBplcInfoInqireServiceV2/getBassInfoSearchV2",
+        "http://apis.data.go.kr/B552015/NpsBplcInfoInqireService/getBassInfoSearch",
+    ]
+    detail_urls = [
+        "https://apis.data.go.kr/B552015/NpsBplcInfoInqireServiceV2/getDetailInfoSearchV2",
+        "http://apis.data.go.kr/B552015/NpsBplcInfoInqireService/getDetailInfoSearch",
+    ]
+
+    q_params = f"serviceKey={encoded_key}&numOfRows=50&pageNo=1"
+    if kw:
+        q_params += f"&wkpl_nm={urllib.parse.quote(kw)}"
+    if bno6:
+        q_params += f"&bzowr_rgst_no={bno6}"
+
+    root = None
+    used_v2 = True
+    last_status = 0
+    for idx, b_url in enumerate(base_urls):
+        try:
+            r = requests.get(f"{b_url}?{q_params}", timeout=15)
+            last_status = r.status_code
+            if r.status_code == 200 and "<item>" in r.text:
+                root = ET.fromstring(r.text)
+                used_v2 = (idx == 0)
+                break
+            elif r.status_code == 200 and root is None:
+                root = ET.fromstring(r.text)
+                used_v2 = (idx == 0)
+        except Exception:
+            continue
+
+    if root is None:
+        return (
+            f"❌ 국민연금 사업장 API 호출 실패 (HTTP {last_status}): "
+            "공공데이터포털(data.go.kr/data/3046071/openapi.do)에서 '국민연금공단_국민연금 가입 사업장 내역' 활용신청 여부를 확인해 주세요."
+        )
+
+    res_code = (root.findtext(".//resultCode") or "").strip()
+    res_msg = (root.findtext(".//resultMsg") or "").strip()
+    if res_code not in ("00", "000", "0000", ""):
+        return f"❌ 국민연금 API 응답 오류 (코드 {res_code}): {res_msg}"
+
+    items = root.findall(".//item")
+    if not items:
+        return f"조회된 국민연금 가입 사업장 내역이 없습니다. (사업장명: '{kw}', 사업자번호 앞6자리: '{bno6 or '전체'}')"
+
+    reg_kw = (region_keyword or "").strip()
+    parsed = []
+    for it in items:
+        d = {c.tag: (c.text or "").strip() for c in it}
+        addr = d.get("wkplRoadNmDtlAddr") or d.get("wkplJgongAddr") or ""
+        if reg_kw and reg_kw not in addr:
+            continue
+        b_no_item = d.get("bzowrRgstNo") or ""
+        if bno6 and b_no_item and not b_no_item.startswith(bno6):
+            continue
+        parsed.append(d)
+
+    if not parsed:
+        return f"검색된 {len(items)}건 중 조건(지역:'{reg_kw}', 사업자번호앞6자리:'{bno6}')에 일치하는 사업장이 없습니다."
+
+    parsed.sort(key=lambda x: (str(x.get("wkplJnngStcd", "")) == "1", str(x.get("dataCrtYm", ""))), reverse=True)
+
+    output = [
+        f"🏦 [국민연금 가입 사업장 내역 조회 결과 | 검색:'{kw}' (일치 {len(parsed)}건 중 최신 10건)]"
+    ]
+    det_ep = detail_urls[0] if used_v2 else detail_urls[1]
+    seen_seqs = set()
+
+    for d in parsed[:10]:
+        seq = d.get("seq") or ""
+        ym = d.get("dataCrtYm") or "-"
+        w_nm = d.get("wkplNm") or "-"
+        b_no_m = d.get("bzowrRgstNo") or "-"
+        addr = d.get("wkplRoadNmDtlAddr") or "-"
+        st_cd = "등록(계속)" if d.get("wkplJnngStcd") == "1" else "탈퇴/해지"
+        tp_cd = "법인" if d.get("wkplStylDvcd") == "1" else "개인"
+
+        det_info = ""
+        if seq and seq not in seen_seqs and len(seen_seqs) < 5:
+            seen_seqs.add(seq)
+            try:
+                dr = requests.get(f"{det_ep}?serviceKey={encoded_key}&seq={seq}", timeout=10)
+                if dr.status_code == 200:
+                    d_root = ET.fromstring(dr.text)
+                    d_it = d_root.find(".//item")
+                    if d_it is not None:
+                        dd = {c.tag: (c.text or "").strip() for c in d_it}
+                        j_cnt = dd.get("jnngpCnt") or "-"
+                        ntc_amt = dd.get("crrmmNtcAmt") or "0"
+                        nw_cnt = dd.get("nwAcqzrCnt") or "0"
+                        lss_cnt = dd.get("lssJnngpCnt") or "0"
+                        adpt_dt = dd.get("adptDt") or "-"
+                        ntc_fmt = f"{int(ntc_amt):,}원" if ntc_amt.isdigit() else f"{ntc_amt}원"
+                        det_info = (
+                            f"\n  · [상세] 가입자수: {j_cnt}명 (당월 신규취득: {nw_cnt}명 / 상실: {lss_cnt}명) | "
+                            f"당월고지금액: {ntc_fmt} | 적용일: {adpt_dt}"
+                        )
+            except Exception:
+                pass
+
+        output.append(
+            f"- [{ym} 기준] {w_nm} ({tp_cd} · 사업자번호: {b_no_m} | 상태: {st_cd})\n"
+            f"  · 주소: {addr}{det_info}"
+        )
+
+    return "\n".join(output)[:14000]
+
+
+# ---------------------------------------------------------
+# 11. 관세청 수출입 과세환율 정보 조회 (관세법 제18조 · 부가가치세 영세율/수입세금계산서 과세표준 검증용)
+# ---------------------------------------------------------
+def get_customs_exchange_rate(aply_bgn_dt: str, imex_type: str = "2", currency: str = "") -> str:
+    """
+    공공데이터포털 인증키(NTS_API_KEY)를 사용하여 관세청_관세환율정보(retrieveTrifFxrtInfo)를 조회합니다.
+    - aply_bgn_dt: 조회 기준일자 8자리 'YYYYMMDD' (예: '20261025')
+    - imex_type: 수출입 구분 ('1' 또는 'export'=수출, '2' 또는 'import'=수입, 'all'=수출·수입 모두)
+    - currency: 통화코드 필터 (예: 'USD', 'JPY', 'EUR', 'CNY' — 비워두면 주요 통화 전체 출력)
+    """
+    nts_key = _live_nts_key()
+    if not nts_key:
+        return "❌ NTS_API_KEY(공공데이터포털 인증키)가 설정되지 않았습니다."
+
+    dt_clean = re.sub(r"\D", "", aply_bgn_dt or "")[:8]
+    if len(dt_clean) != 8:
+        return f"❌ 조회일자('{aply_bgn_dt}')는 'YYYYMMDD' 8자리 형식(예: '20261025')이어야 합니다."
+
+    tp_raw = (imex_type or "2").lower().strip()
+    if tp_raw in ("1", "수출", "export", "exp"):
+        tp_list = [("1", "수출 과세환율")]
+    elif tp_raw in ("all", "전체", "수출입"):
+        tp_list = [("2", "수입 과세환율"), ("1", "수출 과세환율")]
+    else:
+        tp_list = [("2", "수입 과세환율")]
+
+    encoded_key = nts_key if "%" in nts_key else urllib.parse.quote(nts_key, safe="")
+    curr_filter = (currency or "").upper().strip()
+    major_currs = {"USD", "JPY", "EUR", "CNY", "GBP", "HKD", "SGD", "AUD", "CAD", "CHF", "VND", "THB"}
+
+    output = [f"🚢 [관세청 관세법 제18조 주간 수출입 과세환율 조회 | 기준일: {dt_clean[:4]}-{dt_clean[4:6]}-{dt_clean[6:]}]"]
+
+    for tp_code, tp_label in tp_list:
+        ep = (
+            f"https://apis.data.go.kr/1220000/retrieveTrifFxrtInfo/getRetrieveTrifFxrtInfo"
+            f"?serviceKey={encoded_key}&aplyBgnDt={dt_clean}&weekFxrtTpcd={tp_code}"
+        )
+        try:
+            resp = requests.get(ep, timeout=15)
+            if resp.status_code != 200:
+                return (
+                    f"❌ 관세청 과세환율 API 호출 실패 (HTTP {resp.status_code}): "
+                    "공공데이터포털(data.go.kr/data/15101230/openapi.do)에서 '관세청_관세환율정보(GW)' 활용신청 여부를 확인해 주세요."
+                )
+            root = ET.fromstring(resp.text)
+            res_code = (root.findtext(".//resultCode") or "").strip()
+            res_msg = (root.findtext(".//resultMsg") or "").strip()
+            if res_code not in ("00", "000", "0000", ""):
+                output.append(f"\n■ {tp_label}: API 응답 오류 (코드 {res_code}) - {res_msg}")
+                continue
+
+            items = root.findall(".//item")
+            if not items:
+                output.append(f"\n■ {tp_label}: 해당 일자({dt_clean})로 조회된 과세환율 내역이 없습니다.")
+                continue
+
+            rows = []
+            for it in items:
+                d = {c.tag: (c.text or "").strip() for c in it}
+                c_sgn = (d.get("currSgn") or "").upper()
+                if curr_filter and curr_filter not in c_sgn and curr_filter not in (d.get("cntySgn") or "").upper():
+                    continue
+                if not curr_filter and c_sgn not in major_currs and len(items) > 15:
+                    continue
+                cnty = d.get("cntySgn") or "-"
+                u_nm = d.get("mtryUtNm") or "-"
+                fxrt = d.get("fxrt") or "-"
+                bgn = d.get("aplyBgnDt") or dt_clean
+                rows.append(f"  - [{c_sgn} ({cnty} · {u_nm})] {fxrt} 원 (적용개시일: {bgn})")
+
+            if not rows and items:
+                for it in items[:15]:
+                    d = {c.tag: (c.text or "").strip() for c in it}
+                    rows.append(
+                        f"  - [{d.get('currSgn', '-')} ({d.get('cntySgn', '-')} · {d.get('mtryUtNm', '-')})] "
+                        f"{d.get('fxrt', '-')} 원 (적용개시일: {d.get('aplyBgnDt', dt_clean)})"
+                    )
+
+            output.append(f"\n■ {tp_label} (조회 {len(rows)}건):")
+            output.extend(rows[:20])
+        except Exception as e:
+            output.append(f"\n■ {tp_label} 조회 오류: {e}")
+
+    return "\n".join(output)[:14000]

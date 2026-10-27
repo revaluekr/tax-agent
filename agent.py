@@ -1758,6 +1758,39 @@ def search_building_ledger_for_gemini(address: str) -> str:
     except Exception as e:
         return f"건축물대장 조회 오류: {e}"
 
+def search_comwel_workplace_for_gemini(biz_no: str, insurance_type: str = "all") -> str:
+    """근로복지공단 고용·산재보험 가입 사업장 현황(상시인원·피보험자수·성립일·업종)을 사업자번호(10자리)로 조회합니다."""
+    _emit_live_status(f"👷 1단계: 근로복지공단 고용·산재보험 가입 현황 조회 중 ({biz_no})...")
+    print(f"\n[시스템] 👷 근로복지공단 고용·산재보험 조회 가동: 사업자번호='{biz_no}' | 구분='{insurance_type}'")
+    try:
+        if hasattr(law_api, "get_comwel_workplace_info"):
+            return _record("detail", law_api.get_comwel_workplace_info(biz_no, insurance_type))
+        return "현재 law_api.py에 근로복지공단 조회 함수가 없습니다."
+    except Exception as e:
+        return f"고용·산재보험 조회 오류: {e}"
+
+def search_nps_workplace_for_gemini(corp_name: str, biz_no_prefix6: str = "", region_keyword: str = "") -> str:
+    """국민연금 가입 사업장 내역(월별 가입자수·당월고지금액·신규취득/상실 인원)을 사업장명(corp_name)과 사업자번호 앞6자리로 조회합니다."""
+    _emit_live_status(f"🏦 1단계: 국민연금 가입 사업장 가입자수·고지금액 조회 중 ({corp_name})...")
+    print(f"\n[시스템] 🏦 국민연금 가입 사업장 조회 가동: 상호='{corp_name}' | 사업자앞6자리='{biz_no_prefix6}' | 지역='{region_keyword}'")
+    try:
+        if hasattr(law_api, "get_nps_workplace_info"):
+            return _record("detail", law_api.get_nps_workplace_info(corp_name, biz_no_prefix6, region_keyword))
+        return "현재 law_api.py에 국민연금 사업장 조회 함수가 없습니다."
+    except Exception as e:
+        return f"국민연금 사업장 조회 오류: {e}"
+
+def search_customs_exchange_rate_for_gemini(aply_bgn_dt: str, imex_type: str = "2", currency: str = "") -> str:
+    """관세청 수출입 과세환율(관세법 제18조 주간 고시환율)을 조회합니다. aply_bgn_dt('YYYYMMDD'), imex_type('1'=수출, '2'=수입, 'all'=모두), currency('USD' 등)."""
+    _emit_live_status(f"🚢 1단계: 관세청 수출입 과세환율 조회 중 ({aply_bgn_dt} · {currency or '전체'})...")
+    print(f"\n[시스템] 🚢 관세청 수출입 과세환율 조회 가동: 일자={aply_bgn_dt} | 구분={imex_type} | 통화={currency}")
+    try:
+        if hasattr(law_api, "get_customs_exchange_rate"):
+            return _record("detail", law_api.get_customs_exchange_rate(aply_bgn_dt, imex_type, currency))
+        return "현재 law_api.py에 관세청 과세환율 조회 함수가 없습니다."
+    except Exception as e:
+        return f"관세청 과세환율 조회 오류: {e}"
+
 # ---------------------------------------------------------
 # 🛡️ 정밀 수리 계산기: AST 화이트리스트 보안 샌드박스 & 천 단위 쉼표 지능형 정제
 #    (min(100,200) 공백 없는 인자 쉼표 보호 + 음수 거듭제곱 1.05**-3 허용 + pow(a,b) 지수 한도 검증 완벽 통합)
@@ -1961,6 +1994,9 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
 - 부동산 매매 실거래가 확인: 'search_real_estate_trade_for_gemini' 호출 / 전월세(보증금·월세) 실거래가 확인: 'search_real_estate_rent_for_gemini' 호출.
 - 부동산 개별공시지가 및 공동주택 공시가격(기준시가) 확인: 'search_official_land_price_for_gemini' 호출.
 - 건축물대장 표제부·층별개요(겸용주택 주택/상가 면적 비율·주용도·위반건축물 여부) 확인: 'search_building_ledger_for_gemini' 호출.
+- 근로복지공단 고용·산재보험 사업장 상시인원(피보험자수)·성립일·업종 확인: 'search_comwel_workplace_for_gemini' 호출.
+- 국민연금 가입 사업장 월별 가입자수·신규취득/상실 인원·고지금액 확인: 'search_nps_workplace_for_gemini' 호출.
+- 관세청 수출입 주간 과세환율(관세법 제18조 · 수입세금계산서 과세표준 검증) 확인: 'search_customs_exchange_rate_for_gemini' 호출.
 - 세액·공제액·수당·지분율 등 모든 숫자 계산: 반드시 'run_tax_calculator_for_gemini'를 호출하여 단 1원의 오차도 없이 정확히 계산할 것. (수식 내 숫자에는 천 단위 쉼표를 넣지 말고 `1500000 * 0.15`처럼 적으며, 함수 인자는 `min(1500000, 2000000)`처럼 쉼표+공백으로 구분할 것)
 
 1. 자료 검토 우선순위 및 기준
@@ -2494,6 +2530,9 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False, room
             search_real_estate_rent_for_gemini,
             search_official_land_price_for_gemini,
             search_building_ledger_for_gemini,
+            search_comwel_workplace_for_gemini,
+            search_nps_workplace_for_gemini,
+            search_customs_exchange_rate_for_gemini,
             run_tax_calculator_for_gemini
         ]
 

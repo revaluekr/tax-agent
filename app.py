@@ -955,9 +955,9 @@ DEFAULT_API_EXPIRY_CONFIG = {
         "url": "https://www.vworld.kr/dev/v4dv_apikey_s001.do"
     },
     "DATA_GO_KR": {
-        "name": "공공데이터포털(국세청·실거래가) API",
-        "org_name": "공공데이터포털 (국세청 · 국토교통부)",
-        "api_info": "사업자등록 상태·진위확인 및 부동산 실거래가 조회",
+        "name": "공공데이터포털(국세청·국토부·4대보험·관세청) API",
+        "org_name": "공공데이터포털 (국세청 · 국토부 · 근로복지공단 · 국민연금 · 관세청)",
+        "api_info": "사업자상태·진위확인 / 매매·전월세 실거래가·건축물대장 / 고용·산재·국민연금 사업장 / 관세환율 조회",
         "key_names": ["NTS_API_KEY", "DATA_GO_KR_KEY", "PUBLIC_DATA_KEY", "MOLIT_API_KEY"],
         "secret_key": "DATA_GO_KR_EXPIRY_DATE",
         "default_date": "2028-10-20",
@@ -2326,7 +2326,7 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
         },
         {
             "site_org": "2. 법제처 국가법령정보센터 (MOLEG)",
-            "api_info": "현행법령 · 연혁법령(구법) · 대법원판례 · 심판례 · 예규 · 개정이유서",
+            "api_info": "현행법령(조문·부칙) · 연혁법령(구법) · 대법원판례 · 헌재결정례 · 심판례 · 예규 · 별표/서식 · 개정이유서",
             "api_code": f"`{_format_api_code_display(law_raw, show_full_code)}`" if law_raw else "`미설정 (LAW_OPEN_API_KEY)`",
             "led_status": "🟢 정상 연동 (무기한)" if (law_raw or law_prom_map) else "⚪ 미설정",
             "link_md": "[🔗 사이트 이동](https://open.law.go.kr/LSO/openApi/guideList.do)"
@@ -2833,11 +2833,10 @@ if st.session_state.get("show_inline_api_manager"):
             st.rerun()
 
 # ---------------------------------------------------------
-# 4. 대화방 메시지 목록 렌더링 (방 전환 시 잔상 차단 + 2·3번째 답변 완료 시 해당 결론 시작점으로 자동 스크롤)
+# 4. 대화방 메시지 목록 렌더링 (방 전환 시 이전 방의 고스트 잔상 원천 차단용 고유 키 컨테이너)
 # ---------------------------------------------------------
-import streamlit.components.v1 as components
-
-with st.container(key=f"room_main_view_{effective_ws_id}_{selected_room}"):
+room_view_Slot = st.empty()
+with room_view_Slot.container(key=f"room_main_view_{effective_ws_id}_{selected_room}"):
     if not current_messages and not is_current_room_running:
         st.markdown(
             f"<div style='padding: 18px 20px; background-color: #f8fafc; border: 1px dashed #cbd5e1; "
@@ -2849,10 +2848,6 @@ with st.container(key=f"room_main_view_{effective_ws_id}_{selected_room}"):
         )
 
     for idx, message in enumerate(current_messages):
-        st.markdown(
-            f"<div id='chat-msg-anchor-{idx}' style='scroll-margin-top: 68px;'></div>",
-            unsafe_allow_html=True
-        )
         with st.chat_message(message["role"]):
             display_content = message["content"]
             if message["role"] == "assistant" and hasattr(agent, "_inject_direct_law_links"):
@@ -2952,46 +2947,6 @@ with st.container(key=f"room_main_view_{effective_ws_id}_{selected_room}"):
 
                 with st.expander("📋 카톡·이메일 전송용 텍스트 원클릭 복사 (우측 상단 복사 아이콘 클릭)"):
                     st.code(_extract_clean_copy_text(message["content"]), language="markdown")
-
-    # 🎯 [자동 스크롤 엔진] 2번째·3번째 이후 새 질문 등록 시 또는 새 답변 완료 시
-    #    맨 처음(1번 질문)으로 돌아가지 않고 방금 나온 최신 질문/답변(결론 시작점)으로 즉시 포커스합니다.
-    st.markdown("<div id='chat-live-running-anchor' style='scroll-margin-top: 68px;'></div>", unsafe_allow_html=True)
-    _scroll_state_key = f"_last_scroll_sig_{effective_ws_id}_{selected_room}"
-    _msg_cnt = len(current_messages)
-    _cur_scroll_sig = f"{_msg_cnt}_{is_current_room_running}"
-    _prev_scroll_sig = st.session_state.get(_scroll_state_key)
-
-    if _prev_scroll_sig != _cur_scroll_sig:
-        st.session_state[_scroll_state_key] = _cur_scroll_sig
-        if _msg_cnt >= 2:
-            # 직전 상태가 작성중(running)이었다가 완료된 순간이거나, 2번째 이상 대화가 추가된 경우
-            # 최신 답변(assistant)의 시작점(결론 바로 위 질문/답변 경계) 또는 진행중 상태창으로 스크롤
-            if is_current_room_running:
-                _target_anchor_id = f"chat-msg-anchor-{_msg_cnt - 1}"
-            else:
-                _last_role = current_messages[-1].get("role", "")
-                _target_anchor_id = f"chat-msg-anchor-{_msg_cnt - 1}" if _last_role == "assistant" else f"chat-msg-anchor-{max(0, _msg_cnt - 1)}"
-            components.html(
-                f"""
-                <script>
-                (function() {{
-                    const targetId = "{_target_anchor_id}";
-                    function scrollToTarget() {{
-                        try {{
-                            const parentDoc = window.parent.document;
-                            const el = parentDoc.getElementById(targetId);
-                            if (el) {{
-                                el.scrollIntoView({{ behavior: "smooth", block: "start" }});
-                            }}
-                        }} catch (e) {{}}
-                    }}
-                    setTimeout(scrollToTarget, 80);
-                    setTimeout(scrollToTarget, 280);
-                }})();
-                </script>
-                """,
-                height=0,
-            )
 
 # ---------------------------------------------------------
 # 5. 메인 화면 최하단 고정: Gemini 스타일 올인원 통합 채팅 입력창 (드래그 앤 드롭 파일 첨부 통합)
