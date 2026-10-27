@@ -2530,6 +2530,8 @@ def _compute_historical_matrix_columns(
         b2_y = float(d.get("b2_yth", yth) or 0.0)
         b3_r = float(d.get("b3_reg", reg) or 0.0)
         b3_y = float(d.get("b3_yth", yth) or 0.0)
+        b2_ya = float(d["b2_yth_act"]) if d.get("b2_yth_act") is not None else b2_y
+        b3_ya = float(d["b3_yth_act"]) if d.get("b3_yth_act") is not None else b3_y
         has_d = bool(d.get("has_data", reg > 0 or yth > 0))
         return {
             "reg": round(reg, 2),
@@ -2539,6 +2541,8 @@ def _compute_historical_matrix_columns(
             "b2_yth": round(b2_y, 2),
             "b3_reg": round(b3_r, 2),
             "b3_yth": round(b3_y, 2),
+            "b2_yth_act": round(b2_ya, 2),
+            "b3_yth_act": round(b3_ya, 2),
             "has_data": has_d,
             "from_filed": bool(d.get("from_filed")),
         }
@@ -2649,6 +2653,7 @@ def _compute_historical_matrix_columns(
             init_gen_inc=info_m3["gen_inc"],
             cur_pm_reg=s_m2["b2_reg"],
             cur_pm_yth=s_m2["b2_yth"],
+            cur_pm_yth_actual=s_m2["b2_yth_act"],
             init_credit_claimed_won=info_m3["credit_1st_won"],
         )
         c_m2_2_cr = int(pm_m3_in_m2.get("continued_credit_won") or 0)
@@ -2683,6 +2688,7 @@ def _compute_historical_matrix_columns(
             init_gen_inc=info_m2["gen_inc"],
             cur_pm_reg=s_m1["b2_reg"],
             cur_pm_yth=s_m1["b2_yth"],
+            cur_pm_yth_actual=s_m1["b2_yth_act"],
             init_credit_claimed_won=info_m2["credit_1st_won"],
         )
         c_m1_2_cr = int(pm_m2_in_m1.get("continued_credit_won") or 0)
@@ -2701,9 +2707,11 @@ def _compute_historical_matrix_columns(
             init_gen_inc=info_m3["gen_inc"],
             cur_pm_reg=s_m1["b3_reg"],
             cur_pm_yth=s_m1["b3_yth"],
+            cur_pm_yth_actual=s_m1["b3_yth_act"],
             init_credit_claimed_won=info_m3["credit_1st_won"],   # 2차 공제분은 계산 함수가 한도에 자동 합산
             prev_pm_reg=s_m2["b2_reg"] if s_m2["has_data"] else None,
             prev_pm_yth=s_m2["b2_yth"] if s_m2["has_data"] else None,
+            prev_pm_yth_actual=s_m2["b2_yth_act"] if s_m2["has_data"] else None,
             prior_clawback_paid_won=c_m2_2_cl,
             y1_continued_credit_won=c_m2_2_cr,
         )

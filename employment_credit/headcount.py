@@ -301,7 +301,12 @@ def youth_hold_years(corp_size: str, contract_dt: date | None = None) -> int:
     return 0
 
 
-def is_youth_month(person: dict, year: int, month: int, corp_size: str) -> bool:
+def is_youth_month(person: dict, year: int, month: int, corp_size: str, use_hold: bool = True) -> bool:
+    """
+    청년 정규직 해당 여부(월말 기준).
+    use_hold=True : 2026.2.27. 개정 정의(계약일 기준 유예 포함) — 2025년 이후 최초공제분·당해 판정
+    use_hold=False: 종전 정의(매달 나이로만 판정) — 2024년 이전 최초공제분의 사후관리
+    """
     birth = parse_date(person.get("생년월일"))
     c_dt = contract_date(person)
     if not birth or not c_dt:
@@ -320,6 +325,8 @@ def is_youth_month(person: dict, year: int, month: int, corp_size: str) -> bool:
         return True
 
     # 34세를 넘은 달: 근로계약 체결일 기준 인정기간 안이면 청년 (2024년 이전 계약은 인정기간 없음)
+    if not use_hold:
+        return False
     hold = youth_hold_years(corp_size, c_dt)
     if hold <= 0:
         return False
@@ -338,6 +345,18 @@ def was_youth_in_year_by_age(person: dict, year: int, corp_size: str) -> bool:
     )
 
 
+NEW_YOUTH_DEF_FROM_COHORT = 2025   # 2025.1.1. 이후 개시 과세연도를 최초공제연도로 하는 분부터 새 정의(시행령 부칙 제36127호 제11조)
+
+
+def youth_flag_old_def(person: dict, year: int, month: int, corp_size: str, youth_label: str) -> bool:
+    """종전 정의의 '실제' 청년등 여부(간주 없음): 2024년 이전 최초공제분의 연속공제 판정용 (서면-2023-법인-0978)"""
+    if youth_label in (R.YOUTH_SENIOR, R.YOUTH_DISABLED, R.YOUTH_CAREER):
+        return True
+    if youth_label == R.YOUTH_YOUNG and parse_date(person.get("생년월일")) and contract_date(person) is not None:
+        return is_youth_month(person, year, month, corp_size, use_hold=False)
+    return False                    # 북한이탈주민은 2025년 이후 최초공제분부터 청년등
+
+
 def is_youth_month_for_cohort(
     person: dict,
     eval_year: int,
@@ -348,16 +367,16 @@ def is_youth_month_for_cohort(
     was_youth_in_cohort: bool | None = None,
 ) -> bool:
     """
-    사후관리·연속공제용 청년등 판정 (구 조특령 제26조의8 제5항)
-    = 당해 판정상 청년등  OR  최초공제연도(cohort_year)에 청년등이었던 사람
-    ※ 나이가 지나 지금은 '해당없음(일반)'으로 표시되는 사람이 바로 간주 대상이므로, 현재 표시와 무관하게 판정합니다.
+    2024년 이전 최초공제분의 추가납부용 청년등 판정 (구 조특령 제26조의8 제5항 간주)
+    = 종전 정의상 현재 청년등  OR  최초공제연도(cohort_year)에 청년등이었던 사람
+    ※ 2025년 이후 최초공제분은 제5항이 삭제되어 간주 없이 새 정의(당해 판정)를 그대로 씀 → compute_row에서 처리
     """
     if youth_label in (R.YOUTH_SENIOR, R.YOUTH_DISABLED, R.YOUTH_CAREER):
         return True
     if youth_label == R.YOUTH_NK:
         return cohort_year >= 2025
     if youth_label == R.YOUTH_YOUNG and parse_date(person.get("생년월일")) and \
-            is_youth_month(person, eval_year, month, corp_size):
+            is_youth_month(person, eval_year, month, corp_size, use_hold=cohort_year >= NEW_YOUTH_DEF_FROM_COHORT):
         return True
     if was_youth_in_cohort is None:
         if not parse_date(person.get("생년월일")):
@@ -506,6 +525,8 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
     youth_flags_b1: list[bool] = []
     youth_flags_b2: list[bool] = []
     youth_flags_b3: list[bool] = []
+    youth_flags_b2a: list[bool] = []          # 연속공제 판정용 (간주 없음)
+    youth_flags_b3a: list[bool] = []
     no_pay_months: list[int] = []
     hire_month_nopay: list[int] = []
     projected_months: list[int] = []
@@ -583,19 +604,32 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
             else:
                 yf1 = True
 
-            yf2 = is_youth_month_for_cohort(person, year, m, year - 1, corp_size, youth, c1_was_youth)
-            yf3 = is_youth_month_for_cohort(person, year, m, year - 2, corp_size, youth, c2_was_youth)
+            # 사후관리용 청년 판정 (귀속분별 규칙)
+            #  · 2025년 이후 최초공제분: 새 정의(유예 포함), 간주 없음 → 추가납부·연속공제 모두 당해 판정과 같음
+            #  · 2024년 이전 최초공제분: 추가납부는 최초연도 청년 간주(구 제5항), 연속공제 판정은 종전 정의의 실제 청년
+            def _cohort_flags(cy: int, was):
+                if cy >= NEW_YOUTH_DEF_FROM_COHORT:
+                    return yf1, yf1
+                claw = is_youth_month_for_cohort(person, year, m, cy, corp_size, youth, was)
+                act = youth_flag_old_def(person, year, m, corp_size, youth)
+                return claw, act
+            yf2, yf2a = _cohort_flags(year - 1, c1_was_youth)
+            yf3, yf3a = _cohort_flags(year - 2, c2_was_youth)
         else:
-            yf1 = yf2 = yf3 = False
+            yf1 = yf2 = yf3 = yf2a = yf3a = False
 
         youth_flags_b1.append(yf1)
         youth_flags_b2.append(yf2)
         youth_flags_b3.append(yf3)
+        youth_flags_b2a.append(yf2a)
+        youth_flags_b3a.append(yf3a)
 
     row_sum_frac = sum((Fraction(str(v)) for v in months if v), Fraction(0))
     yth_b1_frac = sum((Fraction(str(v)) for v, f in zip(months, youth_flags_b1) if v and f), Fraction(0))
     yth_b2_frac = sum((Fraction(str(v)) for v, f in zip(months, youth_flags_b2) if v and f), Fraction(0))
     yth_b3_frac = sum((Fraction(str(v)) for v, f in zip(months, youth_flags_b3) if v and f), Fraction(0))
+    yth_b2a_frac = sum((Fraction(str(v)) for v, f in zip(months, youth_flags_b2a) if v and f), Fraction(0))
+    yth_b3a_frac = sum((Fraction(str(v)) for v, f in zip(months, youth_flags_b3a) if v and f), Fraction(0))
 
     row_sum = float(row_sum_frac)
     yth_sum_b1 = float(yth_b1_frac)
@@ -667,6 +701,12 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
         "youth_sum": yth_sum_b1,
         "youth_sum_b2": yth_sum_b2,
         "youth_sum_b3": yth_sum_b3,
+        "youth_flags_b2a": youth_flags_b2a,
+        "youth_flags_b3a": youth_flags_b3a,
+        "youth_sum_b2a": float(yth_b2a_frac),
+        "youth_sum_b3a": float(yth_b3a_frac),
+        "b2_yth_act": round(float(yth_b2a_frac) / months_in_year, 2),
+        "b3_yth_act": round(float(yth_b3a_frac) / months_in_year, 2),
         "gen_sum_b1": gen_sum_b1,
         "gen_sum_b2": gen_sum_b2,
         "gen_sum_b3": gen_sum_b3,
@@ -719,6 +759,9 @@ def year_totals(computed_rows: list[dict], months_in_year: int, year: int | None
     yth_b1_f = sum((Fraction(str(r["youth_sum"])) for r in computed_rows), Fraction(0))
     yth_b2_f = sum((Fraction(str(r.get("youth_sum_b2", r["youth_sum"]))) for r in computed_rows), Fraction(0))
     yth_b3_f = sum((Fraction(str(r.get("youth_sum_b3", r["youth_sum"]))) for r in computed_rows), Fraction(0))
+    # 연속공제 판정용(간주 없음) 청년 수: 없으면 추가납부용과 같은 값
+    yth_b2a_f = sum((Fraction(str(r.get("youth_sum_b2a", r.get("youth_sum_b2", r["youth_sum"])))) for r in computed_rows), Fraction(0))
+    yth_b3a_f = sum((Fraction(str(r.get("youth_sum_b3a", r.get("youth_sum_b3", r["youth_sum"])))) for r in computed_rows), Fraction(0))
 
     reg_total = float(reg_total_f)
     yth_total_b1 = float(yth_b1_f)
@@ -792,6 +835,8 @@ def year_totals(computed_rows: list[dict], months_in_year: int, year: int | None
         "b3_yth": b3_yth,
         "b3_gen": b3_gen,
         "b3_reg": b3_reg,
+        "b2_yth_act": trunc2(yth_b2a_f / n),
+        "b3_yth_act": trunc2(yth_b3a_f / n),
         "b4_yth": b4_yth,
         "b4_gen": b4_gen,
         "b4_reg": b4_reg,
@@ -1112,6 +1157,8 @@ def calc_legacy_post_management(
     prev_pm_yth: float | None = None,
     prior_clawback_paid_won: int = 0,
     y1_continued_credit_won: int | None = None,
+    cur_pm_yth_actual: float | None = None,
+    prev_pm_yth_actual: float | None = None,
 ) -> dict[str, Any]:
     """
     [2023~2025년 귀속 공제분의 1차·2차 사후관리(2·3차년도 연속공제 및 추가납부세액) 정밀 산출]
@@ -1160,59 +1207,76 @@ def calc_legacy_post_management(
         prior_years_claimed_count = 1
     else:
         if y1_continued_credit_won is not None:
-            prior_years_claimed_count = 2 if (y1_continued_credit_won > 0 and not is_large) else 1
+            # 직전 2년 이내 공제받은 횟수 (구 조특령 제26조의8 제4항 제2호): 최초연도 + 2차연도에 공제를 받았으면 2회.
+            # 대기업도 공제기간이 2년(최초·다음 연도)이고 사후관리 기간은 기업규모와 무관하게 2년(구 조특법 제29조의8 제2항)이므로 같은 방식
+            prior_years_claimed_count = 2 if y1_continued_credit_won > 0 else 1
         elif prev_pm_reg is not None and prev_pm_reg < init_reg:
             prior_years_claimed_count = 1
         else:
-            prior_years_claimed_count = 2 if not is_large else 1
+            prior_years_claimed_count = 2
 
-    if reg_diff >= 0 and yth_diff >= 0:
-        case_code = "유지/증가"
-        case_title = "전체 상시 및 청년등 인원 모두 유지 (전액 연속공제 · 추징 없음)"
-        ret_yth = round(init_yth_inc, 2)
-        ret_gen = round(init_gen_inc, 2)
-        if elapsed == 2:
-            if (y1_continued_credit_won is not None and y1_continued_credit_won == 0) or (
-                prev_pm_reg is not None and prev_pm_reg < init_reg
-            ):
-                ret_yth = 0.0
-                ret_gen = 0.0
-            elif prev_pm_yth is not None and prev_pm_yth < init_yth:
-                lost_y1 = max(0.0, init_yth - prev_pm_yth)
-                ret_yth = round(max(0.0, init_yth_inc - lost_y1), 2)
-                ret_gen = round(init_gen_inc + (init_yth_inc - ret_yth), 2)
-
-        cont_man = (ret_yth * yth_rate + ret_gen * gen_rate) if can_receive_continued else 0.0
-        raw_claw_man = 0.0
-        formula_note = (
-            f"[{cohort_year}년분 {elapsed+1}차년도] 상시({cur_pm_reg:.2f} ≥ {init_reg:.2f}) 및 "
-            f"청년등({cur_pm_yth:.2f} ≥ {init_yth:.2f}) 유지 → "
-            f"연속공제: 청년 {ret_yth:.2f}명×{yth_rate:,}만 + 청년외 {ret_gen:.2f}명×{gen_rate:,}만 = {cont_man:,.1f}만원 / 추징 0원"
-        )
-
-    elif reg_diff >= 0 and yth_diff < 0:
-        case_code = "Case 3 (전체 유지·청년등만 감소)"
-        case_title = "전체 상시근로자 유지 · 청년등만 감소 (부분 연속공제 + 단가차액 추가납부)"
-        capped_yth_dec = round(min(init_yth_inc, yth_dec), 2)
-        ret_yth = round(max(0.0, init_yth_inc - capped_yth_dec), 2)
-        ret_gen = round(init_gen_inc + capped_yth_dec, 2)
-
-        if elapsed == 2 and (
-            (y1_continued_credit_won is not None and y1_continued_credit_won == 0)
-            or (prev_pm_reg is not None and prev_pm_reg < init_reg)
+    # ── 연속공제: 청년 단가 적용 여부 (법 §29의8②, 기재부 조세특례제도과-214 2023.3.6., 서면-2023-법인-0978) ──
+    #  · 판정은 '간주 없는' 청년 수(cur_pm_yth_actual)로: 나이가 지나 청년이 아니게 된 경우도 청년 감소
+    #  · 청년이 줄면 그해부터 청년 단가는 아무에게도 적용하지 않고, 당초 청년 증가분 전부를 청년외 단가로 공제
+    #  · 한번 멈춘 청년 단가는 이후 연도에 청년 수가 회복돼도 되살아나지 않음
+    yth_act = cur_pm_yth if cur_pm_yth_actual is None else cur_pm_yth_actual
+    full_man = init_yth_inc * yth_rate + init_gen_inc * gen_rate
+    conv_man = (init_yth_inc + init_gen_inc) * gen_rate
+    stopped_now = round(yth_act - init_yth, 2) < 0
+    stopped_before = False
+    y1_halted = False
+    if elapsed == 2:
+        if (y1_continued_credit_won is not None and y1_continued_credit_won == 0) or (
+            prev_pm_reg is not None and prev_pm_reg < init_reg
         ):
-            ret_yth = 0.0
-            ret_gen = 0.0
+            y1_halted = True                                   # 1년차에 전체 감소로 공제 중단
+        prev_act = prev_pm_yth_actual if prev_pm_yth_actual is not None else prev_pm_yth
+        if prev_act is not None and round(prev_act - init_yth, 2) < 0:
+            stopped_before = True
+        if y1_continued_credit_won and 0 < y1_continued_credit_won < int(round(full_man * 10_000)) - 10:
+            stopped_before = True                              # 2차 공제를 줄여 받았다면 이미 청년 단가 중단
+    youth_stopped = stopped_now or stopped_before
 
-        cont_man = (ret_yth * yth_rate + ret_gen * gen_rate) if can_receive_continued else 0.0
-        raw_claw_man = capped_yth_dec * diff_rate * prior_years_claimed_count
-        formula_note = (
-            f"[{cohort_year}년분 {elapsed+1}차년도 · Case 3] 전체 상시 유지({cur_pm_reg:.2f} ≥ {init_reg:.2f}), "
-            f"청년등 {capped_yth_dec:.2f}명 감소(일반 대체) → "
-            f"추징(차액): {capped_yth_dec:.2f}명 × ({yth_rate:,}-{gen_rate:,})만원 × {prior_years_claimed_count}년 = {raw_claw_man:,.1f}만원 / "
-            f"연속공제: 유지청년 {ret_yth:.2f}명×{yth_rate:,}만 + 대체포함일반 {ret_gen:.2f}명×{gen_rate:,}만 = {cont_man:,.1f}만원"
+    if reg_diff >= 0:
+        if y1_halted:
+            ret_yth, ret_gen, cont_man = 0.0, 0.0, 0.0
+        elif youth_stopped:
+            ret_yth, ret_gen = 0.0, round(init_yth_inc + init_gen_inc, 2)
+            cont_man = conv_man if can_receive_continued else 0.0
+        else:
+            ret_yth, ret_gen = round(init_yth_inc, 2), round(init_gen_inc, 2)
+            cont_man = full_man if can_receive_continued else 0.0
+        cont_txt = (
+            f"연속공제: (청년 {init_yth_inc:.2f} + 청년외 {init_gen_inc:.2f})명 × {gen_rate:,}만 = {cont_man:,.1f}만원 (청년 단가 중단)"
+            if youth_stopped and not y1_halted else
+            (f"연속공제: 청년 {init_yth_inc:.2f}명×{yth_rate:,}만 + 청년외 {init_gen_inc:.2f}명×{gen_rate:,}만 = {cont_man:,.1f}만원"
+             if not y1_halted else "연속공제: 1년차 감소로 중단(0원)")
         )
-
+        if yth_diff < 0:
+            case_code = "Case 3 (전체 유지·청년등만 감소)"
+            case_title = "전체 상시근로자 유지 · 청년등만 감소 (청년 단가 중단 + 단가차액 추가납부)"
+            capped_yth_dec = round(min(init_yth_inc, yth_dec), 2)
+            raw_claw_man = capped_yth_dec * diff_rate * prior_years_claimed_count
+            formula_note = (
+                f"[{cohort_year}년분 {elapsed+1}차년도 · Case 3] 전체 상시 유지({cur_pm_reg:.2f} ≥ {init_reg:.2f}), "
+                f"청년등 {capped_yth_dec:.2f}명 감소 → 추징(차액): {capped_yth_dec:.2f}명 × ({yth_rate:,}-{gen_rate:,})만원 × "
+                f"{prior_years_claimed_count}회 = {raw_claw_man:,.1f}만원 / {cont_txt}"
+            )
+        else:
+            raw_claw_man = 0.0
+            if youth_stopped and not y1_halted:
+                case_code = "청년 단가 중단 (추징 없음)"
+                case_title = "청년등 수가 최초공제연도보다 적어(나이 경과 등) 청년 단가 중단 · 추가납부 없음"
+                why = ("1년차에 이미 청년 단가가 중단됨" if stopped_before and not stopped_now else
+                       f"판정용 청년 {yth_act:.2f} < 최초 {init_yth:.2f} (나이 경과 등, 추가납부는 간주 인원 {cur_pm_yth:.2f}로 계산)")
+                formula_note = f"[{cohort_year}년분 {elapsed+1}차년도] 상시 유지, {why} → 추징 0원 / {cont_txt}"
+            else:
+                case_code = "유지/증가"
+                case_title = "전체 상시 및 청년등 인원 모두 유지 (전액 연속공제 · 추징 없음)"
+                formula_note = (
+                    f"[{cohort_year}년분 {elapsed+1}차년도] 상시({cur_pm_reg:.2f} ≥ {init_reg:.2f}) 및 "
+                    f"청년등({yth_act:.2f} ≥ {init_yth:.2f}) 유지 → {cont_txt} / 추징 0원"
+                )
     else:
         ret_yth = 0.0
         ret_gen = 0.0
@@ -1337,6 +1401,8 @@ def calculate_tax_year_package(
         b3_r = float(d.get("b3_reg", reg) or 0.0)
         b3_y = float(d.get("b3_yth", yth) or 0.0)
         b3_y_tot = float(d.get("b3_청년등_합계", round(b3_y * n_m, 2)) or 0.0)
+        b2_ya = float(d.get("b2_yth_act", b2_y) if d.get("b2_yth_act") is not None else b2_y)
+        b3_ya = float(d.get("b3_yth_act", b3_y) if d.get("b3_yth_act") is not None else b3_y)
 
         b4_r = float(d.get("b4_reg", reg) or 0.0)
         b4_y = float(d.get("b4_yth", yth) or 0.0)
@@ -1356,6 +1422,8 @@ def calculate_tax_year_package(
             "b3_reg": b3_r,
             "b3_yth": b3_y,
             "b3_yth_total": b3_y_tot,
+            "b2_yth_act": b2_ya,
+            "b3_yth_act": b3_ya,
             "b4_reg": b4_r,
             "b4_yth": b4_y,
             "has_data": has_data,
@@ -1416,7 +1484,8 @@ def calculate_tax_year_package(
                   "formula_note": f"{cohort}년 귀속분은 구법 사후관리 대상이 아니며 신법 {label}(B·C) 유지분 공제로 반영됩니다."})
         return r
 
-    def _cohort(cohort: int, elapsed: int, cur_reg: float, cur_yth: float, s_init: dict, s_before: dict) -> tuple[dict, dict, dict]:
+    def _cohort(cohort: int, elapsed: int, cur_reg: float, cur_yth: float, s_init: dict, s_before: dict,
+                cur_yth_act: float | None = None) -> tuple[dict, dict, dict]:
         f = pf.get(cohort) or pf.get(str(cohort)) or {}
         # 최초공제연도 사업장 소재지(수도권 여부): 연속공제·추가납부 단가는 최초공제연도 기준. 없으면 현재 소재지.
         coh_cap = is_capital if f.get("is_capital") is None else bool(f.get("is_capital"))
@@ -1430,6 +1499,7 @@ def calculate_tax_year_package(
         if elapsed == 2:
             extra = dict(prev_pm_reg=prev_s["b2_reg"] if prev_s["has_data"] else None,
                          prev_pm_yth=prev_s["b2_yth"] if prev_s["has_data"] else None,
+                         prev_pm_yth_actual=prev_s["b2_yth_act"] if prev_s["has_data"] else None,
                          prior_clawback_paid_won=paid,
                          y1_continued_credit_won=int(y1_cont) if y1_cont is not None else None)
 
@@ -1440,7 +1510,7 @@ def calculate_tax_year_package(
             r = calc_legacy_post_management(cohort, t, corp_size, coh_cap,
                                             vals["init_reg"], vals["init_yth"], vals["init_yth_inc"], vals["init_gen_inc"],
                                             cur_reg, cur_yth, init_credit_claimed_won=claimed,
-                                            unclaimed_carryforward_won=cf, **extra)
+                                            unclaimed_carryforward_won=cf, cur_pm_yth_actual=cur_yth_act, **extra)
             r["base_label"] = label + (f" ({', '.join(borrowed)}은 기신고 숫자 사용)" if borrowed else "")
             if claimed <= 0 and r.get("clawback_gross_won", 0) > 0:
                 r["formula_note"] += " ※ 기신고 공제세액이 없어 추가납부 한도를 적용하지 못했습니다."
@@ -1474,12 +1544,14 @@ def calculate_tax_year_package(
         return r_filed, r_recalc, {"filed": filed, "recalc": recalc, "borrowed": borrowed}
 
     if (t - 1) <= 2025:
-        pm_y1_filed, pm_y1_recalc, base_y1 = _cohort(t - 1, 1, cur_s["b2_reg"], cur_s["b2_yth"], prev_s, prev2_s)
+        pm_y1_filed, pm_y1_recalc, base_y1 = _cohort(t - 1, 1, cur_s["b2_reg"], cur_s["b2_yth"], prev_s, prev2_s,
+                                                    cur_yth_act=cur_s["b2_yth_act"])
     else:
         pm_y1_filed = pm_y1_recalc = _new_law(t - 1, "B", "2년차")
         base_y1 = {}
     if (t - 2) <= 2025:
-        pm_y2_filed, pm_y2_recalc, base_y2 = _cohort(t - 2, 2, cur_s["b3_reg"], cur_s["b3_yth"], prev2_s, prev3_s)
+        pm_y2_filed, pm_y2_recalc, base_y2 = _cohort(t - 2, 2, cur_s["b3_reg"], cur_s["b3_yth"], prev2_s, prev3_s,
+                                                    cur_yth_act=cur_s["b3_yth_act"])
     else:
         pm_y2_filed = pm_y2_recalc = _new_law(t - 2, "C", "3년차")
         base_y2 = {}
