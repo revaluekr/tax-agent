@@ -1003,8 +1003,7 @@ def get_molit_real_estate_trade(property_type: str, region: str, deal_ymd: str, 
         kw = filter_keyword.strip()
         parsed_rows = []
 
-        for it in items:
-            data = {child.tag: (child.text or "").strip() for child in it}
+        for data in items:
             raw_str = " ".join(data.values())
             if kw and kw not in raw_str:
                 continue
@@ -1099,20 +1098,16 @@ def get_molit_real_estate_rent(property_type: str, region: str, deal_ymd: str, f
                 "공공데이터포털(data.go.kr)에서 '국토교통부_아파트/오피스텔/연립다세대/단독다가구 전월세 실거래가 자료' 활용신청 여부를 확인해 주세요."
             )
 
-        root = ET.fromstring(resp.text)
-        result_code = (root.findtext(".//resultCode") or "").strip()
-        result_msg = (root.findtext(".//resultMsg") or "").strip()
-        if result_code not in ("00", "000", "0000", ""):
-            return f"❌ 국토부 전월세 API 응답 오류 (코드 {result_code}): {result_msg}"
-
-        items = root.findall(".//item")
+        items_dict_list, err_msg = _parse_data_go_kr_items(resp.text, f"국토교통부 {type_label}")
+        if err_msg:
+            return err_msg
+        items = items_dict_list
         if not items:
             return f"조회된 [{type_label}] 실거래 내역이 없습니다. (지역코드: {lawd_cd}, 계약연월: {ymd})"
 
         kw = (filter_keyword or "").strip()
         parsed_rows = []
-        for it in items:
-            data = {child.tag: (child.text or "").strip() for child in it}
+        for data in items:
             raw_str = " ".join(data.values())
             if kw and kw not in raw_str:
                 continue
@@ -1422,6 +1417,101 @@ def get_vworld_official_price(address_or_pnu: str, stdr_year: str = "") -> str:
 # ---------------------------------------------------------
 # 8. 국토교통부 건축물대장 표제부 · 층별개요 조회 (겸용주택 주택/상가 면적 비율 · 주용도 · 위반건축물 판정용)
 # ---------------------------------------------------------
+def _parse_data_go_kr_items(raw_text: str, service_label: str) -> tuple[list[dict], str]:
+    """
+    공공데이터포털(apis.data.go.kr)의 XML 또는 JSON 응답을 모두 파싱하여 (items_dict_list, error_msg)를 반환합니다.
+    특히 활용신청 직후 게이트웨이 키 동기화 대기(10분~1시간) 중에 발생하는
+    <cmmMsgHeader><returnReasonCode>30</returnReasonCode><returnAuthMsg>SERVICE_KEY_IS_NOT_REGISTERED_ERROR</returnAuthMsg>
+    에러를 정밀 감지하여 명확한 안내 메시지를 반환합니다.
+    """
+    txt = (raw_text or "").strip()
+    if not txt:
+        return [], f"❌ {service_label} API로부터 빈 응답이 반환되었습니다."
+
+    # 1) JSON 응답인 경우 자동 처리
+    if txt.startswith("{") or txt.startswith("["):
+        try:
+            js = json.loads(txt)
+            if isinstance(js, dict):
+                cmm = js.get("cmmMsgHeader") or (js.get("OpenAPI_ServiceResponse", {}) or {}).get("cmmMsgHeader") or {}
+                if cmm:
+                    r_code = str(cmm.get("returnReasonCode") or "").strip()
+                    r_auth = str(cmm.get("returnAuthMsg") or cmm.get("errMsg") or "").strip()
+                    if r_code == "30" or "NOT_REGISTERED" in r_auth:
+                        return [], (
+                            f"⏳ [{service_label}] 공공데이터포털 인증키 동기화 대기 중 (코드 30: {r_auth})\n"
+                            "→ 공공데이터포털(data.go.kr)에서 [활용신청] 승인 직후에는 게이트웨이 서버에 인증키가 전파되는 데 약 10분~1시간이 소요됩니다. 잠시 후 다시 조회해 주세요."
+                        )
+                    if r_code == "20" or "ACCESS_DENIED" in r_auth:
+                        return [], (
+                            f"⏳ [{service_label}] 공공데이터포털 서비스 접근 권한 미반영 (코드 20: {r_auth})\n"
+                            "→ 활용신청을 방금 완료하셨다면 키 동기화까지 약 10~30분 정도 기다려 주시고, 아직 신청 전이라면 data.go.kr에서 활용신청을 진행해 주세요."
+                        )
+                    return [], f"❌ [{service_label}] 게이트웨이 오류 (코드 {r_code}): {r_auth}"
+
+                resp_obj = js.get("response") or js
+                header = resp_obj.get("header") or {}
+                res_code = str(header.get("resultCode") or "").strip()
+                res_msg = str(header.get("resultMsg") or "").strip()
+                if res_code not in ("00", "000", "0000", ""):
+                    return [], f"❌ [{service_label}] API 응답 오류 (코드 {res_code}): {res_msg}"
+
+                body = resp_obj.get("body") or {}
+                items_node = body.get("items")
+                if isinstance(items_node, dict):
+                    item_list = items_node.get("item")
+                elif isinstance(items_node, list):
+                    item_list = items_node
+                else:
+                    item_list = []
+
+                if isinstance(item_list, dict):
+                    item_list = [item_list]
+                elif not isinstance(item_list, list):
+                    item_list = []
+
+                cleaned_items = []
+                for it in item_list:
+                    if isinstance(it, dict):
+                        cleaned_items.append({str(k): str(v).strip() if v is not None else "" for k, v in it.items()})
+                return cleaned_items, ""
+        except Exception as e:
+            return [], f"❌ [{service_label}] JSON 응답 파싱 실패: {e}"
+
+    # 2) XML 응답인 경우 처리
+    try:
+        root = ET.fromstring(txt)
+    except Exception as e:
+        return [], f"❌ [{service_label}] XML 응답 파싱 실패: {e}"
+
+    reason_code = (root.findtext(".//returnReasonCode") or "").strip()
+    auth_msg = (root.findtext(".//returnAuthMsg") or "").strip()
+    err_msg = (root.findtext(".//errMsg") or "").strip()
+    if reason_code or auth_msg:
+        combined_err = f"{auth_msg} ({err_msg})" if err_msg and err_msg != auth_msg else (auth_msg or err_msg)
+        if reason_code == "30" or "NOT_REGISTERED" in combined_err:
+            return [], (
+                f"⏳ [{service_label}] 공공데이터포털 인증키 동기화 대기 중 (코드 {reason_code}: {combined_err})\n"
+                "→ 공공데이터포털(data.go.kr)에서 [활용신청] 승인 직후에는 실제 API 게이트웨이 서버에 인증키 권한이 반영되는 데 약 10분~1시간이 소요됩니다. 잠시 후 다시 조회해 주세요."
+            )
+        if reason_code == "20" or "ACCESS_DENIED" in combined_err:
+            return [], (
+                f"⏳ [{service_label}] 공공데이터포털 서비스 접근 권한 미반영 (코드 {reason_code}: {combined_err})\n"
+                "→ 활용신청을 방금 완료하셨다면 키 동기화까지 약 10~30분 정도 기다려 주시고, 아직 신청 전이라면 data.go.kr에서 활용신청을 진행해 주세요."
+            )
+        return [], f"❌ [{service_label}] 공공데이터포털 게이트웨이 오류 (코드 {reason_code}): {combined_err}"
+
+    res_code = (root.findtext(".//resultCode") or "").strip()
+    res_msg = (root.findtext(".//resultMsg") or "").strip()
+    if res_code not in ("00", "000", "0000", ""):
+        return [], f"❌ [{service_label}] API 응답 오류 (코드 {res_code}): {res_msg}"
+
+    items = []
+    for it in root.findall(".//item"):
+        items.append({c.tag: (c.text or "").strip() for c in it})
+    return items, ""
+
+
 def get_building_ledger_info(address_or_pnu: str) -> str:
     """
     지번/도로명 주소 또는 19자리 PNU를 입력받아 국토교통부 건축물대장(BldRgstHubService)의
@@ -1449,109 +1539,107 @@ def get_building_ledger_info(address_or_pnu: str) -> str:
         f"- 행정구역코드: 시군구({sigungu_cd}) · 법정동({bjdong_cd}) · 번지({int(bun)}-{int(ji)})",
     ]
 
-    # 1) 표제부 조회 (getBrTitleInfo)
-    title_ep = (
-        f"https://apis.data.go.kr/1613000/BldRgstHubService/getBrTitleInfo"
-        f"?serviceKey={encoded_key}&sigunguCd={sigungu_cd}&bjdongCd={bjdong_cd}"
-        f"&platGbCd={plat_gb_cd}&bun={bun}&ji={ji}&numOfRows=20&pageNo=1"
-    )
-    try:
-        r_title = requests.get(title_ep, timeout=15)
-        if r_title.status_code != 200:
-            return (
-                f"❌ 건축물대장 API 호출 실패 (HTTP {r_title.status_code}): "
-                "공공데이터포털(data.go.kr)에서 '국토교통부_건축물대장정보 서비스(BldRgstHubService)' 활용신청 여부를 확인해 주세요."
-            )
-        root_t = ET.fromstring(r_title.text)
-        res_code = (root_t.findtext(".//resultCode") or "").strip()
-        res_msg = (root_t.findtext(".//resultMsg") or "").strip()
-        if res_code not in ("00", "000", "0000", ""):
-            return f"❌ 건축물대장 API 응답 오류 (코드 {res_code}): {res_msg}"
+    def _call_bld_hub(op_name: str, num_rows: int = 30) -> tuple[list[dict], str]:
+        # platGbCd 지정 호출 후 결과 0건이면 platGbCd 생략 재시도
+        urls = [
+            f"https://apis.data.go.kr/1613000/BldRgstHubService/{op_name}?serviceKey={encoded_key}&sigunguCd={sigungu_cd}&bjdongCd={bjdong_cd}&platGbCd={plat_gb_cd}&bun={bun}&ji={ji}&numOfRows={num_rows}&pageNo=1",
+            f"https://apis.data.go.kr/1613000/BldRgstHubService/{op_name}?serviceKey={encoded_key}&sigunguCd={sigungu_cd}&bjdongCd={bjdong_cd}&bun={bun}&ji={ji}&numOfRows={num_rows}&pageNo=1",
+        ]
+        last_err = ""
+        for u in urls:
+            try:
+                r = requests.get(u, timeout=15)
+                if r.status_code != 200:
+                    last_err = (
+                        f"❌ 건축물대장 API 호출 실패 (HTTP {r.status_code}): "
+                        "공공데이터포털(data.go.kr/data/15134735/openapi.do)에서 '국토교통부_건축HUB_건축물대장정보 서비스' 활용신청 및 키 동기화(신청 후 약 10~30분 소요) 여부를 확인해 주세요."
+                    )
+                    continue
+                items, err_msg = _parse_data_go_kr_items(r.text, "국토교통부 건축물대장(BldRgstHubService)")
+                if err_msg:
+                    return [], err_msg
+                if items:
+                    return items, ""
+            except Exception as e:
+                last_err = f"❌ 건축물대장 API 통신 오류: {e}"
+        return [], last_err
 
-        t_items = root_t.findall(".//item")
-        if not t_items:
-            output.append("\n■ 1. 건축물대장 표제부: 해당 지번으로 조회된 표제부 내역이 없습니다.")
-        else:
-            output.append(f"\n■ 1. 건축물대장 표제부 (총 {len(t_items)}동 중 주요 내역):")
-            for idx, it in enumerate(t_items[:5], start=1):
-                d = {c.tag: (c.text or "").strip() for c in it}
-                bld_nm = d.get("bldNm") or d.get("dongNm") or f"건축물 #{idx}"
-                main_p = d.get("mainPurpsCdNm") or "-"
-                etc_p = d.get("etcPurps") or ""
-                strct = d.get("strctCdNm") or "-"
-                plat_ar = d.get("platArea") or "0"
-                arch_ar = d.get("archArea") or "0"
-                tot_ar = d.get("totArea") or "0"
-                grnd_cnt = d.get("grndFlrCnt") or "0"
-                ugrnd_cnt = d.get("ugrndFlrCnt") or "0"
-                hhld = d.get("hhldCnt") or "0"
-                fmly = d.get("fmlyCnt") or "0"
-                ho = d.get("hoCnt") or "0"
-                apr_day = d.get("useAprDay") or "-"
-                viol = d.get("violBldYn") or "0"
-                viol_str = "⚠️ 위반건축물 등재(Y)" if viol in ("1", "Y", "유") else "정상(위반사항 없음)"
-                output.append(
-                    f"- [{bld_nm}] 주용도: {main_p}{f' ({etc_p})' if etc_p and etc_p != main_p else ''} | 주구조: {strct}\n"
-                    f"  · 대지면적: {plat_ar}㎡ | 건축면적: {arch_ar}㎡ | 연면적: {tot_ar}㎡ (지상 {grnd_cnt}층 / 지하 {ugrnd_cnt}층)\n"
-                    f"  · 세대/가구/호수: {hhld}세대 · {fmly}가구 · {ho}호 | 사용승인일: {apr_day} | 위반건축물: {viol_str}"
-                )
-    except Exception as e:
-        output.append(f"\n■ 1. 건축물대장 표제부 조회 오류: {e}")
+    # 1) 표제부 조회 (getBrTitleInfo)
+    t_items, t_err = _call_bld_hub("getBrTitleInfo", num_rows=20)
+    if t_err:
+        return t_err
+
+    if not t_items:
+        output.append("\n■ 1. 건축물대장 표제부: 해당 지번으로 조회된 표제부 내역이 없습니다.")
+    else:
+        output.append(f"\n■ 1. 건축물대장 표제부 (총 {len(t_items)}동 중 주요 내역):")
+        for idx, d in enumerate(t_items[:5], start=1):
+            bld_nm = d.get("bldNm") or d.get("dongNm") or f"건축물 #{idx}"
+            main_p = d.get("mainPurpsCdNm") or "-"
+            etc_p = d.get("etcPurps") or ""
+            strct = d.get("strctCdNm") or "-"
+            plat_ar = d.get("platArea") or "0"
+            arch_ar = d.get("archArea") or "0"
+            tot_ar = d.get("totArea") or "0"
+            grnd_cnt = d.get("grndFlrCnt") or "0"
+            ugrnd_cnt = d.get("ugrndFlrCnt") or "0"
+            hhld = d.get("hhldCnt") or "0"
+            fmly = d.get("fmlyCnt") or "0"
+            ho = d.get("hoCnt") or "0"
+            apr_day = d.get("useAprDay") or "-"
+            viol = d.get("violBldYn") or "0"
+            viol_str = "⚠️ 위반건축물 등재(Y)" if viol in ("1", "Y", "유") else "정상(위반사항 없음)"
+            output.append(
+                f"- [{bld_nm}] 주용도: {main_p}{f' ({etc_p})' if etc_p and etc_p != main_p else ''} | 주구조: {strct}\n"
+                f"  · 대지면적: {plat_ar}㎡ | 건축면적: {arch_ar}㎡ | 연면적: {tot_ar}㎡ (지상 {grnd_cnt}층 / 지하 {ugrnd_cnt}층)\n"
+                f"  · 세대/가구/호수: {hhld}세대 · {fmly}가구 · {ho}호 | 사용승인일: {apr_day} | 위반건축물: {viol_str}"
+            )
 
     # 2) 층별개요 조회 (getBrFlrOulnInfo) — 겸용주택 주택 vs 상가(근린생활시설) 면적 자동 판정
-    flr_ep = (
-        f"https://apis.data.go.kr/1613000/BldRgstHubService/getBrFlrOulnInfo"
-        f"?serviceKey={encoded_key}&sigunguCd={sigungu_cd}&bjdongCd={bjdong_cd}"
-        f"&platGbCd={plat_gb_cd}&bun={bun}&ji={ji}&numOfRows=50&pageNo=1"
-    )
-    try:
-        r_flr = requests.get(flr_ep, timeout=15)
-        if r_flr.status_code == 200:
-            root_f = ET.fromstring(r_flr.text)
-            f_items = root_f.findall(".//item")
-            if f_items:
-                output.append(f"\n■ 2. 층별개요 및 용도별 면적 분석 (총 {len(f_items)}개 층 데이터):")
-                house_area = 0.0
-                non_house_area = 0.0
-                house_keywords = ("주택", "다가구", "다세대", "연립", "아파트", "기숙사")
-                for it in f_items[:30]:
-                    fd = {c.tag: (c.text or "").strip() for c in it}
-                    flr_gb = fd.get("flrGbCdNm") or ""
-                    flr_nm = fd.get("flrNoNm") or fd.get("flrNo") or "-"
-                    purp = fd.get("mainPurpsCdNm") or fd.get("etcPurps") or "-"
-                    etc_p = fd.get("etcPurps") or ""
-                    ar_str = fd.get("area") or "0"
-                    try:
-                        ar_val = float(ar_str)
-                    except ValueError:
-                        ar_val = 0.0
-                    comb_purp = f"{purp} {etc_p}"
-                    is_house = any(hk in comb_purp for hk in house_keywords) and "오피스텔" not in comb_purp
-                    if is_house:
-                        house_area += ar_val
-                    else:
-                        non_house_area += ar_val
-                    tag_h = "[주택]" if is_house else "[비주택/상가등]"
-                    output.append(
-                        f"- {flr_gb} {flr_nm}: {purp}{f' ({etc_p})' if etc_p and etc_p != purp else ''} | 면적: {ar_val:,.2f}㎡ {tag_h}"
-                    )
-                tot_flr_ar = house_area + non_house_area
-                if tot_flr_ar > 0:
-                    h_ratio = (house_area / tot_flr_ar) * 100.0
-                    rule_note = (
-                        "주택 연면적 > 비주택 연면적 (소득세법 시행령 제154조 제3항 겸용주택 특례 요건 참고)"
-                        if house_area > non_house_area
-                        else "주택 연면적 ≤ 비주택 연면적 (주택 부분만 주택으로 판정)"
-                    )
-                    output.append(
-                        f"\n📌 [겸용주택 용도별 면적 자동 집계]\n"
-                        f"- 주택 부분 합계: {house_area:,.2f}㎡ ({h_ratio:.1f}%) | 비주택(상가·업무 등) 합계: {non_house_area:,.2f}㎡ ({100.0 - h_ratio:.1f}%)\n"
-                        f"- 비교 판정: {rule_note}"
-                    )
-    except Exception:
-        pass
+    f_items, f_err = _call_bld_hub("getBrFlrOulnInfo", num_rows=50)
+    if f_items:
+        output.append(f"\n■ 2. 층별개요 및 용도별 면적 분석 (총 {len(f_items)}개 층 데이터):")
+        house_area = 0.0
+        non_house_area = 0.0
+        house_keywords = ("주택", "다가구", "다세대", "연립", "아파트", "기숙사")
+        for fd in f_items[:30]:
+            flr_gb = fd.get("flrGbCdNm") or ""
+            flr_nm = fd.get("flrNoNm") or fd.get("flrNo") or "-"
+            purp = fd.get("mainPurpsCdNm") or fd.get("etcPurps") or "-"
+            etc_p = fd.get("etcPurps") or ""
+            ar_str = fd.get("area") or "0"
+            try:
+                ar_val = float(ar_str)
+            except ValueError:
+                ar_val = 0.0
+            comb_purp = f"{purp} {etc_p}"
+            is_house = any(hk in comb_purp for hk in house_keywords) and "오피스텔" not in comb_purp
+            if is_house:
+                house_area += ar_val
+            else:
+                non_house_area += ar_val
+            tag_h = "[주택]" if is_house else "[비주택/상가등]"
+            output.append(
+                f"- {flr_gb} {flr_nm}: {purp}{f' ({etc_p})' if etc_p and etc_p != purp else ''} | 면적: {ar_val:,.2f}㎡ {tag_h}"
+            )
+        tot_flr_ar = house_area + non_house_area
+        if tot_flr_ar > 0:
+            h_ratio = (house_area / tot_flr_ar) * 100.0
+            rule_note = (
+                "주택 연면적 > 비주택 연면적 (소득세법 시행령 제154조 제3항 겸용주택 특례 요건 참고)"
+                if house_area > non_house_area
+                else "주택 연면적 ≤ 비주택 연면적 (주택 부분만 주택으로 판정)"
+            )
+            output.append(
+                f"\n📌 [겸용주택 용도별 면적 자동 집계]\n"
+                f"- 주택 부분 합계: {house_area:,.2f}㎡ ({h_ratio:.1f}%) | 비주택(상가·업무 등) 합계: {non_house_area:,.2f}㎡ ({100.0 - h_ratio:.1f}%)\n"
+                f"- 비교 판정: {rule_note}"
+            )
+    elif f_err:
+        output.append(f"\n■ 2. 층별개요 조회 참고: {f_err}")
 
     return "\n".join(output)[:14000]
+
 # ---------------------------------------------------------
 # 9. 근로복지공단 고용·산재보험 가입 사업장 현황 조회 (사업자번호 기준 상시인원·성립일자·업종 대사)
 # ---------------------------------------------------------
@@ -1596,16 +1684,12 @@ def get_comwel_workplace_info(biz_no: str, insurance_type: str = "all") -> str:
                         f"❌ 근로복지공단 API 호출 실패 (HTTP {resp.status_code}): "
                         "공공데이터포털(data.go.kr/data/15059256/openapi.do)에서 '근로복지공단_고용/산재보험 현황정보' 활용신청 여부를 확인해 주세요."
                     )
-                root = ET.fromstring(resp.text)
-                res_code = (root.findtext(".//resultCode") or "").strip()
-                res_msg = (root.findtext(".//resultMsg") or "").strip()
-                if res_code not in ("00", "000", "0000", ""):
-                    bno_lines.append(f"  - [{fg_label_map.get(fg, fg)}] API 응답 오류 (코드 {res_code}): {res_msg}")
+                items, err_msg = _parse_data_go_kr_items(resp.text, f"근로복지공단 {fg_label_map.get(fg, fg)}")
+                if err_msg:
+                    bno_lines.append(f"  - {err_msg}")
                     continue
-                items = root.findall(".//item")
-                for it in items[:5]:
+                for d in items[:5]:
                     found_any = True
-                    d = {c.tag: (c.text or "").strip() for c in it}
                     s_nm = d.get("saeopjangNm") or "-"
                     cnt = d.get("sangsiInwonCnt") or "0"
                     dt = d.get("seongripDt") or "-"
@@ -1803,21 +1887,16 @@ def get_customs_exchange_rate(aply_bgn_dt: str, imex_type: str = "2", currency: 
                     f"❌ 관세청 과세환율 API 호출 실패 (HTTP {resp.status_code}): "
                     "공공데이터포털(data.go.kr/data/15101230/openapi.do)에서 '관세청_관세환율정보(GW)' 활용신청 여부를 확인해 주세요."
                 )
-            root = ET.fromstring(resp.text)
-            res_code = (root.findtext(".//resultCode") or "").strip()
-            res_msg = (root.findtext(".//resultMsg") or "").strip()
-            if res_code not in ("00", "000", "0000", ""):
-                output.append(f"\n■ {tp_label}: API 응답 오류 (코드 {res_code}) - {res_msg}")
+            items, err_msg = _parse_data_go_kr_items(resp.text, f"관세청 {tp_label}")
+            if err_msg:
+                output.append(f"\n■ {tp_label}: {err_msg}")
                 continue
-
-            items = root.findall(".//item")
             if not items:
                 output.append(f"\n■ {tp_label}: 해당 일자({dt_clean})로 조회된 과세환율 내역이 없습니다.")
                 continue
 
             rows = []
-            for it in items:
-                d = {c.tag: (c.text or "").strip() for c in it}
+            for d in items:
                 c_sgn = (d.get("currSgn") or "").upper()
                 if curr_filter and curr_filter not in c_sgn and curr_filter not in (d.get("cntySgn") or "").upper():
                     continue
@@ -1830,8 +1909,7 @@ def get_customs_exchange_rate(aply_bgn_dt: str, imex_type: str = "2", currency: 
                 rows.append(f"  - [{c_sgn} ({cnty} · {u_nm})] {fxrt} 원 (적용개시일: {bgn})")
 
             if not rows and items:
-                for it in items[:15]:
-                    d = {c.tag: (c.text or "").strip() for c in it}
+                for d in items[:15]:
                     rows.append(
                         f"  - [{d.get('currSgn', '-')} ({d.get('cntySgn', '-')} · {d.get('mtryUtNm', '-')})] "
                         f"{d.get('fxrt', '-')} 원 (적용개시일: {d.get('aplyBgnDt', dt_clean)})"
