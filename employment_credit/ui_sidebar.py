@@ -70,10 +70,11 @@ def _dlg_nts_dart_check():
         st.error("프로젝트 루트의 `law_api.py` 모듈을 불러올 수 없습니다.")
         return
 
-    tab_nts, tab_verify, tab_dart = st.tabs([
-        "🏛️ 1. 국세청 휴·폐업/과세유형 조회",
-        "🛡️ 2. 사업자등록 진위확인",
-        "📊 3. DART 최대주주 · 국세청 업종코드",
+    tab_nts, tab_verify, tab_dart, tab_ins = st.tabs([
+        "🏛️ 1. 국세청 휴·폐업/과세유형",
+        "🛡️ 2. 사업자 진위확인",
+        "📊 3. DART 주주 · 업종코드",
+        "👷 4. 4대보험(고용·산재·국민연금) 인원 대사",
     ])
 
     with tab_nts:
@@ -149,6 +150,35 @@ def _dlg_nts_dart_check():
             st.session_state["ec_ind_res"] = _law_api.search_industry_code(ind_kw)
         if st.session_state.get("ec_ind_res"):
             st.code(st.session_state["ec_ind_res"], language="text")
+
+    with tab_ins:
+        st.caption(
+            "근로복지공단(고용·산재보험 상시인원·성립일) 및 국민연금공단(월별 가입자수·신규취득/상실 인원) 데이터를 실시간 조회하여 "
+            "2단계 원천징수부 사원표 인원 및 4대보험 가입 누락 여부를 교차 검증합니다."
+        )
+        ci_a, ci_b = st.columns([3.5, 1.5])
+        cw_bno = ci_a.text_input(
+            "근로복지공단 조회용 사업자등록번호 (10자리, 복수 가능)",
+            value=str(b.get("사업자번호") or ""),
+            placeholder="예: 123-45-67890",
+            key="ec_comwel_bno",
+        )
+        if ci_b.button("👷 고용·산재 조회", type="primary", use_container_width=True, key="btn_run_ec_comwel"):
+            with st.spinner("근로복지공단 고용·산재보험 현황 조회 중..."):
+                st.session_state["ec_comwel_res"] = _law_api.get_comwel_workplace_info(cw_bno)
+        if st.session_state.get("ec_comwel_res"):
+            st.code(st.session_state["ec_comwel_res"], language="text")
+
+        st.markdown("---")
+        cn1, cn2, cn3 = st.columns([2.2, 1.4, 1.4])
+        nps_nm = cn1.text_input("국민연금 조회 사업장명(상호)", value=str(b.get("상호") or ""), key="ec_nps_nm")
+        raw_bno_digits = re.sub(r"\D", "", str(b.get("사업자번호") or ""))
+        nps_bno6 = cn2.text_input("사업자번호 앞 6자리(선택)", value=raw_bno_digits[:6], key="ec_nps_bno6")
+        if cn3.button("🏦 국민연금 조회", type="primary", use_container_width=True, key="btn_run_ec_nps"):
+            with st.spinner("국민연금 가입 사업장 내역 조회 중..."):
+                st.session_state["ec_nps_res"] = _law_api.get_nps_workplace_info(nps_nm, nps_bno6)
+        if st.session_state.get("ec_nps_res"):
+            st.code(st.session_state["ec_nps_res"], language="text")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -395,7 +425,7 @@ def render_credit_sidebar():
             st.rerun()
 
         if st.button(
-            "🔎 국세청 휴·폐업/진위 · DART 주주 조회",
+            "🔎 국세청 · DART · 4대보험 사업장 대사",
             use_container_width=True,
             key="btn_open_nts_dart_modal",
             help="국세청 API(사업자 휴·폐업일·과세유형·진위확인) 및 Open DART(최대주주·특수관계인 지분 공시)를 실시간 조회합니다.",
