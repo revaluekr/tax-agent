@@ -297,7 +297,7 @@ def youth_hold_years(corp_size: str, contract_dt: date | None = None) -> int:
     if contract_dt is None or contract_dt.year >= 2026:
         return R.YOUTH_HOLD_YEARS_LARGE if large else R.YOUTH_HOLD_YEARS_SME
     if contract_dt.year == 2025:
-        return R.YOUTH_HOLD_YEARS_2025_LARGE if large else R.YOUTH_HOLD_YEARS_2025_SME
+        return getattr(R, "YOUTH_HOLD_YEARS_2025_LARGE", 2) if large else getattr(R, "YOUTH_HOLD_YEARS_2025_SME", 3)
     return 0
 
 
@@ -1558,12 +1558,19 @@ def calculate_tax_year_package(
         # 세법원칙 기준인데 기신고 공제세액이 없으면, 재계산한 증가인원 × 구법 단가로 추가납부 한도를 추정
         recalc_claimed, cap_note = claimed, ""
         if claimed <= 0 and recalc.get("init_yth_inc") is not None and recalc.get("init_gen_inc") is not None:
-            recalc_claimed = int(round((float(recalc["init_yth_inc"]) * coh_rates["청년등"]
-                                        + float(recalc["init_gen_inc"]) * coh_rates["청년등외"]) * 10_000))
+            y0_est_won = int(round((float(recalc["init_yth_inc"]) * coh_rates["청년등"]
+                                    + float(recalc["init_gen_inc"]) * coh_rates["청년등외"]) * 10_000))
+            recalc_claimed = y0_est_won
             if elapsed == 2 and y1_cont is None and corp_size not in ("일반기업", "대기업") and not (
                 prev_s["has_data"] and prev_s["b2_reg"] < float(recalc.get("init_reg") or 0.0)
             ):
-                recalc_claimed *= 2
+                y1_act = prev_s.get("b2_yth_act", prev_s["b2_yth"])
+                if prev_s["has_data"] and y1_act < float(recalc.get("init_yth") or 0.0):
+                    tot_inc_recalc = float(recalc["init_yth_inc"]) + float(recalc["init_gen_inc"])
+                    y1_est_won = int(round(tot_inc_recalc * coh_rates["청년등외"] * 10_000))
+                else:
+                    y1_est_won = y0_est_won
+                recalc_claimed = y0_est_won + y1_est_won
             cap_note = f" ※ 한도는 재계산 증가인원 × 구법 단가로 추정({recalc_claimed:,}원)했습니다."
         r_recalc = _run(recalc, "세법원칙 기준", borrowed, claimed=recalc_claimed, cap_note=cap_note)
         return r_filed, r_recalc, {"filed": filed, "recalc": recalc, "borrowed": borrowed}
