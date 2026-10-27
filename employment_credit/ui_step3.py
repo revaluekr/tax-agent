@@ -43,6 +43,24 @@ from .ui_common import (  # noqa: F401
 )
 
 
+_ROMAN_MAP_S3 = str.maketrans({
+    "Ⅰ": "I", "Ⅱ": "II", "Ⅲ": "III", "Ⅳ": "IV", "Ⅴ": "V",
+    "Ⅵ": "VI", "Ⅶ": "VII", "Ⅷ": "VIII", "Ⅸ": "IX", "Ⅹ": "X",
+})
+
+
+def _pdf_text(t: str) -> str:
+    """PDF 문단용: 폰트 미지원 로마숫자(Ⅰ~Ⅳ)·유니코드 물결표(∼)·마이너스(−) 치환 및 마크다운 변환"""
+    _, bold_font = _ensure_korean_pdf_font()
+    s = str(t or "").translate(_ROMAN_MAP_S3)
+    s = s.replace("∼", "~").replace("〜", "~").replace("～", "~")
+    s = s.replace("−", "-").replace("–", "-").replace("—", "-")
+    s = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    s = re.sub(r"\*\*(.+?)\*\*", rf"<font name='{bold_font}'><b>\1</b></font>", s)
+    s = re.sub(r"`([^`]+)`", rf"<font name='{bold_font}'><b>\1</b></font>", s)
+    return s
+
+
 def _render_pm_basis_selector_right(s: dict, widget_key: str) -> str:
     cur_basis = s.get("pm_basis", R.PM_BASIS_FILED)
     if cur_basis not in (R.PM_BASIS_FILED, R.PM_BASIS_RECALC):
@@ -388,7 +406,7 @@ def _build_step3_calculation_pdf_bytes(
         ["세액공제액\n(추가납부세액)", "1차", *[_cell_str(matrix_cols[y]["r1_credit"], matrix_cols[y]["r1_claw"]) for y in yr_list]],
         ["", "2차", *[_cell_str(matrix_cols[y]["r2_credit"], matrix_cols[y]["r2_claw"]) for y in yr_list]],
         ["", "3차", *[_cell_str(matrix_cols[y]["r3_credit"], matrix_cols[y]["r3_claw"]) for y in yr_list]],
-        ["", "합계", *[f"{int(matrix_cols[y]['net_total']):,}" for y in yr_list]],
+        ["합계 (순액)", "", *[f"{int(matrix_cols[y]['net_total']):,}" for y in yr_list]],
     ]
     mat_widths = [avail_w * 0.16, avail_w * 0.08, avail_w * 0.19, avail_w * 0.19, avail_w * 0.19, avail_w * 0.19]
     t_mat = Table(mat_data, colWidths=mat_widths)
@@ -402,7 +420,8 @@ def _build_step3_calculation_pdf_bytes(
                 ("FONTSIZE", (0, 0), (-1, -1), 8.5),
                 ("LEADING", (0, 0), (-1, -1), 11.5),
                 ("SPAN", (0, 0), (1, 0)),
-                ("SPAN", (0, 1), (0, 4)),
+                ("SPAN", (0, 1), (0, 3)),
+                ("SPAN", (0, 4), (1, 4)),
                 ("ALIGN", (0, 0), (1, -1), "CENTER"),
                 ("ALIGN", (2, 0), (-1, 0), "CENTER"),
                 ("ALIGN", (2, 1), (-1, -1), "RIGHT"),
@@ -412,7 +431,7 @@ def _build_step3_calculation_pdf_bytes(
                 ("BACKGROUND", (-1, 0), (-1, 0), colors.HexColor("#1d4ed8")),
                 ("BACKGROUND", (0, 1), (1, -1), colors.HexColor("#f8fafc")),
                 ("BACKGROUND", (-1, 1), (-1, -2), colors.HexColor("#f0f7ff")),
-                ("BACKGROUND", (1, -1), (-1, -1), colors.HexColor("#f1f5f9")),
+                ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#f1f5f9")),
                 ("BACKGROUND", (-1, -1), (-1, -1), colors.HexColor("#dbeafe")),
                 ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
                 ("BOX", (0, 0), (-1, -1), 1.0, colors.HexColor("#1e293b")),

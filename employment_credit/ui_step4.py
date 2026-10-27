@@ -48,6 +48,39 @@ from .ui_common import (  # noqa: F401
 )
 
 
+_ROMAN_MAP = str.maketrans({
+    "Ⅰ": "I", "Ⅱ": "II", "Ⅲ": "III", "Ⅳ": "IV", "Ⅴ": "V",
+    "Ⅵ": "VI", "Ⅶ": "VII", "Ⅷ": "VIII", "Ⅸ": "IX", "Ⅹ": "X",
+    "ⅰ": "i", "ⅱ": "ii", "ⅲ": "iii", "ⅳ": "iv", "ⅴ": "v",
+})
+
+
+def _format_citation_tag_for_pdf(m: re.Match) -> str:
+    kind = m.group(1).strip()
+    body = m.group(2).strip()
+    if kind in ("조문", "부칙", "별표"):
+        m_law = re.match(r"^(조세특례제한법\s*시행령|조세특례제한법\s*시행규칙|조세특례제한법|소득세법\s*시행령|소득세법|법인세법\s*시행령|법인세법|농어촌특별세법|근로기준법)\s*(.*)$", body)
+        if m_law:
+            law_nm, rest = m_law.group(1).strip(), m_law.group(2).strip()
+            return f"「{law_nm}」 {rest}" if rest else f"「{law_nm}」"
+        return body
+    return f"[{kind}: {body}]"
+
+
+def _pdf_text(t: str) -> str:
+    """PDF 문단용: 폰트 미지원 전각 로마숫자(Ⅰ~Ⅳ)·유니코드 물결표(∼)·마이너스(−) 치환 및 마크다운 변환"""
+    _, bold_font = _ensure_korean_pdf_font()
+    s = str(t or "")
+    s = s.translate(_ROMAN_MAP)
+    s = s.replace("∼", "~").replace("〜", "~").replace("～", "~")
+    s = s.replace("−", "-").replace("–", "-").replace("—", "-")
+    s = re.sub(r"\[(조문|부칙|별표|판례|심판례|헌재|헌재결정례|해석례|예규)\s*:\s*([^\]]+)\]", _format_citation_tag_for_pdf, s)
+    s = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    s = re.sub(r"\*\*(.+?)\*\*", rf"<font name='{bold_font}'><b>\1</b></font>", s)
+    s = re.sub(r"`([^`]+)`", rf"<font name='{bold_font}'><b>\1</b></font>", s)
+    return s
+
+
 def _strip_all_emojis(text: str) -> str:
     """보고서 본문 및 기존 캐시된 AI 코멘트에서 아이콘·이모지를 모두 제거합니다."""
     if not text:
@@ -748,7 +781,7 @@ def _build_report_markdown(s: dict, log_tokens_fn=None, room_key: str = "") -> s
         f"### (1) 평균 상시근로자 증가 인원 및 코호트별 상시근로자 현황 [각주 2, 3]",
         *prev_basis_bullets,
         "",
-        "| 구분 | 전체 상시 [총인원 / 평균] | 청년등 [총인원 / 평균] | 청년등 외 [총인원 / 평균] | 산정 기준 및 법령 근거 |",
+        "| 구분 | 전체 상시<br>[총인원 / 평균] | 청년등<br>[총인원 / 평균] | 청년등 외<br>[총인원 / 평균] | 산정 기준 및 법령 근거 |",
         "| :--- | ---: | ---: | ---: | :--- |",
         f"| **{tax_yr}년 귀속 [{b3_title}]** | {cur_s['reg_total']:g}명 / **{cur_s['regular']:.2f}명** | {cur_s['yth_total']:g}명 / **{cur_s['youth']:.2f}명** | {cur_s['non_youth_total']:g}명 / **{cur_s['non_youth']:.2f}명** | 신법(실제 근로기간 1년 미만 제외 · 합산 후 절사) [각주 2] |",
         f"| **{tax_yr}년 귀속 [{b4_title}]** | {cur_s['reg_total']:g}명 / **{cur_s['b2_reg']:.2f}명** | {cur_s['b2_yth_total']:g}명 / **{cur_s['b2_yth']:.2f}명** | {round(max(0.0, cur_s['reg_total']-cur_s['b2_yth_total']),2):g}명 / **{round(max(0.0, cur_s['b2_reg']-cur_s['b2_yth']),2):.2f}명** | {pm_row_note} |",
@@ -796,8 +829,9 @@ def _build_report_markdown(s: dict, log_tokens_fn=None, room_key: str = "") -> s
 def _build_report_pdf_bytes(s: dict, log_tokens_fn=None, room_key: str = "") -> bytes:
     """
     4단계 『보고서 PDF 다운』 전용 빌더:
-    - 화면의 대제목 / 중제목(Ⅰ~Ⅳ) / 소제목 / 본문·표를 그대로 A4 세로(Portrait) 정식 PDF로 출력합니다.
-    - 모든 그림문자(느낌표·왕관·돋보기 등)를 제거하고, 하단 적용모델 정보는 PDF에서 완전히 제외합니다.
+    - 화면의 대제목 / 중제목(I~IV) / 소제목 / 본문·표를 그대로 A4 세로(Portrait) 정식 PDF로 출력합니다.
+    - 전각 로마숫자(Ⅰ~Ⅳ) 및 유니코드 물결표(∼)·마이너스(−) 폰트 누락 방지, 소제목 고립(Orphan Heading) 방지,
+      표 숫자·금액 열 우측 정렬 및 합계 행 하이라이트, 하단 페이지 번호를 적용합니다.
     """
     _ensure_built_for_tax_year(s)
     reg_font, bold_font = _ensure_korean_pdf_font()
@@ -808,7 +842,7 @@ def _build_report_pdf_bytes(s: dict, log_tokens_fn=None, room_key: str = "") -> 
         leftMargin=26,
         rightMargin=26,
         topMargin=26,
-        bottomMargin=26,
+        bottomMargin=32,
     )
     avail_w = A4[0] - 52
 
@@ -821,6 +855,7 @@ def _build_report_pdf_bytes(s: dict, log_tokens_fn=None, room_key: str = "") -> 
         leading=20.0,
         textColor=colors.HexColor("#0f172a"),
         spaceAfter=6,
+        keepWithNext=True,
     )
     st_meta = ParagraphStyle(
         "ECRepMeta",
@@ -840,6 +875,7 @@ def _build_report_pdf_bytes(s: dict, log_tokens_fn=None, room_key: str = "") -> 
         textColor=colors.HexColor("#1e3a8a"),
         spaceBefore=11,
         spaceAfter=6,
+        keepWithNext=True,
     )
     st_h3 = ParagraphStyle(
         "ECRepH3",
@@ -848,8 +884,9 @@ def _build_report_pdf_bytes(s: dict, log_tokens_fn=None, room_key: str = "") -> 
         fontSize=10.2,
         leading=14.5,
         textColor=colors.HexColor("#0f172a"),
-        spaceBefore=7,
+        spaceBefore=8,
         spaceAfter=4,
+        keepWithNext=True,
     )
     st_body = ParagraphStyle(
         "ECRepBody",
@@ -858,7 +895,7 @@ def _build_report_pdf_bytes(s: dict, log_tokens_fn=None, room_key: str = "") -> 
         fontSize=9.2,
         leading=14.2,
         textColor=colors.HexColor("#1e293b"),
-        spaceAfter=3,
+        spaceAfter=3.5,
     )
     st_tbl_hdr = ParagraphStyle(
         "ECRepTblHdr",
@@ -869,12 +906,31 @@ def _build_report_pdf_bytes(s: dict, log_tokens_fn=None, room_key: str = "") -> 
         alignment=1,
         textColor=colors.white,
     )
-    st_tbl_cell = ParagraphStyle(
-        "ECRepTblCell",
+    st_tbl_cell_l = ParagraphStyle(
+        "ECRepTblCellL",
         parent=styles["Normal"],
         fontName=reg_font,
         fontSize=8.2,
         leading=11.2,
+        alignment=0,
+        textColor=colors.HexColor("#1e293b"),
+    )
+    st_tbl_cell_c = ParagraphStyle(
+        "ECRepTblCellC",
+        parent=styles["Normal"],
+        fontName=reg_font,
+        fontSize=8.2,
+        leading=11.2,
+        alignment=1,
+        textColor=colors.HexColor("#1e293b"),
+    )
+    st_tbl_cell_r = ParagraphStyle(
+        "ECRepTblCellR",
+        parent=styles["Normal"],
+        fontName=reg_font,
+        fontSize=8.2,
+        leading=11.2,
+        alignment=2,
         textColor=colors.HexColor("#1e293b"),
     )
 
@@ -905,22 +961,48 @@ def _build_report_pdf_bytes(s: dict, log_tokens_fn=None, room_key: str = "") -> 
                     idx += 1
                 else:
                     break
-            parsed_rows = []
-            for r_i, t_ln in enumerate(tbl_lines):
+            col_aligns: list[str] = []
+            raw_rows: list[list[str]] = []
+            for t_ln in tbl_lines:
                 cells = [c.strip() for c in t_ln.strip("|").split("|")]
                 if all(re.match(r"^[:\-]+$", c.replace(" ", "")) for c in cells if c):
+                    col_aligns = []
+                    for c in cells:
+                        cs = c.replace(" ", "")
+                        if cs.startswith(":") and cs.endswith(":"):
+                            col_aligns.append("C")
+                        elif cs.endswith(":"):
+                            col_aligns.append("R")
+                        else:
+                            col_aligns.append("L")
                     continue
-                is_hdr = len(parsed_rows) == 0
+                raw_rows.append(cells)
+
+            parsed_rows = []
+            highlight_row_indices: list[tuple[int, str]] = []
+            for r_i, cells in enumerate(raw_rows):
+                is_hdr = r_i == 0
                 row_paras = []
-                for c_txt in cells:
+                first_cell_plain = re.sub(r"\*+", "", cells[0] if cells else "").strip()
+                if not is_hdr:
+                    if first_cell_plain.startswith("최종 실질 순절세액"):
+                        highlight_row_indices.append((r_i, "#dbeafe"))
+                    elif first_cell_plain.startswith("합계"):
+                        highlight_row_indices.append((r_i, "#f1f5f9"))
+                for c_i, c_txt in enumerate(cells):
                     c_clean = c_txt.replace("<br>", "\n")
-                    p_style = st_tbl_hdr if is_hdr else st_tbl_cell
+                    if is_hdr:
+                        p_style = st_tbl_hdr
+                    else:
+                        al = col_aligns[c_i] if c_i < len(col_aligns) else "L"
+                        p_style = st_tbl_cell_r if al == "R" else (st_tbl_cell_c if al == "C" else st_tbl_cell_l)
                     row_paras.append(Paragraph(_pdf_text(c_clean).replace("\n", "<br/>"), p_style))
                 parsed_rows.append(row_paras)
+
             if parsed_rows:
                 n_cols = len(parsed_rows[0])
                 if n_cols == 3:
-                    col_w = [avail_w * 0.36, avail_w * 0.20, avail_w * 0.44]
+                    col_w = [avail_w * 0.35, avail_w * 0.19, avail_w * 0.46]
                 elif n_cols == 4:
                     col_w = [avail_w * 0.18, avail_w * 0.32, avail_w * 0.18, avail_w * 0.32]
                 elif n_cols == 5:
@@ -930,21 +1012,20 @@ def _build_report_pdf_bytes(s: dict, log_tokens_fn=None, room_key: str = "") -> 
                 else:
                     col_w = [avail_w / n_cols] * n_cols
                 t_obj = Table(parsed_rows, colWidths=col_w, repeatRows=1)
-                t_obj.setStyle(
-                    TableStyle(
-                        [
-                            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1e293b")),
-                            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                            ("GRID", (0, 0), (-1, -1), 0.45, colors.HexColor("#cbd5e1")),
-                            ("BOX", (0, 0), (-1, -1), 0.9, colors.HexColor("#1e293b")),
-                            ("TOPPADDING", (0, 0), (-1, -1), 4.5),
-                            ("BOTTOMPADDING", (0, 0), (-1, -1), 4.5),
-                            ("LEFTPADDING", (0, 0), (-1, -1), 5),
-                            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-                        ]
-                    )
-                )
+                t_cmds = [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1e293b")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("GRID", (0, 0), (-1, -1), 0.45, colors.HexColor("#cbd5e1")),
+                    ("BOX", (0, 0), (-1, -1), 0.9, colors.HexColor("#1e293b")),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4.5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4.5),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                ]
+                for hr_idx, hex_bg in highlight_row_indices:
+                    t_cmds.append(("BACKGROUND", (0, hr_idx), (-1, hr_idx), colors.HexColor(hex_bg)))
+                t_obj.setStyle(TableStyle(t_cmds))
                 story.append(t_obj)
                 story.append(Spacer(1, 5))
             continue
@@ -956,6 +1037,7 @@ def _build_report_pdf_bytes(s: dict, log_tokens_fn=None, room_key: str = "") -> 
 
         if raw_ln.startswith("## "):
             h2_tbl = Table([[Paragraph(_pdf_text(raw_ln[3:].strip()), st_h2)]], colWidths=[avail_w])
+            h2_tbl.keepWithNext = True
             h2_tbl.setStyle(
                 TableStyle(
                     [
@@ -976,7 +1058,9 @@ def _build_report_pdf_bytes(s: dict, log_tokens_fn=None, room_key: str = "") -> 
 
         if raw_ln.startswith("### ") or raw_ln.startswith("#### "):
             sub_txt = re.sub(r"^#{3,4}\s*", "", raw_ln).strip()
-            story.append(Paragraph(_pdf_text(f"■ {sub_txt}"), st_h3))
+            p_h3 = Paragraph(_pdf_text(f"■ {sub_txt}"), st_h3)
+            p_h3.keepWithNext = True
+            story.append(p_h3)
             idx += 1
             continue
 
@@ -993,7 +1077,15 @@ def _build_report_pdf_bytes(s: dict, log_tokens_fn=None, room_key: str = "") -> 
             story.append(Paragraph(_pdf_text(raw_ln), st_body))
         idx += 1
 
-    doc.build(story)
+    def _draw_page_footer(canvas, doc_obj):
+        canvas.saveState()
+        canvas.setFont(reg_font, 8.0)
+        canvas.setFillColor(colors.HexColor("#64748b"))
+        page_str = f"- {canvas.getPageNumber()} -"
+        canvas.drawCentredString(A4[0] / 2.0, 14, page_str)
+        canvas.restoreState()
+
+    doc.build(story, onFirstPage=_draw_page_footer, onLaterPages=_draw_page_footer)
     return buf.getvalue()
 
 

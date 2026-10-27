@@ -20,7 +20,7 @@ from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, KeepTogether
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
@@ -157,7 +157,8 @@ def _build_schedule_pdf_bytes(s: dict, target_years: list[int], include_summary:
         col_has_y1 = any_has_y1 if multi_yr_mode else yr_has_y1
         col_has_y2 = any_has_y2 if multi_yr_mode else yr_has_y2
 
-        story.append(
+        yr_flowables = []
+        yr_flowables.append(
             Paragraph(
                 f"■ {y}년 귀속 상시근로자 명세 ({len(rows)}명) — {role_desc}",
                 st_yr_hdr,
@@ -169,7 +170,7 @@ def _build_schedule_pdf_bytes(s: dict, target_years: list[int], include_summary:
             + (f"   |   [{b5_t}] 상시 {totals['b3_reg']:.2f}명 (청년등 {totals['b3_yth']:.2f} · 청년외 {totals['b3_gen']:.2f})" if yr_has_y2 else "")
             + f"   |   총인원(연인원) {totals['상시_합계']:g}명 ÷ {totals['months_in_year']}개월 ({trunc_mode})"
         )
-        story.append(Paragraph(kpi_line, st_sub))
+        yr_flowables.append(Paragraph(kpi_line, st_sub))
 
         headers = [
             "사업장", "성명", "생년월일", "입사일", "퇴사일", "연령", "고용유형", "제외사유", "청년등 구분", "상시",
@@ -177,7 +178,7 @@ def _build_schedule_pdf_bytes(s: dict, target_years: list[int], include_summary:
             f"{y%100:02d}공제\n청년", f"{y%100:02d}공제\n일반", f"{y%100:02d}공제\n상시",
         ]
         col_widths = [
-            32, 34, 41, 41, 41, 21, 42, 60, 62, 18,
+            33, 35, 41, 41, 41, 22, 48, 56, 58, 18,
             *[16.0 for _ in range(12)], 21,
             23.5, 23.5, 23.5,
         ]
@@ -209,7 +210,7 @@ def _build_schedule_pdf_bytes(s: dict, target_years: list[int], include_summary:
                 str(r["입사일"]).replace("-", "."),
                 str(r["퇴사일"]).replace("-", "."),
                 str(r["취업연령"]),
-                str(r["고용유형"]).replace("근로자", ""),
+                str(r["고용유형"]).replace("근로자", "").replace("시간 이상", "h↑").replace("시간 미만", "h↓"),
                 str(r["제외사유"])[:11],
                 str(r["청년등"])[:11],
                 str(r["상시"]),
@@ -232,7 +233,7 @@ def _build_schedule_pdf_bytes(s: dict, target_years: list[int], include_summary:
         # 하단 요약 3행 추가 (2~9열 SPAN 병합으로 안내 문구가 이웃 열과 겹치지 않도록 정렬)
         sum_rows = [
             (
-                "합산합계", "상시근로자", f"÷ {totals['months_in_year']}개월 ({trunc_mode})",
+                "합산합계 · 상시근로자", "", f"÷ {totals['months_in_year']}개월 ({trunc_mode})",
                 [f"{v:g}" if v is not None else "-" for v in totals["월별_상시"]],
                 f"{totals['상시_합계']:g}",
                 [f"{totals['b1_yth']:.2f}", f"{totals['b1_gen']:.2f}", f"{totals['b1_reg']:.2f}"],
@@ -240,7 +241,7 @@ def _build_schedule_pdf_bytes(s: dict, target_years: list[int], include_summary:
                 [f"{totals['b3_yth']:.2f}", f"{totals['b3_gen']:.2f}", f"{totals['b3_reg']:.2f}"] if yr_has_y2 else ["-", "-", "-"],
             ),
             (
-                "합산합계", "청년등", "각 코호트 기준",
+                "합산합계 · 청년등", "", "각 코호트 기준",
                 [f"{v:g}" if v is not None else "-" for v in totals["월별_청년등"]],
                 f"{totals['청년등_합계']:g}",
                 [f"{totals['b1_yth']:.2f}", "-", "-"],
@@ -248,7 +249,7 @@ def _build_schedule_pdf_bytes(s: dict, target_years: list[int], include_summary:
                 [f"{totals['b3_yth']:.2f}", "-", "-"] if yr_has_y2 else ["-", "-", "-"],
             ),
             (
-                "합산합계", "청년등 외", "상시 - 청년등",
+                "합산합계 · 청년등 외", "", "상시 - 청년등",
                 [f"{v:g}" if v is not None else "-" for v in totals["월별_청년외"]],
                 f"{totals['청년외_합계']:g}",
                 ["-", f"{totals['b1_gen']:.2f}", "-"],
@@ -287,28 +288,31 @@ def _build_schedule_pdf_bytes(s: dict, target_years: list[int], include_summary:
             ("RIGHTPADDING", (0, 0), (-1, -1), 1.5),
         ]
         for sum_r in range(n_data_end, len(tbl_data)):
+            t_style.append(("SPAN", (0, sum_r), (1, sum_r)))
             t_style.append(("SPAN", (2, sum_r), (9, sum_r)))
         for r_i in range(1, n_data_end):
             if r_i % 2 == 0:
                 t_style.append(("BACKGROUND", (0, r_i), (-1, r_i), colors.HexColor("#f8fafc")))
         t_obj.setStyle(TableStyle(t_style))
-        story.append(t_obj)
+        yr_flowables.append(t_obj)
+        if len(rows) <= 18:
+            story.append(KeepTogether(yr_flowables))
+        else:
+            story.extend(yr_flowables)
 
     if include_summary and tax_yr in totals_by_yr and (tax_yr - 1) in totals_by_yr:
         story.append(Spacer(1, 10))
         cur_t = totals_by_yr[tax_yr]
         adj_prv, _, _ = _adjusted_prev_totals(s, totals_by_yr[tax_yr - 1])
-        use_nr = int(tax_yr) >= H.NEW_TENURE_RULE_FROM and adj_prv.get("nr_상시_평균") is not None
-        eff_prv_reg = round(float(adj_prv["nr_상시_평균"] if use_nr else adj_prv["상시_평균"]), 2)
-        eff_prv_yth = round(float(adj_prv.get("nr_청년등_평균", 0.0) if use_nr else adj_prv["청년등_평균"]), 2)
+        eff_prv_reg = round(adj_prv["상시_평균"], 2)
+        eff_prv_yth = round(adj_prv["청년등_평균"], 2)
         eff_prv_gen = round(max(0.0, eff_prv_reg - eff_prv_yth), 2)
-        nr_note_pdf = " (25년 1년미만 퇴사자 개정규정 재산정 반영)" if use_nr else ""
         inc = H.calc_increase_with_cap(
             cur_t["상시_평균"], cur_t["청년등_평균"], cur_t["청년외_평균"], eff_prv_reg, eff_prv_yth, eff_prv_gen
         )
         story.append(
             Paragraph(
-                f"■ [{tax_yr}년 vs {tax_yr-1}년 신규공제 고용증가 요약{nr_note_pdf}]  "
+                f"■ [{tax_yr}년 vs {tax_yr-1}년 신규공제 고용증가 요약]  "
                 f"전체 상시 증가: +{inc['전체_증가']:.2f}명  |  "
                 f"청년등 인정 증가: +{inc['청년등_증가']:.2f}명  |  "
                 f"청년등 외 인정 증가: +{inc['청년등외_증가']:.2f}명",
@@ -1195,9 +1199,8 @@ def _page_employees(room_key: str, log_tokens_fn=None):
     if tax_yr in totals_all and (tax_yr - 1) in totals_all:
         cur_t = totals_all[tax_yr]
         adj_prv, suc_reg, ded_reg = _adjusted_prev_totals(s, totals_all[tax_yr - 1])
-        use_nr = int(tax_yr) >= H.NEW_TENURE_RULE_FROM and adj_prv.get("nr_상시_평균") is not None
-        eff_prv_reg = round(float(adj_prv["nr_상시_평균"] if use_nr else adj_prv["상시_평균"]), 2)
-        eff_prv_yth = round(float(adj_prv.get("nr_청년등_평균", 0.0) if use_nr else adj_prv["청년등_평균"]), 2)
+        eff_prv_reg = round(adj_prv["상시_평균"], 2)
+        eff_prv_yth = round(adj_prv["청년등_평균"], 2)
         eff_prv_gen = round(max(0.0, eff_prv_reg - eff_prv_yth), 2)
         inc = H.calc_increase_with_cap(
             cur_t["상시_평균"],
@@ -1210,11 +1213,8 @@ def _page_employees(room_key: str, log_tokens_fn=None):
         cap_note = ""
         if inc.get("청년등_한도적용전", 0) > inc["청년등_증가"] or inc.get("청년등외_한도적용전", 0) > inc["청년등외_증가"]:
             cap_note = " &nbsp;·&nbsp; ⚠️ <b>전체 상시근로자 증가인원 한도(Cap) 자동 적용됨</b>"
-        suc_note = (
-            (f" (포괄양수·승계 직전인원 +{suc_reg:.2f}명 반영)" if suc_reg > 0 else "")
-            + (f" (기중양도 승계 근로자 직전인원 −{ded_reg:.2f}명 차감)" if ded_reg > 0 else "")
-            + (" (25년 1년미만 퇴사자 개정규정 재산정 반영)" if use_nr else "")
-        )
+        suc_note = (f" (포괄양수·승계 직전인원 +{suc_reg:.2f}명 반영)" if suc_reg > 0 else "") + \
+                   (f" (기중양도 승계 근로자 직전인원 −{ded_reg:.2f}명 차감)" if ded_reg > 0 else "")
         st.markdown(
             f"<div class='ec-law-banner'>"
             f"📊 <b>[{tax_yr}년 vs {tax_yr-1}년 신규공제 고용증가 요약{suc_note}]</b> &nbsp; "
