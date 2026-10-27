@@ -144,6 +144,189 @@ def _parse_and_clean_pro_audit(raw_comment: str) -> tuple[str, str]:
     return body, model_name
 
 
+
+
+def _build_prior_filing_discrepancy_bullets(
+    s: dict,
+    totals_all: dict | None = None,
+    pkg: dict | None = None,
+) -> list[str]:
+    """
+    이전 과세연도 기신고 자료(prev_summary / ext.prev_filing)와 2·3단계 세법원칙 재계산 수치 간에
+    차이가 존재하는 경우에만 차이나는 항목·수치와 세법상 원인(근거 법령 포함)을 2~3개 불릿으로 생성합니다.
+    (차이가 전혀 없거나 기신고 비교 대상이 없으면 빈 리스트를 반환하여 보고서 분량이 불필요하게 길어지지 않도록 합니다.)
+    """
+    tax_yr = int(s.get("tax_year") or R.DEFAULT_TAX_YEAR)
+    if totals_all is None:
+        totals_all = _ensure_totals_snapshot(s)
+
+    ps = s.get("prev_summary") or {}
+    ext_pf = ((s.get("ext") or {}).get("prev_filing") or {}).get("연도별") or {}
+
+    if pkg is None:
+        b = s.get("biz") or {}
+        corp_sz = b.get("기업구분", "중소기업")
+        cap_bool = H.is_capital_area(b.get("사업장소재지", ""))
+        is_cap = True if cap_bool is None else bool(cap_bool)
+        p1_f = ps.get(str(tax_yr - 1)) or {}
+        p2_f = ps.get(str(tax_yr - 2)) or {}
+        try:
+            pkg = H.calculate_tax_year_package(
+                tax_year=tax_yr,
+                corp_size=corp_sz,
+                is_capital=is_cap,
+                summaries=totals_all,
+                prior_filings={
+                    cohort: {
+                        "init_reg": f.get("상시"),
+                        "init_yth": f.get("청년등"),
+                        "init_yth_inc": f.get("청년등_증가"),
+                        "init_gen_inc": f.get("청년등외_증가"),
+                        "claimed_won": f.get("공제세액"),
+                        "carryforward_won": f.get("이월세액"),
+                        "y1_continued_won": f.get("2차_공제세액") if cohort == tax_yr - 2 else None,
+                        "prior_clawback_paid_won": f.get("기추징세액") if cohort == tax_yr - 2 else None,
+                        "is_capital": f.get("수도권"),
+                    }
+                    for cohort, f in ((tax_yr - 1, p1_f), (tax_yr - 2, p2_f))
+                },
+                additional_inputs=s.get("additional_inputs"),
+                scheme_2026=s.get("scheme_2026", "new_2026"),
+                pm_basis=s.get("pm_basis", R.PM_BASIS_FILED),
+            )
+        except Exception:
+            pkg = s.get("calc_pkg") or {}
+
+    bullets: list[str] = []
+    has_higher_recalc = False
+    has_lower_recalc = False
+
+    # 1) 과세연도별 기신고 인원 vs 2단계 사원표(세법원칙) 재계산 인원 비교
+    for y in (tax_yr - 1, tax_yr - 2, tax_yr - 3):
+        t_y = totals_all.get(y) or {}
+        if not t_y.get("has_data") or t_y.get("from_filed"):
+            continue
+
+        f_merged = {}
+        if isinstance(ext_pf.get(str(y)), dict):
+            f_merged.update(ext_pf[str(y)])
+        if isinstance(ps.get(str(y)), dict):
+            for k, v in ps[str(y)].items():
+                if v is not None:
+                    f_merged[k] = v
+
+        f_reg_raw = f_merged.get("상시")
+        f_yth_raw = f_merged.get("청년등")
+        if f_reg_raw is None and f_yth_raw is None:
+            continue
+
+        # 2단계 사원표의 해당 연도 귀속 기준 상시·청년등 평균인원 (합산 후 1회 절사)
+        recalc_reg = float(t_y.get("old_rule_regular") if t_y.get("old_rule_regular") is not None else t_y.get("상시_평균", t_y.get("b1_reg", 0.0)) or 0.0)
+        recalc_yth = float(t_y.get("old_rule_youth") if t_y.get("old_rule_youth") is not None else t_y.get("청년등_평균", t_y.get("b1_yth", 0.0)) or 0.0)
+        indiv_reg = float(t_y.get("b4_reg", recalc_reg) or 0.0)
+        indiv_yth = float(t_y.get("b4_yth", recalc_yth) or 0.0)
+
+        f_reg = float(f_reg_raw) if f_reg_raw is not None else recalc_reg
+        f_yth = float(f_yth_raw) if f_yth_raw is not None else recalc_yth
+        diff_reg = round(recalc_reg - f_reg, 2)
+        diff_yth = round(recalc_yth - f_yth, 2)
+
+        if abs(diff_reg) < 0.01 and abs(diff_yth) < 0.01:
+            continue
+
+        if diff_reg > 0 or diff_yth > 0:
+            has_higher_recalc = True
+        if diff_reg < 0 or diff_yth < 0:
+            has_lower_recalc = True
+
+        diff_parts = []
+        if f_reg_raw is not None and abs(diff_reg) >= 0.01:
+            diff_parts.append(f"전체 상시근로자 기신고 **{f_reg:.2f}명** → 세법원칙 재계산 **{recalc_reg:.2f}명**(차이 **{diff_reg:+.2f}명**)")
+        if f_yth_raw is not None and abs(diff_yth) >= 0.01:
+            diff_parts.append(f"청년등 상시근로자 기신고 **{f_yth:.2f}명** → 세법원칙 재계산 **{recalc_yth:.2f}명**(차이 **{diff_yth:+.2f}명**)")
+        diff_summary = ", ".join(diff_parts)
+
+        # 원인 판별: 인별 절사 vs 합산 후 1회 절사(0.01~0.12명 이내 소수점 차이 또는 b4 근접) vs 인별 요건 판정 차이
+        is_trunc_diff = (
+            (abs(f_reg - indiv_reg) <= 0.02 and abs(diff_reg) >= 0.01)
+            or (abs(f_yth - indiv_yth) <= 0.02 and abs(diff_yth) >= 0.01)
+            or (abs(diff_reg) <= 0.12 and abs(diff_yth) <= 0.12)
+        )
+        if is_trunc_diff:
+            reason_str = (
+                "과거 신고 시에는 근로자 개개인별로 근무월수를 과세연도 개월 수(12개월)로 나눈 값을 먼저 소수점 둘째 자리에서 버림한 뒤 합산(인별 절사 방식)하여 "
+                "중도 입·퇴사자의 소수점 셋째 자리 이하 자투리가 절사된 반면, 세법원칙(**조세특례제한법 시행령 제26조의8 제9항**, 2026.5.22. 개정 명확화: "
+                "'근로자별 계산한 수의 합에서 100분의 1 미만은 버린다')은 **매월 말 현재 상시근로자 수의 연간 합계(연인원)를 12개월로 나눈 뒤 마지막에 1회만 소수점 둘째 자리로 절사(합산 후 절사)**하도록 규정하고 있기 때문입니다."
+            )
+        else:
+            reason_str = (
+                "원천징수부 기반 인별 세법 요건 재검토 결과, ① 중도 입·퇴사자의 매월 말일 재직 판정 및 입사월 급여 익월 지급분 산입 여부(**조세특례제한법 시행령 제26조의8 제2항**), "
+                "② 근로계약 체결일 현재 만 15∼34세 청년 연령 및 병역이행기간(최대 6년) 차감 판정(**같은 조 제3항·제5항**), "
+                "③ 등기임원·최대주주·친족·1년 미만 계약자 등 상시근로자 제외대상 분류(**같은 법 시행령 제23조 제10항 준용**) 및 합산 후 1회 절사(**같은 조 제9항**) 원칙을 엄격히 적용함에 따라 발생한 차이입니다."
+            )
+
+        bullets.append(f"**{y}년 귀속 기신고 인원 대비 세법원칙 재계산 차이**: {diff_summary}. {reason_str}")
+
+    # 2) 직전 과세연도(tax_yr - 1)의 『종전 규정 인원(2단계 표·사후관리용)』 vs 『개정 규정 인원(3단계 당해 신규공제 비교용)』 차이
+    prev_s = (pkg or {}).get("prev_s") or {}
+    old_rule_reg = prev_s.get("old_rule_regular")
+    new_rule_reg = prev_s.get("regular")
+    if old_rule_reg is not None and new_rule_reg is not None and abs(float(old_rule_reg) - float(new_rule_reg)) >= 0.01:
+        old_r = float(old_rule_reg)
+        new_r = float(new_rule_reg)
+        r_diff = round(new_r - old_r, 2)
+        bullets.append(
+            f"**{tax_yr}년 신규공제 산정용 직전연도({tax_yr-1}년) 인원 재산정 차이 (종전규정 {old_r:.2f}명 → 개정규정 {new_r:.2f}명, {r_diff:+.2f}명)**: "
+            f"{tax_yr-1}년 귀속 자체의 공제 및 그 사후관리에는 종전 규정(**근로계약기간 1년 미만자만 제외**, **대통령령 제35999호 부칙 제2조** 경과조치)이 적용되어 "
+            f"2단계 {tax_yr-1}년 표에서는 **{old_r:.2f}명**으로 산정되나, **{tax_yr}년 귀속 1차년도 신규 고용증가 인원을 계산할 때 비교하는 직전 과세연도({tax_yr-1}년) 인원**은 "
+            f"개정 규정(**실제 근로기간이 1년 미만인 중도퇴사자도 상시근로자에서 제외**, **조세특례제한법 시행령 제26조의8 제2항 제1호**)으로 다시 세도록 의무화되어 있어 "
+            f"3단계 평균 상시근로자 증가 인원 표에서는 **{new_r:.2f}명**으로 적용된 적법한 세법 기준 차이입니다."
+        )
+
+    # 3) 기신고 기준 vs 세법원칙 기준에 따른 사후관리 세액 차이 및 경정청구·실무 적용 가이드
+    pm1_f = (pkg or {}).get("pm_y1_filed") or {}
+    pm1_r = (pkg or {}).get("pm_y1_recalc") or {}
+    pm2_f = (pkg or {}).get("pm_y2_filed") or {}
+    pm2_r = (pkg or {}).get("pm_y2_recalc") or {}
+
+    net_f = (
+        int(pm1_f.get("continued_credit_won") or 0)
+        - int(pm1_f.get("clawback_net_payable_won") or 0)
+        + int(pm2_f.get("continued_credit_won") or 0)
+        - int(pm2_f.get("clawback_net_payable_won") or 0)
+    )
+    net_r = (
+        int(pm1_r.get("continued_credit_won") or 0)
+        - int(pm1_r.get("clawback_net_payable_won") or 0)
+        + int(pm2_r.get("continued_credit_won") or 0)
+        - int(pm2_r.get("clawback_net_payable_won") or 0)
+    )
+
+    if bullets or abs(net_r - net_f) >= 10:
+        tax_diff_note = ""
+        if abs(net_r - net_f) >= 10 and not pm1_f.get("base_missing") and not pm1_r.get("base_missing"):
+            diff_won = net_r - net_f
+            fav_lbl = "세법원칙 재계산 기준" if diff_won > 0 else "기신고 서식 기준"
+            tax_diff_note = (
+                f" 당해 사후관리 순세액(연속공제 − 추가납부) 비교 시 기신고 기준(**{net_f:,}원**) 대비 "
+                f"세법원칙 재계산 기준(**{net_r:,}원**)이 **{diff_won:+,}원** 차이나므로(**{fav_lbl}** 유리),"
+            )
+        if has_higher_recalc:
+            bullets.append(
+                f"**경정청구 및 사후관리 기준 선택 실무 가이드**:{tax_diff_note} "
+                f"과거 과세연도 기신고 인원이 세법원칙(합산 후 1회 절사 등) 대비 과소 산정되어 공제세액을 적게 신고한 경우에는 "
+                f"법정신고기한 경과 후 5년 이내에 **경정청구(국세기본법 제45조의2)**를 통해 미공제 세액 환급(또는 이월공제액 증액) 및 사후관리 기초값 정정을 검토하시기 바랍니다."
+            )
+        elif has_lower_recalc or tax_diff_note:
+            bullets.append(
+                f"**사후관리 소명 및 수정신고 검토 가이드**:{tax_diff_note} "
+                f"기신고 서식 수치와 원천징수부 세법원칙 재계산 수치 간 차이에 대해 3단계 상단의 계산 기준 선택 스위치로 세액 영향을 비교하고, "
+                f"필요시 **국세기본법 제45조(수정신고)** 또는 **제45조의2(경정청구)** 규정에 따라 기초 인원 정합성을 맞추어 신고하시기 바랍니다."
+            )
+
+    return bullets
+
+
 def _ensure_auto_pro_audit_comment(s: dict, log_tokens_fn=None, room_key: str = "") -> tuple[str, str]:
     """
     4단계 진입 시 버튼 클릭 없이도 『Ⅳ. 심층 세무진단 의견』이 항상 자동으로 생성·표시되도록 보장합니다.
@@ -153,6 +336,20 @@ def _ensure_auto_pro_audit_comment(s: dict, log_tokens_fn=None, room_key: str = 
     shown_years = _years(s)
     cur_sig = f"{s.get('built_sig')}|{tax_yr}|{s.get('pm_basis')}"
 
+    totals_snapshot = _ensure_totals_snapshot(s)
+    discrepancy_bullets = _build_prior_filing_discrepancy_bullets(s, totals_all=totals_snapshot, pkg=s.get("calc_pkg"))
+
+    def _attach_sec4_if_needed(clean_body: str) -> str:
+        if not discrepancy_bullets:
+            return clean_body
+        if "### (4)" in clean_body or "#### (4)" in clean_body:
+            return clean_body
+        sec4_md = (
+            "\n\n### (4) 이전 과세연도 기신고 내역과 세법원칙 재계산 차이 및 법령 근거\n"
+            + "\n".join(f"- {_sanitize_markdown_tilde(b)}" for b in discrepancy_bullets)
+        )
+        return (clean_body.rstrip() + sec4_md).strip()
+
     existing_raw = str(s.get("pro_audit_comment") or "").strip()
     if existing_raw and not existing_raw.startswith("❌") and s.get("pro_audit_sig") == cur_sig:
         body, mod_nm = _parse_and_clean_pro_audit(existing_raw)
@@ -160,7 +357,7 @@ def _ensure_auto_pro_audit_comment(s: dict, log_tokens_fn=None, room_key: str = 
             if not mod_nm:
                 mod_nm = str(s.get("pro_audit_model") or "gemini-2.5-pro")
             s["pro_audit_model"] = mod_nm
-            return body, mod_nm
+            return _attach_sec4_if_needed(body), mod_nm
 
     if existing_raw and not existing_raw.startswith("❌") and not s.get("pro_audit_sig"):
         body, mod_nm = _parse_and_clean_pro_audit(existing_raw)
@@ -169,7 +366,7 @@ def _ensure_auto_pro_audit_comment(s: dict, log_tokens_fn=None, room_key: str = 
                 mod_nm = str(s.get("pro_audit_model") or "gemini-2.5-pro")
             s["pro_audit_model"] = mod_nm
             s["pro_audit_sig"] = cur_sig
-            return body, mod_nm
+            return _attach_sec4_if_needed(body), mod_nm
 
     computed_all, totals_all, ctx_all = {}, {}, {}
     for y in shown_years:
@@ -202,6 +399,7 @@ def _ensure_auto_pro_audit_comment(s: dict, log_tokens_fn=None, room_key: str = 
             for y, t in totals_all.items()
         },
         "결정론적_검토항목": [{"구분": lv, "내용": _strip_all_emojis(msg)} for lv, msg in review_items],
+        "기신고_대비_세법원칙_차이분석": discrepancy_bullets,
     }
 
     raw_generated = P.call_pro_argon_audit_commentary(
@@ -210,7 +408,8 @@ def _ensure_auto_pro_audit_comment(s: dict, log_tokens_fn=None, room_key: str = 
     body, mod_nm = _parse_and_clean_pro_audit(raw_generated)
     if not mod_nm:
         mod_nm = "gemini-2.5-pro"
-    s["pro_audit_comment"] = raw_generated
+    body = _attach_sec4_if_needed(body)
+    s["pro_audit_comment"] = f"[적용 모델: {mod_nm}]\n\n{body}"
     s["pro_audit_model"] = mod_nm
     s["pro_audit_sig"] = cur_sig
     _save_ec_to_disk(s)
@@ -343,26 +542,9 @@ def _build_report_markdown(s: dict, log_tokens_fn=None, room_key: str = "") -> s
         scheme_desc = "조세특례제한법 제29조의8 제1항 기본공제 단가 [각주 1]"
 
     pm1_reg_dec = "여(감소)" if (pm1.get("active") and not pm1.get("base_missing") and cur_s["b2_reg"] < pm1.get("init_reg", 0)) else "부(유지·증가)"
-    if pm1.get("active") and not pm1.get("base_missing"):
-        if cur_s["b2_yth"] < pm1.get("init_yth", 0):
-            pm1_yth_dec = "여(감소)"
-        elif cur_s.get("b2_yth_act", cur_s["b2_yth"]) < pm1.get("init_yth", 0):
-            pm1_yth_dec = "추징:부(간주유지)·연속공제:여(일반전환)"
-        else:
-            pm1_yth_dec = "부(유지·증가)"
-    else:
-        pm1_yth_dec = "부(유지·증가)"
-
+    pm1_yth_dec = "여(감소)" if (pm1.get("active") and not pm1.get("base_missing") and cur_s["b2_yth"] < pm1.get("init_yth", 0)) else "부(유지·증가)"
     pm2_reg_dec = "여(감소)" if (pm2.get("active") and not pm2.get("base_missing") and cur_s["b3_reg"] < pm2.get("init_reg", 0)) else "부(유지·증가)"
-    if pm2.get("active") and not pm2.get("base_missing"):
-        if cur_s["b3_yth"] < pm2.get("init_yth", 0):
-            pm2_yth_dec = "여(감소)"
-        elif cur_s.get("b3_yth_act", cur_s["b3_yth"]) < pm2.get("init_yth", 0):
-            pm2_yth_dec = "추징:부(간주유지)·연속공제:여(일반전환)"
-        else:
-            pm2_yth_dec = "부(유지·증가)"
-    else:
-        pm2_yth_dec = "부(유지·증가)"
+    pm2_yth_dec = "여(감소)" if (pm2.get("active") and not pm2.get("base_missing") and cur_s["b3_yth"] < pm2.get("init_yth", 0)) else "부(유지·증가)"
 
     audit_body, _ = _ensure_auto_pro_audit_comment(s, log_tokens_fn=log_tokens_fn, room_key=room_key)
 
@@ -433,10 +615,10 @@ def _build_report_markdown(s: dict, log_tokens_fn=None, room_key: str = "") -> s
         "## Ⅲ. 계산근거 관련 법령 주석",
         "### (1) 기본공제·상시근로자 범위 및 소수점 절사 규정",
         "- **[각주 1] 조세특례제한법 제29조의8 제1항 (통합고용세액공제 기본공제 및 단가)**: 소비성서비스업 등 제외 업종 외의 내국인이 직전 과세연도 대비 상시근로자 수가 증가한 경우, 청년등 상시근로자 증가인원(중소 수도권 1,450만원·비수도권 1,550만원 / 2026 신법은 유지연차별 점증 단가)과 청년등 외 증가인원(중소 수도권 850만원·비수도권 950만원)에 해당 공제단가를 곱한 금액을 소득세 또는 법인세에서 공제한다.",
-        "- **[각주 2] 조세특례제한법 시행령 제26조의8 제2항·제3항·제9항 및 대통령령 제35999호 부칙 제2조 (상시근로자 제외 범위 · 경과규정 · 소수점 절사)**: 근로계약기간 1년 미만자(실제 근로기간 1년 미만 중도퇴사자 제외는 2026.1.1. 이후 개시 과세연도 최초공제분부터 적용하며, 2024·2025년 최초공제분 및 그 사후관리는 종전 규정을 적용함 — 기획재정부 소비세제과-269), 월평균 60시간 미만 단시간근로자, 법인의 등기임원, 최대주주·최대출자자(개인사업자는 대표자)와 그 배우자·직계존비속·친족은 상시근로자에서 제외한다(제23조 제10항 준용). 청년등 상시근로자(15~34세 청년[병역기간 최대 6년 차감], 60세 이상, 장애인, 경력단절근로자, 북한이탈주민) 증가인원은 **전체 상시근로자 증가인원을 한도(Cap)**로 하며, 상시근로자 수 계산 시 근로자별 계산한 수의 합에서 **100분의 1 미만은 버린다(소수점 둘째 자리 절사, 2026.5.22. 시행령 개정 기준)**.",
+        "- **[각주 2] 조세특례제한법 시행령 제26조의8 제2항·제3항·제9항 (상시근로자 제외 범위 · 청년등 증가한도 Cap · 소수점 절사)**: 근로계약기간 1년 미만자(2025년 귀속부터 실제 근로기간 1년 미만자 포함), 월평균 60시간 미만 단시간근로자, 법인의 등기임원, 최대주주·최대출자자(개인사업자는 대표자)와 그 배우자·직계존비속·친족은 상시근로자에서 제외한다(제23조 제10항 준용). 청년등 상시근로자(15~34세 청년[병역기간 최대 6년 차감], 60세 이상, 장애인, 경력단절근로자, 북한이탈주민) 증가인원은 **전체 상시근로자 증가인원을 한도(Cap)**로 하며, 상시근로자 수 계산 시 근로자별 계산한 수의 합에서 **100분의 1 미만은 버린다(소수점 둘째 자리 절사, 2026.5.22. 시행령 개정 기준)**.",
         "",
         "### (2) 사후관리·연속공제·추가납부 및 고용승계 특례 규정",
-        "- **[각주 3] 조세특례제한법 시행령 제26조의8 제3항 제1호 및 구 제5항 (청년등 연령 판정 및 유예기간 특례)**: 2024년 이전 최초공제분은 사후관리 추가납부(추징) 산정 시에만 최초연도 청년 간주(구 제5항)를 적용하고 2·3차년도 연속공제 시에는 실제 연령 기준으로 판정하여 청년 감소 시 당초 청년 증가분 전원을 일반단가로 전환하며(법 제29조의8 제3항, 서면-2023-법인-0978), 2025년 이후 근로계약·공제분은 근로계약 체결일 당시 34세 이하인 경우 체결일로부터 3년(2026년 이후 체결분은 4년, 일반기업은 각 2년·3년)이 되는 날이 속하는 달까지 계속하여 **청년등 상시근로자로 본다**.",
+        "- **[각주 3] 조세특례제한법 시행령 제26조의8 제5항 (사후관리·연속공제 시 청년등 연령경과 간주 특례)**: 최초로 공제받은 과세연도에 청년등 상시근로자에 해당하였던 자는 이후 과세연도에 연령 증가로 34세를 초과하더라도, 그 최초 공제연도 분에 대한 2·3차년도 연속공제 및 사후관리(추가납부세액) 상시근로자 수 산정 시에는 계속하여 **청년등 상시근로자로 본다**.",
         "- **[각주 4] 조세특례제한법 제29조의8 제3항 및 시행령 제26조의8 제6항 (고용 감소 시 추가납부세액 산식 및 이자상당가산액 면제)**: 공제를 받은 과세연도 종료일부터 2년(대기업 1년)이 되는 날이 속하는 과세연도 종료일까지 전체 상시근로자 수가 감소한 경우 연속공제를 중단하고 감소 인원분 공제세액을 추가납부하며(Case 1·Case 2), 전체 상시근로자 수는 유지되었으나 청년등 상시근로자 수만 감소한 경우(Case 3)에는 청년등 단가와 일반 단가의 차액(청년단가 − 일반단가)만을 추가납부한다. 이때 기공제받은 세액을 한도로 하며 이자상당가산액은 부과되지 아니한다.",
         "- **[각주 5] 조세특례제한법 제144조 및 기본통칙 (최저한세 등 미공제 이월세액 우선 소멸 특례)**: 사후관리 위반으로 추가납부 사유가 발생하였으나 최저한세 적용 또는 결손금 등으로 인하여 당초 실제로 공제받지 못하고 이월된 세액공제액(이월세액)이 남아 있는 경우, 현금으로 추가납부하는 대신 해당 미공제 이월세액을 먼저 차감(소멸)한다.",
         "- **[각주 6] 조세특례제한법 시행령 제26조의8 제10항 및 제23조 제13항 준용 (포괄양수·합병·분할·법인전환 고용승계 특례)**: 과세연도 중 사업을 포괄양수하거나 합병·분할·현물출자·법인전환에 따라 고용을 승계한 기업의 직전 과세연도 상시근로자 수는 기존 사업장 직전 인원에 승계 사업장 직전 인원을 더한 수로 하고, 당해 과세연도에는 과세연도 개시일에 승계한 것으로 보아 근무기간을 통산한다.",
@@ -448,7 +630,7 @@ def _build_report_markdown(s: dict, log_tokens_fn=None, room_key: str = "") -> s
     return _sanitize_markdown_tilde("\n".join(lines))
 
 
-def _build_report_pdf_bytes(s: dict, log_tokens_fn=None, room_key: str = "", md_text: str | None = None) -> bytes:
+def _build_report_pdf_bytes(s: dict, log_tokens_fn=None, room_key: str = "") -> bytes:
     """
     4단계 『보고서 PDF 다운』 전용 빌더:
     - 화면의 대제목 / 중제목(Ⅰ~Ⅳ) / 소제목 / 본문·표를 그대로 A4 세로(Portrait) 정식 PDF로 출력합니다.
@@ -533,7 +715,7 @@ def _build_report_pdf_bytes(s: dict, log_tokens_fn=None, room_key: str = "", md_
         textColor=colors.HexColor("#1e293b"),
     )
 
-    md_full = md_text if md_text is not None else _build_report_markdown(s, log_tokens_fn=log_tokens_fn, room_key=room_key)
+    md_full = _build_report_markdown(s, log_tokens_fn=log_tokens_fn, room_key=room_key)
     story = []
 
     lines = md_full.splitlines()
@@ -681,7 +863,7 @@ def _page_report(room_key: str = "", log_tokens_fn=None):
         )
 
     md_text = _build_report_markdown(s, log_tokens_fn=log_tokens_fn, room_key=room_key)
-    pdf_report_bytes = _build_report_pdf_bytes(s, log_tokens_fn=log_tokens_fn, room_key=room_key, md_text=md_text)
+    pdf_report_bytes = _build_report_pdf_bytes(s, log_tokens_fn=log_tokens_fn, room_key=room_key)
 
     # 보고서 본문: 자율 에이전트AI 스크린 글자크기(1.12rem) + 대/중/소제목/내용 위계 적용 래퍼
     st.markdown(f"<div class='ec-agent-report-wrap'>\n\n{md_text}\n\n</div>", unsafe_allow_html=True)
