@@ -288,8 +288,17 @@ def current_year_end_age(person: dict, year: int) -> int | None:
     return full_age(birth, date(year, 12, 31), mil)
 
 
-def youth_hold_years(corp_size: str) -> int:
-    return R.YOUTH_HOLD_YEARS_SME if corp_size == "중소기업" else R.YOUTH_HOLD_YEARS_LARGE
+def youth_hold_years(corp_size: str, contract_dt: date | None = None) -> int:
+    """
+    근로계약 체결일 기준 청년 인정기간(년). 0이면 인정기간 없음(매달 나이로만 판정).
+    - 2026년 이후 계약: 중소·중견 4년, 대기업 3년 / 2025년 계약: 중소·중견 3년, 대기업 2년 / 2024년 이전 계약: 0
+    """
+    large = corp_size in ("일반기업", "대기업")
+    if contract_dt is None or contract_dt.year >= 2026:
+        return R.YOUTH_HOLD_YEARS_LARGE if large else R.YOUTH_HOLD_YEARS_SME
+    if contract_dt.year == 2025:
+        return R.YOUTH_HOLD_YEARS_2025_LARGE if large else R.YOUTH_HOLD_YEARS_2025_SME
+    return 0
 
 
 def is_youth_month(person: dict, year: int, month: int, corp_size: str) -> bool:
@@ -310,9 +319,12 @@ def is_youth_month(person: dict, year: int, month: int, corp_size: str) -> bool:
     if age_at_me is not None and R.YOUTH_AGE_MIN <= age_at_me <= R.YOUTH_AGE_MAX:
         return True
 
-    hold_end = add_years(c_dt, youth_hold_years(corp_size))
-    hold_end_month_last = month_end(hold_end.year, hold_end.month)
-    return me <= hold_end_month_last
+    # 34세를 넘은 달: 근로계약 체결일 기준 인정기간 안이면 청년 (2024년 이전 계약은 인정기간 없음)
+    hold = youth_hold_years(corp_size, c_dt)
+    if hold <= 0:
+        return False
+    hold_end = add_years(c_dt, hold)          # 청년 제외시점 (이 날부터 청년 아님)
+    return me < hold_end
 
 
 def was_youth_in_year_by_age(person: dict, year: int, corp_size: str) -> bool:
@@ -1869,9 +1881,9 @@ def review(
             items.append(
                 (
                     "확인",
-                    f"[{y}년 · 청년 연령도과 사후관리 특례 자동적용] {', '.join(cohort_preserved_names)}: "
-                    f"근로계약 체결일부터 청년 인정기간(중소·중견 4년/그 외 3년) 도과로 당해 세액공제(3번 블록)에서는 '청년외'로 전환되었으나, "
-                    f"조특령 제26조의8 제5항에 따라 1·2차 사후관리(4·5번 블록)에서는 최초공제연도 기준 '청년등'으로 안전하게 유지되었습니다.",
+                    f"[{y}년 · 사후관리 청년 간주 자동적용] {', '.join(cohort_preserved_names)}: "
+                    f"당해 세액공제(3번 블록)에서는 청년등이 아니지만(나이·인정기간 경과 또는 단시간·기간제 등), "
+                    f"최초공제연도에 청년등이었으므로 조특령 제26조의8 제5항에 따라 1·2차 사후관리(4·5번 블록)에서는 '청년등'으로 유지했습니다.",
                 )
             )
 
