@@ -48,7 +48,6 @@ BACKUP_KEYS = (
     "tax_year",
     "step",
     "max_step_reached",
-    "max_step_reached",
     "biz",
     "sub_biz_list",
     "files",

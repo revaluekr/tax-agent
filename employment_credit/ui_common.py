@@ -752,14 +752,18 @@ def _ensure_korean_pdf_font() -> tuple[str, str]:
 
     if chosen_reg is None:
         try:
-            urllib.request.urlretrieve(
+            with urllib.request.urlopen(
                 "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Regular.ttf",
-                reg_path,
-            )
-            urllib.request.urlretrieve(
+                timeout=3,
+            ) as _resp:
+                with open(reg_path, "wb") as _out_f:
+                    _out_f.write(_resp.read())
+            with urllib.request.urlopen(
                 "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Bold.ttf",
-                bold_path,
-            )
+                timeout=3,
+            ) as _resp:
+                with open(bold_path, "wb") as _out_f:
+                    _out_f.write(_resp.read())
             if os.path.exists(reg_path):
                 chosen_reg = reg_path
                 chosen_bold = bold_path if os.path.exists(bold_path) else reg_path

@@ -918,11 +918,19 @@ def _page_calculation():
         unsafe_allow_html=True,
     )
 
-    def _build_pm_req_check_bar_html(pm_obj: dict, cohort_yr: int, eval_yr: int, cur_reg_v: float, cur_yth_v: float) -> str:
+    def _build_pm_req_check_bar_html(
+        pm_obj: dict,
+        cohort_yr: int,
+        eval_yr: int,
+        cur_reg_v: float,
+        cur_yth_v: float,
+        cur_yth_act_v: float | None = None,
+    ) -> str:
         init_r = float(pm_obj.get("init_reg") or 0.0)
         init_y = float(pm_obj.get("init_yth") or 0.0)
         is_active = bool(pm_obj.get("active")) and not bool(pm_obj.get("base_missing"))
         is_new_law = str(pm_obj.get("case_code") or "").startswith("신법")
+        act_y = float(cur_yth_v if cur_yth_act_v is None else cur_yth_act_v)
 
         if is_new_law and isinstance(pm_obj.get("new_tier_info"), dict):
             ti = pm_obj["new_tier_info"]
@@ -943,10 +951,17 @@ def _page_calculation():
         else:
             reg_diff_v = round(cur_reg_v - init_r, 2)
             yth_diff_v = round(cur_yth_v - init_y, 2)
+            act_diff_v = round(act_y - init_y, 2)
             reg_dec_yes = reg_diff_v < 0
             yth_dec_yes = yth_diff_v < 0
             r_sub = f"1차년도({cohort_yr}년) {init_r:.2f}명 → 당해({eval_yr}년) {cur_reg_v:.2f}명 ({reg_diff_v:+.2f}명)"
-            y_sub = f"1차년도({cohort_yr}년) {init_y:.2f}명 → 당해({eval_yr}년) {cur_yth_v:.2f}명 ({yth_diff_v:+.2f}명)"
+            if not yth_dec_yes and act_diff_v < 0:
+                y_sub = (
+                    f"1차년도({cohort_yr}년) {init_y:.2f}명 → 추징간주 {cur_yth_v:.2f}명(유지) · "
+                    f"연속공제실제 {act_y:.2f}명(연령경과 일반단가 전환)"
+                )
+            else:
+                y_sub = f"1차년도({cohort_yr}년) {init_y:.2f}명 → 당해({eval_yr}년) {cur_yth_v:.2f}명 ({yth_diff_v:+.2f}명)"
             r_yes_cls = "active-yes" if reg_dec_yes else ""
             r_no_cls = "active-no" if not reg_dec_yes else ""
             y_yes_cls = "active-yes" if yth_dec_yes else ""
@@ -983,7 +998,7 @@ def _page_calculation():
         unsafe_allow_html=True,
     )
     pm1_req_bar_html = _build_pm_req_check_bar_html(
-        pkg["pm_y1"], tax_yr - 1, tax_yr, cur_s["b2_reg"], cur_s["b2_yth"]
+        pkg["pm_y1"], tax_yr - 1, tax_yr, cur_s["b2_reg"], cur_s["b2_yth"], cur_s.get("b2_yth_act", cur_s["b2_yth"])
     )
     pm1_title, pm1_lines, pm1_amt_lbl, pm1_val, pm1_is_neg = _build_pm_formula_lines(
         pm=pkg["pm_y1"],
@@ -1029,7 +1044,7 @@ def _page_calculation():
         unsafe_allow_html=True,
     )
     pm2_req_bar_html = _build_pm_req_check_bar_html(
-        pkg["pm_y2"], tax_yr - 2, tax_yr, cur_s["b3_reg"], cur_s["b3_yth"]
+        pkg["pm_y2"], tax_yr - 2, tax_yr, cur_s["b3_reg"], cur_s["b3_yth"], cur_s.get("b3_yth_act", cur_s["b3_yth"])
     )
     pm2_title, pm2_lines, pm2_amt_lbl, pm2_val, pm2_is_neg = _build_pm_formula_lines(
         pm=pkg["pm_y2"],

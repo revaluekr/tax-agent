@@ -298,15 +298,17 @@ def _build_schedule_pdf_bytes(s: dict, target_years: list[int], include_summary:
         story.append(Spacer(1, 10))
         cur_t = totals_by_yr[tax_yr]
         adj_prv, _, _ = _adjusted_prev_totals(s, totals_by_yr[tax_yr - 1])
-        eff_prv_reg = round(adj_prv["상시_평균"], 2)
-        eff_prv_yth = round(adj_prv["청년등_평균"], 2)
+        use_nr = int(tax_yr) >= H.NEW_TENURE_RULE_FROM and adj_prv.get("nr_상시_평균") is not None
+        eff_prv_reg = round(float(adj_prv["nr_상시_평균"] if use_nr else adj_prv["상시_평균"]), 2)
+        eff_prv_yth = round(float(adj_prv.get("nr_청년등_평균", 0.0) if use_nr else adj_prv["청년등_평균"]), 2)
         eff_prv_gen = round(max(0.0, eff_prv_reg - eff_prv_yth), 2)
+        nr_note_pdf = " (25년 1년미만 퇴사자 개정규정 재산정 반영)" if use_nr else ""
         inc = H.calc_increase_with_cap(
             cur_t["상시_평균"], cur_t["청년등_평균"], cur_t["청년외_평균"], eff_prv_reg, eff_prv_yth, eff_prv_gen
         )
         story.append(
             Paragraph(
-                f"■ [{tax_yr}년 vs {tax_yr-1}년 신규공제 고용증가 요약]  "
+                f"■ [{tax_yr}년 vs {tax_yr-1}년 신규공제 고용증가 요약{nr_note_pdf}]  "
                 f"전체 상시 증가: +{inc['전체_증가']:.2f}명  |  "
                 f"청년등 인정 증가: +{inc['청년등_증가']:.2f}명  |  "
                 f"청년등 외 인정 증가: +{inc['청년등외_증가']:.2f}명",
@@ -1193,8 +1195,9 @@ def _page_employees(room_key: str, log_tokens_fn=None):
     if tax_yr in totals_all and (tax_yr - 1) in totals_all:
         cur_t = totals_all[tax_yr]
         adj_prv, suc_reg, ded_reg = _adjusted_prev_totals(s, totals_all[tax_yr - 1])
-        eff_prv_reg = round(adj_prv["상시_평균"], 2)
-        eff_prv_yth = round(adj_prv["청년등_평균"], 2)
+        use_nr = int(tax_yr) >= H.NEW_TENURE_RULE_FROM and adj_prv.get("nr_상시_평균") is not None
+        eff_prv_reg = round(float(adj_prv["nr_상시_평균"] if use_nr else adj_prv["상시_평균"]), 2)
+        eff_prv_yth = round(float(adj_prv.get("nr_청년등_평균", 0.0) if use_nr else adj_prv["청년등_평균"]), 2)
         eff_prv_gen = round(max(0.0, eff_prv_reg - eff_prv_yth), 2)
         inc = H.calc_increase_with_cap(
             cur_t["상시_평균"],
@@ -1207,8 +1210,11 @@ def _page_employees(room_key: str, log_tokens_fn=None):
         cap_note = ""
         if inc.get("청년등_한도적용전", 0) > inc["청년등_증가"] or inc.get("청년등외_한도적용전", 0) > inc["청년등외_증가"]:
             cap_note = " &nbsp;·&nbsp; ⚠️ <b>전체 상시근로자 증가인원 한도(Cap) 자동 적용됨</b>"
-        suc_note = (f" (포괄양수·승계 직전인원 +{suc_reg:.2f}명 반영)" if suc_reg > 0 else "") + \
-                   (f" (기중양도 승계 근로자 직전인원 −{ded_reg:.2f}명 차감)" if ded_reg > 0 else "")
+        suc_note = (
+            (f" (포괄양수·승계 직전인원 +{suc_reg:.2f}명 반영)" if suc_reg > 0 else "")
+            + (f" (기중양도 승계 근로자 직전인원 −{ded_reg:.2f}명 차감)" if ded_reg > 0 else "")
+            + (" (25년 1년미만 퇴사자 개정규정 재산정 반영)" if use_nr else "")
+        )
         st.markdown(
             f"<div class='ec-law-banner'>"
             f"📊 <b>[{tax_yr}년 vs {tax_yr-1}년 신규공제 고용증가 요약{suc_note}]</b> &nbsp; "

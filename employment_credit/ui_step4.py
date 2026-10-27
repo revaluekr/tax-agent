@@ -343,9 +343,26 @@ def _build_report_markdown(s: dict, log_tokens_fn=None, room_key: str = "") -> s
         scheme_desc = "조세특례제한법 제29조의8 제1항 기본공제 단가 [각주 1]"
 
     pm1_reg_dec = "여(감소)" if (pm1.get("active") and not pm1.get("base_missing") and cur_s["b2_reg"] < pm1.get("init_reg", 0)) else "부(유지·증가)"
-    pm1_yth_dec = "여(감소)" if (pm1.get("active") and not pm1.get("base_missing") and cur_s["b2_yth"] < pm1.get("init_yth", 0)) else "부(유지·증가)"
+    if pm1.get("active") and not pm1.get("base_missing"):
+        if cur_s["b2_yth"] < pm1.get("init_yth", 0):
+            pm1_yth_dec = "여(감소)"
+        elif cur_s.get("b2_yth_act", cur_s["b2_yth"]) < pm1.get("init_yth", 0):
+            pm1_yth_dec = "추징:부(간주유지)·연속공제:여(일반전환)"
+        else:
+            pm1_yth_dec = "부(유지·증가)"
+    else:
+        pm1_yth_dec = "부(유지·증가)"
+
     pm2_reg_dec = "여(감소)" if (pm2.get("active") and not pm2.get("base_missing") and cur_s["b3_reg"] < pm2.get("init_reg", 0)) else "부(유지·증가)"
-    pm2_yth_dec = "여(감소)" if (pm2.get("active") and not pm2.get("base_missing") and cur_s["b3_yth"] < pm2.get("init_yth", 0)) else "부(유지·증가)"
+    if pm2.get("active") and not pm2.get("base_missing"):
+        if cur_s["b3_yth"] < pm2.get("init_yth", 0):
+            pm2_yth_dec = "여(감소)"
+        elif cur_s.get("b3_yth_act", cur_s["b3_yth"]) < pm2.get("init_yth", 0):
+            pm2_yth_dec = "추징:부(간주유지)·연속공제:여(일반전환)"
+        else:
+            pm2_yth_dec = "부(유지·증가)"
+    else:
+        pm2_yth_dec = "부(유지·증가)"
 
     audit_body, _ = _ensure_auto_pro_audit_comment(s, log_tokens_fn=log_tokens_fn, room_key=room_key)
 
@@ -416,10 +433,10 @@ def _build_report_markdown(s: dict, log_tokens_fn=None, room_key: str = "") -> s
         "## Ⅲ. 계산근거 관련 법령 주석",
         "### (1) 기본공제·상시근로자 범위 및 소수점 절사 규정",
         "- **[각주 1] 조세특례제한법 제29조의8 제1항 (통합고용세액공제 기본공제 및 단가)**: 소비성서비스업 등 제외 업종 외의 내국인이 직전 과세연도 대비 상시근로자 수가 증가한 경우, 청년등 상시근로자 증가인원(중소 수도권 1,450만원·비수도권 1,550만원 / 2026 신법은 유지연차별 점증 단가)과 청년등 외 증가인원(중소 수도권 850만원·비수도권 950만원)에 해당 공제단가를 곱한 금액을 소득세 또는 법인세에서 공제한다.",
-        "- **[각주 2] 조세특례제한법 시행령 제26조의8 제2항·제3항·제9항 (상시근로자 제외 범위 · 청년등 증가한도 Cap · 소수점 절사)**: 근로계약기간 1년 미만자(2025년 귀속부터 실제 근로기간 1년 미만자 포함), 월평균 60시간 미만 단시간근로자, 법인의 등기임원, 최대주주·최대출자자(개인사업자는 대표자)와 그 배우자·직계존비속·친족은 상시근로자에서 제외한다(제23조 제10항 준용). 청년등 상시근로자(15~34세 청년[병역기간 최대 6년 차감], 60세 이상, 장애인, 경력단절근로자, 북한이탈주민) 증가인원은 **전체 상시근로자 증가인원을 한도(Cap)**로 하며, 상시근로자 수 계산 시 근로자별 계산한 수의 합에서 **100분의 1 미만은 버린다(소수점 둘째 자리 절사, 2026.5.22. 시행령 개정 기준)**.",
+        "- **[각주 2] 조세특례제한법 시행령 제26조의8 제2항·제3항·제9항 및 대통령령 제35999호 부칙 제2조 (상시근로자 제외 범위 · 경과규정 · 소수점 절사)**: 근로계약기간 1년 미만자(실제 근로기간 1년 미만 중도퇴사자 제외는 2026.1.1. 이후 개시 과세연도 최초공제분부터 적용하며, 2024·2025년 최초공제분 및 그 사후관리는 종전 규정을 적용함 — 기획재정부 소비세제과-269), 월평균 60시간 미만 단시간근로자, 법인의 등기임원, 최대주주·최대출자자(개인사업자는 대표자)와 그 배우자·직계존비속·친족은 상시근로자에서 제외한다(제23조 제10항 준용). 청년등 상시근로자(15~34세 청년[병역기간 최대 6년 차감], 60세 이상, 장애인, 경력단절근로자, 북한이탈주민) 증가인원은 **전체 상시근로자 증가인원을 한도(Cap)**로 하며, 상시근로자 수 계산 시 근로자별 계산한 수의 합에서 **100분의 1 미만은 버린다(소수점 둘째 자리 절사, 2026.5.22. 시행령 개정 기준)**.",
         "",
         "### (2) 사후관리·연속공제·추가납부 및 고용승계 특례 규정",
-        "- **[각주 3] 조세특례제한법 시행령 제26조의8 제5항 (사후관리·연속공제 시 청년등 연령경과 간주 특례)**: 최초로 공제받은 과세연도에 청년등 상시근로자에 해당하였던 자는 이후 과세연도에 연령 증가로 34세를 초과하더라도, 그 최초 공제연도 분에 대한 2·3차년도 연속공제 및 사후관리(추가납부세액) 상시근로자 수 산정 시에는 계속하여 **청년등 상시근로자로 본다**.",
+        "- **[각주 3] 조세특례제한법 시행령 제26조의8 제3항 제1호 및 구 제5항 (청년등 연령 판정 및 유예기간 특례)**: 2024년 이전 최초공제분은 사후관리 추가납부(추징) 산정 시에만 최초연도 청년 간주(구 제5항)를 적용하고 2·3차년도 연속공제 시에는 실제 연령 기준으로 판정하여 청년 감소 시 당초 청년 증가분 전원을 일반단가로 전환하며(법 제29조의8 제3항, 서면-2023-법인-0978), 2025년 이후 근로계약·공제분은 근로계약 체결일 당시 34세 이하인 경우 체결일로부터 3년(2026년 이후 체결분은 4년, 일반기업은 각 2년·3년)이 되는 날이 속하는 달까지 계속하여 **청년등 상시근로자로 본다**.",
         "- **[각주 4] 조세특례제한법 제29조의8 제3항 및 시행령 제26조의8 제6항 (고용 감소 시 추가납부세액 산식 및 이자상당가산액 면제)**: 공제를 받은 과세연도 종료일부터 2년(대기업 1년)이 되는 날이 속하는 과세연도 종료일까지 전체 상시근로자 수가 감소한 경우 연속공제를 중단하고 감소 인원분 공제세액을 추가납부하며(Case 1·Case 2), 전체 상시근로자 수는 유지되었으나 청년등 상시근로자 수만 감소한 경우(Case 3)에는 청년등 단가와 일반 단가의 차액(청년단가 − 일반단가)만을 추가납부한다. 이때 기공제받은 세액을 한도로 하며 이자상당가산액은 부과되지 아니한다.",
         "- **[각주 5] 조세특례제한법 제144조 및 기본통칙 (최저한세 등 미공제 이월세액 우선 소멸 특례)**: 사후관리 위반으로 추가납부 사유가 발생하였으나 최저한세 적용 또는 결손금 등으로 인하여 당초 실제로 공제받지 못하고 이월된 세액공제액(이월세액)이 남아 있는 경우, 현금으로 추가납부하는 대신 해당 미공제 이월세액을 먼저 차감(소멸)한다.",
         "- **[각주 6] 조세특례제한법 시행령 제26조의8 제10항 및 제23조 제13항 준용 (포괄양수·합병·분할·법인전환 고용승계 특례)**: 과세연도 중 사업을 포괄양수하거나 합병·분할·현물출자·법인전환에 따라 고용을 승계한 기업의 직전 과세연도 상시근로자 수는 기존 사업장 직전 인원에 승계 사업장 직전 인원을 더한 수로 하고, 당해 과세연도에는 과세연도 개시일에 승계한 것으로 보아 근무기간을 통산한다.",
@@ -431,7 +448,7 @@ def _build_report_markdown(s: dict, log_tokens_fn=None, room_key: str = "") -> s
     return _sanitize_markdown_tilde("\n".join(lines))
 
 
-def _build_report_pdf_bytes(s: dict, log_tokens_fn=None, room_key: str = "") -> bytes:
+def _build_report_pdf_bytes(s: dict, log_tokens_fn=None, room_key: str = "", md_text: str | None = None) -> bytes:
     """
     4단계 『보고서 PDF 다운』 전용 빌더:
     - 화면의 대제목 / 중제목(Ⅰ~Ⅳ) / 소제목 / 본문·표를 그대로 A4 세로(Portrait) 정식 PDF로 출력합니다.
@@ -516,7 +533,7 @@ def _build_report_pdf_bytes(s: dict, log_tokens_fn=None, room_key: str = "") -> 
         textColor=colors.HexColor("#1e293b"),
     )
 
-    md_full = _build_report_markdown(s, log_tokens_fn=log_tokens_fn, room_key=room_key)
+    md_full = md_text if md_text is not None else _build_report_markdown(s, log_tokens_fn=log_tokens_fn, room_key=room_key)
     story = []
 
     lines = md_full.splitlines()
@@ -664,7 +681,7 @@ def _page_report(room_key: str = "", log_tokens_fn=None):
         )
 
     md_text = _build_report_markdown(s, log_tokens_fn=log_tokens_fn, room_key=room_key)
-    pdf_report_bytes = _build_report_pdf_bytes(s, log_tokens_fn=log_tokens_fn, room_key=room_key)
+    pdf_report_bytes = _build_report_pdf_bytes(s, log_tokens_fn=log_tokens_fn, room_key=room_key, md_text=md_text)
 
     # 보고서 본문: 자율 에이전트AI 스크린 글자크기(1.12rem) + 대/중/소제목/내용 위계 적용 래퍼
     st.markdown(f"<div class='ec-agent-report-wrap'>\n\n{md_text}\n\n</div>", unsafe_allow_html=True)
