@@ -122,6 +122,7 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
             "💡 <b>[2026년 귀속 통합 계산 안내]</b> 2026년 귀속 신고 시에는 "
             "<b>① 26년 세액공제(합산 후 절사)</b>, <b>② 25년 1차 사후관리(2차년도 연속공제·추징)</b>, "
             "<b>③ 24년 2차 사후관리(3차년도 연속공제·추징)</b>를 함께 검토합니다. "
+            "24·25·26년 공제 및 사후관리(24년 고용증가 23→24년 산정 포함)를 위해 <b>23년 자료(원천징수부·기신고서)</b>도 함께 올리실 수 있으며, "
             "본점·지점 또는 기중 양도(1번)·포괄양수(2번) 복수 사업장 원천징수부를 함께 올리면 자동 합산됩니다."
             "</div>",
             unsafe_allow_html=True,
@@ -157,7 +158,7 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
     st.markdown(
         "<div class='ec-bottom-upload-label'>"
         "<span>📥 <b>파일 추가 업로드</b> (본·지점 / 양도·양수 복수 사업장 파일도 한꺼번에 끌어다 놓으세요)</span>"
-        f"<span style='color:#16a34a;font-size:0.80rem;'>{tax_yr-2}·{tax_yr-1}·{tax_yr}년 원천징수부(100% 자체 고속파싱) · 복수 사업장 합산 지원</span>"
+        f"<span style='color:#16a34a;font-size:0.80rem;'>{tax_yr-3}·{tax_yr-2}·{tax_yr-1}·{tax_yr}년 원천징수부(100% 자체 고속파싱) · 복수 사업장 합산 지원</span>"
         "</div>",
         unsafe_allow_html=True,
     )

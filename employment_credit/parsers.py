@@ -1726,6 +1726,7 @@ def check_missing(classified: dict[str, list[str]], ext: dict | None, tax_year: 
 
     t1 = int(tax_year) - 1
     t2 = int(tax_year) - 2
+    t3 = int(tax_year) - 3
     if not classified.get(f"credit_calc_{t1}") and not classified.get("prev_filing") and not classified.get("prev_credit_calc"):
         msgs.append(
             f"**{t1}년 공제감면세액계산서**가 업로드되지 않았습니다. "
@@ -1736,10 +1737,17 @@ def check_missing(classified: dict[str, list[str]], ext: dict | None, tax_year: 
             f"**{t2}년 귀속분 2차 사후관리(3차년도)** 확인을 위한 `{t2}년 원천징수부` 또는 `기신고 명세서`가 없습니다. "
             f"(2단계·3단계에서 {t2}년 기신고 인원을 직접 입력하거나 사원표를 열어 계산할 수 있습니다.)"
         )
+    elif classified.get(f"wht_{t2}") and not (
+        classified.get(f"wht_{t3}") or classified.get("prev_filing") or classified.get(f"credit_calc_{t2}") or classified.get(f"credit_calc_{t3}")
+    ):
+        msgs.append(
+            f"**{t2}년 귀속분 고용증가 인원({t3}→{t2}년)** 산정을 위한 `{t3}년 원천징수부` 또는 `{t2}·{t3}년 기신고 명세서`가 없습니다. "
+            f"(3단계에서 {t2}년 기신고 증가인원을 직접 입력하거나 `{t3}년 자료`를 추가 업로드하면 자동 계산됩니다.)"
+        )
 
     if ext:
         wht = ext.get("wht") or {}
-        for y in (tax_year, tax_year - 1):
+        for y in (tax_year, tax_year - 1, tax_year - 2, tax_year - 3):
             if classified.get(f"wht_{y}") and not wht.get(str(y)):
                 msgs.append(f"{y}년 원천징수부에서 근로자 명단을 읽지 못했습니다. 2단계에서 직접 입력하거나 파일을 다시 확인하세요.")
         for w in ai_extra_warnings(ext):
