@@ -1714,25 +1714,76 @@ def get_comwel_workplace_info(biz_no: str, insurance_type: str = "all") -> str:
 
 
 # ---------------------------------------------------------
-# 10. 국민연금공단 가입 사업장 내역 조회 (월별 가입자수 · 당월고지금액 · 신규취득/상실 인원 대사)
+# 10. 4대보험(국민연금·건강·장기요양·고용·산재) 월별 고지보험료 및 연간 고지총액 합계 실시간 통합 조회
 # ---------------------------------------------------------
-def get_nps_workplace_info(corp_name: str, biz_no_prefix6: str = "", region_keyword: str = "") -> str:
+def _estimate_sanjae_rate_by_upjong(upjong_nm: str, upjong_cd: str = "") -> tuple[float, str]:
+    """근로복지공단 산재업종명/코드에 따른 산재보험요율(사업주 100% 부담, 출퇴근재해 0.06% 포함)을 반환합니다."""
+    nm = (upjong_nm or "").strip()
+    if any(k in nm for k in ("소프트웨어", "정보처리", "포털", "연구", "법무", "회계", "세무", "건축기술", "금융", "보험", "교육", "전문", "광고", "출판", "디자인", "경영컨설팅")):
+        return 0.0066, "금융·전문·정보통신·사무서비스업 (0.66%)"
+    if any(k in nm for k in ("도매", "소매", "음식", "숙박", "부동산", "임대", "보건", "사회복지", "병원", "의원")):
+        return 0.0086, "도소매·음식·숙박·보건·임대업 (0.86%)"
+    if any(k in nm for k in ("건설", "토목", "건축")):
+        return 0.0356, "건설업 (3.56%)"
+    if any(k in nm for k in ("운수", "창고", "물류", "화물", "택배")):
+        return 0.0186, "운수·창고·통신업 (1.86%)"
+    if any(k in nm for k in ("제조", "기계", "금속", "화학", "식품", "섬유", "전자", "전기")):
+        return 0.0136, "제조업 평균 (1.36%)"
+    return 0.0106, "일반 사업장 평균 (1.06%)"
+
+
+def get_nps_workplace_info(
+    corp_name: str,
+    biz_no_prefix6: str = "",
+    region_keyword: str = "",
+    target_year: str = ""
+) -> str:
     """
-    공공데이터포털 인증키(NTS_API_KEY)를 사용하여 국민연금공단_국민연금 가입 사업장 내역(NpsBplcInfoInqireServiceV2)을 조회합니다.
+    공공데이터포털 인증키(NTS_API_KEY)를 사용하여 국민연금공단(NpsBplcInfoInqireServiceV2) 및 근로복지공단(gySjbPstateInfoService) API를 연동해
+    사업장의 [국민연금 · 건강보험 · 장기요양보험 · 고용보험 · 산재보험] 4대보험 전체의
+    1) 연도별(연간) 고지보험료 총액 합계 (전체 / 사업주 부담분 / 근로자 부담분) 및
+    2) 월별 4대보험 고지보험료 상세 내역과 가입자수(신규/상실)를 실시간 조회·산출합니다.
     - corp_name: 사업장명(상호, 예: '삼성전자', '(주)세무법인')
-    - biz_no_prefix6: 사업자등록번호 앞 6자리 (선택, 입력 시 정밀 필터링)
+    - biz_no_prefix6: 사업자등록번호 앞 6자리 또는 전체 10자리 (선택, 10자리 입력 시 근로복지공단 업종·상시인원 자동 교차조회)
     - region_keyword: 주소 필터 키워드 (선택, 예: '강남구', '성남시')
+    - target_year: 특정 연도 필터 (선택, 예: '2026', '2025' — 비워두면 조회된 전체 연도별·월별 합계 자동 산출)
     """
+    from concurrent.futures import ThreadPoolExecutor
+
     nts_key = _live_nts_key()
     if not nts_key:
         return "❌ NTS_API_KEY(공공데이터포털 인증키)가 설정되지 않았습니다."
 
     kw = (corp_name or "").strip()
-    bno6 = re.sub(r"\D", "", biz_no_prefix6 or "")[:6]
+    raw_bno_digits = re.sub(r"\D", "", biz_no_prefix6 or "")
+    bno6 = raw_bno_digits[:6]
+    bno10 = raw_bno_digits[:10] if len(raw_bno_digits) >= 10 else ""
+    yr_filter = re.sub(r"\D", "", str(target_year or ""))[:4]
     if not kw and not bno6:
-        return "❌ 조회할 사업장명(corp_name) 또는 사업자등록번호 앞 6자리(biz_no_prefix6)를 입력해 주세요."
+        return "❌ 조회할 사업장명(corp_name) 또는 사업자등록번호(biz_no_prefix6)를 입력해 주세요."
 
     encoded_key = nts_key if "%" in nts_key else urllib.parse.quote(nts_key, safe="")
+
+    # 10자리 사업자번호가 함께 들어온 경우 근로복지공단 API에서 실제 업종명·상시인원 동시 조회
+    comwel_upjong_nm = ""
+    comwel_upjong_cd = ""
+    comwel_cnt = 0
+    if bno10:
+        try:
+            cw_ep = (
+                f"https://apis.data.go.kr/B490001/gySjbPstateInfoService/getGySjBoheomBsshItem"
+                f"?serviceKey={encoded_key}&v_saeopjaDrno={bno10}&opaBoheomFg=1&pageNo=1&numOfRows=5"
+            )
+            cw_r = requests.get(cw_ep, timeout=8)
+            if cw_r.status_code == 200:
+                cw_items, _ = _parse_data_go_kr_items(cw_r.text, "근로복지공단")
+                if cw_items:
+                    comwel_upjong_nm = cw_items[0].get("sjEopjongNm") or cw_items[0].get("gyEopjongNm") or ""
+                    comwel_upjong_cd = cw_items[0].get("sjEopjongCd") or cw_items[0].get("gyEopjongCd") or ""
+                    comwel_cnt = int(re.sub(r"\D", "", str(cw_items[0].get("sangsiInwonCnt") or "0")) or 0)
+        except Exception:
+            pass
+
     base_urls = [
         "https://apis.data.go.kr/B552015/NpsBplcInfoInqireServiceV2/getBassInfoSearchV2",
         "http://apis.data.go.kr/B552015/NpsBplcInfoInqireService/getBassInfoSearch",
@@ -1742,103 +1793,242 @@ def get_nps_workplace_info(corp_name: str, biz_no_prefix6: str = "", region_keyw
         "http://apis.data.go.kr/B552015/NpsBplcInfoInqireService/getDetailInfoSearch",
     ]
 
-    q_params = f"serviceKey={encoded_key}&numOfRows=50&pageNo=1"
+    q_params = f"serviceKey={encoded_key}&numOfRows=100&pageNo=1"
     if kw:
-        q_params += f"&wkpl_nm={urllib.parse.quote(kw)}"
+        enc_kw = urllib.parse.quote(kw)
+        q_params += f"&wkplNm={enc_kw}&wkpl_nm={enc_kw}"
     if bno6:
-        q_params += f"&bzowr_rgst_no={bno6}"
+        q_params += f"&bzowrRgstNo={bno6}&bzowr_rgst_no={bno6}"
 
-    root = None
+    items = []
+    err_msg = ""
     used_v2 = True
     last_status = 0
+
     for idx, b_url in enumerate(base_urls):
         try:
             r = requests.get(f"{b_url}?{q_params}", timeout=15)
             last_status = r.status_code
-            if r.status_code == 200 and "<item>" in r.text:
-                root = ET.fromstring(r.text)
+            if r.status_code != 200:
+                continue
+            cand_items, cand_err = _parse_data_go_kr_items(r.text, "국민연금 가입 사업장 내역(NpsBplcInfoInqireServiceV2)")
+            if cand_items:
+                items = cand_items
+                err_msg = ""
                 used_v2 = (idx == 0)
                 break
-            elif r.status_code == 200 and root is None:
-                root = ET.fromstring(r.text)
+            if cand_err and not err_msg:
+                err_msg = cand_err
                 used_v2 = (idx == 0)
-        except Exception:
+        except Exception as e:
+            if not err_msg:
+                err_msg = str(e)
             continue
 
-    if root is None:
+    if err_msg and not items:
+        return err_msg
+
+    if not items and last_status != 200:
         return (
-            f"❌ 국민연금 사업장 API 호출 실패 (HTTP {last_status}): "
-            "공공데이터포털(data.go.kr/data/3046071/openapi.do)에서 '국민연금공단_국민연금 가입 사업장 내역' 활용신청 여부를 확인해 주세요."
+            f"❌ 4대보험(국민연금) 사업장 API 호출 실패 (HTTP {last_status}): "
+            "공공데이터포털(data.go.kr/data/3046071/openapi.do)에서 '국민연금공단_국민연금 가입 사업장 내역' 활용신청 및 키 동기화 여부를 확인해 주세요."
         )
 
-    res_code = (root.findtext(".//resultCode") or "").strip()
-    res_msg = (root.findtext(".//resultMsg") or "").strip()
-    if res_code not in ("00", "000", "0000", ""):
-        return f"❌ 국민연금 API 응답 오류 (코드 {res_code}): {res_msg}"
-
-    items = root.findall(".//item")
     if not items:
-        return f"조회된 국민연금 가입 사업장 내역이 없습니다. (사업장명: '{kw}', 사업자번호 앞6자리: '{bno6 or '전체'}')"
+        return (
+            f"조회된 사업장 내역이 없습니다. (검색 상호: '{kw}', 사업자번호 앞6자리: '{bno6 or '전체'}')\n"
+            "※ 참고: 국민연금 공개 Open API는 개인정보 보호를 위해 가입자 3인 이상 사업장(법인 3인 이상 / 개인 10인 이상 등 공단 공개 기준 충족 사업장)만 수록됩니다."
+        )
 
     reg_kw = (region_keyword or "").strip()
     parsed = []
-    for it in items:
-        d = {c.tag: (c.text or "").strip() for c in it}
+    for d in items:
         addr = d.get("wkplRoadNmDtlAddr") or d.get("wkplJgongAddr") or ""
         if reg_kw and reg_kw not in addr:
             continue
         b_no_item = d.get("bzowrRgstNo") or ""
         if bno6 and b_no_item and not b_no_item.startswith(bno6):
             continue
+        ym_val = str(d.get("dataCrtYm") or "").strip()
+        if yr_filter and ym_val and not ym_val.startswith(yr_filter):
+            continue
         parsed.append(d)
 
     if not parsed:
-        return f"검색된 {len(items)}건 중 조건(지역:'{reg_kw}', 사업자번호앞6자리:'{bno6}')에 일치하는 사업장이 없습니다."
+        return f"검색된 {len(items)}건 중 조건(지역:'{reg_kw}', 사업자번호앞6자리:'{bno6}', 연도:'{yr_filter or '전체'}')에 일치하는 사업장이 없습니다."
 
     parsed.sort(key=lambda x: (str(x.get("wkplJnngStcd", "")) == "1", str(x.get("dataCrtYm", ""))), reverse=True)
+    primary = parsed[0]
+    p_nm = primary.get("wkplNm") or kw
+    p_bno = primary.get("bzowrRgstNo") or ""
+    p_addr = primary.get("wkplRoadNmDtlAddr") or primary.get("wkplJgongAddr") or "-"
+    p_tp = "법인" if primary.get("wkplStylDvcd") == "1" else "개인"
+    p_st = "등록(계속)" if primary.get("wkplJnngStcd") == "1" else "탈퇴/해지"
+    p_upjong = comwel_upjong_nm or primary.get("vldtVlKrnNm") or ""
 
-    output = [
-        f"🏦 [국민연금 가입 사업장 내역 조회 결과 | 검색:'{kw}' (일치 {len(parsed)}건 중 최신 10건)]"
+    same_wp_rows = [
+        d for d in parsed
+        if (d.get("wkplNm") == p_nm and (not p_bno or d.get("bzowrRgstNo") == p_bno))
     ]
+    ym_to_row = {}
+    for d in same_wp_rows:
+        ym = str(d.get("dataCrtYm") or "").strip()
+        seq = str(d.get("seq") or "").strip()
+        if ym and seq and ym not in ym_to_row:
+            ym_to_row[ym] = d
+
+    target_ym_rows = [ym_to_row[k] for k in sorted(ym_to_row.keys(), reverse=True)[:18]]
+    if not target_ym_rows:
+        target_ym_rows = parsed[:12]
+
     det_ep = detail_urls[0] if used_v2 else detail_urls[1]
-    seen_seqs = set()
 
-    for d in parsed[:10]:
-        seq = d.get("seq") or ""
-        ym = d.get("dataCrtYm") or "-"
-        w_nm = d.get("wkplNm") or "-"
-        b_no_m = d.get("bzowrRgstNo") or "-"
-        addr = d.get("wkplRoadNmDtlAddr") or "-"
-        st_cd = "등록(계속)" if d.get("wkplJnngStcd") == "1" else "탈퇴/해지"
-        tp_cd = "법인" if d.get("wkplStylDvcd") == "1" else "개인"
+    def _fetch_detail_by_seq(row_item: dict) -> dict:
+        seq_val = str(row_item.get("seq") or "").strip()
+        if not seq_val:
+            return {}
+        try:
+            dr = requests.get(f"{det_ep}?serviceKey={encoded_key}&seq={seq_val}", timeout=10)
+            if dr.status_code == 200:
+                d_items, _ = _parse_data_go_kr_items(dr.text, "국민연금 상세")
+                if d_items:
+                    return d_items[0]
+        except Exception:
+            pass
+        return {}
 
-        det_info = ""
-        if seq and seq not in seen_seqs and len(seen_seqs) < 5:
-            seen_seqs.add(seq)
+    detail_map = {}
+    with ThreadPoolExecutor(max_workers=min(8, max(1, len(target_ym_rows)))) as pool:
+        futs = {pool.submit(_fetch_detail_by_seq, r): str(r.get("seq") or "") for r in target_ym_rows}
+        for fut, s_key in futs.items():
             try:
-                dr = requests.get(f"{det_ep}?serviceKey={encoded_key}&seq={seq}", timeout=10)
-                if dr.status_code == 200:
-                    d_root = ET.fromstring(dr.text)
-                    d_it = d_root.find(".//item")
-                    if d_it is not None:
-                        dd = {c.tag: (c.text or "").strip() for c in d_it}
-                        j_cnt = dd.get("jnngpCnt") or "-"
-                        ntc_amt = dd.get("crrmmNtcAmt") or "0"
-                        nw_cnt = dd.get("nwAcqzrCnt") or "0"
-                        lss_cnt = dd.get("lssJnngpCnt") or "0"
-                        adpt_dt = dd.get("adptDt") or "-"
-                        ntc_fmt = f"{int(ntc_amt):,}원" if ntc_amt.isdigit() else f"{ntc_amt}원"
-                        det_info = (
-                            f"\n  · [상세] 가입자수: {j_cnt}명 (당월 신규취득: {nw_cnt}명 / 상실: {lss_cnt}명) | "
-                            f"당월고지금액: {ntc_fmt} | 적용일: {adpt_dt}"
-                        )
+                res_d = fut.result()
+                if s_key and res_d:
+                    detail_map[s_key] = res_d
             except Exception:
                 pass
 
-        output.append(
-            f"- [{ym} 기준] {w_nm} ({tp_cd} · 사업자번호: {b_no_m} | 상태: {st_cd})\n"
-            f"  · 주소: {addr}{det_info}"
+    sj_rate, sj_label = _estimate_sanjae_rate_by_upjong(p_upjong, comwel_upjong_cd)
+
+    output = [
+        f"🏦 [4대보험(국민연금·건강·장기요양·고용·산재) 월별 고지보험료 및 연간 고지총액 통합 조회]",
+        f"- 사업장명: {p_nm} ({p_tp} · 사업자번호: {bno10 or p_bno} | 가입상태: {p_st})",
+        f"- 소재지: {p_addr}" + (f" | 산재/고용 업종: {p_upjong}({comwel_upjong_cd})" if p_upjong else ""),
+    ]
+
+    yearly_totals: dict[str, dict] = {}
+    monthly_rows = []
+
+    for r in sorted(target_ym_rows, key=lambda x: str(x.get("dataCrtYm") or ""), reverse=True):
+        ym = str(r.get("dataCrtYm") or "-")
+        yr = ym[:4] if len(ym) >= 4 else "기타"
+        seq = str(r.get("seq") or "")
+        dd = detail_map.get(seq) or {}
+        j_cnt = int(re.sub(r"\D", "", str(dd.get("jnngpCnt") or "0")) or 0)
+        nps_total = int(re.sub(r"\D", "", str(dd.get("crrmmNtcAmt") or "0")) or 0)
+        nw_cnt = int(re.sub(r"\D", "", str(dd.get("nwAcqzrCnt") or "0")) or 0)
+        lss_cnt = int(re.sub(r"\D", "", str(dd.get("lssJnngpCnt") or "0")) or 0)
+
+        # 1) 국민연금 (API 실제 고지 원문 수치: 총 9.0%, 사업주 4.5% / 근로자 4.5%)
+        nps_emp_owner = nps_total // 2
+        nps_worker = nps_total - nps_emp_owner
+        est_payroll = int(round(nps_total / 0.09)) if nps_total > 0 else 0
+
+        # 2) 건강보험 (법정요율 7.09%: 사업주 3.545% / 근로자 3.545%)
+        nhis_total = int(round(est_payroll * 0.0709))
+        nhis_owner = nhis_total // 2
+        nhis_worker = nhis_total - nhis_owner
+
+        # 3) 노인장기요양보험 (건강보험료의 12.95%: 사업주 50% / 근로자 50%)
+        ltc_total = int(round(nhis_total * 0.1295))
+        ltc_owner = ltc_total // 2
+        ltc_worker = ltc_total - ltc_owner
+
+        # 4) 고용보험 (실업급여 노사 각 0.9% + 고안직능 사업주 부담: 150인 미만 0.25%, 150~999인 0.65%, 1000인 이상 0.85%)
+        eff_cnt = max(j_cnt, comwel_cnt)
+        ei_extra_rate = 0.0085 if eff_cnt >= 1000 else (0.0065 if eff_cnt >= 150 else 0.0025)
+        ei_worker = int(round(est_payroll * 0.009))
+        ei_owner = int(round(est_payroll * (0.009 + ei_extra_rate)))
+        ei_total = ei_owner + ei_worker
+
+        # 5) 산재보험 (사업주 100% 부담)
+        sj_owner = int(round(est_payroll * sj_rate))
+        sj_total = sj_owner
+
+        # 당월 4대보험 합계
+        m_all_total = nps_total + nhis_total + ltc_total + ei_total + sj_total
+        m_owner_total = nps_emp_owner + nhis_owner + ltc_owner + ei_owner + sj_owner
+        m_worker_total = nps_worker + nhis_worker + ltc_worker + ei_worker
+
+        if nps_total > 0 or j_cnt > 0:
+            yb = yearly_totals.setdefault(yr, {
+                "months": 0, "sum_cnt": 0, "est_payroll": 0,
+                "nps_tot": 0, "nps_own": 0,
+                "nhis_tot": 0, "nhis_own": 0,
+                "ltc_tot": 0, "ltc_own": 0,
+                "ei_tot": 0, "ei_own": 0,
+                "sj_tot": 0, "sj_own": 0,
+                "all_tot": 0, "all_own": 0, "all_wrk": 0,
+            })
+            yb["months"] += 1
+            yb["sum_cnt"] += j_cnt
+            yb["est_payroll"] += est_payroll
+            yb["nps_tot"] += nps_total
+            yb["nps_own"] += nps_emp_owner
+            yb["nhis_tot"] += nhis_total
+            yb["nhis_own"] += nhis_owner
+            yb["ltc_tot"] += ltc_total
+            yb["ltc_own"] += ltc_owner
+            yb["ei_tot"] += ei_total
+            yb["ei_own"] += ei_owner
+            yb["sj_tot"] += sj_total
+            yb["sj_own"] += sj_owner
+            yb["all_tot"] += m_all_total
+            yb["all_own"] += m_owner_total
+            yb["all_wrk"] += m_worker_total
+
+        ym_fmt = f"{ym[:4]}-{ym[4:6]}" if len(ym) == 6 else ym
+        monthly_rows.append(
+            f"| {ym_fmt} | {j_cnt:,}명 (+{nw_cnt}/-{lss_cnt}) | {nps_total:,}원 | {nhis_total + ltc_total:,}원 | "
+            f"{ei_total:,}원 | {sj_total:,}원 | **{m_all_total:,}원** (사업주 {m_owner_total:,}원) |"
         )
+
+    if yearly_totals:
+        output.append("\n■ 1. 연도별(연간) 4대보험 고지총액 합계 및 회사(사업주) 부담분 요약:")
+        output.append("| 귀속연도 (집계월수) | 월평균 가입자 | 추정 연간 보수총액 | ① 국민연금 (실제고지) | ② 건강+장기요양 (법정요율) | ③ 고용보험 (법정요율) | ④ 산재보험 (업종요율) | **4대보험 연간 고지총액 합계** | **사업주(회사) 연간 부담분** | **근로자 연간 부담분** |")
+        output.append("| :--- | :---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+        for yr in sorted(yearly_totals.keys(), reverse=True):
+            yb = yearly_totals[yr]
+            mc = yb["months"]
+            avg_c = yb["sum_cnt"] / mc if mc else 0.0
+            output.append(
+                f"| **{yr}년 ({mc}개월)** | {avg_c:.1f}명 | {yb['est_payroll']:,}원 | "
+                f"{yb['nps_tot']:,}원 | {yb['nhis_tot'] + yb['ltc_tot']:,}원 | "
+                f"{yb['ei_tot']:,}원 | {yb['sj_tot']:,}원 | "
+                f"**{yb['all_tot']:,}원** | **{yb['all_own']:,}원** | {yb['all_wrk']:,}원 |"
+            )
+
+    if monthly_rows:
+        output.append(f"\n■ 2. 월별 4대보험 고지보험료 상세 내역 (최근 {len(monthly_rows)}개월):")
+        output.append("| 기준년월 | 가입자(신규/상실) | ① 국민연금(실제고지) | ② 건강+장기요양 | ③ 고용보험 | ④ 산재보험 | **당월 4대보험 고지합계 (사업주 부담분)** |")
+        output.append("| :---: | :---: | ---: | ---: | ---: | ---: | ---: |")
+        output.extend(monthly_rows)
+
+    other_wps = []
+    seen_wp_keys = {(p_nm, p_bno)}
+    for d in parsed:
+        k_pair = (d.get("wkplNm") or "", d.get("bzowrRgstNo") or "")
+        if k_pair not in seen_wp_keys:
+            seen_wp_keys.add(k_pair)
+            other_wps.append(f"{k_pair[0]}({k_pair[1]} · {d.get('wkplRoadNmDtlAddr', '')[:18]})")
+    if other_wps:
+        output.append(f"\n*(참고 - 동일 검색어 내 타 사업장/지점 후보: {', '.join(other_wps[:5])})*")
+
+    output.append(
+        f"\n※ [산출 기준 안내] ① 국민연금은 국민연금공단 Open API 실제 고지 원문 수치(crrmmNtcAmt)이며, "
+        f"②~④ 건강보험(7.09%)·장기요양(건보의 12.95%)·고용보험(실업급여 1.8%+규모별 고안직능)·산재보험({sj_label})은 "
+        f"국민연금 고지액에서 역산된 보수총액에 법정요율을 적용한 실시간 산출치입니다(상한액 초과자·비과세 및 개별 정산분에 따라 실제 고지서와 소폭 차이가 날 수 있음)."
+    )
 
     return "\n".join(output)[:14000]
 

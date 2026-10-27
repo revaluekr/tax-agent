@@ -1769,13 +1769,13 @@ def search_comwel_workplace_for_gemini(biz_no: str, insurance_type: str = "all")
     except Exception as e:
         return f"고용·산재보험 조회 오류: {e}"
 
-def search_nps_workplace_for_gemini(corp_name: str, biz_no_prefix6: str = "", region_keyword: str = "") -> str:
-    """국민연금 가입 사업장 내역(월별 가입자수·당월고지금액·신규취득/상실 인원)을 사업장명(corp_name)과 사업자번호 앞6자리로 조회합니다."""
-    _emit_live_status(f"🏦 1단계: 국민연금 가입 사업장 가입자수·고지금액 조회 중 ({corp_name})...")
-    print(f"\n[시스템] 🏦 국민연금 가입 사업장 조회 가동: 상호='{corp_name}' | 사업자앞6자리='{biz_no_prefix6}' | 지역='{region_keyword}'")
+def search_nps_workplace_for_gemini(corp_name: str, biz_no_prefix6: str = "", region_keyword: str = "", target_year: str = "") -> str:
+    """4대보험(국민연금·건강보험·노인장기요양보험·고용보험·산재보험) 전체의 월별 고지보험료, 연간 보험료 고지총액 합계, 사업주(회사)/근로자 부담분, 추정 과세보수총액 및 월별 가입자수(신규취득/상실 인원)를 실시간 통합 조회합니다. biz_no_prefix6에 10자리 사업자등록번호(또는 앞 6자리)를 입력하면 근로복지공단 업종·상시인원을 자동 연계하여 산재·고용보험 요율까지 정밀 산출합니다. target_year에 '2026', '2025' 등 연도를 지정할 수 있습니다."""
+    _emit_live_status(f"🏦 1단계: 4대보험(연금·건보·장기요양·고용·산재) 월별·연간 고지보험료 통합 조회 중 ({corp_name})...")
+    print(f"\n[시스템] 🏦 4대보험 월별/연간 고지액 통합 조회 가동: 상호='{corp_name}' | 사업자번호='{biz_no_prefix6}' | 지역='{region_keyword}' | 연도='{target_year}'")
     try:
         if hasattr(law_api, "get_nps_workplace_info"):
-            return _record("detail", law_api.get_nps_workplace_info(corp_name, biz_no_prefix6, region_keyword))
+            return _record("detail", law_api.get_nps_workplace_info(corp_name, biz_no_prefix6, region_keyword, target_year))
         return "현재 law_api.py에 국민연금 사업장 조회 함수가 없습니다."
     except Exception as e:
         return f"국민연금 사업장 조회 오류: {e}"
@@ -1995,7 +1995,7 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
 - 부동산 개별공시지가 및 공동주택 공시가격(기준시가) 확인: 'search_official_land_price_for_gemini' 호출.
 - 건축물대장 표제부·층별개요(겸용주택 주택/상가 면적 비율·주용도·위반건축물 여부) 확인: 'search_building_ledger_for_gemini' 호출.
 - 근로복지공단 고용·산재보험 사업장 상시인원(피보험자수)·성립일·업종 확인: 'search_comwel_workplace_for_gemini' 호출.
-- 국민연금 가입 사업장 월별 가입자수·신규취득/상실 인원·고지금액 확인: 'search_nps_workplace_for_gemini' 호출.
+- 국민연금 가입 사업장 월별·연간 보험료 고지액(당월고지금액·연간 고지총액·사업주 부담분·추정 인건비) 및 월별 가입자수(신규/상실) 확인: 'search_nps_workplace_for_gemini' 호출.
 - 관세청 수출입 주간 과세환율(관세법 제18조 · 수입세금계산서 과세표준 검증) 확인: 'search_customs_exchange_rate_for_gemini' 호출.
 - 세액·공제액·수당·지분율 등 모든 숫자 계산: 반드시 'run_tax_calculator_for_gemini'를 호출하여 단 1원의 오차도 없이 정확히 계산할 것. (수식 내 숫자에는 천 단위 쉼표를 넣지 말고 `1500000 * 0.15`처럼 적으며, 함수 인자는 `min(1500000, 2000000)`처럼 쉼표+공백으로 구분할 것)
 
