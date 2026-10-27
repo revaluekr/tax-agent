@@ -794,10 +794,10 @@ def _build_report_markdown(s: dict, log_tokens_fn=None, room_key: str = "") -> s
 
     audit_body, _ = _ensure_auto_pro_audit_comment(s, log_tokens_fn=log_tokens_fn, room_key=room_key)
 
-    # 직전연도 비교인원 보수적 산정(방식 2) 및 청년등외 0.42명 vs 0.41명 안내 불릿
+    # 직전연도 비교인원 보수적 산정(방식 2) 및 청년등외 산정 순서(전체 - 청년등) 안내 불릿
     prev_basis_bullets = [
         f"- **산정 방법**: 매월 말 현재 상시근로자 수의 연간 합계(연인원)를 해당 과세연도 개월 수({cur_s['months_in_year']}개월)로 나눈 뒤 소수점 셋째 자리에서 버림(100분의 1 미만 절사, [조문:조세특례제한법 시행령 제26조의8 제6항] 및 [조문:조세특례제한법 시행령 제11조의2 제8항] 준용)하여 산정하였습니다.",
-        f"- **청년등 증가인원 한도(Cap) 및 청년등 외 비교인원({prev_s['non_youth']:.2f}명) 산정 기준**: 청년등 상시근로자 증가인원(+{cur_inc['youth_inc']:.2f}명)은 **[조문:조세특례제한법 제29조의8 제1항] 제1호 괄호 규정**에 따라 전체 상시근로자 증가인원(+{cur_inc['total_inc']:.2f}명)을 한도로 적용하였습니다. 또한 직전연도({tax_yr-1}년) 청년등 외 비교인원(**{prev_s['non_youth']:.2f}명**)은 시행규칙 별지 제10호의9서식 작성방법(`상시 = 청년등 + 청년등 외` 일치 기준)에 따라 전체 상시(**{prev_s['regular']:.2f}명**)에서 청년등(**{prev_s['youth']:.2f}명**)을 차감한 값이며, 만약 청년등 외 연인원 개별 절사(5÷12=0.41명)를 적용하더라도 전체 상시근로자 증가한도(+{cur_inc['total_inc']:.2f}명 − 청년등 +{cur_inc['youth_inc']:.2f}명 = **+{cur_inc['non_youth_inc']:.2f}명**)에 의해 공제 인정 청년등 외 증가인원은 **+{cur_inc['non_youth_inc']:.2f}명**으로 동일합니다.",
+        f"- **청년등 외 상시근로자 수 산정 순서 및 청년등 증가인원 한도(Cap)**: [조문:조세특례제한법 시행령 제26조의8 제6항](제11조의2 제8항 제1호 가목·나목 준용) 및 시행규칙 별지 제10호의9서식 작성방법에 따라 **① 전체 상시근로자 수 산정(연인원 합산 후 소수점 셋째 자리 절사) → ② 청년등 상시근로자 수 산정(연인원 합산 후 소수점 셋째 자리 절사) → ③ 전체 상시근로자 수 − 청년등 상시근로자 수 = 청년등 외 상시근로자 수** 순서로 산정하였습니다(직전연도 {prev_s['regular']:.2f}명 − {prev_s['youth']:.2f}명 = **{prev_s['non_youth']:.2f}명**, 당해연도 {cur_s['regular']:.2f}명 − {cur_s['youth']:.2f}명 = **{cur_s['non_youth']:.2f}명**, 청년등 외 증가 **+{cur_inc['non_youth_inc']:.2f}명**). 아울러 청년등 상시근로자 증가인원(+{cur_inc['youth_inc']:.2f}명)은 **[조문:조세특례제한법 제29조의8 제1항] 제1호 괄호 규정**에 따라 전체 상시근로자 증가인원(+{cur_inc['total_inc']:.2f}명)을 한도로 적용하였습니다.",
     ]
     if prev_s.get("old_rule_regular") is not None or cons_prev_names:
         old_rv = float(prev_s.get("old_rule_regular") if prev_s.get("old_rule_regular") is not None else prev_s["regular"])
