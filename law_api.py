@@ -83,7 +83,7 @@ def _search_law_data_raw(keyword: str, target: str, search_mode: int = None, law
     }
     if search_mode:
         params["search"] = search_mode
-    if target in ("prec", "ttSpecialDecc"):
+    if target in ("prec", "ttSpecialDecc", "detc"):
         params["sort"] = "ddes"
 
     try:
@@ -97,14 +97,18 @@ def _search_law_data_raw(keyword: str, target: str, search_mode: int = None, law
         tag_map = {
             "law": "law",
             "prec": "prec",
+            "detc": "Detc",
             "admrul": "admrul",
             "expc": "expc",
             "decc": "decc",
             "ttSpecialDecc": "decc",
-            "ordin": "law"
+            "ordin": "law",
+            "licbyl": "licbyl",
         }
         item_tag = tag_map.get(target, target)
         items = root.findall(f".//{item_tag}")
+        if not items and target == "detc":
+            items = root.findall(".//detc") or root.findall(".//Detc")
         if not items and target == "ordin":
             items = root.findall(".//ordin")
 
@@ -186,15 +190,66 @@ def _fetch_xml_root(url: str, params: dict):
     except Exception:
         return None
 
+def _extract_addenda_blocks(root, query_filter: str = "", max_recent: int = 8) -> list[str]:
+    """
+    법제처 법령 XML의 <부칙단위>에서 공포일자·공포번호·부칙내용을 최신순으로 추출합니다.
+    - query_filter에 특정 조문번호(예: '제29조의8'), 연도(예: '2026'), 공포번호(예: '35999') 또는 키워드가 있으면
+      해당 키워드를 포함한 부칙을 최우선 추출하고, 없으면 최신 개정 부칙 상위 max_recent개를 반환합니다.
+    """
+    raw_units = root.findall(".//부칙단위")
+    if not raw_units:
+        return []
+
+    parsed_units = []
+    for u in raw_units:
+        anc_dt = re.sub(r"\D", "", u.findtext("부칙공포일자") or "")
+        anc_no = (u.findtext("부칙공포번호") or "").strip()
+        content = (u.findtext("부칙내용") or "").strip()
+        if not content:
+            content = "\n".join(t.strip() for t in u.itertext() if t and t.strip())
+        if not content:
+            continue
+        dt_fmt = f"{anc_dt[:4]}.{anc_dt[4:6]}.{anc_dt[6:]}." if len(anc_dt) == 8 else anc_dt
+        no_fmt = f"제{anc_no}호, " if anc_no else ""
+        head = f"부칙 <{no_fmt}{dt_fmt}>".strip()
+        full_blk = f"{head}\n{content}" if not content.startswith("부칙") else f"[{head}]\n{content}"
+        parsed_units.append((int(anc_dt) if anc_dt.isdigit() else 0, anc_no, full_blk))
+
+    parsed_units.sort(key=lambda x: x[0], reverse=True)
+
+    qf_clean = re.sub(r"부칙", "", query_filter or "").strip()
+    art_refs = re.findall(r"제\s*\d+\s*조(?:\s*의\s*\d+)?", qf_clean)
+    yr_refs = re.findall(r"20\d{2}", qf_clean)
+    no_refs = re.findall(r"\b\d{4,6}\b", qf_clean)
+
+    matched_blocks = []
+    for dt_int, anc_no, blk in parsed_units:
+        blk_nospace = blk.replace(" ", "")
+        if art_refs and any(a.replace(" ", "") in blk_nospace for a in art_refs):
+            matched_blocks.append(blk)
+        elif no_refs and any(n in anc_no or n in blk_nospace for n in no_refs):
+            matched_blocks.append(blk)
+        elif yr_refs and any(str(dt_int).startswith(y) or y in blk_nospace for y in yr_refs):
+            matched_blocks.append(blk)
+        elif qf_clean and not art_refs and qf_clean.replace(" ", "") in blk_nospace:
+            matched_blocks.append(blk)
+
+    if matched_blocks:
+        return matched_blocks[:max_recent]
+    return [blk for _, _, blk in parsed_units[:max_recent]]
+
+
 def _get_statute_articles(doc_id: str, query_filter: str = "") -> str:
-    """법령 원문에서 조문을 정밀 추출합니다."""
+    """법령 원문에서 조문 및 개정 부칙(적용례·경과조치)을 정밀 추출합니다."""
     law_key = _live_law_key()
     url = "http://www.law.go.kr/DRF/lawService.do"
-    art_filter = _parse_article_filter(query_filter)
+    wants_addendum = "부칙" in (query_filter or "")
+    art_filter = _parse_article_filter(query_filter) if not wants_addendum else _parse_article_filter(re.sub(r"부칙[^,]*", "", query_filter or ""))
     base = {"OC": law_key, "target": "law", "type": "XML"}
 
     attempts = []
-    if art_filter:
+    # 부칙을 함께 조회해야 할 때는 JO 단일조문 호출(부칙 미포함) 대신 전체 법령 XML 호출을 우선 실행
+    if art_filter and not wants_addendum:
         jo_code = f"{art_filter[0]:04d}{art_filter[1]:02d}"
         attempts.append({**base, "MST": doc_id, "JO": jo_code})
     attempts.append({**base, "MST": doc_id})
@@ -211,7 +266,8 @@ def _get_statute_articles(doc_id: str, query_filter: str = "") -> str:
             a for a in root.findall(".//조문단위")
             if (a.findtext("조문여부") or "조문").strip() != "전문"
         ]
-        if not articles:
+        addenda_nodes = root.findall(".//부칙단위")
+        if not articles and not addenda_nodes:
             continue
 
         found_any_law = True
@@ -220,6 +276,24 @@ def _get_statute_articles(doc_id: str, query_filter: str = "") -> str:
         eff_note = f" | 법령 시행일자: {law_eff[:4]}.{law_eff[4:6]}.{law_eff[6:]}" if len(law_eff) == 8 else ""
         header = f"📘 [{title}] (일련번호: {doc_id}{eff_note})"
 
+        # 1) '부칙' 단독 또는 '제29조의8, 부칙' 복합 조회
+        if wants_addendum:
+            out_sections = []
+            if art_filter and articles:
+                jo, gaji, hang = art_filter
+                matched_arts = [
+                    a for a in articles
+                    if _to_int(a.findtext("조문번호")) == jo and _to_int(a.findtext("조문가지번호")) == gaji
+                ]
+                if matched_arts:
+                    out_sections.append("\n\n".join(_format_article(a, only_hang=hang) for a in matched_arts))
+            add_blocks = _extract_addenda_blocks(root, query_filter=query_filter, max_recent=6)
+            if add_blocks:
+                out_sections.append("📌 [법령 부칙 (시행일 · 적용례 · 경과조치)]\n\n" + "\n\n".join(add_blocks))
+            if out_sections:
+                return (header + "\n\n" + "\n\n".join(out_sections))[:16000]
+
+        # 2) 일반 조문번호 조회 (+ 전체 XML인 경우 해당 조문 관련 최근 부칙 자동 첨부)
         if art_filter:
             jo, gaji, hang = art_filter
             matched = [
@@ -228,7 +302,12 @@ def _get_statute_articles(doc_id: str, query_filter: str = "") -> str:
             ]
             if matched:
                 body = "\n\n".join(_format_article(a, only_hang=hang) for a in matched)
-                return (header + "\n\n" + body)[:15000]
+                art_label = f"제{jo}조" + (f"의{gaji}" if gaji else "")
+                rel_add = _extract_addenda_blocks(root, query_filter=art_label, max_recent=3)
+                rel_add = [b for b in rel_add if art_label in b.replace(" ", "")]
+                if rel_add:
+                    body += "\n\n📌 [관련 최근 개정 부칙(적용례·경과조치) 발췌]\n" + "\n\n".join(rel_add)[:3000]
+                return (header + "\n\n" + body)[:16000]
             continue
 
         if query_filter:
@@ -238,13 +317,16 @@ def _get_statute_articles(doc_id: str, query_filter: str = "") -> str:
                 txt = _format_article(a)
                 if kw in txt.replace(" ", ""):
                     matched.append(txt)
+            for b in _extract_addenda_blocks(root, query_filter=query_filter, max_recent=5):
+                if kw in b.replace(" ", ""):
+                    matched.append(b)
             if not matched:
-                return f"'{title}' 내에서 '{query_filter}' 키워드가 포함된 조문을 찾지 못했습니다. 조문번호(예: '제33조의2')로 다시 조회하세요."
-            note = f"\n\n[※ 키워드 포함 조문 {len(matched)}개 중 앞 8개만 표시]" if len(matched) > 8 else ""
-            return (header + "\n\n" + "\n\n".join(matched[:8]))[:12000] + note
+                return f"'{title}' 내에서 '{query_filter}' 키워드가 포함된 조문·부칙을 찾지 못했습니다. 조문번호(예: '제29조의8') 또는 '부칙'으로 다시 조회하세요."
+            note = f"\n\n[※ 키워드 포함 조문·부칙 {len(matched)}개 중 앞 8개만 표시]" if len(matched) > 8 else ""
+            return (header + "\n\n" + "\n\n".join(matched[:8]))[:14000] + note
 
         body = "\n\n".join(_format_article(a) for a in articles)
-        return (header + "\n\n" + body)[:12000] + "\n\n[※ 전체 조문 중 앞부분만 표시. 조문번호를 지정해 다시 조회하세요]"
+        return (header + "\n\n" + body)[:12000] + "\n\n[※ 전체 조문 중 앞부분만 표시. 조문번호나 '부칙'을 지정해 다시 조회하세요]"
 
     if art_filter and found_any_law:
         jo, gaji, _ = art_filter
@@ -346,6 +428,40 @@ def get_law_content(doc_id: str, target: str = "law", query_filter: str = "") ->
             body_nodes = [elem.text.strip() for elem in root.iter() if elem.text and elem.text.strip()]
             body_text = "\n".join(body_nodes)
             return f"📋 [행정규칙/훈령/고시] {rule_name} ({ministry}, 발령일: {issue_date})\n\n{body_text[:10000]}"
+
+        elif target == "detc":
+            case_name = root.findtext(".//사건명") or ""
+            case_no = root.findtext(".//사건번호") or ""
+            dec_date = root.findtext(".//종국일자") or root.findtext(".//선고일자") or ""
+            holding = root.findtext(".//판시사항") or ""
+            summary = root.findtext(".//결정요지") or ""
+            target_law = root.findtext(".//심판대상조문") or ""
+            ref_law = root.findtext(".//참조조문") or ""
+            full_body = root.findtext(".//전문") or ""
+
+            text = (
+                f"⚖️ [헌법재판소 결정례 상세] {case_name} ({case_no}, 종국일: {dec_date})\n"
+                f"■ 판시사항:\n{holding}\n\n"
+                f"■ 결정요지:\n{summary}\n\n"
+                f"■ 심판대상조문:\n{target_law}\n\n"
+                f"■ 참조조문:\n{ref_law}\n\n"
+                f"■ 결정전문(주문·이유 발췌):\n{full_body[:6000]}"
+            )
+            return text[:14000]
+
+        elif target == "licbyl":
+            byl_name = root.findtext(".//별표명") or ""
+            law_name_rel = root.findtext(".//관련법령명") or ""
+            byl_no = root.findtext(".//별표번호") or ""
+            byl_kind = root.findtext(".//별표구분") or "별표/서식"
+            byl_content = root.findtext(".//별표내용") or ""
+            if not byl_content:
+                byl_content = "\n".join(t.strip() for t in root.itertext() if t and t.strip())
+            text = (
+                f"📊 [{byl_kind} 상세] {law_name_rel} - {byl_name} (번호: {byl_no}, ID: {doc_id})\n\n"
+                f"{byl_content[:12000]}"
+            )
+            return text[:14000]
 
         elif target == "expc":
             title = root.findtext(".//안건명") or ""

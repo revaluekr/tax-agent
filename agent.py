@@ -386,8 +386,8 @@ def _is_unleashed() -> bool:
     trace = _TOOL_TRACE.get()
     return bool(trace and trace.get("unleash"))
 
-_SEARCH_LIMIT = {"law": 7, "prec": 3, "decc": 3, "expc": 2, "admrul": 2, "ordin": 2}
-_DETAIL_LIMIT = {"law": 12, "eflaw": 6, "prec": 3, "decc": 3, "expc": 2, "admrul": 2, "ordin": 2}
+_SEARCH_LIMIT = {"law": 7, "prec": 3, "decc": 3, "detc": 3, "expc": 2, "admrul": 2, "ordin": 2, "licbyl": 2}
+_DETAIL_LIMIT = {"law": 12, "eflaw": 6, "prec": 3, "decc": 3, "detc": 3, "expc": 2, "admrul": 2, "ordin": 2, "licbyl": 2}
 
 def _over_limit(kind: str, target: str) -> bool:
     trace = _TOOL_TRACE.get()
@@ -498,23 +498,23 @@ _EXEC_STD = re.compile(r"(?<![\d의])(\d{1,3}(?:의\d{1,2})?-\d{1,3}(?:의\d{1,2
 
 # [보강 ③] 마크다운 표 등에서 콜론(:)이 빠진 [조문 조세특례제한법 제29조의8] 또는 [조문조세특례제한법...] 형태까지 모두 인식
 _TAG = re.compile(
-    r"\[(판례|심판례|해석례|예규|조문)(?:\s*[:：]\s*|\s*)(?=[가-힣A-Za-z0-9「])([^\]]+)\]"
+    r"\[(판례|심판례|헌재|헌재결정례|해석례|예규|조문|부칙|별표)(?:\s*[:：]\s*|\s*)(?=[가-힣A-Za-z0-9「])([^\]]+)\]"
 )
 
 def _normalize_citation_tags(text: str) -> str:
     """
     [보강 ③] AI가 콜론(:)을 누락하여 작성한 `[조문 조세특례제한법 제29조의8]` 또는
-    `[조문조세특례제한법 제29조의8 제1항제1호가목]` 형태를 표준 `[조문: ...]` 형식으로 자동 정규화합니다.
+    `[헌재 2021헌바123]` 형태를 표준 `[조문: ...]` / `[헌재: ...]` 형식으로 자동 정규화합니다.
     """
     if not text:
         return ""
     s = re.sub(
-        r"\[(판례|심판례|해석례|예규|조문)(?:\s*[:：]\s*|\s+)(?=[가-힣A-Za-z0-9「])([^\]]+)\]",
+        r"\[(판례|심판례|헌재|헌재결정례|해석례|예규|조문|부칙|별표)(?:\s*[:：]\s*|\s+)(?=[가-힣A-Za-z0-9「])([^\]]+)\]",
         r"[\1: \2]",
         text
     )
     s = re.sub(
-        r"\[(판례|심판례|해석례|예규|조문)(?=[가-힣A-Za-z0-9「])([^\]:：\n]+)\]",
+        r"\[(판례|심판례|헌재|헌재결정례|해석례|예규|조문|부칙|별표)(?=[가-힣A-Za-z0-9「])([^\]:：\n]+)\]",
         r"[\1: \2]",
         s
     )
@@ -1066,6 +1066,21 @@ def _fetch_full_law_xml_direct(doc_id: str, query_filter: str = "") -> str:
                             if mok_txt:
                                 lines.append("    " + mok_txt)
                 article_blocks.append("\n".join(lines))
+            addenda_units = []
+            for a_unit in root.findall(".//부칙단위"):
+                anc_dt = re.sub(r"\D", "", a_unit.findtext("부칙공포일자") or "")
+                anc_no = (a_unit.findtext("부칙공포번호") or "").strip()
+                a_body = (a_unit.findtext("부칙내용") or "").strip()
+                if not a_body:
+                    a_body = "\n".join(t.strip() for t in a_unit.itertext() if t and t.strip())
+                if not a_body:
+                    continue
+                dt_fmt = f"{anc_dt[:4]}.{anc_dt[4:6]}.{anc_dt[6:]}." if len(anc_dt) == 8 else anc_dt
+                no_fmt = f"제{anc_no}호, " if anc_no else ""
+                addenda_units.append((int(anc_dt) if anc_dt.isdigit() else 0, f"부칙 <{no_fmt}{dt_fmt}>\n{a_body}"))
+            addenda_units.sort(key=lambda x: x[0], reverse=True)
+            for _, a_blk in addenda_units[:15]:
+                article_blocks.append(a_blk)
             if article_blocks:
                 full_text = f"📘 [{lname}]\n\n" + "\n\n".join(article_blocks)
                 _cache_set(full_cache_key, full_text)
@@ -1150,23 +1165,36 @@ def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
             f"제{m[0]}조" + (f"의{m[1]}" if m[1] else "")
             for m in art_matches
         ))
+        wants_add = "부칙" in (query_filter or "")
         blocks = cleaned.split("\n\n")
         header = blocks[0] if blocks else ""
         exact_articles = []
         other_mentions = []
+        addenda_matches = []
+        addenda_all = []
 
         for blk in blocks[1:]:
-            blk_clean = blk.strip().replace(" ", "")
+            blk_s = blk.strip()
+            blk_clean = blk_s.replace(" ", "")
+            is_add_blk = blk_s.startswith("부칙") or blk_s.startswith("[부칙") or blk_s.startswith("📌")
+            if is_add_blk:
+                addenda_all.append(blk_s)
+                if any(tp in blk_clean for tp in target_prefixes):
+                    addenda_matches.append(blk_s)
+                continue
             if any(
                 blk_clean.startswith(tp + "(") or blk_clean.startswith(tp + " ") or blk_clean == tp
                 or re.match(rf"^{re.escape(tp)}(?![0-9의])", blk_clean)
                 for tp in target_prefixes
             ):
-                exact_articles.append(blk.strip())
+                exact_articles.append(blk_s)
             elif any(tp in blk_clean for tp in target_prefixes):
-                other_mentions.append(blk.strip())
+                other_mentions.append(blk_s)
 
-        if exact_articles:
+        if wants_add and not exact_articles and addenda_all:
+            picked_add = addenda_matches if addenda_matches else addenda_all[:5 * mult]
+            cleaned = header + "\n\n📌 [법령 부칙 (시행일·적용례·경과조치)]\n\n" + "\n\n".join(picked_add)
+        elif exact_articles:
             total_exact_len = sum(len(x) for x in exact_articles)
             if len(exact_articles) > 1 and total_exact_len > limit:
                 per_art_quota = max(5000, (limit - len(header) - 200) // len(exact_articles))
@@ -1179,6 +1207,13 @@ def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
                 cleaned = header + "\n\n" + "\n\n".join(balanced_articles)
             else:
                 cleaned = header + "\n\n" + "\n\n".join(exact_articles)
+            if addenda_matches:
+                add_Cap = 4500 * mult if wants_add else 2500 * mult
+                add_txt = "\n\n".join(addenda_matches[:4 if wants_add else 2])[:add_Cap]
+                cleaned += "\n\n📌 [관련 최근 개정 부칙(시행일·적용례·경과조치) 발췌]\n" + add_txt
+            elif wants_add and addenda_all:
+                add_txt = "\n\n".join(addenda_all[:3 * mult])[:4500 * mult]
+                cleaned += "\n\n📌 [최근 개정 부칙(시행일·적용례·경과조치)]\n" + add_txt
         elif other_mentions:
             cleaned = header + "\n\n" + "\n\n".join(other_mentions[:3 * mult])
     elif query_filter and query_filter.strip():
@@ -1290,10 +1325,10 @@ def select_optimal_model(user_query: str, has_file: bool = False, full_input_len
 # ---------------------------------------------------------
 def search_law_for_gemini(keyword: str, target: str = "law") -> str:
     """
-    국가법령정보센터에서 법령, 판례, 행정규칙, 법령해석례, 조세심판원 결정례, 지방세 자치법규(조례) 목록과 일련번호(ID)를 검색합니다.
-    - target: 'law'(법령), 'prec'(판례), 'decc'(조세심판원 결정례), 'admrul'(훈령·예규·고시·기본통칙), 'expc'(법령해석례), 'ordin'(지자체 조례)
+    국가법령정보센터에서 법령, 대법원 판례, 헌법재판소 결정례, 조세심판원 결정례, 행정규칙, 법령해석례, 지자체 조례, 별표·서식 목록과 일련번호(ID)를 검색합니다.
+    - target: 'law'(법령), 'prec'(대법원 판례), 'detc'(헌법재판소 위헌·헌법불합치 결정례), 'decc'(조세심판원 결정례), 'admrul'(훈령·예규·고시·기본통칙), 'expc'(법령해석례), 'ordin'(지자체 조례), 'licbyl'(법령 별표·서식)
     - target='law'일 때 keyword에는 '법령명만' 넣을 것 (예: '소득세법', '소득세법 시행령'). 주제어는 넣지 말 것. (정식 법령명을 아는 경우 get_law_details_for_gemini의 doc_id에 법령명을 바로 넣으면 1턴에 직행 조회됨)
-    - target='prec'/'decc'/'expc'는 핵심 주제어(예: '업무무관 가지급금')나 사건번호(예: '2005두9415')로 검색할 것.
+    - target='prec'/'detc'/'decc'/'expc'는 핵심 주제어(예: '업무무관 가지급금')나 사건번호(예: '2005두9415', '2021헌바123')로 검색할 것.
     """
     if _over_limit("search", target):
         print(f"\n[시스템] ⛔ 검색 한도 도달 → 차단: '{keyword}' (대상: {target})")
@@ -1316,7 +1351,7 @@ def search_law_for_gemini(keyword: str, target: str = "law") -> str:
             results = None
         used_keyword = keyword
 
-        if not results and target in ("prec", "decc", "expc", "admrul"):
+        if not results and target in ("prec", "decc", "detc", "expc", "admrul"):
             print("[시스템]    ↳ 제목 검색 결과 없음 → 본문 검색으로 재시도")
             try:
                 results = law_api.search_law_data(keyword, target, search_mode=2)
@@ -1332,7 +1367,7 @@ def search_law_for_gemini(keyword: str, target: str = "law") -> str:
             print(f"[시스템]    ↳ 결과 없음 → '{used_keyword}'로 자동 재검색")
             try:
                 results = law_api.search_law_data(used_keyword, target)
-                if not results and target in ("prec", "decc", "expc", "admrul"):
+                if not results and target in ("prec", "decc", "detc", "expc", "admrul"):
                     results = law_api.search_law_data(used_keyword, target, search_mode=2)
             except Exception:
                 results = None
@@ -1363,6 +1398,10 @@ def search_law_for_gemini(keyword: str, target: str = "law") -> str:
             summary += f"{i+1}. [법령] {item.get('법령명한글')} | 공포번호: {item.get('공포번호')} | 공포일: {item.get('공포일자')} | 시행일: {item.get('시행일자')} | 구분: {item.get('제개정구분명')} | ID: {item.get('법령일련번호')}\n"
         elif target == "prec":
             summary += f"{i+1}. [판례] 사건명: {item.get('사건명')} | 사건번호: {item.get('사건번호')} | 선고일자: {item.get('선고일자')} | ID: {item.get('판례일련번호')}\n"
+        elif target == "detc":
+            summary += f"{i+1}. [헌재결정례] 사건명: {item.get('사건명')} | 사건번호: {item.get('사건번호')} | 종국일자: {item.get('종국일자')} | ID: {item.get('헌재결정례일련번호')}\n"
+        elif target == "licbyl":
+            summary += f"{i+1}. [별표/서식] {item.get('별표명')} | 관련법령: {item.get('관련법령명')} | 구분: {item.get('별표구분')} | ID: {item.get('별표일련번호')}\n"
         elif target == "decc":
             case_no = item.get('사건번호') or item.get('청구번호') or '-'
             dec_id = item.get('특별행정심판재결례일련번호') or item.get('행정심판재결례일련번호') or item.get('id') or '-'
@@ -1380,8 +1419,8 @@ def search_law_for_gemini(keyword: str, target: str = "law") -> str:
     if trace is not None:
         meta = trace.setdefault("meta_map", {})
         for item in results[:15]:
-            if target in ("prec", "decc"):
-                rid = item.get("판례일련번호") or item.get("특별행정심판재결례일련번호") or item.get("행정심판재결례일련번호")
+            if target in ("prec", "decc", "detc"):
+                rid = item.get("판례일련번호") or item.get("헌재결정례일련번호") or item.get("특별행정심판재결례일련번호") or item.get("행정심판재결례일련번호")
                 rno = item.get("사건번호") or item.get("청구번호")
                 if rid and rno:
                     trace["id_map"][str(rid).strip()] = rno.strip()
@@ -1403,9 +1442,10 @@ def search_law_for_gemini(keyword: str, target: str = "law") -> str:
 
 def get_law_details_for_gemini(doc_id: str, target: str = "law", query_filter: str = "") -> str:
     """
-    검색된 일련번호(ID) 또는 정식 법령명(예: '조세특례제한법', '조세특례제한법 시행령')으로 원문을 조회합니다.
-    - 법령('law') 조회 시 반드시 query_filter에 조문번호(예: '제29조의8', '제29조의8, 제127조, 제132조')를 넣어 호출하세요.
-    - doc_id에 정식 법령명을 바로 넣으면 search_law_for_gemini 없이 1턴에 즉시 원문이 조회됩니다.
+    검색된 일련번호(ID) 또는 정식 법령명(예: '조세특례제한법', '조세특례제한법 시행령')으로 조문·부칙·판례·헌재결정례·심판례 원문을 조회합니다.
+    - 법령('law') 조회 시 query_filter에 조문번호(예: '제29조의8', '제29조의8, 부칙') 또는 '부칙'(시행일·적용례·경과조치 확인용)을 넣어 호출하세요.
+    - target: 'law'(법령·부칙), 'prec'(대법원 판례), 'detc'(헌법재판소 결정례), 'decc'(조세심판원 결정례), 'admrul'(행정규칙·예규), 'expc'(법령해석례), 'ordin'(조례), 'licbyl'(별표·서식)
+    - doc_id에 정식 법령명을 바로 넣으면 search_law_for_gemini 없이 1턴에 즉시 원문 및 관련 개정 부칙이 조회됩니다.
     """
     _emit_live_status(f"📖 2단계: 법령·판례 원문 정밀 파싱 중 ('{doc_id}' · {query_filter or target})...")
 
@@ -1474,7 +1514,7 @@ def get_law_details_for_gemini(doc_id: str, target: str = "law", query_filter: s
     print(f"[시스템]    ↳ 원문 {len(raw_text or ''):,}자 → 전달 {len(result):,}자 | 앞부분: {preview}")
     if target == "law" and body_ok:
         _record_law_articles(result)
-    if trace is not None and target in ("prec", "decc"):
+    if trace is not None and target in ("prec", "decc", "detc"):
         rno = trace["id_map"].get(clean_id)
         if rno and body_ok and _norm(rno) not in _norm(result):
             result = f"[사건(청구)번호: {rno}]\n" + result
@@ -1586,6 +1626,14 @@ def search_historical_law_for_gemini(law_name: str, target_date: str, query_filt
                                     if mok_txt:
                                         lines.append("    " + mok_txt)
                         article_blocks.append("\n".join(lines))
+                    for a_unit in d_root.findall(".//부칙단위"):
+                        anc_dt = re.sub(r"\D", "", a_unit.findtext("부칙공포일자") or "")
+                        anc_no = (a_unit.findtext("부칙공포번호") or "").strip()
+                        a_body = (a_unit.findtext("부칙내용") or "").strip()
+                        if a_body:
+                            dt_fmt = f"{anc_dt[:4]}.{anc_dt[4:6]}.{anc_dt[6:]}." if len(anc_dt) == 8 else anc_dt
+                            no_fmt = f"제{anc_no}호, " if anc_no else ""
+                            article_blocks.append(f"부칙 <{no_fmt}{dt_fmt}>\n{a_body}")
                     if article_blocks:
                         break
                 except Exception:
