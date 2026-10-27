@@ -74,7 +74,7 @@ def _dlg_nts_dart_check():
         "🏛️ 1. 국세청 휴·폐업/과세유형",
         "🛡️ 2. 사업자 진위확인",
         "📊 3. DART 주주 · 업종코드",
-        "👷 4. 4대보험(고용·산재·국민연금) 인원 대사",
+        "👷 4. 4대보험 월·연 고지액 · 인원 대사",
     ])
 
     with tab_nts:
@@ -153,8 +153,8 @@ def _dlg_nts_dart_check():
 
     with tab_ins:
         st.caption(
-            "근로복지공단(고용·산재보험 상시인원·성립일) 및 국민연금공단(월별 가입자수·신규취득/상실 인원) 데이터를 실시간 조회하여 "
-            "2단계 원천징수부 사원표 인원 및 4대보험 가입 누락 여부를 교차 검증합니다."
+            "근로복지공단(고용·산재보험 상시인원·업종·성립일) 및 국민연금공단(월별 고지액·가입자수) Open API를 실시간 교차 조회하여 "
+            "**4대보험(국민연금·건강·장기요양·고용·산재) 전체 월별 고지보험료 및 연간 고지총액 합계(사업주/근로자 부담분)**와 사원표 인원을 대사합니다."
         )
         ci_a, ci_b = st.columns([3.5, 1.5])
         cw_bno = ci_a.text_input(
@@ -170,13 +170,18 @@ def _dlg_nts_dart_check():
             st.code(st.session_state["ec_comwel_res"], language="text")
 
         st.markdown("---")
-        cn1, cn2, cn3 = st.columns([2.2, 1.4, 1.4])
-        nps_nm = cn1.text_input("국민연금 조회 사업장명(상호)", value=str(b.get("상호") or ""), key="ec_nps_nm")
-        raw_bno_digits = re.sub(r"\D", "", str(b.get("사업자번호") or ""))
-        nps_bno6 = cn2.text_input("사업자번호 앞 6자리(선택)", value=raw_bno_digits[:6], key="ec_nps_bno6")
-        if cn3.button("🏦 국민연금 조회", type="primary", use_container_width=True, key="btn_run_ec_nps"):
-            with st.spinner("국민연금 가입 사업장 내역 조회 중..."):
-                st.session_state["ec_nps_res"] = _law_api.get_nps_workplace_info(nps_nm, nps_bno6)
+        cn1, cn2, cn3, cn4 = st.columns([1.9, 1.3, 0.9, 1.4])
+        nps_nm = cn1.text_input("4대보험 조회 사업장명(상호)", value=str(b.get("상호") or ""), key="ec_nps_nm")
+        nps_bno6 = cn2.text_input(
+            "사업자번호(10자리 권장·앞6자리 가능)",
+            value=str(b.get("사업자번호") or ""),
+            placeholder="10자리 입력 시 산재업종 자동연계",
+            key="ec_nps_bno6",
+        )
+        nps_yr = cn3.text_input("연도(비우면 전체)", value="", placeholder=str(tax_yr), key="ec_nps_yr")
+        if cn4.button("🏦 4대보험 월·연 고지액", type="primary", use_container_width=True, key="btn_run_ec_nps"):
+            with st.spinner("4대보험(국민연금·건보·장기요양·고용·산재) 월별·연간 고지총액 및 인원 병렬 조회 중..."):
+                st.session_state["ec_nps_res"] = _law_api.get_nps_workplace_info(nps_nm, nps_bno6, target_year=nps_yr)
         if st.session_state.get("ec_nps_res"):
             st.code(st.session_state["ec_nps_res"], language="text")
 
