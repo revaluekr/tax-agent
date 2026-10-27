@@ -1736,6 +1736,28 @@ def search_official_land_price_for_gemini(address: str, stdr_year: str = "") -> 
     except Exception as e:
         return f"공시지가 조회 오류: {e}"
 
+def search_real_estate_rent_for_gemini(property_type: str, region: str, deal_ymd: str, filter_keyword: str = "") -> str:
+    """국토부 부동산 전월세(보증금·월세) 실거래가를 조회합니다. property_type('apt','offi','villa','house'), region(시군구명), deal_ymd('YYYYMM')."""
+    _emit_live_status(f"🏠 1단계: 국토교통부 전월세 실거래가 조회 중 ({region})...")
+    print(f"\n[시스템] 🏠 국토교통부 전월세 실거래가 조회 가동: 유형={property_type} | 지역={region} | 연월={deal_ymd} | 필터='{filter_keyword}'")
+    try:
+        if hasattr(law_api, "get_molit_real_estate_rent"):
+            return _record("detail", law_api.get_molit_real_estate_rent(property_type, region, deal_ymd, filter_keyword))
+        return "현재 law_api.py에 전월세 실거래가 조회 함수가 없습니다."
+    except Exception as e:
+        return f"전월세 실거래가 조회 오류: {e}"
+
+def search_building_ledger_for_gemini(address: str) -> str:
+    """국토부 건축물대장(표제부·층별개요)을 조회하여 주용도, 연면적, 층별 주택/상가 면적 비율(겸용주택 판정), 위반건축물 여부를 확인합니다."""
+    _emit_live_status(f"🏢 1단계: 국토교통부 건축물대장 표제부·층별개요 조회 중 ({address})...")
+    print(f"\n[시스템] 🏢 국토교통부 건축물대장 조회 가동: 주소='{address}'")
+    try:
+        if hasattr(law_api, "get_building_ledger_info"):
+            return _record("detail", law_api.get_building_ledger_info(address))
+        return "현재 law_api.py에 건축물대장 조회 함수가 없습니다."
+    except Exception as e:
+        return f"건축물대장 조회 오류: {e}"
+
 # ---------------------------------------------------------
 # 🛡️ 정밀 수리 계산기: AST 화이트리스트 보안 샌드박스 & 천 단위 쉼표 지능형 정제
 #    (min(100,200) 공백 없는 인자 쉼표 보호 + 음수 거듭제곱 1.05**-3 허용 + pow(a,b) 지수 한도 검증 완벽 통합)
@@ -1936,8 +1958,9 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
 - 과거 시점 구법(연혁법령) 원문 확인: 'search_historical_law_for_gemini' 호출.
 - 기업 공시·재무·지분·배당·출자 확인: 'search_dart_corp_for_gemini' 호출.
 - 사업자 상태(휴·폐업/과세유형) 및 진위확인: 'check_nts_biz_status_for_gemini' 또는 'verify_nts_biz_info_for_gemini' 호출.
-- 부동산(아파트·오피스텔·상가·토지) 실거래가 확인: 'search_real_estate_trade_for_gemini' 호출.
+- 부동산 매매 실거래가 확인: 'search_real_estate_trade_for_gemini' 호출 / 전월세(보증금·월세) 실거래가 확인: 'search_real_estate_rent_for_gemini' 호출.
 - 부동산 개별공시지가 및 공동주택 공시가격(기준시가) 확인: 'search_official_land_price_for_gemini' 호출.
+- 건축물대장 표제부·층별개요(겸용주택 주택/상가 면적 비율·주용도·위반건축물 여부) 확인: 'search_building_ledger_for_gemini' 호출.
 - 세액·공제액·수당·지분율 등 모든 숫자 계산: 반드시 'run_tax_calculator_for_gemini'를 호출하여 단 1원의 오차도 없이 정확히 계산할 것. (수식 내 숫자에는 천 단위 쉼표를 넣지 말고 `1500000 * 0.15`처럼 적으며, 함수 인자는 `min(1500000, 2000000)`처럼 쉼표+공백으로 구분할 것)
 
 1. 자료 검토 우선순위 및 기준
@@ -2468,7 +2491,9 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False, room
             check_nts_biz_status_for_gemini,
             verify_nts_biz_info_for_gemini,
             search_real_estate_trade_for_gemini,
+            search_real_estate_rent_for_gemini,
             search_official_land_price_for_gemini,
+            search_building_ledger_for_gemini,
             run_tax_calculator_for_gemini
         ]
 

@@ -1053,6 +1053,107 @@ def get_molit_real_estate_trade(property_type: str, region: str, deal_ymd: str, 
 
 
 # ---------------------------------------------------------
+# 6-2. 국토교통부 부동산 전월세 실거래가 4종 통합 조회 (아파트 / 오피스텔 / 연립다세대 / 단독다가구)
+# ---------------------------------------------------------
+def get_molit_real_estate_rent(property_type: str, region: str, deal_ymd: str, filter_keyword: str = "") -> str:
+    """
+    공공데이터포털 인증키(NTS_API_KEY)를 사용하여 국토교통부 전월세(보증금·월세) 실거래가를 조회합니다.
+    - property_type: 'apt'(아파트), 'offi'(오피스텔), 'rh'/'villa'(연립다세대·빌라), 'sh'/'house'(단독·다가구)
+    - region: 시·군·구 명칭(예: '강남구', '분당구') 또는 5자리 LAWD_CD(예: '11680')
+    - deal_ymd: 계약연월 6자리 'YYYYMM'(예: '202609')
+    """
+    nts_key = _live_nts_key()
+    if not nts_key:
+        return "❌ NTS_API_KEY(공공데이터포털 인증키)가 설정되지 않았습니다."
+
+    lawd_cd = _resolve_lawd_cd(region)
+    if not lawd_cd:
+        return f"❌ '{region}'에 해당하는 5자리 법정동코드를 찾지 못했습니다. 시·군·구 명칭(예: '강남구', '서초구', '분당구')이나 5자리 법정동코드(예: '11680')로 다시 입력해 주세요."
+
+    ymd = re.sub(r"\D", "", deal_ymd)[:6]
+    if len(ymd) != 6:
+        return f"❌ 계약연월('{deal_ymd}')은 'YYYYMM' 6자리 형식(예: '202609')이어야 합니다."
+
+    ptype = (property_type or "").lower().strip()
+    if ptype in ("오피스텔", "offi", "officetel"):
+        endpoint = "https://apis.data.go.kr/1613000/RTMSDataSvcOffiRent/getRTMSDataSvcOffiRent"
+        type_label = "오피스텔 전월세"
+    elif ptype in ("연립", "다세대", "연립다세대", "빌라", "rh", "villa"):
+        endpoint = "https://apis.data.go.kr/1613000/RTMSDataSvcRHRent/getRTMSDataSvcRHRent"
+        type_label = "연립·다세대(빌라) 전월세"
+    elif ptype in ("단독", "다가구", "단독다가구", "sh", "house"):
+        endpoint = "https://apis.data.go.kr/1613000/RTMSDataSvcSHRent/getRTMSDataSvcSHRent"
+        type_label = "단독·다가구 전월세"
+    else:
+        endpoint = "https://apis.data.go.kr/1613000/RTMSDataSvcAptRent/getRTMSDataSvcAptRent"
+        type_label = "아파트(공동주택) 전월세"
+
+    encoded_key = nts_key if "%" in nts_key else urllib.parse.quote(nts_key, safe="")
+    full_url = f"{endpoint}?serviceKey={encoded_key}&LAWD_CD={lawd_cd}&DEAL_YMD={ymd}&numOfRows=200&pageNo=1"
+
+    try:
+        resp = requests.get(full_url, timeout=15)
+        if resp.status_code != 200:
+            return (
+                f"❌ 국토교통부 전월세 API 호출 실패 (HTTP {resp.status_code}): "
+                "공공데이터포털(data.go.kr)에서 '국토교통부_아파트/오피스텔/연립다세대/단독다가구 전월세 실거래가 자료' 활용신청 여부를 확인해 주세요."
+            )
+
+        root = ET.fromstring(resp.text)
+        result_code = (root.findtext(".//resultCode") or "").strip()
+        result_msg = (root.findtext(".//resultMsg") or "").strip()
+        if result_code not in ("00", "000", "0000", ""):
+            return f"❌ 국토부 전월세 API 응답 오류 (코드 {result_code}): {result_msg}"
+
+        items = root.findall(".//item")
+        if not items:
+            return f"조회된 [{type_label}] 실거래 내역이 없습니다. (지역코드: {lawd_cd}, 계약연월: {ymd})"
+
+        kw = (filter_keyword or "").strip()
+        parsed_rows = []
+        for it in items:
+            data = {child.tag: (child.text or "").strip() for child in it}
+            raw_str = " ".join(data.values())
+            if kw and kw not in raw_str:
+                continue
+
+            umd = data.get("umdNm") or data.get("법정동") or ""
+            jibun = data.get("jibun") or data.get("지번") or ""
+            bldg_nm = (
+                data.get("aptNm")
+                or data.get("offiNm")
+                or data.get("mhouseNm")
+                or data.get("아파트")
+                or data.get("단지")
+                or "단독/다가구"
+            )
+            area = data.get("excluUseAr") or data.get("cntrArea") or data.get("전용면적") or data.get("계약면적") or "-"
+            floor = data.get("floor") or data.get("층") or "-"
+            build_yr = data.get("buildYear") or data.get("건축년도") or "-"
+            dep = data.get("deposit") or data.get("보증금액") or "0"
+            m_rent = data.get("monthlyRent") or data.get("월세금액") or "0"
+            m_rent_clean = re.sub(r"[^0-9]", "", m_rent)
+            rent_kind = "전세" if (not m_rent_clean or int(m_rent_clean) == 0) else f"월세 {m_rent}만원"
+            deal_day = f"{ymd[:4]}-{ymd[4:6]}-{str(data.get('dealDay') or data.get('일') or '01').zfill(2)}"
+            c_type = data.get("contractType") or data.get("계약구분") or ""
+            c_term = data.get("contractTerm") or data.get("계약기간") or ""
+            extra_tag = f" ({c_type}{', ' + c_term if c_term else ''})" if c_type or c_term else ""
+
+            parsed_rows.append(
+                f"- [{deal_day}] {umd} {bldg_nm} ({jibun}) | 전용/계약 {area}㎡ ({floor}층, 건축:{build_yr}년) | "
+                f"보증금: {dep}만원 / {rent_kind}{extra_tag}"
+            )
+
+        if not parsed_rows:
+            return f"지역({lawd_cd})·연월({ymd})의 전체 전월세 {len(items)}건 중 '{kw}' 키워드가 포함된 내역이 없습니다."
+
+        header = f"🏠 [국토교통부 {type_label} 실거래가 조회 결과 | 지역:{region}({lawd_cd}) | 연월:{ymd} | 검색:{kw or '전체'} (총 {len(parsed_rows)}건 중 최근 25건)]"
+        return header + "\n" + "\n".join(parsed_rows[:25])
+    except Exception as e:
+        return f"❌ 국토교통부 전월세 실거래가 조회 중 오류 발생: {e}"
+
+
+# ---------------------------------------------------------
 # 7. 국토교통부 브이월드(V-World) 개별공시지가 및 공동주택 공시가격 조회
 # ---------------------------------------------------------
 _MAJOR_BJDONG_MAP = {
@@ -1317,3 +1418,137 @@ def get_vworld_official_price(address_or_pnu: str, stdr_year: str = "") -> str:
         pass
 
     return "\n".join(output)
+
+# ---------------------------------------------------------
+# 8. 국토교통부 건축물대장 표제부 · 층별개요 조회 (겸용주택 주택/상가 면적 비율 · 주용도 · 위반건축물 판정용)
+# ---------------------------------------------------------
+def get_building_ledger_info(address_or_pnu: str) -> str:
+    """
+    지번/도로명 주소 또는 19자리 PNU를 입력받아 국토교통부 건축물대장(BldRgstHubService)의
+    1) 표제부(주용도·대지면적·연면적·층수·사용승인일·위반건축물 여부) 및
+    2) 층별개요(층별 용도·면적 및 겸용주택 주택/비주택 면적 자동 합산 비교)를 조회합니다.
+    """
+    nts_key = _live_nts_key()
+    if not nts_key:
+        return "❌ NTS_API_KEY(공공데이터포털 인증키)가 설정되지 않았습니다."
+
+    vworld_key = _get_vworld_key()
+    pnu, resolved_addr = _address_to_pnu(address_or_pnu, vworld_key)
+    if not pnu or len(pnu) != 19:
+        return f"❌ 건축물대장 조회를 위한 19자리 PNU 변환 실패: {resolved_addr}"
+
+    sigungu_cd = pnu[0:5]
+    bjdong_cd = pnu[5:10]
+    plat_gb_cd = "0" if pnu[10] == "1" else "1"
+    bun = pnu[11:15]
+    ji = pnu[15:19]
+    encoded_key = nts_key if "%" in nts_key else urllib.parse.quote(nts_key, safe="")
+
+    output = [
+        f"🏢 [국토교통부 건축물대장 표제부·층별개요 통합 조회 | 주소: {resolved_addr} (PNU: {pnu})]",
+        f"- 행정구역코드: 시군구({sigungu_cd}) · 법정동({bjdong_cd}) · 번지({int(bun)}-{int(ji)})",
+    ]
+
+    # 1) 표제부 조회 (getBrTitleInfo)
+    title_ep = (
+        f"https://apis.data.go.kr/1613000/BldRgstHubService/getBrTitleInfo"
+        f"?serviceKey={encoded_key}&sigunguCd={sigungu_cd}&bjdongCd={bjdong_cd}"
+        f"&platGbCd={plat_gb_cd}&bun={bun}&ji={ji}&numOfRows=20&pageNo=1"
+    )
+    try:
+        r_title = requests.get(title_ep, timeout=15)
+        if r_title.status_code != 200:
+            return (
+                f"❌ 건축물대장 API 호출 실패 (HTTP {r_title.status_code}): "
+                "공공데이터포털(data.go.kr)에서 '국토교통부_건축물대장정보 서비스(BldRgstHubService)' 활용신청 여부를 확인해 주세요."
+            )
+        root_t = ET.fromstring(r_title.text)
+        res_code = (root_t.findtext(".//resultCode") or "").strip()
+        res_msg = (root_t.findtext(".//resultMsg") or "").strip()
+        if res_code not in ("00", "000", "0000", ""):
+            return f"❌ 건축물대장 API 응답 오류 (코드 {res_code}): {res_msg}"
+
+        t_items = root_t.findall(".//item")
+        if not t_items:
+            output.append("\n■ 1. 건축물대장 표제부: 해당 지번으로 조회된 표제부 내역이 없습니다.")
+        else:
+            output.append(f"\n■ 1. 건축물대장 표제부 (총 {len(t_items)}동 중 주요 내역):")
+            for idx, it in enumerate(t_items[:5], start=1):
+                d = {c.tag: (c.text or "").strip() for c in it}
+                bld_nm = d.get("bldNm") or d.get("dongNm") or f"건축물 #{idx}"
+                main_p = d.get("mainPurpsCdNm") or "-"
+                etc_p = d.get("etcPurps") or ""
+                strct = d.get("strctCdNm") or "-"
+                plat_ar = d.get("platArea") or "0"
+                arch_ar = d.get("archArea") or "0"
+                tot_ar = d.get("totArea") or "0"
+                grnd_cnt = d.get("grndFlrCnt") or "0"
+                ugrnd_cnt = d.get("ugrndFlrCnt") or "0"
+                hhld = d.get("hhldCnt") or "0"
+                fmly = d.get("fmlyCnt") or "0"
+                ho = d.get("hoCnt") or "0"
+                apr_day = d.get("useAprDay") or "-"
+                viol = d.get("violBldYn") or "0"
+                viol_str = "⚠️ 위반건축물 등재(Y)" if viol in ("1", "Y", "유") else "정상(위반사항 없음)"
+                output.append(
+                    f"- [{bld_nm}] 주용도: {main_p}{f' ({etc_p})' if etc_p and etc_p != main_p else ''} | 주구조: {strct}\n"
+                    f"  · 대지면적: {plat_ar}㎡ | 건축면적: {arch_ar}㎡ | 연면적: {tot_ar}㎡ (지상 {grnd_cnt}층 / 지하 {ugrnd_cnt}층)\n"
+                    f"  · 세대/가구/호수: {hhld}세대 · {fmly}가구 · {ho}호 | 사용승인일: {apr_day} | 위반건축물: {viol_str}"
+                )
+    except Exception as e:
+        output.append(f"\n■ 1. 건축물대장 표제부 조회 오류: {e}")
+
+    # 2) 층별개요 조회 (getBrFlrOulnInfo) — 겸용주택 주택 vs 상가(근린생활시설) 면적 자동 판정
+    flr_ep = (
+        f"https://apis.data.go.kr/1613000/BldRgstHubService/getBrFlrOulnInfo"
+        f"?serviceKey={encoded_key}&sigunguCd={sigungu_cd}&bjdongCd={bjdong_cd}"
+        f"&platGbCd={plat_gb_cd}&bun={bun}&ji={ji}&numOfRows=50&pageNo=1"
+    )
+    try:
+        r_flr = requests.get(flr_ep, timeout=15)
+        if r_flr.status_code == 200:
+            root_f = ET.fromstring(r_flr.text)
+            f_items = root_f.findall(".//item")
+            if f_items:
+                output.append(f"\n■ 2. 층별개요 및 용도별 면적 분석 (총 {len(f_items)}개 층 데이터):")
+                house_area = 0.0
+                non_house_area = 0.0
+                house_keywords = ("주택", "다가구", "다세대", "연립", "아파트", "기숙사")
+                for it in f_items[:30]:
+                    fd = {c.tag: (c.text or "").strip() for c in it}
+                    flr_gb = fd.get("flrGbCdNm") or ""
+                    flr_nm = fd.get("flrNoNm") or fd.get("flrNo") or "-"
+                    purp = fd.get("mainPurpsCdNm") or fd.get("etcPurps") or "-"
+                    etc_p = fd.get("etcPurps") or ""
+                    ar_str = fd.get("area") or "0"
+                    try:
+                        ar_val = float(ar_str)
+                    except ValueError:
+                        ar_val = 0.0
+                    comb_purp = f"{purp} {etc_p}"
+                    is_house = any(hk in comb_purp for hk in house_keywords) and "오피스텔" not in comb_purp
+                    if is_house:
+                        house_area += ar_val
+                    else:
+                        non_house_area += ar_val
+                    tag_h = "[주택]" if is_house else "[비주택/상가등]"
+                    output.append(
+                        f"- {flr_gb} {flr_nm}: {purp}{f' ({etc_p})' if etc_p and etc_p != purp else ''} | 면적: {ar_val:,.2f}㎡ {tag_h}"
+                    )
+                tot_flr_ar = house_area + non_house_area
+                if tot_flr_ar > 0:
+                    h_ratio = (house_area / tot_flr_ar) * 100.0
+                    rule_note = (
+                        "주택 연면적 > 비주택 연면적 (소득세법 시행령 제154조 제3항 겸용주택 특례 요건 참고)"
+                        if house_area > non_house_area
+                        else "주택 연면적 ≤ 비주택 연면적 (주택 부분만 주택으로 판정)"
+                    )
+                    output.append(
+                        f"\n📌 [겸용주택 용도별 면적 자동 집계]\n"
+                        f"- 주택 부분 합계: {house_area:,.2f}㎡ ({h_ratio:.1f}%) | 비주택(상가·업무 등) 합계: {non_house_area:,.2f}㎡ ({100.0 - h_ratio:.1f}%)\n"
+                        f"- 비교 판정: {rule_note}"
+                    )
+    except Exception:
+        pass
+
+    return "\n".join(output)[:14000]
