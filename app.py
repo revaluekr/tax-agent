@@ -2613,55 +2613,61 @@ with st.sidebar:
         )
         st.session_state.pro_toggle_state = pro_toggle_on
 
-    # 📦 [카드 2] 내 작업공간 (비밀번호 미입력 시 접속 PC/세션별 1~10번 방 완벽 분리 + 암호 입력 시 영구 동기화 및 API키 2단 자동패스 연동)
-    with st.container(border=True):
-        ws_widget_ver = st.session_state.get("ws_widget_ver", 0)
-        saved_ws_val = st.session_state.get("active_workspace_id", "")
-        ws_pill = (
-            "<span class='sb-badge-green'>🟢 보안 저장중</span>"
-            if saved_ws_val.strip() else
-            "<span class='sb-badge-amber'>🛡️ 개별 분리(임시)</span>"
-        )
-        st.markdown(f"<div class='sb-card-title'><span>🔐 내 작업공간 코드</span>{ws_pill}</div>", unsafe_allow_html=True)
-        workspace_input = st.text_input(
-            "작업공간 코드",
-            value=saved_ws_val,
-            type="password",
-            placeholder="나만의 암호 입력 후 Enter",
-            label_visibility="collapsed",
-            key=f"ws_input_box_{ws_widget_ver}",
-            help="암호를 입력하지 않아도 각 접속 PC/브라우저마다 1~10번 대화방이 타인과 완벽히 분리됩니다. 여기에 관리자 보안 PIN(MANAGER_SECURITY_PIN)을 입력해 두시면 하단 [🔑 API키]도 별도 로그인 없이 즉시 열립니다."
-        )
-        effective_ws_id = (
-            workspace_input.strip()
-            if workspace_input.strip()
-            else st.session_state.anon_workspace_id
-        )
+    # 📦 [카드 2] 내 작업공간 (자율 에이전트AI 모드에서만 노출; 통합고용세액공제 모드에서는 [🔄 자료 초기화] 카드로 대체)
+    if st.session_state.app_top_mode != "CREDIT_CALC":
+        with st.container(border=True):
+            ws_widget_ver = st.session_state.get("ws_widget_ver", 0)
+            saved_ws_val = st.session_state.get("active_workspace_id", "")
+            ws_pill = (
+                "<span class='sb-badge-green'>🟢 보안 저장중</span>"
+                if saved_ws_val.strip() else
+                "<span class='sb-badge-amber'>🛡️ 개별 분리(임시)</span>"
+            )
+            st.markdown(f"<div class='sb-card-title'><span>🔐 내 작업공간 코드</span>{ws_pill}</div>", unsafe_allow_html=True)
+            workspace_input = st.text_input(
+                "작업공간 코드",
+                value=saved_ws_val,
+                type="password",
+                placeholder="나만의 암호 입력 후 Enter",
+                label_visibility="collapsed",
+                key=f"ws_input_box_{ws_widget_ver}",
+                help="암호를 입력하지 않아도 각 접속 PC/브라우저마다 1~10번 대화방이 타인과 완벽히 분리됩니다. 여기에 관리자 보안 PIN(MANAGER_SECURITY_PIN)을 입력해 두시면 하단 [🔑 API키]도 별도 로그인 없이 즉시 열립니다."
+            )
+            effective_ws_id = (
+                workspace_input.strip()
+                if workspace_input.strip()
+                else st.session_state.anon_workspace_id
+            )
 
-        if st.session_state.get("loaded_workspace_id") != effective_ws_id:
-            ws_data = load_workspace_from_disk(effective_ws_id)
-            st.session_state.chat_rooms = ws_data["chat_rooms"]
-            st.session_state.room_titles = ws_data["room_titles"]
-            st.session_state.room_files = ws_data["room_files"]
-            st.session_state.room_diff_banners = ws_data.get("room_diff_banners", {r_id: "" for r_id in ROOM_IDS})
-            st.session_state.loaded_workspace_id = effective_ws_id
-            st.session_state.active_workspace_id = workspace_input.strip()
-            st.session_state.manager_manual_locked = False
-            if "current_room" not in st.session_state:
-                st.session_state.current_room = ROOM_IDS[0]
-            sync_all_rooms_state(effective_ws_id)
-            st.rerun()
-
-        # 매 렌더링 시점마다 현재 세션(개별 분리 세션 또는 암호 작업공간)의 1~10번 방을 무손실 동기화
-        sync_all_rooms_state(effective_ws_id)
-
-        if workspace_input.strip():
-            if st.button("🔒 작업공간 잠금 (나가기)", use_container_width=True):
-                st.session_state.active_workspace_id = ""
-                st.session_state.loaded_workspace_id = None
-                st.session_state.manager_google_authed_email = ""
-                st.session_state.ws_widget_ver = ws_widget_ver + 1
+            if st.session_state.get("loaded_workspace_id") != effective_ws_id:
+                ws_data = load_workspace_from_disk(effective_ws_id)
+                st.session_state.chat_rooms = ws_data["chat_rooms"]
+                st.session_state.room_titles = ws_data["room_titles"]
+                st.session_state.room_files = ws_data["room_files"]
+                st.session_state.room_diff_banners = ws_data.get("room_diff_banners", {r_id: "" for r_id in ROOM_IDS})
+                st.session_state.loaded_workspace_id = effective_ws_id
+                st.session_state.active_workspace_id = workspace_input.strip()
+                st.session_state.manager_manual_locked = False
+                if "current_room" not in st.session_state:
+                    st.session_state.current_room = ROOM_IDS[0]
+                sync_all_rooms_state(effective_ws_id)
                 st.rerun()
+
+            # 매 렌더링 시점마다 현재 세션(개별 분리 세션 또는 암호 작업공간)의 1~10번 방을 무손실 동기화
+            sync_all_rooms_state(effective_ws_id)
+
+            if workspace_input.strip():
+                if st.button("🔒 작업공간 잠금 (나가기)", use_container_width=True):
+                    st.session_state.active_workspace_id = ""
+                    st.session_state.loaded_workspace_id = None
+                    st.session_state.manager_google_authed_email = ""
+                    st.session_state.ws_widget_ver = ws_widget_ver + 1
+                    st.rerun()
+    else:
+        effective_ws_id = (
+            str(st.session_state.get("active_workspace_id", "")).strip()
+            or st.session_state.anon_workspace_id
+        )
 
     # 📦 [통합고용세액공제 모드 전용] 귀속사업연도 · 사업자정보 (내 작업공간 바로 아래)
     if st.session_state.app_top_mode == "CREDIT_CALC":
