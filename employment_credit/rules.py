@@ -17,6 +17,7 @@
 4. 법인 본·지점 합산 및 개인사업자 기중 사업 양도·포괄양수(조특령 제26조의8 제10항) 복수 사업장 구분 상수 지원.
 """
 from __future__ import annotations
+from typing import Any
 
 # ── 지원 귀속연도 (2024~2028년 A·B·C 점증형 산식 및 구법 사후관리 전면 지원) ──
 SUPPORTED_TAX_YEARS = [2024, 2025, 2026, 2027, 2028]
@@ -656,29 +657,36 @@ def calc_method_badge_label(cohort_year_or_method: int | str) -> str:
     return "B방식(사원별 절사)" if m == "B" else "A방식(합계 절사·신뢰보호)"
 
 
-# ── 행정해석 · 국세청 공문 · 법정서식 실무 마스터 데이터 (법령 문언 + 실무 행정해석 통합) ──
+# ── 행정해석 · 국세청 공문 · 법정서식 원문 데이터 (추론·앱 자체 기준 배제, 문서 원문 사실만 수록) ──
 ADMIN_RULINGS_AND_NOTICES = {
     "국세청_2026_03_상시근로자수_계산안내": {
-        "구분": "행정해석(국세청 공문 · 재정경제부 세제실 회신 반영)",
-        "문서명": "국세청 법인세과 「'26년 3월 법인세 통합고용세액공제 상시근로자 수 계산 안내」",
+        "구분": "국세청 안내문(재정경제부 세제실 회신 내용 반영)",
+        "문서명": "국세청 법인세과 「('26년 3월 법인세) 통합고용세액공제 상시근로자 수 계산 안내」",
         "시행연월": "2026-03",
         "핵심내용": (
-            "1) 조특령 제26조의8 개정('26.2.27. 시행)으로 상시근로자 수 계산방식이 변경되었고, 영 시행 이후 과세표준을 신고하는 분부터 적용.\n"
-            "2) A방식(기존): (매월 말 상시근로자 수의 합계 ÷ 과세연도 개월수)의 값에서 100분의 1 미만 절사.\n"
-            "3) B방식(현행): [(각 상시근로자 근무개월수 ÷ 과세연도 개월수)의 값에서 100분의 1 미만 절사한 값]의 합계.\n"
-            "4) 신뢰보호 적용 구분(2025 사업연도 신고 기준):\n"
-            "   - 2025년을 1차년도로 하는 경우: B방식 (③ 상시근로자 현황의 직전전·직전·해당 / ④ 가. 1차년도 요건의 직전·해당 / ⑤ 추가공제 요건의 직전·해당)\n"
-            "   - 2025년을 2차·3차년도로 하는 경우(2023·2024년 코호트): A방식 (④ 나. 2차년도 요건의 직전·해당 / ④ 다. 3차년도 요건의 직전전·해당)\n"
-            "   - 2026년 이후 평가연도에서 2024년 이하 코호트에 A방식을 계속 적용하는 것은 위 신뢰보호 원칙을 연장 적용한 해석임 (# 확인 필요: '26.3월 국세청 안내 신뢰보호 원칙 연장 적용)."
+            "1) 조세특례제한법 시행령 제26조의8 개정('26.2.27. 시행)으로 상시근로자 수 계산 방법이 변경되었으며, "
+            "부칙 제2조(일반적 적용례)에 따라 영 시행 이후 과세표준을 신고하는 분부터 적용됨.\n"
+            "2) 계산 방법:\n"
+            "   - A방식(기존): (매월 말 현재 상시근로자 수의 합 ÷ 과세연도 개월수)의 값에서 100분의 1미만 절사\n"
+            "   - B방식(현행): [(각 상시근로자의 근무개월수 ÷ 과세연도 개월수)의 값에서 100분의 1미만 절사한 값]의 합\n"
+            "3) 2025 사업연도 신고 시 공제세액계산서(별지 제10호의9 서식) 작성 요령 "
+            "(개정에 따른 납세자 신뢰보호를 위해 기 공제받은 내용에 대한 사후관리와 추가공제 계산 시에는 기존의 계산방식을 적용하여 계산):\n"
+            "   - 2025년을 1차년도로 하는 경우: B방식 "
+            "(③ 상시근로자 현황[직전전 또는 창업연도·직전 과세연도·해당 과세연도] / ④ 가. 1차년도 세액공제 요건[직전 과세연도·해당 과세연도] / ⑤ 추가공제 요건[직전 과세연도·해당 과세연도])\n"
+            "   - 2025년을 2차 또는 3차년도로 하는 경우: A방식 "
+            "(④ 나. 2차년도 세액공제 요건[직전 과세연도·해당 과세연도] / ④ 다. 3차년도 세액공제 요건[직전전 과세연도·해당 과세연도])"
         ),
     },
     "국세청_2026_03_법인세신고_협조안내문": {
-        "구분": "행정해석(국세청 법인세과 협조 공문)",
-        "문서명": "국세청 법인세과 「'26년 3월 법인세 신고 협조 안내문」",
+        "구분": "국세청 안내문",
+        "문서명": "국세청 법인세과 「법인세 신고 협조 안내문」",
         "시행연월": "2026-03",
         "핵심내용": (
-            "조특칙 별지 제10호의10서식(통합고용세액공제 상시근로자 명세서) 입법예고안(합계 후 절사)과 공포안(B방식: 사원별 절사 후 합계) 차이로 인해 "
-            "발생한 A·B 계산방식 단수 차이는 국세청 안내 기준 차이로 설명되므로 경정청구·수정신고 안내 대상에서 제외함."
+            "1) '26.2.27. 통합고용세액공제 관련 조세특례제한법 시행령 제26조의8 개정으로 상시근로자 수 계산 방법이 변경되었으며, "
+            "관련 서식(조세특례제한법 시행규칙 별지 제10호의10 서식)이 입법예고 중 수정사항이 발생하여 전산 반영 중임.\n"
+            "2) 통합고용세액공제 관련 상시근로자 수 계산 방법 비교:\n"
+            "   - 입법예고안: 상시근로자별 (근무개월수 / 과세연도 개월수)의 합 (100분의 1미만 절사)\n"
+            "   - 변경안: ∑ [상시근로자별 (근무개월수 / 과세연도 개월수)(100분의 1미만 절사)] (* 사원별 상시근로자수의 소수점 셋째자리 이하 절사 후 합산)"
         ),
     },
     "조특칙_별지_제10호의9_제10호의10_서식": {
@@ -686,65 +694,115 @@ ADMIN_RULINGS_AND_NOTICES = {
         "문서명": "조세특례제한법 시행규칙 별지 제10호의9서식(공제세액계산서) · 별지 제10호의10서식(상시근로자 명세서)",
         "시행연월": "2026-03",
         "핵심내용": (
-            "별지 제10호의10서식 ⑩ 청년등외 상시근로자 수 = ② 상시근로자 수 − ⑨ 청년등 상시근로자 수 (전체 - 청년등 정본 원칙 유지)."
+            "별지 제10호의10서식 ⑩ 청년등외 상시근로자 수 = ② 상시근로자 수 − ⑨ 청년등 상시근로자 수."
         ),
     },
 }
 
 
 def format_admin_rulings_for_prompt() -> str:
-    """AI 심층 세무진단 프롬프트 및 에이전트 컨텍스트 주입용 행정해석 요약 문자열 반환"""
-    lines = ["[실무 행정해석 및 국세청 공문 · 법정서식 기준 (법령 문언과 함께 필수 반영)]"]
+    """AI 심층 세무진단 프롬프트 주입용 행정해석 원문 요약 문자열 반환 (추론·앱 자체 정책과 엄격 분리)"""
+    lines = [
+        "[국세청 '26.3월 안내문 및 법정서식 원문 사실 (문서에 없는 추론·확장 해석 귀속 절대 금지)]"
+    ]
     for item in ADMIN_RULINGS_AND_NOTICES.values():
         lines.append(f"- [{item['구분']}: {item['문서명']} ({item['시행연월']})]")
         lines.append(f"  {item['핵심내용']}")
+    lines.append(
+        "- [앱 계산엔진 내부 처리 기준 (주의: 아래 항목은 국세청 안내문 원문이 아니라 앱의 자체 계산·화면 표시 기준이므로 '국세청이 안내·해석했다'고 서술하지 말 것)]\n"
+        "  · 2026년 이후 평가연도에서 2024년 이하 최초 공제 코호트의 사후관리에 A방식을 계속 적용하는 것은 '26.3월 국세청 안내(2025 사업연도 신고 기준)의 신뢰보호 원칙을 연장 적용한 앱의 해석임 (# 확인 필요: '26.3월 국세청 안내 신뢰보호 원칙 연장 적용).\n"
+        "  · 기신고값과 재계산값의 차이가 A·B 계산방식 차이로만 설명되는 경우 앱 화면에서는 경정청구·수정신고 안내 대신 계산방식(A/B) 차이로 안내함."
+    )
     return "\n".join(lines)
 
 
 def diagnose_ab_method_difference(
     cohort_year: int,
-    filed_reg: float | None,
-    filed_yth: float | None,
-    recalc_A_reg: float,
-    recalc_A_yth: float,
-    recalc_B_reg: float,
-    recalc_B_yth: float,
+    filed_reg: float | None = None,
+    filed_yth: float | None = None,
+    recalc_A_reg: float | None = None,
+    recalc_A_yth: float | None = None,
+    recalc_B_reg: float | None = None,
+    recalc_B_yth: float | None = None,
+    *,
+    recalc_reg: float | None = None,
+    recalc_yth: float | None = None,
+    a_reg: float | None = None,
+    a_yth: float | None = None,
+    b_reg: float | None = None,
+    b_yth: float | None = None,
+    filed_prev_reg: float | None = None,
+    filed_prev_yth: float | None = None,
+    a_prev_reg: float | None = None,
+    a_prev_yth: float | None = None,
+    b_prev_reg: float | None = None,
+    b_prev_yth: float | None = None,
 ) -> dict[str, Any]:
     """
     기신고값과 재계산값(calc_method_for 기준)의 차이가 A·B 계산방식 차이로만 설명되는지 판정합니다 (5번 · 7-4번 검증).
+    - rules.py 단위 테스트 시그니처(`recalc_A_reg`, `recalc_B_reg`)와
+      ui_step3.py 호출 시그니처(`a_reg`, `b_reg`, `recalc_reg`, `filed_prev_reg` 등)를 모두 지원합니다.
     """
     target_m = calc_method_for(cohort_year)
-    recalc_reg = recalc_B_reg if target_m == "B" else recalc_A_reg
-    recalc_yth = recalc_B_yth if target_m == "B" else recalc_A_yth
-    alt_reg = recalc_A_reg if target_m == "B" else recalc_B_reg
-    alt_yth = recalc_A_yth if target_m == "B" else recalc_B_yth
+    a_r = float(recalc_A_reg if recalc_A_reg is not None else (a_reg or 0.0))
+    a_y = float(recalc_A_yth if recalc_A_yth is not None else (a_yth or 0.0))
+    b_r = float(recalc_B_reg if recalc_B_reg is not None else (b_reg or 0.0))
+    b_y = float(recalc_B_yth if recalc_B_yth is not None else (b_yth or 0.0))
+
+    rec_r = float(recalc_reg) if recalc_reg is not None else (b_r if target_m == "B" else a_r)
+    rec_y = float(recalc_yth) if recalc_yth is not None else (b_y if target_m == "B" else a_y)
+    alt_r = a_r if target_m == "B" else b_r
+    alt_y = a_y if target_m == "B" else b_y
 
     if filed_reg is None or filed_yth is None:
         return {
             "target_method": target_m,
             "is_ab_diff_only": False,
+            "is_only_ab_method_diff": False,
             "status_label": "신고서 미입력",
             "guide_text": "기신고 공제세액계산서(별지 제10호의9) 기초값이 입력되지 않았습니다.",
+            "reason": "",
         }
 
-    diff_reg = round(recalc_reg - float(filed_reg), 2)
-    diff_yth = round(recalc_yth - float(filed_yth), 2)
+    diff_reg = round(rec_r - float(filed_reg), 2)
+    diff_yth = round(rec_y - float(filed_yth), 2)
     has_diff = (abs(diff_reg) >= 0.01 or abs(diff_yth) >= 0.01)
-    matches_alt = (abs(float(filed_reg) - alt_reg) < 0.01 and abs(float(filed_yth) - alt_yth) < 0.01)
-    is_ab_only = bool(has_diff and matches_alt)
+    matches_alt = (abs(float(filed_reg) - alt_r) < 0.01 and abs(float(filed_yth) - alt_y) < 0.01)
 
+    prev_ok = True
+    if filed_prev_reg is not None and a_prev_reg is not None and b_prev_reg is not None:
+        prev_ok = (
+            abs(float(filed_prev_reg) - float(a_prev_reg)) < 0.01
+            or abs(float(filed_prev_reg) - float(b_prev_reg)) < 0.01
+        )
+    if prev_ok and filed_prev_yth is not None and a_prev_yth is not None and b_prev_yth is not None:
+        prev_ok = (
+            abs(float(filed_prev_yth) - float(a_prev_yth)) < 0.01
+            or abs(float(filed_prev_yth) - float(b_prev_yth)) < 0.01
+        )
+
+    is_ab_only = bool(has_diff and matches_alt and prev_ok)
     if is_ab_only:
+        msg = (
+            f"계산방식(A/B) 차이 — 국세청 '26.3월 안내 기준 적용 "
+            f"(기신고 {float(filed_reg):.2f}/{float(filed_yth):.2f}명은 {'A방식(합계 절사)' if target_m == 'B' else 'B방식(사원별 절사)'} 값과 일치하며, "
+            f"{cohort_year}년 코호트 정본인 {calc_method_badge_label(target_m)} 재계산값 {rec_r:.2f}/{rec_y:.2f}명과의 단수 차이임)"
+        )
         return {
             "target_method": target_m,
             "is_ab_diff_only": True,
+            "is_only_ab_method_diff": True,
             "status_label": "계산방식(A/B) 차이 — 국세청 '26.3월 안내 기준 적용",
             "guide_text": "계산방식(A/B) 차이 — 국세청 '26.3월 안내 기준 적용 (인별 절사 B방식과 합산 절사 A방식 간 단수 차이로 설명됨)",
+            "reason": msg,
         }
     return {
         "target_method": target_m,
         "is_ab_diff_only": False,
+        "is_only_ab_method_diff": False,
         "status_label": "차이 없음" if not has_diff else "기신고·재계산 차이 발생",
         "guide_text": "기신고 내역과 재계산 결과 비교",
+        "reason": "",
     }
 
 

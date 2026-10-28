@@ -436,7 +436,7 @@ def _fetch_live_employment_law_context() -> tuple[str, dict | None]:
                 ok_laws.add(clean_lnm)
 
                 # 잘라내기 전 전체 원문(res_s)에서 실제 부칙 조문 제목이 존재하는지 엄격 확인 후 부칙 전용 허용 목록(fetched_addenda)에만 등록
-                res_compact = res_s.replace(" ", "")
+                res_compact = re.sub(r"\s+", "", res_s)
                 if clean_lnm == "조세특례제한법" and (
                     "제34조(통합고용세액공제에관한경과조치)" in res_compact
                     or "통합고용세액공제에관한경과조치" in res_compact
@@ -445,6 +445,8 @@ def _fetch_live_employment_law_context() -> tuple[str, dict | None]:
                 if clean_lnm == "조세특례제한법시행령":
                     if "제26조의8" in res_compact and "제11조의2제8항" in res_compact:
                         trace["verified_26_8_6_mutatis_11_2_8"] = True
+                        global _VERIFIED_26_8_6_MUTATIS_SESSION
+                        _VERIFIED_26_8_6_MUTATIS_SESSION = True
                     if "부칙" in res_s:
                         if "제2조(통합고용세액공제에관한경과조치)" in res_compact:
                             verified_buchik.add(("조세특례제한법시행령", 2, 0))
@@ -461,20 +463,26 @@ def _fetch_live_employment_law_context() -> tuple[str, dict | None]:
     return "\n\n".join(fetched_snippets)[:15000], trace
 
 
+_VERIFIED_26_8_6_MUTATIS_SESSION = False
+
+
 def is_26_8_6_mutatis_verified(trace: dict | None = None) -> bool:
     """
     조세특례제한법 시행령 제26조의8 제6항이 제11조의2 제8항을 준용한다는 문언이
-    law_api 원문 조회를 통해 trace에 기록되었는지 여부를 반환합니다.
+    law_api 원문 조회를 통해 trace(또는 현재 세션의 법제처 API 조회 결과)에 기록되었는지 여부를 반환합니다.
     """
+    global _VERIFIED_26_8_6_MUTATIS_SESSION
     if isinstance(trace, dict) and bool(trace.get("verified_26_8_6_mutatis_11_2_8")):
+        _VERIFIED_26_8_6_MUTATIS_SESSION = True
         return True
     if isinstance(trace, dict):
         for d_txt in (trace.get("detail") or []):
-            compact = str(d_txt or "").replace(" ", "")
+            compact = re.sub(r"\s+", "", str(d_txt or ""))
             if "제26조의8" in compact and "제11조의2제8항" in compact:
                 trace["verified_26_8_6_mutatis_11_2_8"] = True
+                _VERIFIED_26_8_6_MUTATIS_SESSION = True
                 return True
-    return False
+    return bool(_VERIFIED_26_8_6_MUTATIS_SESSION)
 
 
 def _sanitize_law_citation_tags(md_text: str) -> str:
@@ -611,7 +619,11 @@ def call_pro_argon_audit_commentary(summary_context: str | dict, log_tokens_fn=N
         "2. **사후관리 청년 인원과 당해 공제 청년 인원 차이 원인 및 병역 차감 대상 구분**:\n"
         "   - 당해 과세연도 중도퇴사(총 근속 1년 미만)로 인해 구법 사후관리에는 산입되고 신법 당해공제에서 제외되어 발생한 인원 차이를 청년 연령경과 간주 규정 때문이라고 잘못 설명하지 말 것.\n"
         "3. **최저한세([조문:조세특례제한법 제132조]) 및 미공제 이월공제([조문:조세특례제한법 제144조]) 검토 필수**.\n"
-        "4. **법령 태그 표기 규칙(가독성 보장)**: 법령 인용 시 절대 백틱(`)으로 감싸지 말고 반드시 평문으로 `[조문:조세특례제한법 제29조의8 제1항]`, `[부칙:조세특례제한법 시행령 부칙 제11조]`처럼 표기하며, 태그 뒤에 괄호로 긴 웹주소(URL)를 직접 나열하지 마세요(시스템이 자동으로 클릭 가능한 배지 링크로 변환합니다).\n\n"
+        "4. **법령 태그 표기 규칙(가독성 보장)**: 법령 인용 시 절대 백틱(`)으로 감싸지 말고 반드시 평문으로 `[조문:조세특례제한법 제29조의8 제1항]`, `[부칙:조세특례제한법 시행령 부칙 제11조]`처럼 표기하며, 태그 뒤에 괄호로 긴 웹주소(URL)를 직접 나열하지 마세요(시스템이 자동으로 클릭 가능한 배지 링크로 변환합니다).\n"
+        "5. **법제처 원문(시행령 제11조의2 제8항 준용 규정 등) 및 국세청 안내문 오독·재구성 절대 금지**:\n"
+        "   - `[조문:조세특례제한법 시행령 제26조의8 제6항]`은 상시근로자 수 및 청년등상시근로자 수의 계산방법에 관하여 같은 영 제11조의2 제8항을 **준용**하는 규정이므로, 제11조의2 제8항 원문에 있는 '법 제12조의2제3항 및 제5항'이나 '연구개발 우수 인력 상시근로자 수' 문구를 통합고용세액공제(법 제29조의8)의 직접 요건인 것처럼 인용하지 마세요.\n"
+        "   - 제11조의2 제8항 제1호 가목·나목의 '상시근로자별 다음 계산식에 따라 계산한 수의 합(100분의 1 미만의 부분은 없는 것으로 한다)'(<개정 2026.2.27., 2026.5.22.>) 문언을 임의로 해석하여 현행 B방식이 '합산 후 절사'라고 뒤집어 설명하거나, 조회된 원문에 없는 법령 문장을 기억으로 재구성하여 직접 인용하지 마세요. 실제 계산방식은 국세청 '26.3월 안내 및 시행규칙 별지 제10호의10서식에 따라 **B방식([(각 상시근로자의 근무개월수 ÷ 과세연도 개월수)의 값에서 100분의 1미만 절사한 값]의 합)**과 **A방식((매월 말 현재 상시근로자 수의 합 ÷ 과세연도 개월수)의 값에서 100분의 1미만 절사)**으로 확정되어 있습니다.\n"
+        "   - 국세청 안내문 원문에 없는 앱 내부 처리 기준(예: 'A·B 방식 단수 차이에 대해 경정청구·수정신고 안내를 생략한다'는 앱 화면 기준 등)을 마치 국세청이 공식 유권해석한 것처럼 서술하지 마세요.\n\n"
         "절대 이모지나 아이콘을 쓰지 말고, 아래 소제목 형식(`#### (1) ...`)으로 각 3개 불릿씩 핵심만 명확하게 작성하세요:\n"
         "#### (1) 추가 절세 가능성 발굴 및 세액공제 산정 정합성 검토\n"
         "#### (2) 1·2차 사후관리(추징) 리스크 방어 및 최저한세·이월공제 검토\n"

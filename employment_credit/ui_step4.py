@@ -448,7 +448,7 @@ def _ensure_auto_pro_audit_comment(s: dict, log_tokens_fn=None, room_key: str = 
     discrepancy_bullets = _build_prior_filing_discrepancy_bullets(s, totals_all=totals_snapshot, pkg=s.get("calc_pkg"), diff_diag=diff_diag)
 
     # 버전 시그니처에 v4_canonical_law_verified를 포함하여 정본 산식 및 부칙 태그가 즉시 반영되게 함
-    cur_sig = f"v7_ab_dual_2603_nts|{s.get('built_sig')}|{tax_yr}|{s.get('pm_basis')}"
+    cur_sig = f"v8_verbatim_2603_nts|{s.get('built_sig')}|{tax_yr}|{s.get('pm_basis')}"
 
     def _attach_sec4_and_links(clean_body: str) -> str:
         out_b = _normalize_verified_legal_citations(clean_body)
