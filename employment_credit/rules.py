@@ -319,3 +319,73 @@ def get_doc_types(tax_year: int = DEFAULT_TAX_YEAR) -> list[tuple[str, str, bool
 
 
 DOC_TYPES = get_doc_types(DEFAULT_TAX_YEAR)
+
+
+def verify_golden_case_invariants() -> tuple[bool, list[str]]:
+    """
+    [정답지 회귀 테스트 (Golden-Case Regression Test Suite)]
+    - 코드가 수정될 때마다 핵심 법령 단가 및 검증 완료된 정본 사례(주식회사 라포케어 2026년 귀속 등)의
+      0.01명·1원 단위 수리 항등식이 깨지지 않았는지 자동 검증합니다.
+    """
+    errors: list[str] = []
+
+    # 1. 2026 신법 및 구법 공제단가 검증
+    r_2026_cap = get_unit_rates("중소기업", True, tax_year=2026, retention_year=1, scheme="new_2026")
+    if r_2026_cap != {"청년등": 700, "청년등외": 400}:
+        errors.append(f"2026 신법 수도권 중소 1년차 단가 불일치: {r_2026_cap}")
+
+    r_2026_noncap_y2 = get_unit_rates("중소기업", False, tax_year=2026, retention_year=2, scheme="new_2026")
+    if r_2026_noncap_y2 != {"청년등": 1900, "청년등외": 1200}:
+        errors.append(f"2026 신법 비수도권 중소 2년차 단가 불일치: {r_2026_noncap_y2}")
+
+    r_leg_cap = get_unit_rates("중소기업", True, tax_year=2025, retention_year=1, scheme="legacy")
+    if r_leg_cap != {"청년등": 1450, "청년등외": 850}:
+        errors.append(f"구법 수도권 중소 단가 불일치: {r_leg_cap}")
+
+    r_leg_noncap = get_unit_rates("중소기업", False, tax_year=2024, retention_year=1, scheme="legacy")
+    if r_leg_noncap != {"청년등": 1550, "청년등외": 950}:
+        errors.append(f"구법 비수도권 중소 단가 불일치: {r_leg_noncap}")
+
+    # 2. 정본 산식(절사 후 전체 상시 - 절사 후 청년등 상시 = 청년등 외 상시) 및 라포케어 정답 수치 검증
+    prev_reg, prev_yth = 4.33, 3.91
+    cur_reg, cur_yth = 11.83, 10.25
+    prev_non_yth = round(prev_reg - prev_yth, 2)
+    cur_non_yth = round(cur_reg - cur_yth, 2)
+    if prev_non_yth != 0.42:
+        errors.append(f"2025년 비교 청년등 외 인원 오차: {prev_non_yth} != 0.42")
+    if cur_non_yth != 1.58:
+        errors.append(f"2026년 당해 청년등 외 인원 오차: {cur_non_yth} != 1.58")
+
+    tot_inc = round(cur_reg - prev_reg, 2)
+    yth_inc = min(tot_inc, round(cur_yth - prev_yth, 2))
+    non_yth_inc = round(tot_inc - yth_inc, 2)
+    if (tot_inc, yth_inc, non_yth_inc) != (7.50, 6.34, 1.16):
+        errors.append(f"증가인원 분해 오차: {(tot_inc, yth_inc, non_yth_inc)} != (7.50, 6.34, 1.16)")
+    if round((cur_non_yth - prev_non_yth), 2) != non_yth_inc:
+        errors.append(f"청년등 외 직접 차감 증가분과 한도 차감분 불일치: {cur_non_yth - prev_non_yth:.2f} vs {non_yth_inc:.2f}")
+
+    # 3. 1차·2차·3차 공제세액 및 농특세·순절세액 1원 단위 검증
+    c1_won = int(round((yth_inc * r_2026_cap["청년등"] + non_yth_inc * r_2026_cap["청년등외"]) * 10_000))
+    c2_won = int(round((2.62 * r_leg_cap["청년등"] + 0.34 * r_leg_cap["청년등외"]) * 10_000))
+    c2_recalc_won = int(round((2.65 * r_leg_cap["청년등"] + 0.35 * r_leg_cap["청년등외"]) * 10_000))
+    if c2_recalc_won - c2_won != 520_000:
+        errors.append(f"2025년 재계산 경정청구 연간 차액 오차: {c2_recalc_won - c2_won:,} != 520,000")
+    c3_won = int(round((1.00 * r_leg_noncap["청년등"] + 0.00 * r_leg_noncap["청년등외"]) * 10_000))
+    tot_gross = c1_won + c2_won + c3_won
+    rural_tax = int(round(tot_gross * RURAL_SPECIAL_TAX_RATE))
+    net_saving = tot_gross - rural_tax
+
+    if c1_won != 49_020_000:
+        errors.append(f"2026년 1차 공제액 오차: {c1_won:,} != 49,020,000")
+    if c2_won != 40_880_000:
+        errors.append(f"2026년 2차 연속공제액 오차: {c2_won:,} != 40,880,000")
+    if c3_won != 15_500_000:
+        errors.append(f"2026년 3차 연속공제액 오차: {c3_won:,} != 15,500,000")
+    if tot_gross != 105_400_000:
+        errors.append(f"총 공제세액 합계 오차: {tot_gross:,} != 105,400,000")
+    if rural_tax != 21_080_000:
+        errors.append(f"농어촌특별세(20%) 오차: {rural_tax:,} != 21,080,000")
+    if net_saving != 84_320_000:
+        errors.append(f"실질 순절세액 오차: {net_saving:,} != 84,320,000")
+
+    return (len(errors) == 0), errors

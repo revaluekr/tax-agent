@@ -380,10 +380,14 @@ def _strip_report_icons(text: str) -> str:
 
 def _fetch_live_employment_law_context() -> tuple[str, dict | None]:
     """
-    [자율 에이전트AI 연동 — 통합고용세액공제 실시간 법제처 API 원문 조회 및 검증 트레이스 생성]
-    - 하드코딩된 미검증 예규나 구법 조문 번호에 의존하지 않고, `agent.py` 및 `law_api.py`를 통해
-      현행 조세특례제한법(제29조의8, 제2조, 제132조, 제144조, 부칙), 조세특례제한법 시행령(제26조의8, 제11조의2, 제23조, 부칙),
-      농어촌특별세법(제5조), 국세기본법(제45조, 제45조의2)을 실시간 조회하고 `_TOOL_TRACE`에 기록합니다.
+    [자율 에이전트AI 연동 — 통합고용세액공제 실시간 법제처 API 병렬 원문 조회 및 무결성 검증 트레이스 생성]
+    1) 스레드 안전(Thread-safe) 병렬 조회: 워커 스레드에서는 `st.session_state`에 접근하지 않고 순수 API/캐시 조회만 수행합니다.
+    2) 캐시 히트 시에도 `_TOOL_TRACE` 완벽 복원: 메인 흐름에서 조회 성공 건(`not res_s.startswith("❌")`)에 대해서만
+       `agent._record("detail", res_s)` 및 `agent._record_law_articles(res_s)`를 실행합니다.
+    3) 원칙 ② 엄격 준수 (본칙·부칙 분리 및 원문 확인 시에만 허용):
+       - 실제로 조회에 성공한 법령만 `trace["fetched_laws"]`에 등록합니다.
+       - 원문 전체(`res_s`)에 통합고용세액공제 경과조치 부칙 문구가 실제로 포함되어 확인된 경우에만
+         `trace["fetched_addenda"]`에 부칙 조문 키를 등록하며, 본칙(`mentioned_articles`)과 절대 섞지 않습니다.
     """
     try:
         import agent
@@ -395,29 +399,58 @@ def _fetch_live_employment_law_context() -> tuple[str, dict | None]:
     fetched_snippets: list[str] = []
     try:
         law_queries = [
-            ("조세특례제한법", "제29조의8, 제2조, 제132조, 제144조, 부칙"),
-            ("조세특례제한법 시행령", "제26조의8, 제11조의2, 제23조, 부칙"),
+            ("조세특례제한법", "제29조의8, 제2조, 제132조, 제144조, 부칙 제34조"),
+            ("조세특례제한법 시행령", "제26조의8, 제11조의2, 제23조, 부칙 제2조, 부칙 제11조"),
             ("농어촌특별세법", "제5조"),
             ("국세기본법", "제45조, 제45조의2"),
         ]
-        for law_nm, q_filter in law_queries:
+
+        def _worker_fetch(item: tuple[str, str]) -> tuple[str, str, str]:
+            lnm, qf = item
             try:
-                res = agent.get_law_details_for_gemini(doc_id=law_nm, target="law", query_filter=q_filter)
-                if res and not str(res).startswith("❌"):
-                    fetched_snippets.append(str(res)[:4500])
+                r = agent.get_law_details_for_gemini(doc_id=lnm, target="law", query_filter=qf)
+                return lnm, qf, str(r or "")
             except Exception:
-                continue
-        # 법제처 원문에서 부칙이 조회된 조세특례제한법(부칙 제34조) 및 시행령(부칙 제2조·제11조)을 검증 트레이스에 명시 등록
-        trace.setdefault("fetched_laws", set()).update({"조세특례제한법", "조세특례제한법시행령", "농어촌특별세법", "국세기본법"})
-        trace.setdefault("mentioned_articles", set()).update({
-            ("조세특례제한법", 34, 0),
-            ("조세특례제한법시행령", 2, 0),
-            ("조세특례제한법시행령", 11, 0),
-        })
+                return lnm, qf, ""
+
+        results_ordered: list[tuple[str, str, str]] = []
+        try:
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                results_ordered = list(pool.map(_worker_fetch, law_queries))
+        except Exception:
+            results_ordered = [_worker_fetch(it) for it in law_queries]
+
+        ok_laws: set[str] = set()
+        verified_buchik: set[tuple] = set()
+
+        for law_nm, q_filter, res_s in results_ordered:
+            if res_s and not res_s.startswith("❌") and not res_s.startswith("[검색 한도") and not res_s.startswith("[원문 조회 한도"):
+                # 메인 스레드의 trace에 원문 및 조문(본칙/부칙 분리) 기록 보장 (캐시에서 꺼낸 조문도 100% 기록됨)
+                agent._record("detail", res_s)
+                agent._record_law_articles(res_s)
+                fetched_snippets.append(res_s[:4800])
+                clean_lnm = law_nm.replace(" ", "")
+                ok_laws.add(clean_lnm)
+
+                # 잘라내기 전 전체 원문(res_s)에서 경과조치 문구가 실제로 존재하는지 확인 후 부칙 전용 허용 목록(fetched_addenda)에만 등록
+                if clean_lnm == "조세특례제한법" and (
+                    "통합고용세액공제에 관한 경과조치" in res_s
+                    or ("제34조" in res_s and "부칙" in res_s and "제29조의8" in res_s)
+                ):
+                    verified_buchik.add(("조세특례제한법", 34, 0))
+                if clean_lnm == "조세특례제한법시행령" and "통합고용세액공제" in res_s and "부칙" in res_s:
+                    if "제2조" in res_s:
+                        verified_buchik.add(("조세특례제한법시행령", 2, 0))
+                    if "제11조" in res_s:
+                        verified_buchik.add(("조세특례제한법시행령", 11, 0))
+
+        # 실제로 조회에 성공한 법령과 원문에서 확인된 부칙만 인용 허용 목록에 등록 (본칙 mentioned_articles 오염 원천 차단)
+        trace.setdefault("fetched_laws", set()).update(ok_laws)
+        trace.setdefault("fetched_addenda", set()).update(verified_buchik)
     finally:
         agent._TOOL_TRACE.reset(tok)
 
-    return "\n\n".join(fetched_snippets)[:14000], trace
+    return "\n\n".join(fetched_snippets)[:15000], trace
 
 
 def inject_verified_law_links(md_text: str, trace: dict | None = None) -> str:

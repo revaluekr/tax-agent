@@ -915,11 +915,48 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
     for _r in rows:
         if year >= 2026 and _r.get("제외사유") == R.EXCL_UNDER_1Y:
             _r["제외사유"] = "실제근로 1년미만"
-    df = pd.DataFrame(rows)
+    # 전체 원본 rows를 last_sent에 보존하여 필터링 상태에서도 수정사항이 누락 없이 반영되게 함
+    s["last_sent"][year] = rows
+
+    q_filter = str(s.get("emp_quick_filter") or "ALL")
+    disp_rows = rows
+    if q_filter == "CHECK":
+        disp_rows = [
+            r for r in rows
+            if r.get("상시") == "X"
+            or r.get("제외사유") not in ("", R.EXCL_NONE)
+            or not str(r.get("생년월일") or "").strip()
+            or not str(r.get("입사일") or "").strip()
+            or bool(r.get("_nopay_months"))
+        ]
+    elif q_filter == "SAVING":
+        def _is_saving_cand(r_item: dict) -> bool:
+            if str(r_item.get("청년등") or "") not in ("", R.YOUTH_NONE):
+                return True
+            try:
+                age_v = int(float(str(r_item.get("취업연령") or "0").replace("세", "").strip() or 0))
+            except ValueError:
+                age_v = 0
+            return (35 <= age_v <= 40) and int(r_item.get("병역개월") or 0) == 0
+
+        disp_rows = [r for r in rows if _is_saving_cand(r)]
+    elif q_filter == "MOVED":
+        yr_prefix = f"{year}-"
+        disp_rows = [
+            r for r in rows
+            if str(r.get("입사일") or "").startswith(yr_prefix)
+            or str(r.get("퇴사일") or "").startswith(yr_prefix)
+            or ("→" in str(r.get("사업장명") or ""))
+        ]
+
+    if not disp_rows:
+        st.caption(f"ℹ️ {year}년 귀속 명세({len(rows)}명) 중 현재 선택한 필터 조건에 해당하는 사원이 없습니다. (상단 필터를 '전체 사원 보기'로 변경하면 전체 명단이 표시됩니다.)")
+        return computed, totals
+
+    df = pd.DataFrame(disp_rows)
     for _mc in MONTH_COLS:
         if _mc in df.columns:
             df[_mc] = df[_mc].apply(lambda v: "" if (v is None or pd.isna(v) or v == "") else f"{float(v):g}")
-    s["last_sent"][year] = rows
     ver = s["grid_ver"].get(year, 0)
     show_all_4 = bool(s.get("show_all_4_blocks", True))
     force_empty = bool(s.get("show_empty_pm_blocks", False))
@@ -995,7 +1032,7 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
         allow_unsafe_jscode=True,
         theme="balham",
         custom_css=custom_ag_css,
-        key=f"ec_grid_{year}_{ver}_{int(show_b2)}_{int(show_b3)}_{int(s.get('assume_year_end', True))}_{int(s.get('include_unpaid_hire_month', True))}",
+        key=f"ec_grid_{year}_{ver}_{int(show_b2)}_{int(show_b3)}_{int(s.get('assume_year_end', True))}_{int(s.get('include_unpaid_hire_month', True))}_{s.get('emp_quick_filter', 'ALL')}",
         height=min(720, 128 + 32 * (len(rows) + 3)),
         fit_columns_on_grid_load=False,
     )
@@ -1174,6 +1211,29 @@ def _page_employees(room_key: str, log_tokens_fn=None):
                 s["_tabs_user_touched"] = True
                 _save_ec_to_disk(s)
                 st.rerun()
+
+        filter_opts = ["ALL", "CHECK", "SAVING", "MOVED"]
+        filter_labels = {
+            "ALL": "👥 전체 사원 보기",
+            "CHECK": "🚨 제외·확인 필요 사원만 (상시X·누락·무급월)",
+            "SAVING": "💰 청년·병역 절세 후보만 (35~40세 병역미입력·청년우대)",
+            "MOVED": "🔄 중도 입·퇴사 · 사업장 전출입자만",
+        }
+        cur_qf = str(s.get("emp_quick_filter") or "ALL")
+        if cur_qf not in filter_opts:
+            cur_qf = "ALL"
+        chosen_qf = st.radio(
+            "🔎 사원 빠른 필터 (필터 상태에서도 하단 합산합계는 전체 인원 기준으로 유지됩니다)",
+            options=filter_opts,
+            index=filter_opts.index(cur_qf),
+            format_func=lambda k: filter_labels.get(k, k),
+            horizontal=True,
+            key="ec_emp_quick_filter_radio",
+        )
+        if chosen_qf != cur_qf:
+            s["emp_quick_filter"] = chosen_qf
+            _save_ec_to_disk(s)
+            st.rerun()
 
     st.markdown(
         "<div class='ec-legend'>"

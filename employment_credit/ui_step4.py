@@ -714,6 +714,7 @@ def _build_report_markdown(s: dict, log_tokens_fn=None, room_key: str = "") -> s
                 inferred_r1 = int(m1.get("r2_credit") or 0) or int(m2.get("r3_credit") or 0)
                 if inferred_r1 > 0:
                     m0["r1_credit"] = inferred_r1
+                    m0["r1_inferred_from_continued"] = True
                     m0["net_total"] = (
                         int(m0.get("r1_credit") or 0)
                         + int(m0.get("r2_credit") or 0)
@@ -764,7 +765,7 @@ def _build_report_markdown(s: dict, log_tokens_fn=None, room_key: str = "") -> s
             f"- **합산 제{idx}사업장 ({sb_tp})**: {sb_nm} (사업자등록번호: {sb_no} / 소재지: {sb_addr}{suc_info})"
         )
 
-    def _m_txt(cr: int, cl: int, is_na: bool = False) -> str:
+    def _m_txt(cr: int, cl: int, is_na: bool = False, is_inferred: bool = False) -> str:
         if is_na:
             return "-"
         cr_i, cl_i = int(cr or 0), int(cl or 0)
@@ -774,6 +775,8 @@ def _build_report_markdown(s: dict, log_tokens_fn=None, room_key: str = "") -> s
             return f"**-{cl_i:,}원**"
         if cr_i < 0:
             return f"**-{abs(cr_i):,}원**"
+        if cr_i > 0 and is_inferred:
+            return f"{cr_i:,}원 *(추정복원)*"
         return f"{cr_i:,}원"
 
     if pkg["active_scheme"] == "new_2026":
@@ -870,7 +873,7 @@ def _build_report_markdown(s: dict, log_tokens_fn=None, room_key: str = "") -> s
         "",
         f"| 구분 | 차수 | {yr_list[0]}년 | {yr_list[1]}년 | {yr_list[2]}년 | {yr_list[3]}년 (당해 귀속) | 근거 법령 |",
         "| :---: | :---: | ---: | ---: | ---: | ---: | :--- |",
-        f"| **세액공제액 (추가납부액)** | **1차** | {_m_txt(matrix_cols[yr_list[0]]['r1_credit'], matrix_cols[yr_list[0]]['r1_claw'], bool(matrix_cols[yr_list[0]].get('r1_na')))} | {_m_txt(matrix_cols[yr_list[1]]['r1_credit'], matrix_cols[yr_list[1]]['r1_claw'], bool(matrix_cols[yr_list[1]].get('r1_na')))} | {_m_txt(matrix_cols[yr_list[2]]['r1_credit'], matrix_cols[yr_list[2]]['r1_claw'], bool(matrix_cols[yr_list[2]].get('r1_na')))} | **{_m_txt(matrix_cols[yr_list[3]]['r1_credit'], matrix_cols[yr_list[3]]['r1_claw'])}** | [조문:조세특례제한법 제29조의8 제1항] [각주 1] |",
+        f"| **세액공제액 (추가납부액)** | **1차** | {_m_txt(matrix_cols[yr_list[0]]['r1_credit'], matrix_cols[yr_list[0]]['r1_claw'], bool(matrix_cols[yr_list[0]].get('r1_na')), bool(matrix_cols[yr_list[0]].get('r1_inferred_from_continued')))} | {_m_txt(matrix_cols[yr_list[1]]['r1_credit'], matrix_cols[yr_list[1]]['r1_claw'], bool(matrix_cols[yr_list[1]].get('r1_na')), bool(matrix_cols[yr_list[1]].get('r1_inferred_from_continued')))} | {_m_txt(matrix_cols[yr_list[2]]['r1_credit'], matrix_cols[yr_list[2]]['r1_claw'], bool(matrix_cols[yr_list[2]].get('r1_na')), bool(matrix_cols[yr_list[2]].get('r1_inferred_from_continued')))} | **{_m_txt(matrix_cols[yr_list[3]]['r1_credit'], matrix_cols[yr_list[3]]['r1_claw'])}** | [조문:조세특례제한법 제29조의8 제1항] [각주 1] |",
         f"| **세액공제액 (추가납부액)** | **2차** | {_m_txt(matrix_cols[yr_list[0]]['r2_credit'], matrix_cols[yr_list[0]]['r2_claw'], bool(matrix_cols[yr_list[0]].get('r2_na')))} | {_m_txt(matrix_cols[yr_list[1]]['r2_credit'], matrix_cols[yr_list[1]]['r2_claw'], bool(matrix_cols[yr_list[1]].get('r2_na')))} | {_m_txt(matrix_cols[yr_list[2]]['r2_credit'], matrix_cols[yr_list[2]]['r2_claw'], bool(matrix_cols[yr_list[2]].get('r2_na')))} | **{_m_txt(matrix_cols[yr_list[3]]['r2_credit'], matrix_cols[yr_list[3]]['r2_claw'])}** | 구 조특법 제29조의8 제1항·제3항 ([부칙:조세특례제한법 부칙 제34조]) [각주 3, 4] |",
         f"| **세액공제액 (추가납부액)** | **3차** | {_m_txt(matrix_cols[yr_list[0]]['r3_credit'], matrix_cols[yr_list[0]]['r3_claw'], bool(matrix_cols[yr_list[0]].get('r3_na')))} | {_m_txt(matrix_cols[yr_list[1]]['r3_credit'], matrix_cols[yr_list[1]]['r3_claw'], bool(matrix_cols[yr_list[1]].get('r3_na')))} | {_m_txt(matrix_cols[yr_list[2]]['r3_credit'], matrix_cols[yr_list[2]]['r3_claw'], bool(matrix_cols[yr_list[2]].get('r3_na')))} | **{_m_txt(matrix_cols[yr_list[3]]['r3_credit'], matrix_cols[yr_list[3]]['r3_claw'])}** | 구 조특법 제29조의8 제1항·제3항 ([부칙:조세특례제한법 부칙 제34조]) [각주 3, 4] |",
         f"| **합계** | **순액** | **{int(matrix_cols[yr_list[0]]['net_total']):,}원** | **{int(matrix_cols[yr_list[1]]['net_total']):,}원** | **{int(matrix_cols[yr_list[2]]['net_total']):,}원** | **{int(matrix_cols[yr_list[3]]['net_total']):,}원** | [조문:조세특례제한법 제132조] · [조문:조세특례제한법 제144조] [각주 5] |",
@@ -1046,8 +1049,14 @@ def _build_report_pdf_bytes(s: dict, log_tokens_fn=None, room_key: str = "") -> 
                 i += 1
 
             rows_data = []
+            col_aligns = []
             for r_str in table_lines:
                 if re.match(r"^\|[\s\-:|]+\|$", r_str):
+                    sep_cells = [c.strip() for c in r_str.strip("|").split("|")]
+                    col_aligns = [
+                        (1 if (sc.startswith(":") and sc.endswith(":")) else (2 if sc.endswith(":") else 0))
+                        for sc in sep_cells
+                    ]
                     continue
                 cells = [c.strip() for c in r_str.strip("|").split("|")]
                 rows_data.append(cells)
@@ -1055,6 +1064,8 @@ def _build_report_pdf_bytes(s: dict, log_tokens_fn=None, room_key: str = "") -> 
             if rows_data:
                 max_cols = max(len(r) for r in rows_data)
                 padded_rows = [r + [""] * (max_cols - len(r)) for r in rows_data]
+                while len(col_aligns) < max_cols:
+                    col_aligns.append(0)
 
                 if max_cols >= 8:
                     cur_th = ParagraphStyle("DocTH_Wide8", parent=style_th, fontSize=7.4, leading=10.5)
@@ -1085,27 +1096,67 @@ def _build_report_pdf_bytes(s: dict, log_tokens_fn=None, room_key: str = "") -> 
                 scale_factor = usable_width / (sum(raw_widths) or usable_width)
                 col_widths = [w * scale_factor for w in raw_widths]
 
+                cur_th_c = ParagraphStyle("DocTH_C", parent=cur_th, alignment=1)
+                cur_th_r = ParagraphStyle("DocTH_R", parent=cur_th, alignment=2)
+                cur_td_c = ParagraphStyle("DocTD_C", parent=cur_td, alignment=1)
+                cur_td_r = ParagraphStyle("DocTD_R", parent=cur_td, alignment=2)
+                cur_td_tot_l = ParagraphStyle("DocTD_TotL", parent=cur_td, fontName=bold_font, alignment=0, textColor=colors.HexColor("#0f172a"))
+                cur_td_tot_c = ParagraphStyle("DocTD_TotC", parent=cur_td, fontName=bold_font, alignment=1, textColor=colors.HexColor("#0f172a"))
+                cur_td_tot_r = ParagraphStyle("DocTD_TotR", parent=cur_td, fontName=bold_font, alignment=2, textColor=colors.HexColor("#1e3a8a"))
+
                 pdf_table_data = []
+                summary_row_indices = []
                 for r_idx, padded_r in enumerate(padded_rows):
                     row_paras = []
-                    for c_text in padded_r:
+                    first_cell_plain = re.sub(r"\*\*|`|<[^>]+>", "", str(padded_r[0] or "")).strip()
+                    is_summary_row = r_idx > 0 and any(
+                        first_cell_plain.startswith(k) or k in first_cell_plain
+                        for k in ("합계", "최종 실질 순절세액", "총 공제세액")
+                    )
+                    if is_summary_row:
+                        summary_row_indices.append(r_idx)
+
+                    for c_idx, c_text in enumerate(padded_r):
                         c_clean = c_text.replace("<br>", "\n").replace("<br/>", "\n")
+                        c_plain = re.sub(r"\*\*|`", "", c_clean).strip()
+                        align_code = col_aligns[c_idx] if c_idx < len(col_aligns) else 0
+                        if r_idx > 0 and align_code == 0:
+                            if re.match(r"^[+\-]?[\d,]+(?:\.\d+)?\s*(?:원|명|%)?(?:\s*\*\(추정복원\)\*)?$", c_plain) or (
+                                "명 /" in c_plain and c_plain.endswith("명")
+                            ):
+                                align_code = 2
+                            elif c_plain in ("-", "1차", "2차", "3차", "순액"):
+                                align_code = 1
+
+                        if is_summary_row and "**" not in c_clean and c_clean.strip():
+                            c_clean = f"**{c_clean.strip()}**"
                         cell_xml = _pdf_text(c_clean).replace("\n", "<br/>")
-                        row_paras.append(Paragraph(cell_xml, cur_th if r_idx == 0 else cur_td))
+
+                        if r_idx == 0:
+                            st_use = cur_th_c if align_code == 1 else (cur_th_r if align_code == 2 else cur_th)
+                        elif is_summary_row:
+                            st_use = cur_td_tot_c if align_code == 1 else (cur_td_tot_r if align_code == 2 else cur_td_tot_l)
+                        else:
+                            st_use = cur_td_c if align_code == 1 else (cur_td_r if align_code == 2 else cur_td)
+                        row_paras.append(Paragraph(cell_xml, st_use))
                     pdf_table_data.append(row_paras)
 
                 pdf_table = Table(pdf_table_data, colWidths=col_widths, repeatRows=1)
                 t_style = [
                     ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e2e8f0")),
                     ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                     ("TOPPADDING", (0, 0), (-1, -1), v_pad),
                     ("BOTTOMPADDING", (0, 0), (-1, -1), v_pad),
                     ("LEFTPADDING", (0, 0), (-1, -1), h_pad),
                     ("RIGHTPADDING", (0, 0), (-1, -1), h_pad),
                 ]
                 for r_idx in range(1, len(pdf_table_data)):
-                    if r_idx % 2 == 0:
+                    if r_idx in summary_row_indices:
+                        t_style.append(("BACKGROUND", (0, r_idx), (-1, r_idx), colors.HexColor("#eff6ff")))
+                        t_style.append(("LINEABOVE", (0, r_idx), (-1, r_idx), 0.9, colors.HexColor("#93c5fd")))
+                        t_style.append(("LINEBELOW", (0, r_idx), (-1, r_idx), 1.0, colors.HexColor("#3b82f6")))
+                    elif r_idx % 2 == 0:
                         t_style.append(("BACKGROUND", (0, r_idx), (-1, r_idx), colors.HexColor("#f8fafc")))
                 pdf_table.setStyle(TableStyle(t_style))
                 story.append(Spacer(1, 4))
@@ -1161,6 +1212,208 @@ def _build_report_pdf_bytes(s: dict, log_tokens_fn=None, room_key: str = "") -> 
     return buf.getvalue()
 
 
+def _compute_report_cache_sig(s: dict, tax_yr: int) -> str:
+    """
+    [② 보고서 지연 생성(Lazy Generation) 해시 서명]
+    사원표(year_recs/people), 사업자정보, 합산사업장, 기신고 기초값, 추가입력, 계산기준, 법령 세무진단 의견 해시를 모두 결합하여
+    단 1글자·1원이라도 바뀌면 즉시 새로 생성하고, 변동이 없으면 캐시에서 0.001초 만에 반환합니다.
+    """
+    payload = {
+        "built_sig": s.get("built_sig"),
+        "tax_yr": tax_yr,
+        "pm_basis": s.get("pm_basis"),
+        "scheme_2026": s.get("scheme_2026"),
+        "biz": s.get("biz"),
+        "sub_biz": s.get("sub_biz_list"),
+        "prev_summary": s.get("prev_summary"),
+        "add_in": s.get("additional_inputs"),
+        "year_recs": s.get("year_recs"),
+        "audit": s.get("pro_audit_comment"),
+    }
+    raw_json = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(raw_json.encode("utf-8")).hexdigest()[:24]
+
+
+def _build_report_docx_bytes(md_text: str) -> bytes:
+    """마크다운 보고서를 워드(.docx) 문서로 변환합니다."""
+    try:
+        from docx import Document
+        from docx.shared import Pt
+        from docx.oxml.ns import qn
+    except Exception:
+        return md_text.encode("utf-8-sig")
+
+    clean_md = re.sub(
+        r"\[(\[(?:조문|부칙|별표|판례|심판례|헌재|헌재결정례|해석례|예규)\s*:\s*[^\]]+\])\]\(https?://[^\s)]+\)",
+        r"\1",
+        md_text or "",
+    )
+    clean_md = re.sub(r"\[([^\]]+)\]\(https?://[^\s)]+\)", r"\1", clean_md)
+
+    doc = Document()
+    style = doc.styles["Normal"]
+    style.font.name = "Malgun Gothic"
+    style.font.size = Pt(10.0)
+    style._element.rPr.rFonts.set(qn("w:eastAsia"), "Malgun Gothic")
+
+    def _add_runs(p_obj, txt_str: str, bold_all: bool = False):
+        for pt in re.split(r"(\*\*[^*]+?\*\*)", txt_str or ""):
+            if not pt:
+                continue
+            if pt.startswith("**") and pt.endswith("**") and len(pt) > 4:
+                r = p_obj.add_run(pt[2:-2])
+                r.bold = True
+            else:
+                r = p_obj.add_run(pt.replace("**", ""))
+                if bold_all:
+                    r.bold = True
+            r.font.name = "Malgun Gothic"
+            r._element.rPr.rFonts.set(qn("w:eastAsia"), "Malgun Gothic")
+
+    lines = clean_md.splitlines()
+    i = 0
+    while i < len(lines):
+        s_ln = lines[i].strip()
+        if not s_ln or s_ln.startswith(">"):
+            i += 1
+            continue
+        if s_ln.startswith("|") and s_ln.endswith("|"):
+            t_rows = []
+            while i < len(lines):
+                rs = lines[i].strip()
+                if not (rs.startswith("|") and rs.endswith("|")):
+                    break
+                if not re.match(r"^\|[\s\-:|]+\|$", rs):
+                    t_rows.append([c.strip().replace("<br>", " ").replace("<br/>", " ") for c in rs.strip("|").split("|")])
+                i += 1
+            if t_rows:
+                mc = max(len(r) for r in t_rows)
+                t = doc.add_table(rows=len(t_rows), cols=mc)
+                t.style = "Table Grid"
+                for r_i, r_d in enumerate(t_rows):
+                    for c_i, val in enumerate(r_d):
+                        cell = t.cell(r_i, c_i)
+                        cell.text = ""
+                        _add_runs(cell.paragraphs[0], val, bold_all=(r_i == 0))
+            continue
+        clean_h = re.sub(r"\*\*(.*?)\*\*", r"\1", s_ln)
+        if s_ln.startswith("# "):
+            doc.add_heading(clean_h[2:].strip(), level=0)
+        elif s_ln.startswith("## "):
+            doc.add_heading(clean_h[3:].strip(), level=1)
+        elif s_ln.startswith("### ") or s_ln.startswith("#### "):
+            doc.add_heading(re.sub(r"^#{3,4}\s*", "", clean_h).strip(), level=2)
+        elif s_ln.startswith(("- ", "* ")):
+            p = doc.add_paragraph(style="List Bullet")
+            _add_runs(p, s_ln[2:].strip())
+        elif not re.match(r"^-{3,}$", s_ln):
+            p = doc.add_paragraph()
+            _add_runs(p, s_ln)
+        i += 1
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def _build_report_xlsx_bytes(md_text: str) -> bytes:
+    """보고서 내 모든 마크다운 표를 시트별 엑셀(.xlsx) 파일로 변환합니다."""
+    clean_md = re.sub(r"\[([^\]]+)\]\(https?://[^\s)]+\)", r"\1", md_text or "")
+    lines = clean_md.splitlines()
+    tables = []
+    i = 0
+    while i < len(lines):
+        s_ln = lines[i].strip()
+        if s_ln.startswith("|") and s_ln.endswith("|"):
+            t_rows = []
+            while i < len(lines):
+                rs = lines[i].strip()
+                if not (rs.startswith("|") and rs.endswith("|")):
+                    break
+                if not re.match(r"^\|[\s\-:|]+\|$", rs):
+                    cells = [re.sub(r"\*\*(.*?)\*\*", r"\1", c.strip().replace("<br>", " ").replace("<br/>", " ")) for c in rs.strip("|").split("|")]
+                    t_rows.append(cells)
+                i += 1
+            if len(t_rows) >= 2:
+                tables.append(t_rows)
+            continue
+        i += 1
+
+    buf = io.BytesIO()
+    sheet_names = ["1_사업자기본사항", "2_최종세액요약", "3_4개년총괄표", "4_상시근로자현황"]
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        for idx, t_rows in enumerate(tables):
+            mc = max(len(r) for r in t_rows)
+            padded = [r + [""] * (mc - len(r)) for r in t_rows]
+            hdr = [h or f"열{ci+1}" for ci, h in enumerate(padded[0])]
+            df_t = pd.DataFrame(padded[1:], columns=hdr)
+            sh_nm = sheet_names[idx] if idx < len(sheet_names) else f"표_{idx+1}"
+            df_t.to_excel(writer, sheet_name=sh_nm[:31], index=False)
+    return buf.getvalue()
+
+
+def _build_client_kakao_and_email_drafts(s: dict, pkg: dict, tax_yr: int) -> tuple[str, str]:
+    """
+    [④ 온디맨드(버튼 클릭 시에만 생성) 거래처 전송용 카카오톡 안내문(100% 순수 텍스트·법조문 번호 제외) 및 이메일 회신 초안]
+    """
+    b = s.get("biz") or {}
+    corp_nm = (b.get("상호") or "귀사").strip()
+    cur_s = pkg["cur_s"]
+    prev_s = pkg["prev_s"]
+    cur_inc = pkg["cur_inc"]
+
+    c1_won = int(pkg.get("cur_base_credit_won") or 0)
+    c_cont = int(pkg.get("total_continued_credit_won") or 0)
+    c_add = int(pkg.get("additional_credit_won") or 0)
+    tot_gross = int(pkg.get("total_credit_gross_won") or 0)
+    claw_net = int(pkg.get("total_clawback_net_payable_won") or 0)
+    rural_won = int(pkg.get("rural_special_tax_won") or 0)
+    net_saving = int(pkg.get("net_after_rural_tax_won") or 0)
+
+    kakao_lines = [
+        f"[{corp_nm} {tax_yr}년 귀속 통합고용세액공제 검토 요약]",
+        "",
+        "[한줄 결론]",
+        f"- {tax_yr}년 귀속 총 공제세액은 {tot_gross:,}원이며, 농어촌특별세(20%, {rural_won:,}원)"
+        + (f" 및 사후관리 추징세액({claw_net:,}원)" if claw_net > 0 else "")
+        + f"을 반영한 최종 실질 순절세액은 {net_saving:,}원입니다.",
+        "",
+        "[핵심 인원 및 금액 내역]",
+        f"- 연평균 상시근로자 수: 직전연도 {prev_s['regular']:.2f}명 -> 당해연도 {cur_s['regular']:.2f}명 (전체 +{cur_inc['total_inc']:.2f}명 증가 / 청년등 +{cur_inc['youth_inc']:.2f}명, 일반 +{cur_inc['non_youth_inc']:.2f}명)",
+        f"- 당해 신규 고용증가 공제액(1차): {c1_won:,}원",
+        f"- 과거연도 고용유지 연속공제액(2·3차): {c_cont:,}원" + (f" / 추가공제: {c_add:,}원" if c_add > 0 else ""),
+        f"- 농어촌특별세(감면세액의 20%): -{rural_won:,}원",
+        "",
+        "[꼭 챙기실 사항]",
+        "- 만 35~40세 입사 직원 중 군 복무 이력이 있는 분의 병적증명서(또는 주민등록초본 병역사항)를 전달해 주시면 청년 우대공제 단가를 적용해 절세액을 더 늘릴 수 있습니다.",
+        "- 외국인 근로자의 국내 거주 확인서류(외국인등록증)와 중도퇴사자의 근로계약서를 신고 전 최종 확인 부탁드립니다.",
+    ]
+
+    email_lines = [
+        f"제목: [{corp_nm}] {tax_yr}년 귀속 통합고용세액공제 및 사후관리 검토보고서 송부의 건",
+        "",
+        f"{corp_nm} 대표님 및 재무·인사 담당자님께,",
+        f"안녕하십니까. {tax_yr}년 귀속 통합고용세액공제 및 과거 과세연도 사후관리 정밀 검토 결과를 아래와 같이 안내해 드립니다.",
+        "",
+        f"1. {tax_yr}년 귀속 최종 세액공제 및 순절세액 요약",
+        f"  - 당해 1차년도 신규 고용증가 세액공제: {c1_won:,}원 (상시근로자 {prev_s['regular']:.2f}명 -> {cur_s['regular']:.2f}명, +{cur_inc['total_inc']:.2f}명 증가)",
+        f"  - 직전·전전연도 기공제분 연속공제(2·3차년도): {c_cont:,}원",
+        f"  - 당해 총 공제세액 합계: {tot_gross:,}원",
+        f"  - 사후관리 추가납부세액: {claw_net:,}원 / 농어촌특별세(20%): {rural_won:,}원",
+        f"  - 차감 후 최종 실질 순절세액: {net_saving:,}원",
+        "    (※ 당기 법인세/소득세 산출세액 및 최저한세 한도를 초과하여 당기 공제받지 못하는 금액은 향후 10년간 이월공제되며, 이월분에는 당기 농어촌특별세가 부과되지 않습니다.)",
+        "",
+        "2. 신고 전 최종 확인 및 요청 서류",
+        "  (1) 병역이행기간 차감 대상자(입사 당시 만 35~40세 남성 근로자)의 병적증명서 또는 주민등록초본(병역사항 포함)",
+        "  (2) 외국인 근로자의 외국인등록증 사본(국내 거소 기간 183일 이상 거주자 요건 확인용)",
+        "  (3) 중도퇴사자의 근로계약서 사본(근로계약기간 1년 이상 여부 확인용)",
+        "",
+        "상세한 사원별·연도별 산출 근거와 법령 주석은 첨부해 드리는 검토보고서(PDF)를 참고해 주시기 바라며, 문의사항이 있으시면 언제든 연락 주십시오.",
+        "감사합니다.",
+    ]
+    return "\n".join(kakao_lines), "\n".join(email_lines)
+
+
 def _page_report(room_key: str = "", log_tokens_fn=None):
     s = _S()
     _ensure_built_for_tax_year(s)
@@ -1183,14 +1436,41 @@ def _page_report(room_key: str = "", log_tokens_fn=None):
             unsafe_allow_html=True,
         )
 
-    md_text = _build_report_markdown(s, log_tokens_fn=log_tokens_fn, room_key=room_key)
-    pdf_report_bytes = _build_report_pdf_bytes(s, log_tokens_fn=log_tokens_fn, room_key=room_key)
+    # ② 보고서 지연 생성(Lazy Generation) — 사원표·법령·기신고·추가입력 해시 서명 대조
+    cur_rep_sig = _compute_report_cache_sig(s, tax_yr)
+    rep_cache = s.get("_report_artifact_cache") or {}
+    if rep_cache.get("sig") == cur_rep_sig and rep_cache.get("md") and rep_cache.get("pdf"):
+        md_text = rep_cache["md"]
+        pdf_report_bytes = rep_cache["pdf"]
+        docx_report_bytes = rep_cache.get("docx") or _build_report_docx_bytes(md_text)
+        xlsx_report_bytes = rep_cache.get("xlsx") or _build_report_xlsx_bytes(md_text)
+    else:
+        md_text = _build_report_markdown(s, log_tokens_fn=log_tokens_fn, room_key=room_key)
+        pdf_report_bytes = _build_report_pdf_bytes(s, log_tokens_fn=log_tokens_fn, room_key=room_key)
+        docx_report_bytes = _build_report_docx_bytes(md_text)
+        xlsx_report_bytes = _build_report_xlsx_bytes(md_text)
+        s["_report_artifact_cache"] = {
+            "sig": cur_rep_sig,
+            "md": md_text,
+            "pdf": pdf_report_bytes,
+            "docx": docx_report_bytes,
+            "xlsx": xlsx_report_bytes,
+        }
+
+    # ⑨ 상단 4대 KPI 요약 카드 표시 (확정 순절세액과 주황색 조건부 경정청구 실익 분리)
+    pkg_now = s.get("calc_pkg")
+    if isinstance(pkg_now, dict):
+        try:
+            from .ui_step3 import _build_top_kpi_cards_html
+            st.markdown(_build_top_kpi_cards_html(pkg_now, tax_yr), unsafe_allow_html=True)
+        except Exception:
+            pass
 
     st.markdown(f"<div class='ec-agent-report-wrap'>\n\n{md_text}\n\n</div>", unsafe_allow_html=True)
 
     disp_model = model_used or str(s.get("pro_audit_model") or "gemini-2.5-pro")
     with st.expander("✏️ Ⅳ. 심층 세무진단 의견 문구 직접 수정 · AI 재생성", expanded=False):
-        st.caption("아래에서 보고서 『Ⅳ. 심층 세무진단 의견』 문구를 직접 수정하고 [수정 내용 반영]을 누르면 화면 보고서와 PDF 출력물에 즉시 반영됩니다.")
+        st.caption("아래에서 보고서 『Ⅳ. 심층 세무진단 의견』 문구를 직접 수정하고 [수정 내용 반영]을 누르면 화면 보고서와 PDF·워드 출력물에 즉시 반영됩니다.")
         edited_audit = st.text_area(
             "Ⅳ. 심층 세무진단 의견 본문",
             value=audit_clean_body,
@@ -1201,24 +1481,44 @@ def _page_report(room_key: str = "", log_tokens_fn=None):
         ce1, ce2, _ = st.columns([1.4, 1.4, 4.2])
         if ce1.button("💾 수정 내용 반영", type="primary", use_container_width=True, key="btn_save_edited_audit"):
             s["pro_audit_comment"] = f"[적용 모델: {disp_model}]\n\n{_sanitize_markdown_tilde(edited_audit)}"
+            s.pop("_report_artifact_cache", None)
             _save_ec_to_disk(s)
             st.rerun()
         if ce2.button("🔄 AI 의견 다시 생성 (법제처 API 재조회)", use_container_width=True, key="btn_regen_audit"):
             s["pro_audit_comment"] = ""
             s["pro_audit_sig"] = ""
+            s.pop("_report_artifact_cache", None)
             _save_ec_to_disk(s)
             st.rerun()
 
+    with st.expander("💬 거래처 전송용 카카오톡 안내문 · 이메일 회신 초안 (버튼을 누를 때만 생성)", expanded=False):
+        st.caption("평소에는 생성하지 않아 속도와 토큰을 아끼며, 아래 버튼을 누를 때만 즉시 생성합니다.")
+        ck1, ck2, _ = st.columns([1.8, 1.8, 3.4])
+        if ck1.button("💬 카카오톡 안내문 생성 (순수 텍스트)", use_container_width=True, key=f"btn_gen_kakao_{tax_yr}"):
+            if isinstance(pkg_now, dict):
+                k_txt, _ = _build_client_kakao_and_email_drafts(s, pkg_now, tax_yr)
+                s["_client_kakao_draft"] = k_txt
+        if ck2.button("📧 비즈니스 이메일 초안 생성", use_container_width=True, key=f"btn_gen_email_{tax_yr}"):
+            if isinstance(pkg_now, dict):
+                _, e_txt = _build_client_kakao_and_email_drafts(s, pkg_now, tax_yr)
+                s["_client_email_draft"] = e_txt
+        if s.get("_client_kakao_draft"):
+            st.markdown("**📱 카카오톡·문자 전송용 안내문 (우측 상단 복사 아이콘 클릭)**")
+            st.code(s["_client_kakao_draft"], language="text")
+        if s.get("_client_email_draft"):
+            st.markdown("**📧 거래처 발송용 이메일 회신 초안 (우측 상단 복사 아이콘 클릭)**")
+            st.code(s["_client_email_draft"], language="text")
+
     st.markdown(
         f"<div class='ec-model-footer-bar'>"
-        f"<span>심층 세무진단 분석 완료 (법제처 Open API 조문·직링크 연동)</span>"
+        f"<span>심층 세무진단 분석 완료 (법제처 Open API 조문·직링크 연동 · 캐시 서명 <code>{cur_rep_sig[:8]}</code>)</span>"
         f"<span>적용 모델: <code>{disp_model}</code> (스크린 전용 표시 · PDF 출력 제외)</span>"
         f"</div>",
         unsafe_allow_html=True,
     )
 
     st.markdown("<div class='ec-nav-divider'></div>", unsafe_allow_html=True)
-    c_prev, _, c_pdf_bot, c_reset = st.columns([1.2, 3.45, 1.25, 1.3])
+    c_prev, c_pdf_bot, c_docx_bot, c_xlsx_bot, c_md_bot, c_reset = st.columns([1.15, 1.35, 1.25, 1.25, 1.25, 1.15])
     if c_prev.button("< 이전(3단계)", use_container_width=True):
         s["step"] = 3
         _trigger_scroll_to_top(s)
@@ -1235,6 +1535,33 @@ def _page_report(room_key: str = "", log_tokens_fn=None):
                 key="dl_pdf_report_bot",
                 help="현재 화면의 통합고용세액공제 및 사후관리 검토보고서를 A4 PDF로 다운로드합니다.",
             )
+    with c_docx_bot:
+        st.download_button(
+            "📘 워드 (.docx)",
+            data=docx_report_bytes,
+            file_name=f"{corp_fn}_{tax_yr}년귀속_통합고용세액공제_검토보고서.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            use_container_width=True,
+            key="dl_docx_report_bot",
+        )
+    with c_xlsx_bot:
+        st.download_button(
+            "📊 표 엑셀 (.xlsx)",
+            data=xlsx_report_bytes,
+            file_name=f"{corp_fn}_{tax_yr}년귀속_통합고용세액공제_요약표.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key="dl_xlsx_report_bot",
+        )
+    with c_md_bot:
+        st.download_button(
+            "📝 마크다운 (.md)",
+            data=md_text.encode("utf-8-sig"),
+            file_name=f"{corp_fn}_{tax_yr}년귀속_통합고용세액공제_검토보고서.md",
+            mime="text/markdown",
+            use_container_width=True,
+            key="dl_md_report_bot",
+        )
     if c_reset.button("처음으로(1단계)", use_container_width=True):
         s["step"] = 1
         _trigger_scroll_to_top(s)

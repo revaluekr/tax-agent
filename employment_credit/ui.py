@@ -149,17 +149,26 @@ from .ui_step2 import (  # noqa: F401
     _year_role_description,
 )
 from .ui_step3 import (  # noqa: F401
+    _build_headcount_waterfall_and_comparison,
     _build_pm_formula_lines,
     _build_step3_calculation_pdf_bytes,
+    _build_top_kpi_cards_html,
+    _calc_minimum_tax_simulation,
     _cohort_capital,
+    _enrich_matrix_cols_with_cohort_consistency,
     _fmt_matrix_won,
     _fmt_signed_total_won,
     _page_calculation,
     _render_pm_basis_selector_right,
+    _verify_step3_math_integrity,
 )
 from .ui_step4 import (  # noqa: F401
+    _build_client_kakao_and_email_drafts,
+    _build_report_docx_bytes,
     _build_report_markdown,
     _build_report_pdf_bytes,
+    _build_report_xlsx_bytes,
+    _compute_report_cache_sig,
     _ensure_auto_pro_audit_comment,
     _page_report,
     _parse_and_clean_pro_audit,

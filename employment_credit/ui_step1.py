@@ -173,8 +173,15 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
 
     new = [u for u in (ups or []) if u.name not in s["files"]]
     if new:
-        with st.spinner(f"📄 {len(new)}개 파일에서 텍스트 및 표 데이터를 추출하고 있습니다..."):
-            for u in new:
+        # pypdfium2(PDFium C 바인딩)의 스레드 안전성 보호를 위해 순차 처리를 유지하되 실시간 진행률 바를 표시합니다.
+        total_new = len(new)
+        prog_bar = st.progress(0, text=f"📄 총 {total_new}개 파일 순차 안전 판독 준비 중...")
+        try:
+            for idx_u, u in enumerate(new, start=1):
+                prog_bar.progress(
+                    min(99, int((idx_u - 1) * 100 / max(1, total_new))),
+                    text=f"📄 파일 안전 판독 중 ({idx_u}/{total_new}): {u.name}",
+                )
                 text = _read_upload_text(u, extract_file_fn, room_key)
                 auto_wp = _sanitize_workplace_label(getattr(P, "infer_workplace_name", lambda nm, tx="": "")(u.name, text), _default_workplace_label(s))
                 s["files"][u.name] = {
@@ -182,6 +189,9 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
                     "text": text,
                     "wp": auto_wp,
                 }
+            prog_bar.progress(100, text=f"✅ {total_new}개 파일 판독 완료!")
+        finally:
+            prog_bar.empty()
         s["uploader_ver"] += 1
         s["built_sig"] = None
         _save_ec_to_disk(s)

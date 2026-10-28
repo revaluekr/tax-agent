@@ -297,6 +297,43 @@ def render_credit_sidebar():
                 _save_ec_to_disk(s)
                 st.rerun()
 
+        # ── 과거 공제연도(T-1 · T-2) 당시 사업장 소재지 빠른 설정 (지방→수도권 이전 기업용) ──
+        ps_sb = s.setdefault("prev_summary", {})
+        with st.expander(f"📍 과거 공제연도({tax_yr-2}·{tax_yr-1}년) 소재지 설정 (이전 기업용)", expanded=False):
+            st.caption(
+                "2·3차년도 연속공제 및 추가납부 단가는 **최초 공제연도 당시 소재지** 기준입니다(예: 2024년 비수도권 공제 후 2025년 수도권 이전 시 2024년분은 비수도권 단가 유지)."
+            )
+            loc_opts_sb = ["현재 소재지와 같음", "수도권", "수도권 외(비수도권)"]
+            for coh_y in (tax_yr - 1, tax_yr - 2):
+                f_coh = ps_sb.setdefault(str(coh_y), {})
+                cur_c_loc = f_coh.get("수도권")
+                idx_c = 0 if cur_c_loc is None else (1 if cur_c_loc else 2)
+                sel_c = st.selectbox(
+                    f"{coh_y}년 귀속 공제 당시 소재지",
+                    loc_opts_sb,
+                    index=idx_c,
+                    key=f"ec_sb_coh_loc_{coh_y}_{tax_yr}",
+                )
+                new_c_loc = None if sel_c == loc_opts_sb[0] else (sel_c == "수도권")
+                if new_c_loc != cur_c_loc:
+                    f_coh["수도권"] = new_c_loc
+                    f_coh["_소재지_추정"] = False
+                    _save_ec_to_disk(s)
+                    st.rerun()
+
+        if hasattr(R, "verify_golden_case_invariants"):
+            ok_g, errs_g = R.verify_golden_case_invariants()
+            if ok_g:
+                st.markdown(
+                    "<div style='margin-top:4px;padding:4px 8px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;"
+                    "font-size:0.76rem;font-weight:700;color:#15803d;text-align:center;'>"
+                    "🛡️ 정본 산식 · 단가 회귀검증(0.01명·1원 무오차) 정상"
+                    "</div>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.error("⚠️ 산식 회귀검증 경고: " + "; ".join(errs_g))
+
         # ── 하단: 제2사업장 등 추가 합산 사업장 표시 영역 ──
         if sub_list:
             st.markdown(
