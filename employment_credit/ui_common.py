@@ -4,6 +4,7 @@
 (ui.py에서 나눈 파일. 함수 본문은 원래 ui.py와 같습니다.)
 """
 from __future__ import annotations
+from typing import Any
 import io
 import os
 import re
@@ -67,6 +68,11 @@ _PERSIST_KEYS = (
     "_pm_basis_user_touched",
     "_tabs_user_touched",
     "fill_ver",
+    "corp_size_default",
+    "corp_size_by_year",
+    "corp_size_user_set",
+    "yr_sz_ver",
+    "_last_sidebar_corp_size",
     "pro_audit_comment",
     "pro_audit_model",
     "pro_audit_sig",
@@ -213,6 +219,11 @@ def _default_state_dict() -> dict:
         "last_sent": {},
         "industry_alert_for": "",
         "next_pid_seq": 1,
+        "corp_size_default": "중소기업",
+        "corp_size_by_year": {},
+        "corp_size_user_set": [],
+        "yr_sz_ver": 0,
+        "_last_sidebar_corp_size": "",
         "pro_audit_comment": "",
         "pro_audit_model": "",
         "pro_audit_sig": "",
@@ -243,8 +254,32 @@ def _S() -> dict:
     s.setdefault("pro_audit_comment", "")
     s["max_step_reached"] = max(int(s.get("max_step_reached") or 1), int(s.get("step") or 1))
     s.setdefault("additional_inputs", {}).setdefault("maternity_prev_count", 0.0)
+    b_init = s.setdefault("biz", {})
+    def_sz_init = R.normalize_corp_size(
+        s.get("corp_size_default") or b_init.get("기업구분") or "중소기업",
+        "중소기업",
+    )
+    s["corp_size_default"] = def_sz_init
+    b_init["기업구분"] = def_sz_init
+    by_yr_init = s.setdefault("corp_size_by_year", {})
+    if not isinstance(by_yr_init, dict):
+        by_yr_init = {}
+        s["corp_size_by_year"] = by_yr_init
+    raw_uset = s.get("corp_size_user_set")
+    if isinstance(raw_uset, (list, set, tuple)):
+        s["corp_size_user_set"] = sorted({str(x).strip() for x in raw_uset if str(x).strip()})
+    else:
+        s["corp_size_user_set"] = []
+    tax_yr_init = int(s.get("tax_year") or R.DEFAULT_TAX_YEAR)
+    for yy_i in range(min(2021, tax_yr_init - 3), max(2030, tax_yr_init + 2)):
+        by_yr_init.setdefault(str(yy_i), def_sz_init)
     st.session_state.ec = s
     return s
+
+
+def _cohort_corp_size(s: dict | None, year: int | str | None = None, default: str | None = None) -> str:
+    """해당 연도의 기업규모를 돌려준다. 개별 설정 → 기본값 → 기존 biz['기업구분'] → '중소기업' 순서."""
+    return R._cohort_corp_size(s, year, default=default)
 
 
 def _default_workplace_label(s: dict) -> str:
@@ -431,6 +466,10 @@ def _adjusted_prev_totals(s: dict, prev_t: dict) -> tuple[dict, float, float]:
             adj["nr_상시_평균"] = round(float(adj["nr_상시_평균"]) + suc_reg - ded_reg, 2)
             adj["nr_청년등_평균"] = round(float(adj.get("nr_청년등_평균") or 0.0) + suc_yth - ded_yth, 2)
             adj["nr_청년외_평균"] = round(max(0.0, adj["nr_상시_평균"] - adj["nr_청년등_평균"]), 2)
+            if adj.get("nr_상시_합계") is not None:
+                adj["nr_상시_합계"] = round(float(adj.get("nr_상시_합계") or 0.0) + (suc_reg - ded_reg) * m1, 2)
+                adj["nr_청년등_합계"] = round(float(adj.get("nr_청년등_합계") or 0.0) + (suc_yth - ded_yth) * m1, 2)
+                adj["nr_청년외_합계"] = round(max(0.0, adj["nr_상시_합계"] - adj["nr_청년등_합계"]), 2)
         adj["has_data"] = True
     return adj, suc_reg, ded_reg
 
@@ -465,8 +504,10 @@ def _ctx(s: dict, year: int) -> dict:
     except (TypeError, ValueError):
         n = 12
     last_m = H.detect_last_paid_month(s.get("people") or {}, year)
+    yr_corp_size = _cohort_corp_size(s, year)
     return {
-        "corp_size": b.get("기업구분", "중소기업"),
+        "corp_size": yr_corp_size,
+        "corp_size_by_year": R.get_corp_size_map(s),
         "months_in_year": n if n > 0 else 12,
         "assume_year_end": bool(s.get("assume_year_end", True)),
         "include_unpaid_hire_month": bool(s.get("include_unpaid_hire_month", True)),
@@ -500,6 +541,9 @@ def _calc_fingerprint(s: dict) -> str | None:
                 "people": s.get("people"),
                 "year_recs": {str(k): v for k, v in (s.get("year_recs") or {}).items()},
                 "biz": s.get("biz"),
+                "corp_size_default": s.get("corp_size_default"),
+                "corp_size_by_year": s.get("corp_size_by_year"),
+                "corp_size_user_set": s.get("corp_size_user_set"),
                 "sub_biz_list": s.get("sub_biz_list"),
                 "tax_year": s.get("tax_year"),
                 "assume_year_end": s.get("assume_year_end"),
@@ -669,6 +713,11 @@ def _ensure_built_for_tax_year(s: dict):
         ext = s.get("ext") or {}
         tax_yr = int(s["tax_year"])
         s["biz"], s["biz_confirmed"] = P.build_biz_info(ext, tax_yr, existing_biz=s.get("biz"))
+        if s.get("corp_size_default"):
+            s["biz"]["기업구분"] = R.normalize_corp_size(s["corp_size_default"])
+        else:
+            s["corp_size_default"] = R.normalize_corp_size(s["biz"].get("기업구분", "중소기업"))
+            s["biz"]["기업구분"] = s["corp_size_default"]
         s["sub_biz_list"] = P.build_sub_biz_list(ext, s["biz"], existing_sub_biz=s.get("sub_biz_list"))
 
         default_wp = _default_workplace_label(s)
@@ -685,7 +734,7 @@ def _ensure_built_for_tax_year(s: dict):
         if len(s["people"]) >= 45 and not s.get("_tabs_user_touched"):
             s["use_year_tabs"] = True
 
-        parsed_prev = P.build_prev_summary(ext, tax_yr, (s.get("biz") or {}).get("기업구분", "중소기업"))
+        parsed_prev = P.build_prev_summary(ext, tax_yr, _cohort_corp_size(s, tax_yr), corp_size_by_year=R.get_corp_size_map(s))
         ps = s.setdefault("prev_summary", {})
         for y_str, vals in parsed_prev.items():
             if isinstance(vals, dict):
@@ -888,7 +937,7 @@ def _build_review_pdf_bytes(s: dict, items: list[tuple[str, str]], pro_comment: 
     b = s.get("biz") or {}
     corp_nm = (b.get("상호") or "").strip()
     biz_no = (b.get("사업자번호") or "").strip()
-    corp_sz = b.get("기업구분") or "중소기업"
+    corp_sz = R.format_corp_size_summary_text(s)
     cap = H.is_capital_area(b.get("사업장소재지", ""))
     loc_str = "수도권" if cap is True else ("수도권 외(비수도권)" if cap is False else "")
     tax_yr = int(s.get("tax_year") or R.DEFAULT_TAX_YEAR)
@@ -1990,7 +2039,7 @@ def _top_status_bar(s: dict):
     sub_cnt = len(s.get("sub_biz_list") or [])
     if sub_cnt > 0:
         corp_nm = f"{corp_nm} 외 {sub_cnt}개 사업장 합산" if corp_nm else f"{sub_cnt + 1}개 사업장 합산"
-    corp_sz = b.get("기업구분") or "중소기업"
+    corp_sz = R.format_corp_size_summary_text(s)
     cap = H.is_capital_area(b.get("사업장소재지", ""))
     loc_str = "수도권" if cap is True else ("비수도권(수도권 외)" if cap is False else "")
     meta_parts = [p for p in (corp_sz, loc_str) if p]
@@ -2141,12 +2190,21 @@ def _progress(step: int):
 # 3-1. 작업 백업 (비밀번호 암호화 파일로 내 PC에 저장 / 다시 불러오기)
 # ══════════════════════════════════════════════════════════════════
 def _current_build_sig(s: dict) -> str:
-    """_ensure_built_for_tax_year와 같은 방식의 작업 서명 (복원 후 불필요한 재구축 방지용)"""
+    """_ensure_built_for_tax_year와 같은 방식의 작업 서명 (복원 후 불필요한 재구축 방지용 · 기업규모 설정 포함)"""
     wp_sig = json.dumps(
         sorted((n, f.get("key"), f.get("wp", "")) for n, f in (s.get("files") or {}).items()),
         ensure_ascii=False,
     )
-    return f"{s.get('ext_sig')}|{s['tax_year']}|{wp_sig}"
+    sz_sig = json.dumps(
+        {
+            "def": s.get("corp_size_default"),
+            "by_yr": s.get("corp_size_by_year"),
+            "uset": s.get("corp_size_user_set"),
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+    return f"{s.get('ext_sig')}|{s['tax_year']}|{wp_sig}|{sz_sig}"
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -2447,47 +2505,61 @@ def _build_year_rows_uncached(s: dict, year: int) -> tuple[list[dict], dict, dic
 
 def _apply_tenure_transition(s, year, ctx, people, recs, computed, rows, totals) -> None:
     """
-    근로기간 1년 미만 경과조치(대통령령 제35999호 부칙 제2조): 2024·2025년 최초공제분과 그 연속공제·사후관리 연도는
-    종전 규정(근로계약기간 1년 미만), 2026년 이후 최초공제분은 개정 규정(실제 근로기간 1년 미만)을 적용합니다.
-    · 2026년 이후 연도 표(개정 규정): 2025·2024분 사후관리 블록(b2·b3)만 종전 규정으로 다시 센 값으로 바꿉니다.
-    · 2025년 표(종전 규정): 2026년 신규공제의 직전연도 비교용으로 개정 규정 인원(nr_)을 따로 계산합니다.
+    1) 근로기간 1년 미만 경과조치(법률 제21223호 부칙 제34조 · 대통령령 제35999호 부칙 제2조):
+       2024·2025년 최초공제분과 그 연속공제·사후관리 연도는 종전 규정(근로계약기간 1년 미만),
+       2026년 이후 최초공제분은 개정 규정(실제 근로기간 1년 미만)을 적용합니다.
+    2) 일관된 해석 기준 다년도 비교인원 자동 재산정(2026년 이후 신법 A·B·C):
+       당해 과세연도(tax_yr >= 2026)의 신법 공제 계산 시 비교 대상이 되는 과거 과세연도(2025 <= y < tax_yr)는
+       당해 공제 인원과 동일한 잣대(tax_yr 종료일까지 확정된 실제 근로기간 1년 미만 퇴사자 제외)로
+       비교연도 인원(nr_상시_평균·nr_청년등_평균·nr_청년외_평균)을 재산정합니다.
     """
     NEW = H.NEW_TENURE_RULE_FROM
     y = int(year)
+    tax_yr = int((s or {}).get("tax_year") or 0)
+
+    # (1) 2026년 이후 연도 표에서 2024·2025년 귀속분 구법 사후관리 블록(b2·b3) 종전 규정 재산정
     if y >= NEW and ((y - 1) < NEW or (y - 2) < NEW):
-        ctx_old = dict(ctx, old_tenure_rule=True)
-        alt = {}
+        ctx_old = dict(ctx, old_tenure_rule=True, as_of_year=None)
+        alt_old = {}
         for pid, c in computed.items():
             yrec = recs.get(pid) or {}
             if c["제외사유"] == R.EXCL_UNDER_1Y and "제외사유" not in (yrec.get("_user_set") or []):
-                alt[pid] = H.compute_row(people[pid], yrec, y, ctx_old)
-        if not alt:
-            return
-        t_old = H.year_totals([alt.get(pid, c) for pid, c in computed.items()], ctx["months_in_year"], year=y)
-        for blk, cohort in (("b2", y - 1), ("b3", y - 2)):
-            if cohort >= NEW:
-                continue
-            for k in ("yth", "gen", "reg", "yth_act"):
-                totals[f"{blk}_{k}"] = t_old[f"{blk}_{k}"]
-            for k in ("청년등_합계", "청년외_합계"):
-                totals[f"{blk}_{k}"] = t_old[f"{blk}_{k}"]
-            for r in rows:
-                c_old = alt.get(r["pid"])
-                if c_old:
-                    r[f"{blk}_yth"], r[f"{blk}_gen"], r[f"{blk}_reg"] = c_old[f"{blk}_yth"], c_old[f"{blk}_gen"], c_old[f"{blk}_reg"]
-        totals["old_rule_pm_names"] = sorted(people[pid].get("성명", "") for pid in alt)
-    elif y == NEW - 1 and int(s.get("tax_year") or 0) >= NEW:
-        ctx_new = dict(ctx, old_tenure_rule=False)
-        alt = {}
+                alt_old[pid] = H.compute_row(people[pid], yrec, y, ctx_old)
+        if alt_old:
+            t_old = H.year_totals([alt_old.get(pid, c) for pid, c in computed.items()], ctx["months_in_year"], year=y)
+            for blk, cohort in (("b2", y - 1), ("b3", y - 2)):
+                if cohort >= NEW:
+                    continue
+                for k in ("yth", "gen", "reg", "yth_act"):
+                    totals[f"{blk}_{k}"] = t_old[f"{blk}_{k}"]
+                for k in ("청년등_합계", "청년외_합계"):
+                    totals[f"{blk}_{k}"] = t_old[f"{blk}_{k}"]
+                for r in rows:
+                    c_old = alt_old.get(r["pid"])
+                    if c_old:
+                        r[f"{blk}_yth"], r[f"{blk}_gen"], r[f"{blk}_reg"] = c_old[f"{blk}_yth"], c_old[f"{blk}_gen"], c_old[f"{blk}_reg"]
+            totals["old_rule_pm_names"] = sorted(people[pid].get("성명", "") for pid in alt_old)
+
+    # (2) 2026년 이후 신법(A·B·C) 비교 대상 연도(2025 <= y < tax_yr)의 일관된 해석 기준 재산정(nr_)
+    if tax_yr >= NEW and (NEW - 1) <= y < tax_yr:
+        ctx_new = dict(ctx, old_tenure_rule=False, as_of_year=tax_yr)
+        alt_new = {}
         for pid, c in computed.items():
             yrec = recs.get(pid) or {}
-            if c["상시"] == "O" and "제외사유" not in (yrec.get("_user_set") or []) and H.tenure_under_1y(people[pid], y):
-                alt[pid] = H.compute_row(people[pid], yrec, y, ctx_new)
-        t_new = H.year_totals([alt.get(pid, c) for pid, c in computed.items()], ctx["months_in_year"], year=y) if alt else totals
+            if (
+                c["상시"] == "O"
+                and "제외사유" not in (yrec.get("_user_set") or [])
+                and H.tenure_under_1y(people[pid], y, as_of_year=tax_yr)
+            ):
+                alt_new[pid] = H.compute_row(people[pid], yrec, y, ctx_new)
+        t_new = H.year_totals([alt_new.get(pid, c) for pid, c in computed.items()], ctx["months_in_year"], year=y) if alt_new else totals
         totals["nr_상시_평균"] = t_new["상시_평균"]
         totals["nr_청년등_평균"] = t_new["청년등_평균"]
         totals["nr_청년외_평균"] = t_new["청년외_평균"]
-        totals["nr_names"] = sorted(people[pid].get("성명", "") for pid in alt)
+        totals["nr_상시_합계"] = t_new["상시_합계"]
+        totals["nr_청년등_합계"] = t_new["청년등_합계"]
+        totals["nr_청년외_합계"] = t_new["청년외_합계"]
+        totals["nr_names"] = sorted(people[pid].get("성명", "") for pid in alt_new)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -2498,6 +2570,7 @@ def _ensure_totals_snapshot(s: dict) -> dict[int, dict]:
     totals_all = {}
     for y in _all_possible_years(s):
         _, _, t = _build_year_rows(s, y)
+        t["corp_size"] = _cohort_corp_size(s, y)
         totals_all[y] = t
 
     tax_yr = int(s["tax_year"])
@@ -2571,11 +2644,12 @@ def _compute_historical_matrix_columns(
         v = (ps.get(str(y)) or {}).get("수도권")
         return is_capital if v is None else bool(v)
 
-    def _rates(y: int) -> tuple[int, int]:
-        r = H.get_unit_rates(corp_size, _cap(y), scheme="legacy", retention_year=1)
-        return r["청년등"], r["청년등외"]
+    def _sz(y: int) -> str:
+        return _cohort_corp_size(s, y, corp_size)
 
-    is_large = corp_size in ("일반기업", "대기업")
+    def _rates(y: int) -> tuple[int, int]:
+        r = H.get_unit_rates(_sz(y), _cap(y), scheme="legacy", retention_year=1)
+        return r["청년등"], r["청년등외"]
 
     def _s_yr(y: int) -> dict:
         d = totals_all.get(y) or {}
@@ -2700,7 +2774,7 @@ def _compute_historical_matrix_columns(
         pm_m3_in_m2 = H.calc_legacy_post_management(
             cohort_year=y_m3,
             eval_year=y_m2,
-            corp_size=corp_size,
+            corp_size=_sz(y_m3),
             is_capital=_cap(y_m3),
             init_reg=info_m3["reg"],
             init_yth=info_m3["yth"],
@@ -2735,7 +2809,7 @@ def _compute_historical_matrix_columns(
         pm_m2_in_m1 = H.calc_legacy_post_management(
             cohort_year=y_m2,
             eval_year=y_m1,
-            corp_size=corp_size,
+            corp_size=_sz(y_m2),
             is_capital=_cap(y_m2),
             init_reg=info_m2["reg"],
             init_yth=info_m2["yth"],
@@ -2750,11 +2824,12 @@ def _compute_historical_matrix_columns(
         c_m1_2_cl = int(pm_m2_in_m1.get("clawback_net_payable_won") or 0)
 
     if info_m3["has"] and s_m1["has_data"] and (info_m3["yth_inc"] + info_m3["gen_inc"] > 0):
-        cap_m3_2yr = info_m3["credit_1st_won"] + (c_m2_2_cr if not is_large else 0)
+        is_large_m3 = _sz(y_m3) in ("일반기업", "대기업")
+        cap_m3_2yr = info_m3["credit_1st_won"] + (c_m2_2_cr if not is_large_m3 else 0)
         pm_m3_in_m1 = H.calc_legacy_post_management(
             cohort_year=y_m3,
             eval_year=y_m1,
-            corp_size=corp_size,
+            corp_size=_sz(y_m3),
             is_capital=_cap(y_m3),
             init_reg=info_m3["reg"],
             init_yth=info_m3["yth"],

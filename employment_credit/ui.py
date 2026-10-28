@@ -88,6 +88,7 @@ from .ui_common import (  # noqa: F401
     _carry_over_user_edits,
     _clean_md_for_pdf,
     _cleanup_stale_anon_ec_files,
+    _cohort_corp_size,
     _cohort_youth_map,
     _cohort_youth_map_uncached,
     _compose_doc_texts_with_wp,
@@ -183,10 +184,6 @@ from .ui_step4 import (  # noqa: F401
 # ══════════════════════════════════════════════════════════════════
 # 8. 진입점
 # ══════════════════════════════════════════════════════════════════
-if hasattr(R, "install_consistent_comparative_headcount_engine"):
-    R.install_consistent_comparative_headcount_engine()
-
-
 def render_credit_wizard(extract_file_fn, log_tokens_fn=None, active_room_key: str = "", **_):
     s = _S()
     try:

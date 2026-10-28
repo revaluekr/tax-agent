@@ -229,15 +229,41 @@ def worked_in_year(person: dict, year: int) -> bool:
     return True
 
 
-def tenure_under_1y(person: dict, year: int | None = None) -> bool:
+def _resolve_retire_date_for_tenure(person: dict, year: int | None = None, as_of_year: int | None = None) -> date | None:
+    ret_map = person.get("연도별_퇴사일") or {}
+    if as_of_year is None:
+        yr_ret_str = ret_map.get(str(year)) if year is not None else None
+        return parse_date(yr_ret_str if yr_ret_str is not None else person.get("퇴사일"))
+    cutoff = int(as_of_year)
+    min_yr = int(year) if year is not None else None
+    candidates: list[date] = []
+    if isinstance(ret_map, dict):
+        for k, v in ret_map.items():
+            try:
+                ky = int(k)
+            except (TypeError, ValueError):
+                continue
+            if min_yr is not None and ky < min_yr:
+                continue
+            if ky > cutoff:
+                continue
+            dt = parse_date(v)
+            if dt is not None and dt <= date(cutoff, 12, 31):
+                candidates.append(dt)
+    base_ret = parse_date(person.get("퇴사일"))
+    if base_ret is not None:
+        if (min_yr is None or base_ret.year >= min_yr) and base_ret <= date(cutoff, 12, 31):
+            candidates.append(base_ret)
+    return min(candidates) if candidates else None
+
+
+def tenure_under_1y(person: dict, year: int | None = None, as_of_year: int | None = None) -> bool:
     hire = parse_date(person.get("입사일"))
-    yr_ret_str = (person.get("연도별_퇴사일") or {}).get(str(year)) if year else None
-    retire = parse_date(yr_ret_str if yr_ret_str is not None else person.get("퇴사일"))
+    retire = _resolve_retire_date_for_tenure(person, year=year, as_of_year=as_of_year)
     if not hire or not retire or retire < hire:
         return False
-    # 근로기간 1년 미만은 해당 과세연도 말 기준으로 판단: 과세연도 종료일 현재 재직 중이었다면
-    # (그 뒤에 1년을 못 채우고 퇴사했더라도) 그 연도에는 1년 이상 근무할 것으로 봄. 퇴사한 연도에 제외.
-    if year and retire > date(int(year), 12, 31):
+    cutoff_year = int(as_of_year) if as_of_year is not None else (int(year) if year is not None else None)
+    if cutoff_year is not None and retire > date(cutoff_year, 12, 31):
         return False
     one_yr_later = add_years(hire, 1)
     return (retire.toordinal() - hire.toordinal() + 1) < (one_yr_later.toordinal() - hire.toordinal())
@@ -263,21 +289,45 @@ def current_year_end_age(person: dict, year: int) -> int | None:
 def youth_hold_years(corp_size: str, contract_dt: date | None = None) -> int:
     """
     근로계약 체결일 기준 청년 인정기간(년). 0이면 인정기간 없음(매달 나이로만 판정).
-    - 2026년 이후 계약: 중소·중견 4년, 대기업 3년 / 2025년 계약: 중소·중견 3년, 대기업 2년 / 2024년 이전 계약: 0
+    - 현행 조세특례제한법 시행령(2026.2.27. 대통령령 제36127호 개정) 제26조의8 제4항 제1호 후단:
+      "이 경우 근로계약 체결 당시 34세 이하인 사람은 근로기간 중 34세를 초과하더라도 근로계약 체결일부터 4년간(중소기업 또는 중견기업이 아닌 경우에는 3년간)은 청년등상시근로자로 본다."
+    - 2026년 이후 계약: 중소·중견 4년, 일반기업(대기업) 3년
+    - 2025년 계약: 중소·중견 3년, 일반기업(대기업) 2년
+      (# 확인 필요: 2025.2.28. 대통령령 제35395호 구 시행령 제26조의8 제3항 제1호 후단 원문 및
+       2026.2.27. 대통령령 제36127호 부칙 제11조 제1항에 따라 2025년 체결 계약자가 2026년 이후 과세연도 공제 시 3년/2년 유지인지 4년/3년 확대 적용인지 여부)
+    - 2024년 이전 계약: 0 (인정기간 없음 · 매월 말일 현재 만 34세 이하 여부로 판정)
     """
-    large = corp_size in ("일반기업", "대기업")
+    large = R.normalize_corp_size(corp_size) in ("일반기업", "대기업")
     if contract_dt is None or contract_dt.year >= 2026:
         return R.YOUTH_HOLD_YEARS_LARGE if large else R.YOUTH_HOLD_YEARS_SME
     if contract_dt.year == 2025:
+        # 확인 필요: 2025년 중 근로계약 체결자의 기업규모별 청년 유예기간(중소·중견 3년 / 일반기업 2년) 구 시행령 및 부칙 적용례 원문
         return getattr(R, "YOUTH_HOLD_YEARS_2025_LARGE", 2) if large else getattr(R, "YOUTH_HOLD_YEARS_2025_SME", 3)
     return 0
 
 
-def is_youth_month(person: dict, year: int, month: int, corp_size: str, use_hold: bool = True) -> bool:
+def _resolve_contract_year_corp_size(corp_size: str, c_dt: date | None, corp_size_by_year: dict | None = None) -> str:
+    """근로계약 체결 연도의 기업규모를 우선 조회하고, 없으면 전달된 corp_size를 반환합니다."""
+    if c_dt is not None and isinstance(corp_size_by_year, dict) and corp_size_by_year:
+        v = corp_size_by_year.get(c_dt.year) or corp_size_by_year.get(str(c_dt.year))
+        if v:
+            return R.normalize_corp_size(v, corp_size)
+    return R.normalize_corp_size(corp_size)
+
+
+def is_youth_month(
+    person: dict,
+    year: int,
+    month: int,
+    corp_size: str,
+    use_hold: bool = True,
+    corp_size_by_year: dict | None = None,
+) -> bool:
     """
     청년 정규직 해당 여부(월말 기준).
     use_hold=True : 2026.2.27. 개정 정의(계약일 기준 유예 포함) — 2025년 이후 최초공제분·당해 판정
     use_hold=False: 종전 정의(매달 나이로만 판정) — 2024년 이전 최초공제분의 사후관리
+    ※ 청년 연령 유지기간(중소·중견 4년[25년 3년] / 일반 3년[25년 2년])은 근로계약 체결 연도의 기업규모를 기준으로 판정합니다.
     """
     birth = parse_date(person.get("생년월일"))
     c_dt = contract_date(person)
@@ -297,22 +347,39 @@ def is_youth_month(person: dict, year: int, month: int, corp_size: str, use_hold
         return True
 
     # 34세를 넘은 달: 근로계약 체결일 기준 인정기간 안이면 청년 (2024년 이전 계약은 인정기간 없음)
+    # [월 경계 계산 방식(me < hold_end) 근거]:
+    # - 조세특례제한법 시행규칙 별지 제10호의10서식(상시근로자 명세서) 작성방법 제25호 예시:
+    #   "근로계약 체결일이 2025년 4월 1일 ... 2028년 4월 1일부터 청년등상시근로자에서 제외되므로 '20280401'을 적습니다."
+    #   즉, `hold_end = add_years(c_dt, hold)`(계약일 + 유예연수 응당일)는 '청년 제외시점(이 날부터 청년 아님, 초일 산입)'입니다.
+    # - 상시근로자 및 청년등 여부는 '매월 말일 현재(me = month_end(year, month))' 기준으로 판정하므로(시행령 제26조의8 제6항 · 제11조의2 제8항),
+    #   예를 들어 2025-05-01 계약(일반기업 2년 유예)의 경우 청년 제외시점 `hold_end = 2027-05-01`이 되어
+    #   2027-04-30(4월 말)은 `me < 2027-05-01`(True, 청년 인정), 2027-05-31(5월 말)은 `me < 2027-05-01`(False, 청년 제외)로
+    #   2027년 중 1~4월(4개월)은 청년등, 5~12월(8개월)은 청년등외(일반)로 산정됩니다.
+    #   (참고: 월말 기준 판정이므로 말일이 아닌 날에 계약한 경우에는 초일 산입[2027-05-01 제외]이든 초일 불산입[2027-05-02 제외]이든
+    #    5월 말일[2027-05-31] 시점에는 모두 유예기간이 도과하여 동일하게 1~4월 4개월이 청년으로 계산됩니다.)
     if not use_hold:
         return False
-    hold = youth_hold_years(corp_size, c_dt)
+    hold_corp_size = _resolve_contract_year_corp_size(corp_size, c_dt, corp_size_by_year)
+    hold = youth_hold_years(hold_corp_size, c_dt)
     if hold <= 0:
         return False
-    hold_end = add_years(c_dt, hold)          # 청년 제외시점 (이 날부터 청년 아님)
+    hold_end = add_years(c_dt, hold)          # 청년 제외시점 (이 날부터 청년 아님: 별지 제10호의10서식 작성방법 제25호)
     return me < hold_end
 
 
-def was_youth_in_year_by_age(person: dict, year: int, corp_size: str) -> bool:
+def was_youth_in_year_by_age(
+    person: dict,
+    year: int,
+    corp_size: str,
+    corp_size_by_year: dict | None = None,
+) -> bool:
     """사원표가 없을 때의 보조 판정: 그해(year) 매월 말 재직한 달 중 청년 요건을 충족한 달이 실제로 있었는지 검증."""
     hire = parse_date(person.get("입사일"))
     yr_ret = (person.get("연도별_퇴사일") or {}).get(str(year))
     retire = parse_date(yr_ret if yr_ret is not None else person.get("퇴사일"))
     return any(
-        employed_at_month_end(hire, retire, year, m) and is_youth_month(person, year, m, corp_size)
+        employed_at_month_end(hire, retire, year, m)
+        and is_youth_month(person, year, m, corp_size, corp_size_by_year=corp_size_by_year)
         for m in range(1, 13)
     )
 
@@ -337,6 +404,7 @@ def is_youth_month_for_cohort(
     corp_size: str,
     youth_label: str,
     was_youth_in_cohort: bool | None = None,
+    corp_size_by_year: dict | None = None,
 ) -> bool:
     """
     2024년 이전 최초공제분의 추가납부용 청년등 판정 (구 조특령 제26조의8 제5항 간주)
@@ -348,12 +416,19 @@ def is_youth_month_for_cohort(
     if youth_label == R.YOUTH_NK:
         return cohort_year >= 2025
     if youth_label == R.YOUTH_YOUNG and parse_date(person.get("생년월일")) and \
-            is_youth_month(person, eval_year, month, corp_size, use_hold=cohort_year >= NEW_YOUTH_DEF_FROM_COHORT):
+            is_youth_month(
+                person,
+                eval_year,
+                month,
+                corp_size,
+                use_hold=cohort_year >= NEW_YOUTH_DEF_FROM_COHORT,
+                corp_size_by_year=corp_size_by_year,
+            ):
         return True
     if was_youth_in_cohort is None:
         if not parse_date(person.get("생년월일")):
             return False                       # 생년월일을 모르면 청년으로 보지 않음
-        was_youth_in_cohort = was_youth_in_year_by_age(person, cohort_year, corp_size)
+        was_youth_in_cohort = was_youth_in_year_by_age(person, cohort_year, corp_size, corp_size_by_year=corp_size_by_year)
     return bool(was_youth_in_cohort)
 
 
@@ -366,12 +441,19 @@ def youth_options(emp_type: str) -> list[str]:
 NEW_TENURE_RULE_FROM = 2026   # '근로기간 1년 미만' 제외는 2026년 이후 최초공제분부터 (대통령령 제35999호 부칙 제2조)
 
 
-def suggest_exclusion(person: dict, yrec: dict, year: int | None = None, old_rule: bool = False) -> str:
+def suggest_exclusion(
+    person: dict,
+    yrec: dict,
+    year: int | None = None,
+    old_rule: bool = False,
+    as_of_year: int | None = None,
+) -> str:
     """
     old_rule=True: 종전 규정(2024·2025년 최초공제분과 그 사후관리) — '근로계약기간 1년 미만'만 제외.
-      원천징수부로는 계약기간을 알 수 없으므로 기간 정함 없는 계약으로 보아 자동 제외하지 않고,
-      1년 미만 기간제는 사용자가 제외사유 '근로계약 1년미만'을 직접 선택해 제외합니다.
-    old_rule=False: 개정 규정 — 실제 근로기간 1년 미만 제외(과세연도 말 기준).
+    old_rule=False: 개정 규정 — 실제 근로기간 1년 미만 제외.
+      - 당해 자체 계산(as_of_year=None): 해당 과세연도 종료일 기준 확정된 1년 미만 퇴사자 제외
+      - 비교연도 재산정(as_of_year=tax_year): 일관된 해석 기준에 따라 공제 계산 과세연도(tax_year) 종료일까지
+        확정된 실제 근로기간 1년 미만 퇴사자를 비교연도 인원에서도 동일하게 제외
     """
     emp_type = yrec.get("고용유형") or R.EMP_REGULAR
     if emp_type in R.EMP_AUTO_EXCLUDE:
@@ -379,15 +461,18 @@ def suggest_exclusion(person: dict, yrec: dict, year: int | None = None, old_rul
     sh_rel = str(person.get("주주관계") or "").strip()
     if sh_rel in R.EXCL_REASONS:
         return sh_rel
-    # ※ 외국인 표시만으로 자동 제외하지 않음: 상시근로자의 '내국인'은 국적과 무관하게
-    #   국내에 주소를 두거나 183일 이상 거소를 둔 개인(통합고용세액공제 상시근로자 명세서 작성방법 10).
-    #   비거주자인 경우에만 사용자가 제외사유 '외국인 근로자'를 직접 선택 → 오류 검토에서 확인 안내.
-    if not old_rule and tenure_under_1y(person, year):
+    if not old_rule and tenure_under_1y(person, year, as_of_year=as_of_year):
         return R.EXCL_UNDER_1Y
     return R.EXCL_NONE
 
 
-def suggest_youth(person: dict, yrec: dict, year: int, corp_size: str) -> str:
+def suggest_youth(
+    person: dict,
+    yrec: dict,
+    year: int,
+    corp_size: str,
+    corp_size_by_year: dict | None = None,
+) -> str:
     emp_type = yrec.get("고용유형") or R.EMP_REGULAR
     c_age = contract_age(person)
     if c_age is not None and c_age >= R.SENIOR_AGE:
@@ -395,7 +480,7 @@ def suggest_youth(person: dict, yrec: dict, year: int, corp_size: str) -> str:
     if emp_type not in R.EMP_NOT_YOUTH_REGULAR:
         # 당해 청년 요건을 충족하는 달이 있을 때만 '취업시 청년'으로 제안
         # (나이가 지난 사람의 사후관리 청년 간주는 이 표시와 무관하게 별도로 계산됨)
-        if any(is_youth_month(person, year, m, corp_size) for m in range(1, 13)):
+        if any(is_youth_month(person, year, m, corp_size, corp_size_by_year=corp_size_by_year) for m in range(1, 13)):
             return R.YOUTH_YOUNG
     return R.YOUTH_NONE
 

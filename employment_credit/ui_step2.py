@@ -47,6 +47,7 @@ from .ui_common import (  # noqa: F401
     _S,
     _adjusted_prev_totals,
     _all_possible_years,
+    _cohort_corp_size,
     _block_titles_for_year,
     _build_review_pdf_bytes,
     _build_year_rows,
@@ -113,7 +114,7 @@ def _build_schedule_pdf_bytes(s: dict, target_years: list[int], include_summary:
     b = s.get("biz") or {}
     corp_nm = (b.get("상호") or "").strip()
     biz_no = (b.get("사업자번호") or "").strip()
-    corp_sz = b.get("기업구분") or "중소기업"
+    corp_sz = R.format_corp_size_summary_text(s, target_years)
     cap = H.is_capital_area(b.get("사업장소재지", ""))
     loc_str = "수도권" if cap is True else ("수도권 외(비수도권)" if cap is False else "")
     tax_yr = int(s.get("tax_year") or R.DEFAULT_TAX_YEAR)
@@ -159,9 +160,10 @@ def _build_schedule_pdf_bytes(s: dict, target_years: list[int], include_summary:
         col_has_y2 = any_has_y2 if multi_yr_mode else yr_has_y2
 
         yr_flowables = []
+        yr_sz_lbl = R.format_corp_size_label(R.get_corp_size_for_year(s, y))
         yr_flowables.append(
             Paragraph(
-                f"■ {y}년 귀속 상시근로자 명세 ({len(rows)}명) — {role_desc}",
+                f"■ {y}년 귀속 상시근로자 명세 ({len(rows)}명 · 기업구분: {yr_sz_lbl}) — {role_desc}",
                 st_yr_hdr,
             )
         )
@@ -887,16 +889,65 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
 
     corp_nm = (s.get("biz", {}).get("상호") or "상호미입력").strip()
 
-    # ── 연도별 상시근로자 명세 헤더 라인 + 맨 오른쪽 붉은색 [📕 PDF 다운] 버튼 ──
-    c_hdr, c_pdf = st.columns([6.15, 0.85])
+    # ── 연도별 상시근로자 명세 헤더 라인 + [기업규모 선택칸 (중소/중견/일반기업)] + 맨 오른쪽 붉은색 [📕 PDF 다운] 버튼 ──
+    def_sz_s2 = R.normalize_corp_size(s.get("corp_size_default") or s.get("biz", {}).get("기업구분", "중소기업"))
+    cur_yr_sz = _cohort_corp_size(s, year, def_sz_s2)
+    cur_yr_sz_lbl = R.format_corp_size_label(cur_yr_sz, short=True)
+    sz_pill_color = (
+        "background:#dcfce7;color:#166534;border:1px solid #86efac;"
+        if cur_yr_sz == "중소기업"
+        else (
+            "background:#dbeafe;color:#1e40af;border:1px solid #93c5fd;"
+            if cur_yr_sz == "중견기업"
+            else "background:#fef3c7;color:#92400e;border:1px solid #fcd34d;"
+        )
+    )
+    diff_pill_html = (
+        "<span style='background:#fff7ed;color:#c2410c;border:1px solid #fdba74;padding:1px 6px;"
+        "border-radius:999px;font-size:0.74rem;font-weight:800;margin-left:5px;'>기본값과 다름</span>"
+        if cur_yr_sz != def_sz_s2
+        else ""
+    )
+    yr_sz_badge_html = (
+        f"<span style='{sz_pill_color}padding:2px 8px;border-radius:999px;font-size:0.78rem;font-weight:800;margin-left:6px;'>"
+        f"🏢 {year%100:02d}년 기업규모: {cur_yr_sz_lbl}"
+        f"</span>{diff_pill_html}"
+    )
+    c_hdr, c_sz, c_pdf = st.columns([4.90, 1.25, 0.85], vertical_alignment="center")
     with c_hdr:
         st.markdown(
             f"<div class='ec-year-header'>"
-            f"<span class='ec-year-title'>📅 {year}년 귀속 상시근로자 명세 ({len(rows)}명)</span>"
+            f"<span class='ec-year-title'>📅 {year}년 귀속 상시근로자 명세 ({len(rows)}명){yr_sz_badge_html}</span>"
             f"<span class='ec-year-sub'>{role_desc}{mid_yr_badge}</span>"
             f"</div>",
             unsafe_allow_html=True,
         )
+    with c_sz:
+        yr_sz_ver = int(s.get("yr_sz_ver", 0))
+        sel_yr_sz = st.selectbox(
+            f"{year}년 기업규모",
+            options=R.CORP_SIZES,
+            index=R.CORP_SIZES.index(cur_yr_sz) if cur_yr_sz in R.CORP_SIZES else 0,
+            format_func=lambda x: f"🏢 {year%100:02d}년: {'일반기업(대기업)' if x == '일반기업' else x}",
+            label_visibility="collapsed",
+            key=f"ec_yr_corp_size_{year}_{yr_sz_ver}",
+            help=(
+                f"📌 [{year}년 귀속 기업규모 선택 — 중소기업 / 중견기업 / 일반기업(대기업)]\n"
+                f"• 1단계·사이드바의 해당 연도 기업규모와 동일한 상태를 공유합니다.\n"
+                f"• 변경 시 근로계약 체결연도({year}년) 기업규모에 따른 청년 유예기간(2026년 이후 계약: 중소·중견 4년 / 일반 3년, "
+                f"2025년 계약: 중소·중견 3년 / 일반 2년 — 청년 제외시점 `계약일+유예연수` 기준 매월 말일 `me < hold_end` 판정, "
+                f"예: 2025.5.1. 일반기업 계약 시 2027.5.1.부터 제외되어 2027년 1~4월 4개월 청년 인정) 인원계산과 "
+                f"3·4단계 공제단가, 최소고용증가인원(중견 5명 / 일반 10명), 공제기간(중소·중견 3년 / 일반 2년), 2년 사후관리 세액계산에 즉시 반영됩니다."
+            ),
+        )
+        if sel_yr_sz != cur_yr_sz:
+            R.apply_corp_size_year_change(s, year, sel_yr_sz)
+            s["yr_sz_ver"] = yr_sz_ver + 1
+            for y_all in _all_possible_years(s):
+                s["grid_ver"][y_all] = s["grid_ver"].get(y_all, 0) + 1
+            s.pop("_report_artifact_cache", None)
+            _save_ec_to_disk(s)
+            st.rerun()
     with c_pdf:
         with st.container(key=f"ec_btn_pdf_yr_{year}"):
             st.download_button(
@@ -1033,7 +1084,7 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
         allow_unsafe_jscode=True,
         theme="balham",
         custom_css=custom_ag_css,
-        key=f"ec_grid_{year}_{ver}_{int(show_b2)}_{int(show_b3)}_{int(s.get('assume_year_end', True))}_{int(s.get('include_unpaid_hire_month', True))}_{s.get('emp_quick_filter', 'ALL')}",
+        key=f"ec_grid_{year}_{ver}_{cur_yr_sz}_{int(show_b2)}_{int(show_b3)}_{int(s.get('assume_year_end', True))}_{int(s.get('include_unpaid_hire_month', True))}_{s.get('emp_quick_filter', 'ALL')}",
         height=min(720, 128 + 32 * (len(rows) + 3)),
         fit_columns_on_grid_load=False,
     )

@@ -36,7 +36,8 @@ from .hc_eligibility import (
 # 4. 개인별 · 월별 상시근로자 및 우측 블록(당해 세액공제 · 1차 사후관리 · 2차 사후관리) 계산
 # ══════════════════════════════════════════════════════════════════
 def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
-    corp_size = ctx.get("corp_size") or "중소기업"
+    corp_size = R.normalize_corp_size(ctx.get("corp_size") or "중소기업")
+    corp_size_by_year = ctx.get("corp_size_by_year") or {}
     months_in_year = max(1, min(12, int(ctx.get("months_in_year") or 12)))
     assume_year_end = bool(ctx.get("assume_year_end", True))
     include_unpaid_hire_month = bool(ctx.get("include_unpaid_hire_month", True))
@@ -60,7 +61,7 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
             person = dict(person, 입사일=succ_date.isoformat(), 계약체결일=succ_date.isoformat())
 
     emp_type = yrec.get("고용유형") or R.EMP_REGULAR
-    sug_excl = suggest_exclusion(person, yrec, year, old_rule=bool(ctx.get("old_tenure_rule")))
+    sug_excl = suggest_exclusion(person, yrec, year, old_rule=bool(ctx.get("old_tenure_rule")), as_of_year=ctx.get("as_of_year"))
     excl = _pick(yrec, "제외사유", sug_excl)
     excl_locked = emp_type in R.EMP_AUTO_EXCLUDE
 
@@ -70,7 +71,7 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
     is_regular = ovr_regular if ovr_regular in ("O", "X") else auto_regular
 
     opts = youth_options(emp_type)
-    sug_youth = suggest_youth(person, yrec, year, corp_size)
+    sug_youth = suggest_youth(person, yrec, year, corp_size, corp_size_by_year=corp_size_by_year)
     youth = _pick(yrec, "청년등", sug_youth)
     if youth not in opts:
         youth = sug_youth if sug_youth in opts else R.YOUTH_NONE
@@ -186,7 +187,7 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
                 yf1 = False
             elif youth == R.YOUTH_YOUNG:
                 birth_ok = parse_date(person.get("생년월일")) is not None and contract_date(person) is not None
-                yf1 = is_youth_month(person, year, m, corp_size) if birth_ok else False
+                yf1 = is_youth_month(person, year, m, corp_size, corp_size_by_year=corp_size_by_year) if birth_ok else False
             elif youth == R.YOUTH_NK:
                 yf1 = year >= 2025
             else:
@@ -196,19 +197,30 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
             #  · 2025년 이후 최초공제분: 새 정의(유예 포함), 간주 없음 → 추가납부·연속공제 모두 당해 판정과 같음
             #  · 2024년 이전 최초공제분: 추가납부는 최초연도 청년 간주(구 제5항), 연속공제 판정은 종전 정의의 실제 청년
             def _cohort_flags(cy: int, was):
+                cy_corp_size = R.normalize_corp_size(
+                    corp_size_by_year.get(cy) or corp_size_by_year.get(str(cy)) or corp_size,
+                    corp_size,
+                )
                 if cy >= NEW_YOUTH_DEF_FROM_COHORT:
-                    claw = yf1
+                    if cy_corp_size == corp_size or youth != R.YOUTH_YOUNG:
+                        claw = yf1
+                        act_cy = yf1
+                    else:
+                        birth_ok_cy = parse_date(person.get("생년월일")) is not None and contract_date(person) is not None
+                        yf_cy = is_youth_month(person, year, m, cy_corp_size, corp_size_by_year=corp_size_by_year) if birth_ok_cy else False
+                        claw = yf_cy
+                        act_cy = yf_cy
                     # 2024년 이전 계약자 보호: 계약일 유예(2025년 이후 계약자만)를 못 받고 제5항 간주도 삭제돼
                     # 보호 공백이 생기므로, 추가납부 계산에서는 최초공제연도에 청년이었으면 계속 청년으로 봄
                     # (2025.12.31. 개정 부칙 제2조 종전규정 취지에 따른 납세자 보호 해석 — 연속공제 판정에는 적용 안 함)
                     if not claw and youth not in (R.YOUTH_SENIOR, R.YOUTH_DISABLED, R.YOUTH_CAREER, R.YOUTH_NK):
                         cdt = contract_date(person)
                         if cdt is not None and cdt.year <= 2024 and parse_date(person.get("생년월일")):
-                            w = was if was is not None else was_youth_in_year_by_age(person, cy, corp_size)
+                            w = was if was is not None else was_youth_in_year_by_age(person, cy, cy_corp_size, corp_size_by_year=corp_size_by_year)
                             claw = bool(w)
-                    return claw, yf1
-                claw = is_youth_month_for_cohort(person, year, m, cy, corp_size, youth, was)
-                act = youth_flag_old_def(person, year, m, corp_size, youth)
+                    return claw, act_cy
+                claw = is_youth_month_for_cohort(person, year, m, cy, cy_corp_size, youth, was, corp_size_by_year=corp_size_by_year)
+                act = youth_flag_old_def(person, year, m, cy_corp_size, youth)
                 return claw, act
             yf2, yf2a = _cohort_flags(year - 1, c1_was_youth)
             yf3, yf3a = _cohort_flags(year - 2, c2_was_youth)

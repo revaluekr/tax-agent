@@ -171,20 +171,33 @@ def calc_new_2026_credit_abc(
     corp_size: str,
     is_capital: bool,
     summaries_by_year: dict[int, dict],
+    corp_size_by_year: dict[int | str, str] | None = None,
 ) -> dict[str, Any]:
     t = int(tax_year)
     comp = valid_comparison_years_for_new_credit(t)
 
+    def _sz_for(y: int | None) -> str:
+        if y is not None and isinstance(corp_size_by_year, dict):
+            v = corp_size_by_year.get(int(y)) or corp_size_by_year.get(str(y))
+            if v:
+                return R.normalize_corp_size(v, corp_size)
+        if y is not None:
+            d = summaries_by_year.get(int(y)) or {}
+            if d.get("corp_size"):
+                return R.normalize_corp_size(d.get("corp_size"), corp_size)
+        return R.normalize_corp_size(corp_size, "중소기업")
+
     def _s(y: int | None) -> dict[str, float]:
         if y is None:
-            return {"reg": 0.0, "yth": 0.0, "b2_yth": 0.0, "b3_yth": 0.0, "has_data": False}
+            return {"reg": 0.0, "yth": 0.0, "gen": 0.0, "b2_yth": 0.0, "b3_yth": 0.0, "has_data": False}
         d = summaries_by_year.get(y) or {}
         reg = float(d.get("regular", d.get("상시_평균", d.get("b1_reg", 0.0))) or 0.0)
         yth = float(d.get("youth", d.get("청년등_평균", d.get("b1_yth", 0.0))) or 0.0)
+        gen = round(max(0.0, reg - yth), 2)
         b2_y = float(d.get("b2_yth", yth) or 0.0)
         b3_y = float(d.get("b3_yth", b2_y) or 0.0)
         has_d = bool(d.get("has_data", reg > 0 or yth > 0))
-        return {"reg": reg, "yth": yth, "b2_yth": b2_y, "b3_yth": b3_y, "has_data": has_d}
+        return {"reg": reg, "yth": yth, "gen": gen, "b2_yth": b2_y, "b3_yth": b3_y, "has_data": has_d}
 
     s_t = _s(t)
     s_t1 = _s(comp.get("A"))
@@ -193,11 +206,12 @@ def calc_new_2026_credit_abc(
 
     tiers: dict[str, dict[str, Any]] = {}
 
-    rates_a = get_unit_rates(corp_size, is_capital, scheme="new_2026", retention_year=1)
+    sz_a = _sz_for(t)
+    rates_a = get_unit_rates(sz_a, is_capital, scheme="new_2026", retention_year=1)
     if comp.get("A") is not None:
         inc_a = calc_increase_with_cap(s_t["reg"], s_t["yth"], s_t1["reg"], s_t1["yth"])
         hurdle_a = calc_minimum_hurdle_deduction_2026(
-            corp_size, inc_a["total_inc"], inc_a["youth_inc"], inc_a["non_youth_inc"], retention_year=1
+            sz_a, inc_a["total_inc"], inc_a["youth_inc"], inc_a["non_youth_inc"], retention_year=1
         )
         if hurdle_a["hurdle_met"]:
             item1_won = int(round(inc_a["youth_inc"] * rates_a["청년등"] * 10_000))
@@ -208,12 +222,13 @@ def calc_new_2026_credit_abc(
             item1_won = item2_won = item3_won = net_a_won = 0
     else:
         inc_a = {"total_inc": 0.0, "youth_inc": 0.0, "non_youth_inc": 0.0}
-        hurdle_a = calc_minimum_hurdle_deduction_2026(corp_size, 0.0, 0.0, 0.0, retention_year=1)
+        hurdle_a = calc_minimum_hurdle_deduction_2026(sz_a, 0.0, 0.0, 0.0, retention_year=1)
         item1_won = item2_won = item3_won = net_a_won = 0
 
     tiers["A"] = {
         "comp_year": comp.get("A"),
         "retention_year": 1,
+        "corp_size": sz_a,
         "rates": rates_a,
         "total_inc": inc_a["total_inc"],
         "youth_inc": inc_a["youth_inc"],
@@ -225,13 +240,23 @@ def calc_new_2026_credit_abc(
         "credit_won": net_a_won,
     }
 
-    rates_b = get_unit_rates(corp_size, is_capital, scheme="new_2026", retention_year=2)
+    # 확인 필요: 신법(2026년 이후, 조세특례제한법 제29조의8 제1항) B(2년차)·C(3년차) 유지분 공제단가는
+    # 법문상 "내국인의 해당 과세연도의 ... 상시근로자 수가 직전 3개 과세연도의 상시근로자 수보다 증가한 경우 다음 각 호에 따른 금액을 ... 공제한다"로만 규정되어 있어,
+    # 최초 증가연도(T-1·T-2)와 당해 과세연도(T) 사이에 기업규모가 변동된 경우 '해당 과세연도(T) 기업규모' 기준인지 '최초 증가연도(T-1·T-2) 기업규모' 기준인지
+    # 명시적 조문·유권해석이 아직 없으므로 확인 전 기본값으로 당해 과세연도(t)의 기업규모를 적용합니다.
+    sz_b = _sz_for(t)
+    rates_b = get_unit_rates(sz_b, is_capital, scheme="new_2026", retention_year=2)
     if comp.get("B") is not None and s_t2["has_data"]:
         tot_b = round(max(0.0, min(s_t["reg"], s_t1["reg"]) - s_t2["reg"]), 2)
         yth_b = round(min(tot_b, max(0.0, min(s_t["yth"], s_t1["yth"]) - s_t2["yth"])), 2)
-        # 전체 유지 증가분(tot_b) 중 청년등 유지분(yth_b)을 제외한 나머지는 청년등외 유지분으로 인정(청년→일반 대체 유지 포함)
-        gen_b = round(max(0.0, tot_b - yth_b), 2)
-        hurdle_b = calc_minimum_hurdle_deduction_2026(corp_size, tot_b, yth_b, gen_b, retention_year=2)
+        # 조세특례제한법 제29조의8 제1항 제2호 가목(중소기업)·나목(중견기업)의 계산식 중 B:
+        #   B = min(해당 과세연도 청년등외, 직전 과세연도 청년등외) - 전전 과세연도 청년등외 (음수이면 0)
+        #   한도 근거: 조세특례제한법 제29조의8 제1항 제1호·제2호 각 호 외의 부분 괄호("(전체 상시근로자의 증가 인원 수를 한도로 한다)")
+        #   ※ 수학적으로 각 연도 Y_k + G_k = T_k 이므로 min(Y) + min(G) <= min(Y + G)가 항상 성립하여
+        #      잔여분(tot_b - yth_b) 비교는 계산 결과를 바꾸지 않으나, 부동소수점 반올림 방어용 안전장치로 함께 유지합니다.
+        raw_gen_b = round(max(0.0, min(s_t["gen"], s_t1["gen"]) - s_t2["gen"]), 2)
+        gen_b = round(min(tot_b, max(0.0, tot_b - yth_b), raw_gen_b), 2)
+        hurdle_b = calc_minimum_hurdle_deduction_2026(sz_b, tot_b, yth_b, gen_b, retention_year=2)
         if hurdle_b["hurdle_met"]:
             b1_won = int(round(yth_b * rates_b["청년등"] * 10_000))
             b2_won = int(round(gen_b * rates_b["청년등외"] * 10_000))
@@ -241,12 +266,13 @@ def calc_new_2026_credit_abc(
             b1_won = b2_won = b3_won = net_b_won = 0
     else:
         tot_b = yth_b = gen_b = 0.0
-        hurdle_b = calc_minimum_hurdle_deduction_2026(corp_size, 0.0, 0.0, 0.0, retention_year=2)
+        hurdle_b = calc_minimum_hurdle_deduction_2026(sz_b, 0.0, 0.0, 0.0, retention_year=2)
         b1_won = b2_won = b3_won = net_b_won = 0
 
     tiers["B"] = {
         "comp_year": comp.get("B"),
         "retention_year": 2,
+        "corp_size": sz_b,
         "rates": rates_b,
         "total_inc": tot_b,
         "youth_inc": yth_b,
@@ -258,13 +284,16 @@ def calc_new_2026_credit_abc(
         "credit_won": net_b_won,
     }
 
-    rates_c = get_unit_rates(corp_size, is_capital, scheme="new_2026", retention_year=3)
+    # 확인 필요: 신법 C(3년차) 단가 기준 기업규모 (기본값: 당해 과세연도 t 기업규모 적용)
+    sz_c = _sz_for(t)
+    rates_c = get_unit_rates(sz_c, is_capital, scheme="new_2026", retention_year=3)
     if comp.get("C") is not None and s_t3["has_data"] and (rates_c["청년등"] > 0 or rates_c["청년등외"] > 0):
         tot_c = round(max(0.0, min(s_t["reg"], s_t1["reg"], s_t2["reg"]) - s_t3["reg"]), 2)
         yth_c = round(min(tot_c, max(0.0, min(s_t["yth"], s_t1["yth"], s_t2["yth"]) - s_t3["yth"])), 2)
-        # 전체 유지 증가분(tot_c) 중 청년등 유지분(yth_c)을 제외한 나머지는 청년등외 유지분으로 인정(청년→일반 대체 유지 포함)
-        gen_c = round(max(0.0, tot_c - yth_c), 2)
-        hurdle_c = calc_minimum_hurdle_deduction_2026(corp_size, tot_c, yth_c, gen_c, retention_year=3)
+        # 조세특례제한법 제29조의8 제1항 제2호 가목(중소기업)·나목(중견기업)의 계산식 중 C 및 제1호·제2호 각 호 외의 부분 괄호 한도
+        raw_gen_c = round(max(0.0, min(s_t["gen"], s_t1["gen"], s_t2["gen"]) - s_t3["gen"]), 2)
+        gen_c = round(min(tot_c, max(0.0, tot_c - yth_c), raw_gen_c), 2)
+        hurdle_c = calc_minimum_hurdle_deduction_2026(sz_c, tot_c, yth_c, gen_c, retention_year=3)
         if hurdle_c["hurdle_met"]:
             c1_won = int(round(yth_c * rates_c["청년등"] * 10_000))
             c2_won = int(round(gen_c * rates_c["청년등외"] * 10_000))
@@ -274,12 +303,13 @@ def calc_new_2026_credit_abc(
             c1_won = c2_won = c3_won = net_c_won = 0
     else:
         tot_c = yth_c = gen_c = 0.0
-        hurdle_c = calc_minimum_hurdle_deduction_2026(corp_size, 0.0, 0.0, 0.0, retention_year=3)
+        hurdle_c = calc_minimum_hurdle_deduction_2026(sz_c, 0.0, 0.0, 0.0, retention_year=3)
         c1_won = c2_won = c3_won = net_c_won = 0
 
     tiers["C"] = {
         "comp_year": comp.get("C"),
         "retention_year": 3,
+        "corp_size": sz_c,
         "rates": rates_c,
         "total_inc": tot_c,
         "youth_inc": yth_c,
@@ -330,9 +360,14 @@ def calc_legacy_post_management(
     gen_rate = rates["청년등외"]
     diff_rate = max(0, yth_rate - gen_rate)
 
-    is_large = corp_size in ("일반기업", "대기업")
+    is_large = R.normalize_corp_size(corp_size) in ("일반기업", "대기업")
     max_credit_years = 2 if is_large else 3
     can_receive_continued = (1 <= elapsed < max_credit_years) and (init_yth_inc + init_gen_inc > 0)
+
+    # 구 조세특례제한법 제29조의8 제1항·제2항(2024년 귀속)·제3항(2025년 귀속) 및 구 조세특례제한법 시행령 제26조의8 제4항:
+    # - 일반기업(대기업)의 공제기간은 2년(최초 과세연도 + 종료일부터 1년이 되는 날이 속하는 과세연도)이므로 3차년도(elapsed == 2) 연속공제는 없음(can_receive_continued = False).
+    # - 반면 사후관리(추가납부) 기간은 기업규모 구분 없이 '최초로 공제를 받은 과세연도의 종료일부터 2년이 되는 날이 속하는 과세연도의 종료일까지'이므로
+    #   일반기업 코호트도 3차년도(elapsed == 2, 2차 사후관리)에 인원이 감소하면 구 시행령 제26조의8 제4항 제2호에 따라 추가납부세액을 계산함.
 
     if elapsed not in (1, 2) or (init_yth_inc <= 0 and init_gen_inc <= 0):
         return {
@@ -407,12 +442,14 @@ def calc_legacy_post_management(
         else:
             ret_yth, ret_gen = round(init_yth_inc, 2), round(init_gen_inc, 2)
             cont_man = full_man if can_receive_continued else 0.0
-        cont_txt = (
-            f"연속공제: (청년 {init_yth_inc:.2f} + 청년외 {init_gen_inc:.2f})명 × {gen_rate:,}만 = {cont_man:,.1f}만원 (청년 단가 중단)"
-            if youth_stopped and not y1_halted else
-            (f"연속공제: 청년 {init_yth_inc:.2f}명×{yth_rate:,}만 + 청년외 {init_gen_inc:.2f}명×{gen_rate:,}만 = {cont_man:,.1f}만원"
-             if not y1_halted else "연속공제: 1년차 감소로 중단(0원)")
-        )
+        if not can_receive_continued and is_large and elapsed == 2:
+            cont_txt = "연속공제: 대기업(일반기업) 2년 공제기간 만료로 3차년도 연속공제 없음(0원 · 2차 사후관리 추징 요건만 점검)"
+        elif y1_halted:
+            cont_txt = "연속공제: 1년차 감소로 중단(0원)"
+        elif youth_stopped:
+            cont_txt = f"연속공제: (청년 {init_yth_inc:.2f} + 청년외 {init_gen_inc:.2f})명 × {gen_rate:,}만 = {cont_man:,.1f}만원 (청년 단가 중단)"
+        else:
+            cont_txt = f"연속공제: 청년 {init_yth_inc:.2f}명×{yth_rate:,}만 + 청년외 {init_gen_inc:.2f}명×{gen_rate:,}만 = {cont_man:,.1f}만원"
         if yth_diff < 0:
             case_code = "Case 3 (전체 유지·청년등만 감소)"
             case_title = "전체 상시근로자 유지 · 청년등만 감소 (청년 단가 중단 + 단가차액 추가납부)"
@@ -425,7 +462,15 @@ def calc_legacy_post_management(
             )
         else:
             raw_claw_man = 0.0
-            if youth_stopped and not y1_halted:
+            if is_large and elapsed == 2:
+                case_code = "공제기간 종료(일반기업 2년) · 고용유지(추징 없음)"
+                case_title = f"{cohort_year}년 귀속분 공제기간 종료(일반기업 2년) — 3차 연속공제 없음 · 2차 사후관리 고용유지(추징 없음)"
+                formula_note = (
+                    f"[{cohort_year}년분 3차년도(2차 사후관리)] 일반기업(대기업) 공제기간(2년) 만료로 3차 연속공제 없음(0원) / "
+                    f"구 조특법 제29조의8 제2항·제3항 2년 사후관리 점검 결과 상시({cur_pm_reg:.2f} ≥ {init_reg:.2f}) 및 "
+                    f"청년등({cur_pm_yth:.2f} ≥ {init_yth:.2f}) 유지 → 추가납부(추징) 0원"
+                )
+            elif youth_stopped and not y1_halted:
                 case_code = "청년 단가 중단 (추징 없음)"
                 case_title = "청년등 수가 최초공제연도보다 적어(나이 경과 등) 청년 단가 중단 · 추가납부 없음"
                 why = ("1년차에 이미 청년 단가가 중단됨" if stopped_before and not stopped_now else
@@ -484,8 +529,13 @@ def calc_legacy_post_management(
     raw_clawback_won = int(round(raw_claw_man * 10_000))
 
     claimed_cap = max(0, int(init_credit_claimed_won or 0))
-    if elapsed == 2 and y1_continued_credit_won and y1_continued_credit_won > 0:
-        claimed_cap = claimed_cap + int(y1_continued_credit_won) if claimed_cap > 0 else 0
+    if elapsed == 2 and claimed_cap > 0:
+        if y1_continued_credit_won is not None and y1_continued_credit_won > 0:
+            claimed_cap = claimed_cap + int(y1_continued_credit_won)
+        elif y1_continued_credit_won is None and prior_years_claimed_count == 2:
+            # 2차 공제액을 별도 입력하지 않았으나 2회 공제(prior_years_claimed_count == 2)로 판정된 경우 2년 누적 공제세액 한도 반영
+            y1_est_cap = int(round((conv_man if stopped_before else full_man) * 10_000))
+            claimed_cap = claimed_cap + (y1_est_cap if y1_est_cap > 0 else claimed_cap)
 
     if claimed_cap > 0:
         capped_cumulative_claw_won = min(raw_clawback_won, claimed_cap)
@@ -506,6 +556,7 @@ def calc_legacy_post_management(
         "cohort_year": cohort_year,
         "eval_year": eval_year,
         "elapsed_year": elapsed,
+        "corp_size": R.normalize_corp_size(corp_size),
         "active": True,
         "case_code": case_code,
         "case_title": case_title,
@@ -536,14 +587,31 @@ def calculate_tax_year_package(
     additional_inputs: dict[str, Any] | None = None,
     scheme_2026: str = "new_2026",
     pm_basis: str = R.PM_BASIS_FILED,
+    corp_size_by_year: dict[int | str, str] | None = None,
 ) -> dict[str, Any]:
     """
-    [선택된 귀속사업연도(2024~2028)의 통합고용세액공제 종합 계산 패키지]
+    [선택된 귀속사업연도(2024~2028)의 통합고용세액공제 종합 계산 패키지 — 연도별 기업구분 개별 설정 완벽 지원]
     """
     t = int(tax_year)
     pf = prior_filings or {}
     add_in = additional_inputs or {}
     basis = R.PM_BASIS_RECALC if pm_basis == R.PM_BASIS_RECALC else R.PM_BASIS_FILED
+
+    def _sz_for(y: int) -> str:
+        if isinstance(corp_size_by_year, dict):
+            v = corp_size_by_year.get(int(y)) or corp_size_by_year.get(str(y))
+            if v:
+                return R.normalize_corp_size(v, corp_size)
+        pf_y = pf.get(int(y)) or pf.get(str(y)) or {}
+        if isinstance(pf_y, dict) and pf_y.get("corp_size"):
+            return R.normalize_corp_size(pf_y.get("corp_size"), corp_size)
+        s_y = summaries.get(int(y)) or {}
+        if isinstance(s_y, dict) and s_y.get("corp_size"):
+            return R.normalize_corp_size(s_y.get("corp_size"), corp_size)
+        return R.normalize_corp_size(corp_size, "중소기업")
+
+    cur_corp_size = _sz_for(t)
+    corp_size_map_resolved = {y_k: _sz_for(y_k) for y_k in (t - 3, t - 2, t - 1, t)}
 
     def _s(y: int) -> dict[str, Any]:
         d = summaries.get(y) or {}
@@ -591,20 +659,28 @@ def calculate_tax_year_package(
         }
 
     def _s_new_cmp(y: int, base_s: dict[str, Any]) -> dict[str, Any]:
-        """2026년 이후 신법(A·B·C) 및 추가공제 비교 시, 비교 대상 연도(≤2025)에 개정 규정 인원(nr_상시_평균)이 있으면 일관되게 적용"""
+        """2026년 이후 신법(A·B·C) 및 추가공제 비교 시, 비교 대상 연도(2025 <= y < t)에 일관된 해석 기준 재산정 인원(nr_상시_평균)이 있으면 일관되게 적용"""
         if t < NEW_TENURE_RULE_FROM:
             return base_s
         yd = summaries.get(y) or {}
         if yd.get("nr_상시_평균") is not None:
             nr_reg = float(yd["nr_상시_평균"])
             nr_yth = float(yd.get("nr_청년등_평균") or 0.0)
+            nr_gen = round(max(0.0, nr_reg - nr_yth), 2)
+            nr_reg_tot = float(yd.get("nr_상시_합계") if yd.get("nr_상시_합계") is not None else round(nr_reg * base_s["months_in_year"], 2))
+            nr_yth_tot = float(yd.get("nr_청년등_합계") if yd.get("nr_청년등_합계") is not None else round(nr_yth * base_s["months_in_year"], 2))
+            nr_gen_tot = round(max(0.0, nr_reg_tot - nr_yth_tot), 2)
             return dict(
                 base_s,
                 regular=nr_reg,
                 youth=nr_yth,
-                non_youth=round(max(0.0, nr_reg - nr_yth), 2),
+                non_youth=nr_gen,
+                reg_total=nr_reg_tot,
+                yth_total=nr_yth_tot,
+                non_youth_total=nr_gen_tot,
                 old_rule_regular=float(yd.get("상시_평균") or 0.0),
                 old_rule_youth=float(yd.get("청년등_평균") or 0.0),
+                nr_names=list(yd.get("nr_names") or []),
             )
         return base_s
 
@@ -620,8 +696,8 @@ def calculate_tax_year_package(
 
     # ── 1) 당해(T) 신규 고용증가분 계산 (신법 A+B+C vs 구법) ──
     cur_inc = calc_increase_with_cap(cur_s["regular"], cur_s["youth"], prev_cmp["regular"], prev_cmp["youth"])
-    rates_legacy = get_unit_rates(corp_size, is_capital, scheme="legacy", retention_year=1)
-    rates_new_y1 = get_unit_rates(corp_size, is_capital, scheme="new_2026", retention_year=1)
+    rates_legacy = get_unit_rates(cur_corp_size, is_capital, scheme="legacy", retention_year=1)
+    rates_new_y1 = get_unit_rates(cur_corp_size, is_capital, scheme="new_2026", retention_year=1)
 
     cur_legacy_yth_won = int(round(cur_inc["youth_inc"] * rates_legacy["청년등"] * 10_000))
     cur_legacy_gen_won = int(round(cur_inc["non_youth_inc"] * rates_legacy["청년등외"] * 10_000))
@@ -629,9 +705,10 @@ def calculate_tax_year_package(
 
     abc_res = calc_new_2026_credit_abc(
         tax_year=t,
-        corp_size=corp_size,
+        corp_size=cur_corp_size,
         is_capital=is_capital,
         summaries_by_year={t: cur_s, t - 1: prev_cmp, t - 2: prev2_cmp, t - 3: prev3_cmp},
+        corp_size_by_year=corp_size_map_resolved,
     )
     hurdle_res = abc_res["tiers"]["A"]["hurdle"]
     cur_new_yth_won = abc_res["tiers"]["A"]["item1_youth_won"]
@@ -653,27 +730,30 @@ def calculate_tax_year_package(
         except (TypeError, ValueError):
             return None
 
-    def _missing(cohort: int, note: str) -> dict:
-        r = calc_legacy_post_management(cohort, t, corp_size, is_capital, 0, 0, 0, 0, 0, 0)
+    def _missing(cohort: int, note: str, coh_sz: str | None = None) -> dict:
+        use_sz = coh_sz or _sz_for(cohort)
+        r = calc_legacy_post_management(cohort, t, use_sz, is_capital, 0, 0, 0, 0, 0, 0)
         r.update({"case_code": "기초값 없음", "case_title": "최초공제연도 인원·증가인원이 없어 계산하지 않음",
-                  "formula_note": note, "base_missing": True})
+                  "formula_note": note, "base_missing": True, "corp_size": use_sz})
         return r
 
     def _new_law(cohort: int, tier: str, label: str) -> dict:
-        r = calc_legacy_post_management(cohort, t, corp_size, is_capital, 0, 0, 0, 0, 0, 0)
+        use_sz = _sz_for(cohort)
+        r = calc_legacy_post_management(cohort, t, use_sz, is_capital, 0, 0, 0, 0, 0, 0)
         t_info = abc_res["tiers"].get(tier) or {}
         r.update({"case_code": f"신법 {tier} 통합", "case_title": f"{cohort}년 귀속분은 신법 점증형({tier})으로 계산",
                   "retained_yth_inc": t_info.get("youth_inc", 0.0), "retained_gen_inc": t_info.get("non_youth_inc", 0.0),
-                  "new_tier_info": t_info,
+                  "new_tier_info": t_info, "corp_size": use_sz,
                   "formula_note": f"{cohort}년 귀속분은 구법 사후관리 대상이 아니며 신법 {label}(B·C) 유지분 공제로 반영됩니다."})
         return r
 
     def _cohort(cohort: int, elapsed: int, cur_reg: float, cur_yth: float, s_init: dict, s_before: dict,
                 cur_yth_act: float | None = None) -> tuple[dict, dict, dict]:
         f = pf.get(cohort) or pf.get(str(cohort)) or {}
-        # 최초공제연도 사업장 소재지(수도권 여부): 연속공제·추가납부 단가는 최초공제연도 기준. 없으면 현재 소재지.
+        coh_sz = _sz_for(cohort)
+        # 최초공제연도 사업장 소재지(수도권 여부) 및 기업규모: 연속공제·추가납부 단가와 공제기간(대기업 2년/중소·중견 3년)은 최초공제연도 기준.
         coh_cap = is_capital if f.get("is_capital") is None else bool(f.get("is_capital"))
-        coh_rates = get_unit_rates(corp_size, coh_cap, scheme="legacy", retention_year=1)
+        coh_rates = get_unit_rates(coh_sz, coh_cap, scheme="legacy", retention_year=1)
         filed = {k: _fv(f, k) for k in ("init_reg", "init_yth", "init_yth_inc", "init_gen_inc")}
         claimed = int(_fv(f, "claimed_won") or 0)                     # 한도: 기신고 공제세액(사실값)
         cf = int(_fv(f, "carryforward_won") or 0)
@@ -690,12 +770,32 @@ def calculate_tax_year_package(
         def _run(vals: dict, label: str, borrowed: list[str], claimed: int = claimed, cap_note: str = "") -> dict:
             if any(v is None for v in vals.values()):
                 return _missing(cohort, f"[{label}] {cohort}년 최초공제연도의 상시·청년등 인원 또는 공제받은 증가인원이 없습니다. "
-                                        f"3단계 위쪽에 기신고 숫자를 입력하세요.")
-            r = calc_legacy_post_management(cohort, t, corp_size, coh_cap,
+                                        f"3단계 위쪽에 기신고 숫자를 입력하세요.", coh_sz=coh_sz)
+            r = calc_legacy_post_management(cohort, t, coh_sz, coh_cap,
                                             vals["init_reg"], vals["init_yth"], vals["init_yth_inc"], vals["init_gen_inc"],
                                             cur_reg, cur_yth, init_credit_claimed_won=claimed,
                                             unclaimed_carryforward_won=cf, cur_pm_yth_actual=cur_yth_act, **extra)
+            r["corp_size"] = coh_sz
+            r["rates_legacy"] = coh_rates
             r["base_label"] = label + (f" ({', '.join(borrowed)}은 기신고 숫자 사용)" if borrowed else "")
+            if claimed > 0 and (vals.get("init_yth_inc") is not None or vals.get("init_gen_inc") is not None):
+                exp_c_won = int(
+                    round(
+                        (
+                            float(vals.get("init_yth_inc") or 0.0) * coh_rates["청년등"]
+                            + float(vals.get("init_gen_inc") or 0.0) * coh_rates["청년등외"]
+                        )
+                        * 10_000
+                    )
+                )
+                if exp_c_won >= 0 and abs(claimed - exp_c_won) >= 10:
+                    r["filed_credit_mismatch"] = True
+                    r["filed_claimed_won"] = claimed
+                    r["expected_claimed_by_size_won"] = exp_c_won
+                    r["filed_credit_mismatch_msg"] = (
+                        f"[{cohort}년 귀속] 기신고 공제세액이 선택한 기업규모 단가와 다릅니다. 규모 선택 또는 신고서를 확인하세요 "
+                        f"(기신고 공제세액 {claimed:,}원 ≠ 기신고 인원 × {R.format_corp_size_label(coh_sz)} 단가 {exp_c_won:,}원)."
+                    )
             if claimed <= 0 and r.get("clawback_gross_won", 0) > 0:
                 r["formula_note"] += " ※ 기신고 공제세액이 없어 추가납부 한도를 적용하지 못했습니다."
             if cap_note:
@@ -720,7 +820,7 @@ def calculate_tax_year_package(
             y0_est_won = int(round((float(recalc["init_yth_inc"]) * coh_rates["청년등"]
                                     + float(recalc["init_gen_inc"]) * coh_rates["청년등외"]) * 10_000))
             recalc_claimed = y0_est_won
-            if elapsed == 2 and y1_cont is None and corp_size not in ("일반기업", "대기업") and not (
+            if elapsed == 2 and y1_cont is None and not (
                 prev_s["has_data"] and prev_s["b2_reg"] < float(recalc.get("init_reg") or 0.0)
             ):
                 y1_act = prev_s.get("b2_yth_act", prev_s["b2_yth"])
@@ -752,7 +852,7 @@ def calculate_tax_year_package(
     pm_y2 = pm_y2_recalc if basis == R.PM_BASIS_RECALC else pm_y2_filed
 
     # ── 4) 정규직 전환자(~2024년 귀속) 및 육아휴직 복귀자(~2026년 귀속) 추가공제 ──
-    add_unit_man = R.ADDITIONAL_CREDIT_PER_PERSON.get(corp_size, 0)
+    add_unit_man = R.ADDITIONAL_CREDIT_PER_PERSON.get(cur_corp_size, 0)
     parental_ret_cnt = int(add_in.get("parental_return_count", 0) or 0) if t <= 2026 else 0
     reg_conv_cnt = int(add_in.get("regular_conversion_count", 0) or 0) if t <= 2024 else 0
     early_term_add_cnt = int(add_in.get("additional_clawback_count", 0) or 0)
@@ -786,7 +886,10 @@ def calculate_tax_year_package(
 
     return {
         "tax_year": t,
-        "corp_size": corp_size,
+        "corp_size": cur_corp_size,
+        "corp_size_by_year": corp_size_map_resolved,
+        "coh1_corp_size": _sz_for(t - 1),
+        "coh2_corp_size": _sz_for(t - 2),
         "is_capital": is_capital,
         "active_scheme": active_scheme,
         "pm_basis": basis,
@@ -798,6 +901,8 @@ def calculate_tax_year_package(
         "prev_s": prev_cmp,
         "prev_s_pm": prev_s,
         "prev2_s": prev2_s,
+        "prev2_s_cmp": prev2_cmp,
+        "prev3_s_cmp": prev3_cmp,
         "cur_inc": cur_inc,
         "hurdle_res": hurdle_res,
         "abc_res": abc_res,
@@ -820,6 +925,11 @@ def calculate_tax_year_package(
         "pm_y1_recalc": pm_y1_recalc,
         "pm_y2_filed": pm_y2_filed,
         "pm_y2_recalc": pm_y2_recalc,
+        "filed_credit_mismatch_warnings": [
+            w["filed_credit_mismatch_msg"]
+            for w in (pm_y1_filed, pm_y2_filed)
+            if isinstance(w, dict) and w.get("filed_credit_mismatch") and w.get("filed_credit_mismatch_msg")
+        ],
         "y1_claimed_won": int(_fv(pf.get(t - 1) or pf.get(str(t - 1)) or {}, "claimed_won") or 0),
         "y2_claimed_won": int(_fv(pf.get(t - 2) or pf.get(str(t - 2)) or {}, "claimed_won") or 0),
         "non_decrease_ok": non_decrease_ok,

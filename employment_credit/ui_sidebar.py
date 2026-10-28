@@ -31,10 +31,13 @@ from . import backup as B
 
 from .ui_common import (  # noqa: F401
     _S,
+    _all_possible_years,
+    _cohort_corp_size,
     _current_build_sig,
     _default_state_dict,
     _ensure_built_for_tax_year,
     _save_ec_to_disk,
+    _years,
 )
 
 
@@ -266,12 +269,47 @@ def render_credit_sidebar():
             b["종목"] = st.text_input("종목", value=str(b.get("종목", "") or ""), disabled="종목" in conf, key="ec_biz_종목")
         txt("사업장 소재지", "사업장소재지", "예: 서울특별시 강남구... / 충청남도...")
 
-        b["기업구분"] = st.selectbox(
-            "기업 규모 구분",
+        cur_sb_size = R.normalize_corp_size(s.get("corp_size_default") or b.get("기업구분") or "중소기업")
+        prev_tracked_sb = s.get("_last_sidebar_corp_size") or cur_sb_size
+        yr_sz_ver_sb = int(s.get("yr_sz_ver", 0))
+        new_sb_size = st.selectbox(
+            "기업규모 기본값",
             R.CORP_SIZES,
-            index=R.CORP_SIZES.index(b.get("기업구분", "중소기업")) if b.get("기업구분") in R.CORP_SIZES else 0,
-            key="ec_biz_size",
+            index=R.CORP_SIZES.index(cur_sb_size) if cur_sb_size in R.CORP_SIZES else 0,
+            format_func=lambda x: "일반기업(대기업)" if x == "일반기업" else x,
+            key=f"ec_biz_size_{yr_sz_ver_sb}",
+            help="중소기업 유예기간(조특령 제2조) 중이면 중소기업으로 선택하세요. 기본값을 바꾸면 개별로 바꾼 적 없는 연도만 따라 바뀝니다.",
         )
+        if new_sb_size != prev_tracked_sb:
+            R.apply_corp_size_default_change(s, new_sb_size)
+            s["yr_sz_ver"] = yr_sz_ver_sb + 1
+            for y_all in _all_possible_years(s):
+                s["grid_ver"][y_all] = s["grid_ver"].get(y_all, 0) + 1
+            s.pop("_report_artifact_cache", None)
+            _save_ec_to_disk(s)
+            st.rerun()
+        else:
+            s["corp_size_default"] = new_sb_size
+            b["기업구분"] = new_sb_size
+            s["_last_sidebar_corp_size"] = new_sb_size
+            sz_map_init = s.setdefault("corp_size_by_year", {})
+            for yy in range(2021, 2030):
+                sz_map_init.setdefault(str(yy), new_sb_size)
+
+        active_chk_yrs = sorted(set(_years(s) or [tax_yr - 2, tax_yr - 1, tax_yr]))
+        if R.has_mixed_corp_sizes(s, active_chk_yrs):
+            yr_badges_txt = " · ".join(
+                f"<b>{yy%100:02d}년</b> {R.format_corp_size_label(_cohort_corp_size(s, yy), short=True)}"
+                for yy in active_chk_yrs
+            )
+            st.markdown(
+                f"<div style='margin:-4px 0 8px 0;padding:6px 10px;background:#eff6ff;border:1px solid #93c5fd;"
+                f"border-radius:7px;font-size:0.79rem;color:#1e3a8a;line-height:1.45;'>"
+                f"📌 <b>연도별 기업규모 개별 적용 중:</b> {yr_badges_txt}<br>"
+                f"<span style='color:#475569;font-size:0.75rem;'>(2단계 각 연도 표 우측 상단 『📕 PDF 다운』 왼쪽에서 변경 가능)</span>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
         c1, c2 = st.columns(2)
         b["전년_월수"] = c1.number_input(
             f"직전({tax_yr-1}년) 월수",

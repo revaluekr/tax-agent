@@ -42,9 +42,154 @@ PM_BASIS_LABELS = {
     PM_BASIS_RECALC: "세법원칙 기준",
 }
 
-# ── 기업규모 및 소재지 ──
+# ── 기업규모 및 소재지 (연도별 기업규모 개별 설정 지원: 예 24년 대기업 → 25·26년 중견기업) ──
 CORP_SIZES = ["중소기업", "중견기업", "일반기업"]
+CORP_SIZE_DISPLAY_LABELS = {
+    "중소기업": "중소기업",
+    "중견기업": "중견기업",
+    "일반기업": "대기업(일반기업)",
+    "대기업": "대기업(일반기업)",
+}
 REGIONS = ["수도권", "수도권 외"]
+
+
+def normalize_corp_size(sz: str | None, default: str = "중소기업") -> str:
+    """'대기업', '대기업(일반기업)', '일반기업' 등을 표준 코드('중소기업' / '중견기업' / '일반기업')로 정규화합니다."""
+    raw = str(sz or "").strip()
+    if not raw:
+        return default if default in CORP_SIZES else "중소기업"
+    if "대기업" in raw or "일반" in raw:
+        return "일반기업"
+    if "중견" in raw:
+        return "중견기업"
+    if "중소" in raw:
+        return "중소기업"
+    return default if default in CORP_SIZES else "중소기업"
+
+
+def format_corp_size_label(sz: str | None, short: bool = False) -> str:
+    """화면·보고서 표시용 기업규모 라벨 (예: '일반기업' -> '일반기업(대기업)' 또는 short=True 시 '일반기업')."""
+    norm = normalize_corp_size(sz)
+    if norm == "일반기업":
+        return "일반기업" if short else "일반기업(대기업)"
+    return norm
+
+
+def _cohort_corp_size(s: dict | None, year: int | str | None = None, default: str | None = None) -> str:
+    """해당 연도의 기업규모를 돌려준다. 개별 설정 → 기본값 → 기존 biz['기업구분'] → '중소기업' 순서."""
+    fallback = normalize_corp_size(
+        (s or {}).get("corp_size_default")
+        or ((s or {}).get("biz") or {}).get("기업구분")
+        or default
+        or "중소기업",
+        "중소기업",
+    )
+    if not isinstance(s, dict) or year is None:
+        return fallback
+    y_str = str(year).strip()
+    by_yr = s.get("corp_size_by_year")
+    if isinstance(by_yr, dict):
+        v = by_yr.get(y_str)
+        if v is None and y_str.isdigit():
+            v = by_yr.get(int(y_str))
+        if v:
+            return normalize_corp_size(v, fallback)
+    ps_yr = ((s.get("prev_summary") or {}).get(y_str)) if isinstance(s.get("prev_summary"), dict) else None
+    if isinstance(ps_yr, dict) and ps_yr.get("기업구분"):
+        return normalize_corp_size(ps_yr.get("기업구분"), fallback)
+    return fallback
+
+
+def get_corp_size_for_year(s: dict | None, year: int | str | None, default: str | None = None) -> str:
+    """_cohort_corp_size의 호환 별칭."""
+    return _cohort_corp_size(s, year, default=default)
+
+
+def apply_corp_size_default_change(s: dict, new_default: str) -> str:
+    """
+    기업규모 기본값(s['corp_size_default'] 및 biz['기업구분'])을 바꾸고,
+    사용자가 개별로 수정한 적 없는 연도(s['corp_size_user_set']에 없는 연도)만 새 기본값으로 따라 바뀌게 합니다.
+    """
+    norm_def = normalize_corp_size(new_default, "중소기업")
+    s["corp_size_default"] = norm_def
+    s["_last_sidebar_corp_size"] = norm_def
+    b = s.setdefault("biz", {})
+    b["기업구분"] = norm_def
+    user_set = {str(x).strip() for x in (s.get("corp_size_user_set") or []) if str(x).strip()}
+    s["corp_size_user_set"] = sorted(user_set)
+    by_yr = s.setdefault("corp_size_by_year", {})
+    tax_yr = int(s.get("tax_year") or DEFAULT_TAX_YEAR)
+    target_yrs = {str(yy) for yy in range(2021, 2030)} | {str(tax_yr - i) for i in range(4)} | {str(k) for k in by_yr.keys()}
+    for y_str in target_yrs:
+        if y_str not in user_set:
+            by_yr[y_str] = norm_def
+            if y_str.isdigit() and int(y_str) in by_yr:
+                by_yr[int(y_str)] = norm_def
+    ps = s.get("prev_summary") or {}
+    if isinstance(ps, dict):
+        for y_k, pv_d in ps.items():
+            if isinstance(pv_d, dict) and str(y_k).strip() not in user_set:
+                pv_d["기업구분"] = norm_def
+    return norm_def
+
+
+def apply_corp_size_year_change(s: dict, year: int | str, new_size: str) -> str:
+    """
+    특정 과세연도(year)의 기업규모를 개별 변경하고 s['corp_size_user_set']에 기록합니다.
+    기본값(s['corp_size_default'] 및 biz['기업구분'])은 덮어쓰지 않습니다.
+    """
+    norm_sz = normalize_corp_size(new_size, _cohort_corp_size(s, year))
+    y_str = str(year).strip()
+    by_yr = s.setdefault("corp_size_by_year", {})
+    by_yr[y_str] = norm_sz
+    if y_str.isdigit() and int(y_str) in by_yr:
+        by_yr[int(y_str)] = norm_sz
+    user_set = {str(x).strip() for x in (s.get("corp_size_user_set") or []) if str(x).strip()}
+    user_set.add(y_str)
+    s["corp_size_user_set"] = sorted(user_set)
+    ps = s.setdefault("prev_summary", {})
+    if isinstance(ps, dict):
+        ps.setdefault(y_str, {})["기업구분"] = norm_sz
+    return norm_sz
+
+
+def get_corp_size_map(s: dict | None, years: list[int] | None = None) -> dict[int, str]:
+    """모든 대상 과세연도(기본 2021~2029년)의 `{연도(int): 기업구분}` 매핑을 반환합니다."""
+    base_default = _cohort_corp_size(s, None, "중소기업")
+    target_years = list(years) if years else list(range(2021, 2030))
+    if isinstance(s, dict):
+        for k in (s.get("corp_size_by_year") or {}):
+            if str(k).isdigit() and int(k) not in target_years:
+                target_years.append(int(k))
+    return {int(y): _cohort_corp_size(s, int(y), base_default) for y in sorted(set(target_years))}
+
+
+def has_mixed_corp_sizes(s: dict | None, years: list[int] | None = None) -> bool:
+    """표시 대상 연도들 사이에 서로 다른 기업구분이 설정되어 있는지 확인합니다."""
+    if not isinstance(s, dict):
+        return False
+    check_years = years
+    if not check_years:
+        tax_yr = int(s.get("tax_year") or DEFAULT_TAX_YEAR)
+        check_years = [tax_yr - 3, tax_yr - 2, tax_yr - 1, tax_yr]
+    sz_set = {_cohort_corp_size(s, y) for y in check_years}
+    return len(sz_set) > 1
+
+
+def format_corp_size_summary_text(s: dict | None, years: list[int] | None = None, short: bool = False) -> str:
+    """
+    모든 연도가 동일한 기업구분이면 단일 명칭(예: '중소기업')을 반환하고,
+    연도별로 다르면 '중견기업 (24년 일반기업 · 25년 중견기업 · 26년 중견기업)' 형태로 반환합니다.
+    """
+    if not isinstance(s, dict):
+        return format_corp_size_label("중소기업", short=short)
+    tax_yr = int(s.get("tax_year") or DEFAULT_TAX_YEAR)
+    cur_lbl = format_corp_size_label(_cohort_corp_size(s, tax_yr), short=short)
+    check_years = sorted(set(years if years else [tax_yr - 2, tax_yr - 1, tax_yr]))
+    if not has_mixed_corp_sizes(s, check_years):
+        return cur_lbl
+    parts = [f"{int(y)%100:02d}년 {format_corp_size_label(_cohort_corp_size(s, y), short=True)}" for y in check_years]
+    return f"{cur_lbl} ({' · '.join(parts)})"
 CAPITAL_AREA_KEYWORDS = ["서울", "인천", "경기"]
 
 # ── 소비성서비스업(적용 제외 업종) — 조특령 제26조의8 제1항, 제29조 제3항 ──
@@ -158,10 +303,12 @@ MILITARY_MAX_MONTHS = 72     # 병역이행기간 차감 한도: 최대 6년(72�
 #   - 2025년 중 계약   : 계약일부터 3년 (대기업 2년)
 #   - 2024년 이전 계약 : 적용 안 함 (매달 나이로만 판정)
 #   중견기업은 중소기업과 같은 기간. 청년 제외시점 = 계약일 + 인정기간 (상시근로자 명세서 작성방법 예: 2025.4.1. 계약 → 2028.4.1.부터 제외)
-YOUTH_HOLD_YEARS_SME = 4     # 2026년 이후 계약 · 중소·중견기업
-YOUTH_HOLD_YEARS_LARGE = 3   # 2026년 이후 계약 · 일반기업(대기업)
-YOUTH_HOLD_YEARS_2025_SME = 3     # 2025년 계약 · 중소·중견기업
-YOUTH_HOLD_YEARS_2025_LARGE = 2   # 2025년 계약 · 일반기업(대기업)
+YOUTH_HOLD_YEARS_SME = 4     # 2026년 이후 계약 · 중소·중견기업 (조특령 제26조의8 제4항 제1호 후단)
+YOUTH_HOLD_YEARS_LARGE = 3   # 2026년 이후 계약 · 일반기업(대기업) (조특령 제26조의8 제4항 제1호 후단)
+# 확인 필요: 2025.2.28. 대통령령 제35395호 구 조세특례제한법 시행령 제26조의8 제3항 제1호 후단 원문 및
+#            2026.2.27. 대통령령 제36127호 부칙 제11조 제1항에 따른 2025년 중 근로계약 체결자의 유예기간(중소·중견 3년 / 일반 2년 vs 4년 / 3년) 적용례 상세 문언
+YOUTH_HOLD_YEARS_2025_SME = 3     # 2025년 계약 · 중소·중견기업 (# 확인 필요)
+YOUTH_HOLD_YEARS_2025_LARGE = 2   # 2025년 계약 · 일반기업(대기업) (# 확인 필요)
 
 # ── 월별 셀 선택값 ──
 MONTH_AUTO = "자동"
@@ -452,6 +599,8 @@ DEC_ART_YOUTH_SCOPE = "조세특례제한법 시행령 제26조의8 제4항" # �
 DEC_ART_CALC_METHOD = "조세특례제한법 시행령 제26조의8 제6항" # 상시근로자 수 및 청년등 상시근로자 수 계산식(제11조의2 제8항 준용)
 DEC_ART_MATERNITY = "조세특례제한법 시행령 제26조의8 제7항"   # 출산전후휴가자 대체인력 특례
 DEC_ART_SUCCESSION = "조세특례제한법 시행령 제26조의8 제8항"  # 창업·포괄양수·합병·분할·법인전환 고용승계 특례(제23조 제13항 준용)
+# 확인 필요: 구 조세특례제한법 시행령(2026.2.27. 대통령령 제36127호로 개정되기 전의 것) 제26조의8 제4항 제1호·제2호 사후관리 추가납부 산식 상세 호·목 문언
+DEC_ART_LEGACY_CLAWBACK = "구 조세특례제한법 시행령 제26조의8 제4항"  # 2024·2025년 귀속 공제분 사후관리 추가납부세액 계산식(# 확인 필요)
 
 
 # ── 라포케어 20명 실제 사원 데이터 (엔진 회귀 테스트 전용 고정 픽스처) ──
@@ -532,171 +681,20 @@ LAFOCARE_GOLDEN_FIXTURE = {
 }
 
 
-import contextvars as _contextvars
-
-_ACTIVE_AS_OF_YEAR: _contextvars.ContextVar[int | None] = _contextvars.ContextVar("_ACTIVE_AS_OF_YEAR", default=None)
-
-
 def install_consistent_comparative_headcount_engine() -> None:
     """
-    [일관된 해석 기준 다년도 비교인원 자동 재산정 엔진 런타임 설치기]
-    - 당해 공제 인원과 직전·전전 비교 인원에 동일한 잣대(실제 근로기간 1년 미만 퇴사 확정자 소급 제외)를 적용하여:
-      1) 2026년 신법 공제 계산 시 2026년 중 1년 미만 퇴사 확정자(박소연·차백준 등)를 2025년 비교인원(nr_)에서도 제외(3.50명)
-      2) 2027년(A·B)·2028년(A·B·C) 계산 시에도 해당 과세연도 말(as_of_year)까지 확정된 1년 미만 퇴사 사실을 반영해
-         직전·전전 비교연도(2025·2026·2027년)의 비교인원(nr_)을 매년 자동 재산정합니다.
+    [하위 호환용 빈 함수(No-op)]
+    - 원칙 2(실행 중 다른 모듈 함수를 바꿔 끼우는 monkeypatch 금지)에 따라
+      일관된 해석 기준 비교인원 재산정 및 연도별 기업규모 계산 로직은
+      `hc_eligibility.py`, `hc_row_engine.py`, `hc_credit_calc.py`, `ui_common.py` 원본 함수에 직접 반영되어 있습니다.
     """
-    import sys as _sys
-    from datetime import date as _date
-
-    def _patched_tenure_under_1y(person: dict, year: int | None = None, as_of_year: int | None = None) -> bool:
-        try:
-            from . import hc_eligibility as _he
-        except Exception:
-            _he = _sys.modules.get("employment_credit.hc_eligibility") or _sys.modules.get("hc_eligibility")
-        if _he is None:
-            return False
-        parse_date = _he.parse_date
-        add_years = _he.add_years
-        hire = parse_date(person.get("입사일"))
-        eff_as_of = as_of_year if as_of_year is not None else _ACTIVE_AS_OF_YEAR.get(None)
-        ret_map = person.get("연도별_퇴사일") or {}
-        if eff_as_of is None:
-            yr_ret_str = ret_map.get(str(year)) if year is not None else None
-            retire = parse_date(yr_ret_str if yr_ret_str is not None else person.get("퇴사일"))
-            cutoff_year = int(year) if year is not None else None
-        else:
-            cutoff_year = int(eff_as_of)
-            min_yr = int(year) if year is not None else None
-            candidates = []
-            if isinstance(ret_map, dict):
-                for k, v in ret_map.items():
-                    try:
-                        ky = int(k)
-                    except (TypeError, ValueError):
-                        continue
-                    if min_yr is not None and ky < min_yr:
-                        continue
-                    if ky > cutoff_year:
-                        continue
-                    dt = parse_date(v)
-                    if dt is not None and dt <= _date(cutoff_year, 12, 31):
-                        candidates.append(dt)
-            base_ret = parse_date(person.get("퇴사일"))
-            if base_ret is not None:
-                if (min_yr is None or base_ret.year >= min_yr) and base_ret <= _date(cutoff_year, 12, 31):
-                    candidates.append(base_ret)
-            retire = min(candidates) if candidates else None
-        if not hire or not retire or retire < hire:
-            return False
-        if cutoff_year is not None and retire > _date(cutoff_year, 12, 31):
-            return False
-        one_yr_later = add_years(hire, 1)
-        return (retire.toordinal() - hire.toordinal() + 1) < (one_yr_later.toordinal() - hire.toordinal())
-
-    def _patched_suggest_exclusion(
-        person: dict,
-        yrec: dict,
-        year: int | None = None,
-        old_rule: bool = False,
-        as_of_year: int | None = None,
-    ) -> str:
-        emp_type = yrec.get("고용유형") or EMP_REGULAR
-        if emp_type in EMP_AUTO_EXCLUDE:
-            return EMP_AUTO_EXCLUDE[emp_type]
-        sh_rel = str(person.get("주주관계") or "").strip()
-        if sh_rel in EXCL_REASONS:
-            return sh_rel
-        if not old_rule and _patched_tenure_under_1y(person, year, as_of_year=as_of_year):
-            return EXCL_UNDER_1Y
-        return EXCL_NONE
-
-    for mod_name in (
-        "employment_credit.hc_eligibility", "hc_eligibility",
-        "employment_credit.hc_row_engine", "hc_row_engine",
-        "employment_credit.hc_review", "hc_review",
-        "employment_credit.headcount", "headcount",
-        "employment_credit.ui_common", "ui_common",
-    ):
-        mod = _sys.modules.get(mod_name)
-        if mod is not None:
-            if hasattr(mod, "tenure_under_1y"):
-                setattr(mod, "tenure_under_1y", _patched_tenure_under_1y)
-            if hasattr(mod, "suggest_exclusion"):
-                setattr(mod, "suggest_exclusion", _patched_suggest_exclusion)
-
-    for mod_name in ("employment_credit.hc_row_engine", "hc_row_engine", "employment_credit.headcount", "headcount", "employment_credit.ui_common", "ui_common"):
-        mod = _sys.modules.get(mod_name)
-        if mod is not None:
-            orig_cr = getattr(mod, "_orig_compute_row_unwrapped", None) or getattr(mod, "compute_row", None)
-            if orig_cr is not None and not getattr(orig_cr, "_is_as_of_wrapped", False):
-                def _make_wrapped_cr(_fn):
-                    def _wrapped_compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
-                        tok = _ACTIVE_AS_OF_YEAR.set(ctx.get("as_of_year") if isinstance(ctx, dict) else None)
-                        try:
-                            return _fn(person, yrec, year, ctx)
-                        finally:
-                            _ACTIVE_AS_OF_YEAR.reset(tok)
-                    _wrapped_compute_row._is_as_of_wrapped = True
-                    return _wrapped_compute_row
-                setattr(mod, "_orig_compute_row_unwrapped", orig_cr)
-                setattr(mod, "compute_row", _make_wrapped_cr(orig_cr))
-
-    for mod_name in ("employment_credit.ui_common", "ui_common"):
-        uic = _sys.modules.get(mod_name)
-        if uic is not None and hasattr(uic, "_apply_tenure_transition"):
-            H_mod = getattr(uic, "H", None)
-            if H_mod is not None:
-                def _patched_apply_tenure_transition(s, year, ctx, people, recs, computed, rows, totals, _H=H_mod) -> None:
-                    NEW = _H.NEW_TENURE_RULE_FROM
-                    y = int(year)
-                    tax_yr = int((s or {}).get("tax_year") or 0)
-                    if y >= NEW and ((y - 1) < NEW or (y - 2) < NEW):
-                        ctx_old = dict(ctx, old_tenure_rule=True, as_of_year=None)
-                        alt_old = {}
-                        for pid, c in computed.items():
-                            yrec = recs.get(pid) or {}
-                            if c["제외사유"] == EXCL_UNDER_1Y and "제외사유" not in (yrec.get("_user_set") or []):
-                                alt_old[pid] = _H.compute_row(people[pid], yrec, y, ctx_old)
-                        if alt_old:
-                            t_old = _H.year_totals([alt_old.get(pid, c) for pid, c in computed.items()], ctx["months_in_year"], year=y)
-                            for blk, cohort in (("b2", y - 1), ("b3", y - 2)):
-                                if cohort >= NEW:
-                                    continue
-                                for k in ("yth", "gen", "reg", "yth_act"):
-                                    totals[f"{blk}_{k}"] = t_old[f"{blk}_{k}"]
-                                for k in ("청년등_합계", "청년외_합계"):
-                                    totals[f"{blk}_{k}"] = t_old[f"{blk}_{k}"]
-                                for r in rows:
-                                    c_old = alt_old.get(r["pid"])
-                                    if c_old:
-                                        r[f"{blk}_yth"], r[f"{blk}_gen"], r[f"{blk}_reg"] = c_old[f"{blk}_yth"], c_old[f"{blk}_gen"], c_old[f"{blk}_reg"]
-                            totals["old_rule_pm_names"] = sorted(people[pid].get("성명", "") for pid in alt_old)
-                    if tax_yr >= NEW and (NEW - 1) <= y < tax_yr:
-                        ctx_new = dict(ctx, old_tenure_rule=False, as_of_year=tax_yr)
-                        alt_new = {}
-                        for pid, c in computed.items():
-                            yrec = recs.get(pid) or {}
-                            if (
-                                c["상시"] == "O"
-                                and "제외사유" not in (yrec.get("_user_set") or [])
-                                and _H.tenure_under_1y(people[pid], y, as_of_year=tax_yr)
-                            ):
-                                alt_new[pid] = _H.compute_row(people[pid], yrec, y, ctx_new)
-                        t_new = _H.year_totals([alt_new.get(pid, c) for pid, c in computed.items()], ctx["months_in_year"], year=y) if alt_new else totals
-                        totals["nr_상시_평균"] = t_new["상시_평균"]
-                        totals["nr_청년등_평균"] = t_new["청년등_평균"]
-                        totals["nr_청년외_평균"] = t_new["청년외_평균"]
-                        totals["nr_상시_합계"] = t_new["상시_합계"]
-                        totals["nr_청년등_합계"] = t_new["청년등_합계"]
-                        totals["nr_청년외_합계"] = t_new["청년외_합계"]
-                        totals["nr_names"] = sorted(people[pid].get("성명", "") for pid in alt_new)
-                setattr(uic, "_apply_tenure_transition", _patched_apply_tenure_transition)
+    return None
 
 
 def verify_golden_case_invariants() -> tuple[bool, list[str]]:
     """
-    [실제 계산 엔진(headcount.py) 기반 정답지 회귀 테스트 — 일관된 해석 기준 & 다년도(2026·2027·2028) 자동 재산정 검증]
-    1) 라포케어 2026년 귀속 검증:
+    [실제 계산 엔진(headcount.py) 기반 정답지 회귀 테스트]
+    1) 라포케어 2026년 귀속 검증 (모든 연도 중소기업 기본 시나리오):
        - 2025년 구법 자체/사후관리 인원: 상시 4.66명(청년등 3.91명, 청년외 0.75명) [박소연·차백준 포함]
        - 2025년 신법 비교인원(nr_): 상시 3.50명(청년등 3.50명, 청년외 0.00명, 42개월) [이진우·박소연·차백준 제외]
        - 2026년 당해 신법 인원: 상시 11.83명(청년등 10.25명, 청년외 1.58명, 142개월) [박소연·차백준 제외]
@@ -704,10 +702,18 @@ def verify_golden_case_invariants() -> tuple[bool, list[str]]:
        - 2026년 증가인원: 전체 +8.33명, 청년등 +6.75명, 청년외 +1.58명 (6.75 + 1.58 = 8.33)
        - 1차 53,570,000원 / 2차 39,640,000원(재계산 40,160,000원) / 3차 16,740,000원 / 합계 109,950,000원 /
          농특세 21,990,000원 / 순절세액 87,960,000원
-    2) 다년도(2027년 B · 2028년 C) 비교연도 자동 재산정 검증:
-       - 2026년 9월 입사자(도은주)가 2027년 5월 중 퇴사(실제 근로기간 1년 미만)한 경우,
-         2026년 당해 신고 시에는 포함(11.83명)되나 2027년·2028년 계산 시 2026년 비교인원(nr_)에서는 자동 제외(11.50명)되고
-         2025년 비교인원(nr_)은 2027년 B·2028년 C에서도 동일하게 3.50명으로 유지되는지 검증합니다.
+    2) 다년도(2027년 B · 2028년 C) 비교연도 자동 재산정 검증 (도은주 시나리오)
+    3) 연도별 기업규모 변동 검증 (2023 중소기업 / 2024 일반기업 / 2025 중견기업 / 2026 중견기업):
+       - 법제처 원문(조세특례제한법 제29조의8 제1항 제3호 가목 2 및 시행령 제26조의8 제3항 제1호)에 따라
+         2026년 신법 중견기업은 최소고용증가인원(5명) 차감 규정이 적용됩니다:
+         * 2026년 1차(중견, 신법 A) 차감 전 산출액: 6.75명 × 500만(33,750,000원) + 1.58명 × 300만(4,740,000원) = 38,490,000원
+         * 중견기업 최소고용증가인원(5명) 차감액: 청년등외 1.58명 × 300만(4,740,000원) + 청년등 (5.00 - 1.58 = 3.42명) × 500만(17,100,000원) = 21,840,000원
+         * 2026년 1차(중견, 신법 A) 차감 후 공제액: 38,490,000원 - 21,840,000원 = 16,650,000원
+         * 2025년분 2차(중견, 구법 기신고 기준): 2.30명 × 800만(18,400,000원) + 0.74명 × 450만(3,330,000원) = 21,730,000원
+           (세법원칙 재계산 기준 시: 2.33명 × 800만 + 0.75명 × 450만 = 22,015,000원)
+         * 2024년분 3차(일반기업): 공제기간 2년 종료 및 2년 사후관리 고용유지('공제기간 종료(일반기업 2년) · 고용유지(추징 없음)') → 연속공제 0원, 추징 0원
+         * 총 공제액(기신고 기준): 16,650,000 + 21,730,000 + 0 = 38,380,000원, 농특세(20%) 7,676,000원, 실질 순절세액 30,704,000원
+           (최소고용증가인원 차감 전 합산 기준 시: 38,490,000 + 21,730,000 + 0 = 60,220,000원, 농특세 12,044,000원)
     """
     errors: list[str] = []
     try:
@@ -725,8 +731,6 @@ def verify_golden_case_invariants() -> tuple[bool, list[str]]:
             H = _importlib.import_module("employment_credit.headcount")
         except Exception as e:
             return False, [f"headcount 모듈 로드 실패: {e}"]
-
-    install_consistent_comparative_headcount_engine()
 
     fx = LAFOCARE_GOLDEN_FIXTURE
     people: dict[str, dict] = {}
@@ -765,7 +769,7 @@ def verify_golden_case_invariants() -> tuple[bool, list[str]]:
                 "_user_set": ["고용유형"] if "고용유형_연도별" in emp else [],
             }
 
-    # ── 1) 2026년 귀속(tax_yr = 2026) 실제 엔진 실행 ──
+    # ── 1) 2026년 귀속(tax_yr = 2026, 모든 연도 중소기업) 실제 엔진 실행 ──
     tax_yr = 2026
     summaries: dict[int, dict] = {}
     cohort_maps: dict[int, dict[str, bool]] = {}
@@ -882,13 +886,13 @@ def verify_golden_case_invariants() -> tuple[bool, list[str]]:
     if c1_won != 53_570_000:
         errors.append(f"2026년 1차 공제액 불일치: {c1_won:,} != 53,570,000")
     if c2_filed_won != 39_640_000:
-        errors.append(f"2026년 2차 연속공제액(기신고) 불일치: {c2_filed_won:,} != 39,640,000")
+        errors.append(f"2026년 2차 연속공제액(기신고) 불일치: {c2_filed_won:,} != 39_640_000")
     if c2_recalc_won != 40_160_000:
-        errors.append(f"2026년 2차 연속공제액(재계산) 불일치: {c2_recalc_won:,} != 40,160,000")
+        errors.append(f"2026년 2차 연속공제액(재계산) 불일치: {c2_recalc_won:,} != 40_160_000")
     if (c2_recalc_won - c2_filed_won) != 520_000:
         errors.append(f"2025년 귀속 경정청구 연간 차액 불일치: {c2_recalc_won - c2_filed_won:,} != 520,000")
     if c3_won != 16_740_000:
-        errors.append(f"2026년 3차 연속공제액(2024년 비수도권 단가 승계) 불일치: {c3_won:,} != 16,740,000")
+        errors.append(f"2026년 3차 연속공제액(2024년 비수도권 단가 승계) 불일치: {c3_won:,} != 16_740,000")
     if tot_gross != 109_950_000:
         errors.append(f"당해 총 공제세액 합계 불일치: {tot_gross:,} != 109,950,000")
     if rural_tax != 21_990_000:
@@ -897,10 +901,6 @@ def verify_golden_case_invariants() -> tuple[bool, list[str]]:
         errors.append(f"실질 순절세액 불일치: {net_saving:,} != 87,960,000")
 
     # ── 2) 다년도(2027년 B · 2028년 C) 비교연도 자동 재산정 검증 ──
-    # 도은주(p22, 2026-09-01 입사)가 2027-05-15에 퇴사(1년 미만)한 경우:
-    # - 2026년 자체 계산(as_of_year=2026)에서는 상시근로자 포함(11.83명)
-    # - 2027년·2028년 계산 시에는 2026년 비교인원(nr_)에서 도은주(4개월)가 자동 제외되어 138/12 = 11.50명(청년등 123/12 = 10.25명, 청년외 15/12 = 1.25명)이 되고,
-    #   2025년 비교인원(nr_)은 2027년 B·2028년 C에서도 3.50명으로 일관되게 유지되는지 검증
     p22_sim = dict(people["p22"], 퇴사일="2027-05-15", 연도별_퇴사일={"2027": "2027-05-15"})
     if H.tenure_under_1y(p22_sim, 2026, as_of_year=None):
         errors.append("다년도 검증 실패: 2026년 말 기준 재직자(도은주)가 2026년 당해 자체 계산에서 1년 미만으로 잘못 제외됨")
@@ -934,14 +934,11 @@ def verify_golden_case_invariants() -> tuple[bool, list[str]]:
     )
     tier_a_2027 = pkg_2027["abc_res"]["tiers"]["A"]
     tier_b_2027 = pkg_2027["abc_res"]["tiers"]["B"]
-    # 2027 A: 2027(14.00/12.00) - 2026 nr(11.50/10.25) -> 전체 +2.50, 청년 +1.75, 일반 +0.75
     if round(float(tier_a_2027["total_inc"]), 2) != 2.50 or round(float(tier_a_2027["youth_inc"]), 2) != 1.75 or round(float(tier_a_2027["non_youth_inc"]), 2) != 0.75:
         errors.append(f"2027년 A(직전 2026년 재산정 비교) 증가인원 불일치: {tier_a_2027}")
-    # 2027 B: min(2027 14.00, 2026 nr 11.50) - 2025 nr(3.50) = 11.50 - 3.50 = +8.00 (청년 10.25 - 3.50 = +6.75, 일반 +1.25)
     if round(float(tier_b_2027["total_inc"]), 2) != 8.00 or round(float(tier_b_2027["youth_inc"]), 2) != 6.75 or round(float(tier_b_2027["non_youth_inc"]), 2) != 1.25:
         errors.append(f"2027년 B(전전 2025년 3.50명 & 직전 2026년 11.50명 비교) 유지인원 불일치: {tier_b_2027}")
 
-    # 도은주 2027년 중 1년 미만 퇴사 시 2026년 자체 공제액 재산정 차이(53,570,000원 -> 52,250,000원, 차이 1,320,000원) 검증
     res_2026_recalc_after_2027 = H.calculate_tax_year_package(
         tax_year=2026,
         corp_size=fx["corp_size"],
@@ -958,7 +955,204 @@ def verify_golden_case_invariants() -> tuple[bool, list[str]]:
     if int(res_2026_recalc_after_2027["cur_base_credit_won"]) != 52_250_000 or (c1_won - int(res_2026_recalc_after_2027["cur_base_credit_won"])) != 1_320_000:
         errors.append(f"2026년 신고분 사후 재산정 세액 차이 불일치: {c1_won - int(res_2026_recalc_after_2027['cur_base_credit_won']):,} != 1,320,000")
 
+    # ── 3) 연도별 기업규모 변동 시나리오(2023 중소 / 2024 일반기업 / 2025 중견기업 / 2026 중견기업) 검증 ──
+    # [계산 과정 주석]
+    # - 2026년 1차(중견기업, 신법 A):
+    #   * 차감 전 기본 산출액(item1 + item2): 청년등 6.75명 × 500만(33,750,000원) + 청년등외 1.58명 × 300만(4,740,000원) = 38,490,000원
+    #   * 최소고용증가인원(중견기업 5명, 조특법 제29조의8 제1항 제3호 가목 2 · 조특령 제26조의8 제3항 제1호) 차감액(item3):
+    #     청년등외 1.58명 × 300만(4,740,000원) + 청년등 (5.00 - 1.58 = 3.42명) × 500만(17,100,000원) = 21,840,000원
+    #   * 차감 후 2026년 1차 공제액(cur_base_credit_won): 38,490,000원 - 21,840,000원 = 16,650,000원
+    # - 2025년분 2차(중견기업, 구법 기신고 기준):
+    #   * 청년등 2.30명 × 800만(18,400,000원) + 청년등외 0.74명 × 450만(3,330,000원) = 21,730,000원
+    #   * (세법원칙 재계산 기준: 2.33명 × 800만 + 0.75명 × 450만 = 22,015,000원)
+    # - 2024년분 3차(일반기업, 구법):
+    #   * 일반기업 공제기간 2년 종료 및 고용유지(case_code='공제기간 종료(일반기업 2년) · 고용유지(추징 없음)', active=True) → 연속공제 0원, 추가납부 0원
+    # - 총 공제액(기신고 기준):
+    #   * 최소고용증가인원 차감 반영 정본: 16,650,000 + 21,730,000 + 0 = 38,380,000원, 농특세(20%) 7,676,000원, 실질 순절세액 30,704,000원
+    #   * 최소고용증가인원 차감 전 합산액: 38,490,000 + 21,730,000 + 0 = 60,220,000원, 농특세(20%) 12,044,000원
+    sz_by_yr = {"2023": "중소기업", "2024": "일반기업", "2025": "중견기업", "2026": "중견기업"}
+    pkg_mixed_filed = H.calculate_tax_year_package(
+        tax_year=2026,
+        corp_size="중견기업",
+        is_capital=fx["is_capital"],
+        summaries=summaries,
+        prior_filings=prior_filings,
+        additional_inputs={},
+        scheme_2026="new_2026",
+        pm_basis=PM_BASIS_FILED,
+        corp_size_by_year=sz_by_yr,
+    )
+    tier_a_mixed = pkg_mixed_filed["abc_res"]["tiers"]["A"]
+    gross_a_before_hurdle = int(tier_a_mixed["item1_youth_won"]) + int(tier_a_mixed["item2_non_youth_won"])
+    if gross_a_before_hurdle != 38_490_000:
+        errors.append(f"연도별 기업규모(2026 중견) 차감 전 1차 산출액 불일치: {gross_a_before_hurdle:,} != 38,490,000")
+    if int(tier_a_mixed["item3_deduction_won"]) != 21_840_000:
+        errors.append(f"연도별 기업규모(2026 중견) 5명 최소고용증가인원 차감액 불일치: {tier_a_mixed['item3_deduction_won']:,} != 21,840,000")
+    if int(pkg_mixed_filed["cur_base_credit_won"]) != 16_650_000:
+        errors.append(f"연도별 기업규모(2026 중견) 차감 후 1차 공제액 불일치: {pkg_mixed_filed['cur_base_credit_won']:,} != 16,650,000")
+    if int(pkg_mixed_filed["pm_y1_filed"]["continued_credit_won"]) != 21_730_000:
+        errors.append(f"연도별 기업규모(2025 중견, 기신고 기준) 2차 연속공제액 불일치: {pkg_mixed_filed['pm_y1_filed']['continued_credit_won']:,} != 21,730,000")
+    if int(pkg_mixed_filed["pm_y1_recalc"]["continued_credit_won"]) != 22_015_000:
+        errors.append(f"연도별 기업규모(2025 중견, 재계산 기준) 2차 연속공제액 불일치: {pkg_mixed_filed['pm_y1_recalc']['continued_credit_won']:,} != 22,015,000")
+    if (
+        int(pkg_mixed_filed["pm_y2"]["continued_credit_won"]) != 0
+        or int(pkg_mixed_filed["pm_y2"]["clawback_net_payable_won"]) != 0
+        or pkg_mixed_filed["pm_y2"].get("case_code") != "공제기간 종료(일반기업 2년) · 고용유지(추징 없음)"
+    ):
+        errors.append(f"연도별 기업규모(2024 일반기업, 고용유지) 3차 공제기간 종료·추징없음 판정 불일치: {pkg_mixed_filed['pm_y2']}")
+    if int(pkg_mixed_filed["total_credit_gross_won"]) != 38_380_000 or int(pkg_mixed_filed["rural_special_tax_won"]) != 7_676_000:
+        errors.append(f"연도별 기업규모(기신고 기준) 총공제액/농특세 불일치: {pkg_mixed_filed['total_credit_gross_won']:,} / {pkg_mixed_filed['rural_special_tax_won']:,}")
+
+    # ── 4) 2024년 코호트(비수도권)가 2026년(2차 사후관리)에 상시·청년등 1.00명으로 감소한 경우 추징 검증 ──
+    #   - 구 조세특례제한법 제29조의8 제2항·제3항 및 구 같은 법 시행령 제26조의8 제4항 제2호:
+    #     사후관리 기간은 기업규모 구분 없이 최초 공제연도 종료일부터 2년.
+    #   - 2024년 최초 상시 1.58명·청년등 1.58명(증가 청년등 1.08명) → 2025년 유지(2회 공제) → 2026년 상시 1.00명·청년등 1.00명(0.58명 감소):
+    #     ① 2024년 코호트가 일반기업(비수도권, 청년등 400만원)인 경우:
+    #        3차 연속공제 0원, 추가납부세액 = 0.58명 × 400만원 × 2회 = 4,640,000원 (2년 기공제 합계 한도 8,640,000원 이내)
+    #     ② 동일 조건에서 2024년 코호트가 중소기업(비수도권, 청년등 1,550만원)인 경우:
+    #        3차 연속공제 0원, 추가납부세액 = 0.58명 × 1,550만원 × 2회 = 17,980,000원 (2년 기공제 합계 한도 33,480,000원 이내)
+    summaries_2026_dec = {
+        **summaries,
+        2026: dict(
+            summaries[2026],
+            상시_평균=1.00,
+            청년등_평균=1.00,
+            청년외_평균=0.00,
+            b2_reg=1.00,
+            b2_yth=1.00,
+            b2_yth_act=1.00,
+            b3_reg=1.00,
+            b3_yth=1.00,
+            b3_yth_act=1.00,
+        ),
+    }
+    pf_2024_large = {
+        **prior_filings,
+        2024: dict(
+            prior_filings[2024],
+            claimed_won=4_320_000,
+            y1_continued_won=4_320_000,
+            is_capital=False,
+        ),
+    }
+    pkg_2024_large_claw = H.calculate_tax_year_package(
+        tax_year=2026,
+        corp_size="중견기업",
+        is_capital=fx["is_capital"],
+        summaries=summaries_2026_dec,
+        prior_filings=pf_2024_large,
+        additional_inputs={},
+        scheme_2026="new_2026",
+        pm_basis=PM_BASIS_FILED,
+        corp_size_by_year={"2023": "중소기업", "2024": "일반기업", "2025": "중견기업", "2026": "중견기업"},
+    )
+    pm2_large_claw = pkg_2024_large_claw["pm_y2_filed"]
+    if int(pm2_large_claw["continued_credit_won"]) != 0 or int(pm2_large_claw["clawback_net_payable_won"]) != 4_640_000:
+        errors.append(
+            f"2024 일반기업(비수도권) 코호트 2026년 인원 감소(1.58→1.00명) 시 3차 공제/추징 불일치: "
+            f"공제 {pm2_large_claw['continued_credit_won']:,} != 0 또는 추징 {pm2_large_claw['clawback_net_payable_won']:,} != 4,640,000"
+        )
+
+    pkg_2024_sme_claw = H.calculate_tax_year_package(
+        tax_year=2026,
+        corp_size="중소기업",
+        is_capital=fx["is_capital"],
+        summaries=summaries_2026_dec,
+        prior_filings=prior_filings,
+        additional_inputs={},
+        scheme_2026="new_2026",
+        pm_basis=PM_BASIS_FILED,
+        corp_size_by_year={"2023": "중소기업", "2024": "중소기업", "2025": "중소기업", "2026": "중소기업"},
+    )
+    pm2_sme_claw = pkg_2024_sme_claw["pm_y2_filed"]
+    if int(pm2_sme_claw["continued_credit_won"]) != 0 or int(pm2_sme_claw["clawback_net_payable_won"]) != 17_980_000:
+        errors.append(
+            f"2024 중소기업(비수도권, 1,550만원) 코호트 2026년 인원 감소(1.58→1.00명) 시 3차 공제/추징 불일치: "
+            f"공제 {pm2_sme_claw['continued_credit_won']:,} != 0 또는 추징 {pm2_sme_claw['clawback_net_payable_won']:,} != 17,980,000"
+        )
+
+    # ── 5) 2028년 중소기업(수도권) B(2년차 유지분) 청년↔청년등외 교차 변동 검증 ──
+    #   - 조세특례제한법 제29조의8 제1항 제1호·제2호 가목(중소기업)의 계산식 중 B 및 각 호 외의 부분 괄호 한도:
+    #     * 2026년(T-2): 상시 0.00, 청년등 0.00, 청년등외 0.00
+    #     * 2027년(T-1): 상시 10.00, 청년등 2.00, 청년등외 8.00
+    #     * 2028년(T)  : 상시 10.00, 청년등 8.00, 청년등외 2.00
+    #     -> tot_b = min(10, 10) - 0 = 10.00명
+    #     -> yth_b = min(8, 2) - 0 = 2.00명
+    #     -> gen_b = min(2, 8) - 0 = 2.00명 (tot_b - yth_b = 8.00명으로 과대계산 금지)
+    #     -> B 세액 = 2.00명 × 1,600만원 + 2.00명 × 900만원 = 32,000,000 + 18,000,000 = 50,000,000원
+    abc_cross_2028 = H.calc_new_2026_credit_abc(
+        tax_year=2028,
+        corp_size="중소기업",
+        is_capital=True,
+        summaries_by_year={
+            2025: {"상시_평균": 0.0, "청년등_평균": 0.0, "청년외_평균": 0.0, "has_data": True},
+            2026: {"상시_평균": 0.0, "청년등_평균": 0.0, "청년외_평균": 0.0, "has_data": True},
+            2027: {"상시_평균": 10.0, "청년등_평균": 2.0, "청년외_평균": 8.0, "has_data": True},
+            2028: {"상시_평균": 10.0, "청년등_평균": 8.0, "청년외_평균": 2.0, "has_data": True},
+        },
+    )
+    tier_b_cross = abc_cross_2028["tiers"]["B"]
+    if (
+        round(float(tier_b_cross["total_inc"]), 2) != 10.00
+        or round(float(tier_b_cross["youth_inc"]), 2) != 2.00
+        or round(float(tier_b_cross["non_youth_inc"]), 2) != 2.00
+        or int(tier_b_cross["credit_won"]) != 50_000_000
+    ):
+        errors.append(
+            f"2028년 중소·수도권 B 교차 변동 산식 불일치: "
+            f"tot_b={tier_b_cross['total_inc']}, yth_b={tier_b_cross['youth_inc']}, gen_b={tier_b_cross['non_youth_inc']}, B_won={tier_b_cross['credit_won']:,} != 50,000,000"
+        )
+
+    # ── 6) 만 34세 초과자(1990-06-01생, 2025-05-01 근로계약 체결) 계약연도 기업규모별 유예기간 및 월 경계(me < hold_end) 검증 ──
+    #   - 2025-05-01 입사 당시 만 34세(1990-06-01생) → 2025년 6월 말부터 만 35세 초과:
+    #     ① 2025년 기업규모가 중견기업(3년 유예, 청년 제외시점 hold_end = 2028-05-01)인 경우:
+    #        2027년 1~12월 말일(me <= 2027-12-31 < 2028-05-01) 12개월 모두 청년 인정 (청년등 12개월 = 1.00명)
+    #     ② 2025년 기업규모가 일반기업(대기업, 2년 유예, 청년 제외시점 hold_end = 2027-05-01)인 경우:
+    #        2027년 1~4월 말일(2027-04-30 < 2027-05-01) 4개월만 청년 인정(청년등 4/12 = 0.33명),
+    #        2027-05-01부터 제외되어 5~12월 말일(2027-05-31 >= 2027-05-01) 8개월은 일반(청년등외 1.00 - 0.33 = 0.67명)
+    p_boundary = {
+        "pid": "p_bnd",
+        "사업장명": "본점",
+        "성명": "홍길동",
+        "생년월일": "1990-06-01",
+        "입사일": "2025-05-01",
+        "퇴사일": "",
+        "연도별_퇴사일": {},
+        "계약체결일": "2025-05-01",
+        "병역개월": 0,
+        "월급여": {"2027": {str(m): 3_500_000.0 for m in range(1, 13)}},
+    }
+    yrec_bnd = {"고용유형": EMP_REGULAR, "제외사유": "", "청년등": "", "상시_override": "", "월_override": {}, "_user_set": []}
+    ctx_bnd_mid = {
+        "corp_size": "중견기업",
+        "corp_size_by_year": {2025: "중견기업", 2026: "중견기업", 2027: "중견기업"},
+        "months_in_year": 12,
+        "assume_year_end": True,
+        "include_unpaid_hire_month": True,
+        "last_paid_month": 12,
+        "cohort_youth_map": {},
+        "old_tenure_rule": False,
+    }
+    ctx_bnd_large = {
+        "corp_size": "중견기업",
+        "corp_size_by_year": {2025: "일반기업", 2026: "중견기업", 2027: "중견기업"},
+        "months_in_year": 12,
+        "assume_year_end": True,
+        "include_unpaid_hire_month": True,
+        "last_paid_month": 12,
+        "cohort_youth_map": {},
+        "old_tenure_rule": False,
+    }
+    row_bnd_mid = H.compute_row(p_boundary, dict(yrec_bnd), 2027, ctx_bnd_mid)
+    row_bnd_large = H.compute_row(p_boundary, dict(yrec_bnd), 2027, ctx_bnd_large)
+    yth_months_mid = sum(1 for flg in row_bnd_mid["youth_flags"] if flg)
+    yth_months_large = sum(1 for flg in row_bnd_large["youth_flags"] if flg)
+    if yth_months_mid != 12 or round(float(row_bnd_mid["b1_yth"]), 2) != 1.00:
+        errors.append(f"2025년 중견기업 계약(3년 유예) 2027년 청년 인정 개월 수 불일치: {yth_months_mid}개월 ({row_bnd_mid['b1_yth']}) != 12개월 (1.00명)")
+    if yth_months_large != 4 or row_bnd_large["youth_flags"][:4] != [True] * 4 or any(row_bnd_large["youth_flags"][4:]) or round(float(row_bnd_large["b1_yth"]), 2) != 0.33:
+        errors.append(
+            f"2025년 일반기업 계약(2년 유예 · 2027-05-01 제외시점) 2027년 월 경계 판정 불일치: "
+            f"청년 {yth_months_large}개월 ({row_bnd_large['youth_flags']}, {row_bnd_large['b1_yth']}) != 1~4월 4개월 (0.33명)"
+        )
+
     return (len(errors) == 0), errors
-
-
-install_consistent_comparative_headcount_engine()

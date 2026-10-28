@@ -32,6 +32,8 @@ from . import backup as B
 from .ui_common import (  # noqa: F401
     _APP_PDF_CHAR_CAP,
     _S,
+    _all_possible_years,
+    _cohort_corp_size,
     _compose_doc_texts_with_wp,
     _current_build_sig,
     _default_workplace_label,
@@ -146,6 +148,95 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
             f"</div>",
             unsafe_allow_html=True,
         )
+
+    # ── 1단계: 기업규모 기본값 및 연도별 기업규모 개별 선택 (입력의 원본) ──
+    with st.container(border=True):
+        cur_def_sz = R.normalize_corp_size(
+            s.get("corp_size_default") or (s.get("biz") or {}).get("기업구분") or "중소기업",
+            "중소기업",
+        )
+        s["corp_size_default"] = cur_def_sz
+        s.setdefault("biz", {})["기업구분"] = cur_def_sz
+        by_yr_s1 = s.setdefault("corp_size_by_year", {})
+        user_set_s1 = {str(x).strip() for x in (s.get("corp_size_user_set") or []) if str(x).strip()}
+        four_years_s1 = [tax_yr, tax_yr - 1, tax_yr - 2, tax_yr - 3]
+        for yy_s1 in four_years_s1:
+            if str(yy_s1) not in by_yr_s1:
+                by_yr_s1[str(yy_s1)] = cur_def_sz
+
+        c_def_sel, c_def_help = st.columns([2.2, 3.8], vertical_alignment="center")
+        with c_def_sel:
+            yr_sz_ver_s1 = int(s.get("yr_sz_ver", 0))
+            new_def_sz = st.selectbox(
+                "기업규모 기본값",
+                options=R.CORP_SIZES,
+                index=R.CORP_SIZES.index(cur_def_sz) if cur_def_sz in R.CORP_SIZES else 0,
+                format_func=lambda v: "일반기업(대기업)" if v == "일반기업" else v,
+                key=f"ec_step1_corp_size_default_{tax_yr}_{yr_sz_ver_s1}",
+                help="중소기업 유예기간(조특령 제2조) 중이면 중소기업으로 선택하세요.",
+            )
+            if new_def_sz != cur_def_sz:
+                R.apply_corp_size_default_change(s, new_def_sz)
+                s["yr_sz_ver"] = yr_sz_ver_s1 + 1
+                for y_all in _all_possible_years(s):
+                    s["grid_ver"][y_all] = s["grid_ver"].get(y_all, 0) + 1
+                s.pop("_report_artifact_cache", None)
+                _save_ec_to_disk(s)
+                st.rerun()
+        with c_def_help:
+            st.caption("💡 중소기업 유예기간(조특령 제2조) 중이면 중소기업으로 선택하세요.")
+            diff_yrs_s1 = [
+                f"{yy}년({_cohort_corp_size(s, yy)})"
+                for yy in four_years_s1
+                if _cohort_corp_size(s, yy) != cur_def_sz
+            ]
+            if diff_yrs_s1:
+                st.markdown(
+                    f"<span style='background:#fff7ed;color:#c2410c;border:1px solid #fdba74;padding:2px 8px;"
+                    f"border-radius:999px;font-size:0.78rem;font-weight:700;'>"
+                    f"⚠️ 기본값과 다름: {', '.join(diff_yrs_s1)}</span>",
+                    unsafe_allow_html=True,
+                )
+
+        with st.expander("연도별로 기업규모가 다른 경우", expanded=bool(diff_yrs_s1)):
+            cols_yr_s1 = st.columns(4)
+            role_labels_s1 = {
+                tax_yr: "당해",
+                tax_yr - 1: "직전",
+                tax_yr - 2: "전전",
+                tax_yr - 3: "전전전",
+            }
+            for idx_y, yy_s1 in enumerate(four_years_s1):
+                with cols_yr_s1[idx_y]:
+                    cur_y_sz = _cohort_corp_size(s, yy_s1, cur_def_sz)
+                    is_diff = cur_y_sz != cur_def_sz
+                    badge_html = (
+                        " <span style='background:#fff7ed;color:#c2410c;border:1px solid #fdba74;"
+                        "padding:1px 6px;border-radius:999px;font-size:0.72rem;font-weight:800;'>기본값과 다름</span>"
+                        if is_diff
+                        else ""
+                    )
+                    st.markdown(
+                        f"<div style='font-size:0.84rem;font-weight:700;color:#1e293b;margin-bottom:3px;'>"
+                        f"{yy_s1}년 ({role_labels_s1.get(yy_s1, '')}){badge_html}</div>",
+                        unsafe_allow_html=True,
+                    )
+                    sel_y_sz = st.selectbox(
+                        f"{yy_s1}년 기업규모",
+                        options=R.CORP_SIZES,
+                        index=R.CORP_SIZES.index(cur_y_sz) if cur_y_sz in R.CORP_SIZES else 0,
+                        format_func=lambda v: "일반기업(대기업)" if v == "일반기업" else v,
+                        label_visibility="collapsed",
+                        key=f"ec_step1_yr_sz_{yy_s1}_{tax_yr}_{yr_sz_ver_s1}",
+                    )
+                    if sel_y_sz != cur_y_sz:
+                        R.apply_corp_size_year_change(s, yy_s1, sel_y_sz)
+                        s["yr_sz_ver"] = yr_sz_ver_s1 + 1
+                        for y_all in _all_possible_years(s):
+                            s["grid_ver"][y_all] = s["grid_ver"].get(y_all, 0) + 1
+                        s.pop("_report_artifact_cache", None)
+                        _save_ec_to_disk(s)
+                        st.rerun()
 
     doc_types = R.get_doc_types(tax_yr)
     doc_help = R.get_doc_help(tax_yr)
