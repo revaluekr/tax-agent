@@ -2364,7 +2364,7 @@ def _inject_direct_law_links(text: str, trace: dict = None) -> str:
 
         if not in_refs:
             linked_line = re.sub(
-                r"(?<!\[)\[(판례|심판례|헌재|헌재결정례|해석례|예규|조문|부칙|별표)(?:\s*[:：]\s*|\s*)(?=[가-힣A-Za-z0-9「])([^\]]+)\](?!\]|\()",
+                r"(?<!\[)\[(판례|심판례|헌재|헌재결정례|해석례|예규|조문|부칙|별표)(?:\s*[:：]\s*|\s*)(?=[가-힣A-Za-z0-9「])([^\]]+)\](?!\]|\(\s*https?://)",
                 _replace_tag_with_link,
                 line
             )
@@ -2441,7 +2441,7 @@ def _inject_direct_law_links(text: str, trace: dict = None) -> str:
                     line = f"{prefix_bullet}[{clean_item_body}]({direct_url})"
                 else:
                     line = re.sub(
-                        r"(?<!\[)\[(판례|심판례|헌재|헌재결정례|해석례|예규|조문|부칙|별표)(?:\s*[:：]\s*|\s*)(?=[가-힣A-Za-z0-9「])([^\]]+)\](?!\()",
+                        r"(?<!\[)\[(판례|심판례|헌재|헌재결정례|해석례|예규|조문|부칙|별표)(?:\s*[:：]\s*|\s*)(?=[가-힣A-Za-z0-9「])([^\]]+)\](?!\]|\(\s*https?://)",
                         _replace_tag_with_link,
                         line
                     )
