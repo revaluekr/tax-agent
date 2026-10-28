@@ -1550,26 +1550,154 @@ def verify_golden_case_invariants() -> tuple[bool, list[str]]:
     ):
         errors.append(f"8-8 실패(이중 대괄호 링크 뒤 불일치 인용 미삭제 또는 링크 훼손): cnt={cnt_dbl}, out={out_dbl}")
 
-    # (8-9) 2단계 [➕ 사원 추가] 수기 사원(입사일 미입력 초기 상태) worked_in_year 및 compute_row 정상 노출 검증
-    manual_emp = {
-        "pid": "manual_1_test",
+    # (8-9) 수기 추가(_manual=True) 사원 월별 재직 계산·1년 미만 제외·단시간 가중치 및 서류 사원 빈 데이터 worked_in_year 검증
+    # ① 2026-04-01 입사, 정규직, 퇴사일 없음 → 2026년 4~12월 9개월(0.75명) / 2025년 미표시(worked_in_year False)
+    manual_c1 = {
+        "pid": "manual_c1",
         "_manual": True,
         "사업장명": "본점",
         "연도별_사업장명": {},
-        "성명": "신규사원1",
-        "생년월일": "",
-        "입사일": "",
+        "성명": "수기정규직",
+        "생년월일": "1990-05-10",
+        "입사일": "2026-04-01",
         "퇴사일": "",
-        "계약체결일": "",
+        "계약체결일": "2026-04-01",
         "병역개월": 0,
         "월급여": {},
         "연도별_퇴사일": {},
         "_confirmed": [],
     }
-    if not H.worked_in_year(manual_emp, 2026) or not H.worked_in_year(manual_emp, 2025):
-        errors.append("8-9 실패: [➕ 사원 추가]로 생성된 수기 사원(입사일 미입력)이 worked_in_year에서 누락됨")
-    manual_emp_2026_hire = dict(manual_emp, 입사일="2026-04-01")
-    if not H.worked_in_year(manual_emp_2026_hire, 2026) or H.worked_in_year(manual_emp_2026_hire, 2025):
-        errors.append("8-9 실패: 수기 사원에 2026년 입사일 입력 후 연도별 재직 판정(2026 True, 2025 False) 불일치")
+    if not H.worked_in_year(manual_c1, 2026) or H.worked_in_year(manual_c1, 2025):
+        errors.append("8-9(1) 실패: 2026-04-01 입사 수기 사원의 연도별 표시 판정(2026 True, 2025 False) 불일치")
+    row_c1_2026 = H.compute_row(
+        manual_c1,
+        {"고용유형": EMP_REGULAR},
+        2026,
+        {"corp_size": "중소기업", "months_in_year": 12, "wht_years": [2026]},
+    )
+    if (
+        row_c1_2026["months"] != [0.0, 0.0, 0.0] + [1.0] * 9
+        or round(row_c1_2026["row_sum"], 2) != 9.0
+        or round(row_c1_2026["b1_reg"], 2) != 0.75
+        or row_c1_2026["no_pay_months"] != []
+    ):
+        errors.append(
+            f"8-9(1) 실패: 2026-04-01 입사 정규직 2026년 4~12월 9개월(0.75명) 불일치 "
+            f"(row_sum={row_c1_2026['row_sum']}, b1_reg={row_c1_2026['b1_reg']}, no_pay={row_c1_2026['no_pay_months']})"
+        )
+
+    # ② 2025-08-01 입사, 2026-03-31 퇴사 → 2025년 8~12월 5개월(0.41명) / 2026년 1~3월 3개월(0.25명) 및 실제 근로기간 1년 미만 제외 판정 확인
+    manual_c2 = {
+        "pid": "manual_c2",
+        "_manual": True,
+        "사업장명": "본점",
+        "연도별_사업장명": {},
+        "성명": "수기중도퇴사",
+        "생년월일": "1992-03-15",
+        "입사일": "2025-08-01",
+        "퇴사일": "2026-03-31",
+        "계약체결일": "2025-08-01",
+        "병역개월": 0,
+        "월급여": {},
+        "연도별_퇴사일": {},
+        "_confirmed": [],
+    }
+    if not H.worked_in_year(manual_c2, 2025) or not H.worked_in_year(manual_c2, 2026):
+        errors.append("8-9(2) 실패: 2025-08-01 입사 · 2026-03-31 퇴사 수기 사원의 2025·2026 worked_in_year 판정 불일치")
+    row_c2_2025 = H.compute_row(
+        manual_c2,
+        {"고용유형": EMP_REGULAR},
+        2025,
+        {"corp_size": "중소기업", "months_in_year": 12, "old_tenure_rule": True},
+    )
+    if (
+        row_c2_2025["months"] != [0.0] * 7 + [1.0] * 5
+        or round(row_c2_2025["row_sum"], 2) != 5.0
+        or round(row_c2_2025["B_b1_reg"], 2) != 0.41
+    ):
+        errors.append(
+            f"8-9(2) 실패: 2025-08-01 입사 수기 사원 2025년 8~12월 5개월(0.41명) 불일치 "
+            f"(row_sum={row_c2_2025['row_sum']}, B_b1_reg={row_c2_2025['B_b1_reg']})"
+        )
+    # 2026년 1~3월 재직(3개월, 0.25명 — 종전 규정/사후관리 기준 또는 제외사유 해제 시) 확인
+    row_c2_2026_active = H.compute_row(
+        manual_c2,
+        {"고용유형": EMP_REGULAR},
+        2026,
+        {"corp_size": "중소기업", "months_in_year": 12, "old_tenure_rule": True},
+    )
+    if (
+        row_c2_2026_active["months"] != [1.0, 1.0, 1.0] + [0.0] * 9
+        or round(row_c2_2026_active["row_sum"], 2) != 3.0
+        or round(row_c2_2026_active["b1_reg"], 2) != 0.25
+    ):
+        errors.append(
+            f"8-9(2) 실패: 2026-03-31 퇴사 수기 사원 2026년 1~3월 3개월(0.25명) 불일치 "
+            f"(row_sum={row_c2_2026_active['row_sum']}, b1_reg={row_c2_2026_active['b1_reg']})"
+        )
+    # 실제 근로기간 1년 미만(8개월: 2025-08-01 ~ 2026-03-31) 제외 판정이 일반 사원과 동일하게 적용되는지 확인
+    row_c2_2026_new_rule = H.compute_row(
+        manual_c2,
+        {"고용유형": EMP_REGULAR},
+        2026,
+        {"corp_size": "중소기업", "months_in_year": 12, "old_tenure_rule": False},
+    )
+    if (
+        not H.tenure_under_1y(manual_c2, 2026)
+        or row_c2_2026_new_rule["제외사유"] != EXCL_UNDER_1Y
+        or row_c2_2026_new_rule["상시"] != "X"
+        or round(row_c2_2026_new_rule["b1_reg"], 2) != 0.0
+    ):
+        errors.append(
+            f"8-9(2) 실패: 수기 사원(2025-08-01~2026-03-31, 8개월 근무)의 실제 근로기간 1년 미만 제외 판정 불일치 "
+            f"(제외사유={row_c2_2026_new_rule['제외사유']}, 상시={row_c2_2026_new_rule['상시']})"
+        )
+
+    # ③ 단시간(0.5) 2026-01-01 입사 → 2026년 0.50명
+    manual_c3 = {
+        "pid": "manual_c3",
+        "_manual": True,
+        "사업장명": "본점",
+        "연도별_사업장명": {},
+        "성명": "수기단시간",
+        "생년월일": "1988-11-20",
+        "입사일": "2026-01-01",
+        "퇴사일": "",
+        "계약체결일": "2026-01-01",
+        "병역개월": 0,
+        "월급여": {},
+        "연도별_퇴사일": {},
+        "_confirmed": [],
+    }
+    row_c3_2026 = H.compute_row(
+        manual_c3,
+        {"고용유형": EMP_PT_050},
+        2026,
+        {"corp_size": "중소기업", "months_in_year": 12},
+    )
+    if (
+        row_c3_2026["months"] != [0.5] * 12
+        or round(row_c3_2026["row_sum"], 2) != 6.0
+        or round(row_c3_2026["b1_reg"], 2) != 0.50
+    ):
+        errors.append(
+            f"8-9(3) 실패: 단시간(0.5) 2026-01-01 입사 수기 사원 2026년 0.50명 불일치 "
+            f"(row_sum={row_c3_2026['row_sum']}, b1_reg={row_c3_2026['b1_reg']})"
+        )
+
+    # ④ 서류에서 읽은 사원(_manual 아님)이 입사일·급여가 모두 비어 있으면 worked_in_year False
+    doc_emp_empty = {
+        "pid": "emp_doc_empty",
+        "사업장명": "본점",
+        "성명": "서류빈사원",
+        "생년월일": "1990-01-01",
+        "입사일": "",
+        "퇴사일": "",
+        "계약체결일": "",
+        "병역개월": 0,
+        "월급여": {},
+    }
+    if H.worked_in_year(doc_emp_empty, 2026) or H.worked_in_year(doc_emp_empty, 2025):
+        errors.append("8-9(4) 실패: 서류에서 읽은 사원(_manual 아님)의 입사일·급여가 모두 비어 있는데 worked_in_year가 True를 반환함")
 
     return (len(errors) == 0), errors

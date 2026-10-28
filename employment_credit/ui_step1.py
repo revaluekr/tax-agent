@@ -130,7 +130,7 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
             unsafe_allow_html=True,
         )
     elif tax_yr in (2024, 2025):
-        trunc_lbl = "합산 후 절사"
+        trunc_lbl = R.calc_method_badge_label(tax_yr)
         st.markdown(
             f"<div class='ec-law-banner'>"
             f"💡 <b>[{tax_yr}년 귀속 세액공제({trunc_lbl}) 및 사후관리 안내]</b> 2단계 진입 시 <b>『{tax_yr}년 귀속 상시근로자 명세』</b>가 맨 위에 표시되며, "

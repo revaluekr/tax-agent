@@ -240,20 +240,13 @@ def worked_in_year(person: dict, year: int) -> bool:
     hire = parse_date(person.get("입사일"))
     yr_ret_str = (person.get("연도별_퇴사일") or {}).get(str(year))
     retire = parse_date(yr_ret_str if yr_ret_str is not None else person.get("퇴사일"))
+    if not hire:
+        return False
     y_start = date(year, 1, 1)
     y_end = date(year, 12, 31)
-    if retire and retire < y_start:
-        return False
-    if not hire:
-        # [➕ 사원 추가] 버튼으로 직접 추가한 사원(입사일 입력 전)은 즉시 사원표에 표시되어 편집 가능해야 함
-        if (
-            person.get("_manual")
-            or str(person.get("pid") or "").startswith("manual_")
-            or not (person.get("월급여") or {})
-        ):
-            return True
-        return False
     if hire > y_end:
+        return False
+    if retire and retire < y_start:
         return False
     return True
 

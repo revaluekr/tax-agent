@@ -2705,7 +2705,7 @@ def _page_calculation():
                 "전체 상시 [총인원 / 평균]": f"{pkg['cur_s']['reg_total']:g}명 / {pkg['cur_s']['regular']:.2f}명",
                 "청년등 [총인원 / 평균]": f"{pkg['cur_s']['yth_total']:g}명 / {pkg['cur_s']['youth']:.2f}명",
                 "청년등 외 [총인원 / 평균]": f"{pkg['cur_s']['non_youth_total']:g}명 / {pkg['cur_s']['non_youth']:.2f}명",
-                "적용 기준 및 비교 안내": f"당해({tax_yr}년) 신법 기준(실제 근로기간 1년 미만 제외 · ÷{pkg['cur_s']['months_in_year']}개월 합산 후 절사)",
+                "적용 기준 및 비교 안내": f"당해({tax_yr}년) 신법 기준(실제 근로기간 1년 미만 제외 · ÷{pkg['cur_s']['months_in_year']}개월 {R.calc_method_badge_label(tax_yr)})",
             },
             {
                 "연도 · 블록 구분": f"② {tax_yr}년 귀속 [{b4_title}]",

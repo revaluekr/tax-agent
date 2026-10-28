@@ -273,8 +273,37 @@ def _S() -> dict:
     tax_yr_init = int(s.get("tax_year") or R.DEFAULT_TAX_YEAR)
     for yy_i in range(min(2021, tax_yr_init - 3), max(2030, tax_yr_init + 2)):
         by_yr_init.setdefault(str(yy_i), def_sz_init)
+    if _prune_manual_without_hire(s) > 0:
+        st.session_state.pop(_CALC_CACHE_KEY, None)
+        _save_ec_to_disk(s)
     st.session_state.ec = s
     return s
+
+
+def _prune_manual_without_hire(s: dict) -> int:
+    """기존 저장 데이터에 입사일이 없는 _manual 사원이 남아 있으면 로드 시 제외하고 제외 인원수를 기록합니다."""
+    people = s.get("people")
+    if not isinstance(people, dict) or not people:
+        return 0
+    drop_pids = [
+        pid
+        for pid, p in list(people.items())
+        if isinstance(p, dict)
+        and (p.get("_manual") or str(pid).startswith("manual_"))
+        and H.parse_date(p.get("입사일")) is None
+    ]
+    if not drop_pids:
+        return 0
+    for pid in drop_pids:
+        people.pop(pid, None)
+    year_recs = s.get("year_recs")
+    if isinstance(year_recs, dict):
+        for recs in year_recs.values():
+            if isinstance(recs, dict):
+                for pid in drop_pids:
+                    recs.pop(pid, None)
+    s["_pruned_manual_no_hire_count"] = int(s.get("_pruned_manual_no_hire_count") or 0) + len(drop_pids)
+    return len(drop_pids)
 
 
 def reset_credit_all_state() -> None:
@@ -356,8 +385,13 @@ def _has_year_data(s: dict, year: int) -> bool:
         if H._has_any_pay_record((p.get("월급여") or {}).get(str(year))):
             return True
     t = int(s.get("tax_year") or R.DEFAULT_TAX_YEAR)
-    if not _uploaded_wht_years(s) and year in (t, t - 1):
-        if any(H.worked_in_year(p, year) for p in (s.get("people") or {}).values()):
+    if year in (t, t - 1):
+        if not _uploaded_wht_years(s) and any(H.worked_in_year(p, year) for p in (s.get("people") or {}).values()):
+            return True
+        if any(
+            (p.get("_manual") or str(p.get("pid") or "").startswith("manual_")) and H.worked_in_year(p, year)
+            for p in (s.get("people") or {}).values()
+        ):
             return True
     ps_y = (s.get("prev_summary") or {}).get(str(year)) or {}
     if (ps_y.get("상시") or 0.0) > 0 or (ps_y.get("청년등") or 0.0) > 0 or (ps_y.get("공제세액") or 0) > 0:
@@ -763,6 +797,7 @@ def _ensure_built_for_tax_year(s: dict):
             default_workplace=default_wp,
         )
         _carry_over_user_edits(s, old_people, old_recs)
+        _prune_manual_without_hire(s)
 
         # 인원수가 45명 이상이면 브라우저 렌더링 부하 방지를 위해 연도별 탭 뷰를 기본 활성화
         if len(s["people"]) >= 45 and not s.get("_tabs_user_touched"):
@@ -2122,6 +2157,10 @@ def _top_status_bar(s: dict):
         f"</div>",
         unsafe_allow_html=True,
     )
+    pruned_n = int(s.pop("_pruned_manual_no_hire_count", 0) or 0)
+    if pruned_n > 0:
+        st.warning(f"ℹ️ 입사일 미입력 수기 사원 {pruned_n}명 제외")
+        _save_ec_to_disk(s)
 
 
 
@@ -2387,6 +2426,14 @@ function(p){
   return String(p.value).replace(/-/g, '.');
 }""")
 
+JS_NAME_FMT = JsCode("""
+function(p){
+  if (!p.value) return '';
+  if (p.node && p.node.rowPinned) return p.value;
+  if (p.data && p.data._manual === '1') return p.value + ' [수기 추가]';
+  return p.value;
+}""")
+
 
 def _block_titles_for_year(year: int, two_line: bool = False) -> tuple[str, str, str]:
     y0 = int(year)
@@ -2557,6 +2604,7 @@ def _build_year_rows_uncached(s: dict, year: int) -> tuple[list[dict], dict, dic
             ),
             "_proj": "".join("1" if (i + 1) in c.get("projected_months", []) else "0" for i in range(12)),
             "_movr": "".join("1" if (i + 1) in ovr else "0" for i in range(12)),
+            "_manual": "1" if (p.get("_manual") or str(pid).startswith("manual_")) else "0",
             "_sovr": "1" if yrec.get("상시_override") else "0",
             "_sauto": c["상시_auto"],
             "_class_diff": "1" if (yrec.get("_class_diff") or p.get("_class_diff")) else "0",
@@ -3048,7 +3096,7 @@ def _build_csv_bytes(s: dict) -> bytes:
         rows, _, totals = _build_year_rows(s, y)
         has_y1 = _has_year_data(s, y - 1)
         has_y2 = _has_year_data(s, y - 2)
-        trunc_mode = "합산 후 절사"
+        trunc_mode = R.calc_method_badge_label(y)
         for r in rows:
             writer.writerow(
                 [

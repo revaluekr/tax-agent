@@ -35,7 +35,10 @@ from .ui_common import (  # noqa: F401
     JS_LOCKED,
     JS_MONTH_EDITABLE,
     JS_MONTH_STYLE,
+    JS_NAME_FMT,
     JS_NUM_FMT,
+    _CALC_CACHE_KEY,
+    _prune_manual_without_hire,
     JS_STYLE,
     JS_STYLE_CENTER,
     JS_STYLE_EXCL,
@@ -437,6 +440,178 @@ def _dlg_review(items: list[tuple[str, str]], audit_payload: dict | None = None,
             st.markdown(s["pro_audit_comment"])
 
 
+@st.dialog("사원 추가")
+def _dlg_add_employee():
+    s = _S()
+    shown_years = _years(s)
+    sub_list = s.get("sub_biz_list") or []
+    is_multi_wp = len(sub_list) > 0
+
+    st.caption("필수(*) 항목을 입력한 뒤 [확인]을 누르면 사원표에 즉시 반영됩니다.")
+
+    if is_multi_wp:
+        default_wp = _default_workplace_label(s)
+        wp_opts = [default_wp]
+        for sb in sub_list:
+            sb_nm = str((sb or {}).get("상호") or "").strip()
+            if sb_nm and sb_nm not in wp_opts:
+                wp_opts.append(sb_nm)
+        if R.DEFAULT_WORKPLACE_NAME not in wp_opts:
+            wp_opts.append(R.DEFAULT_WORKPLACE_NAME)
+        wp_val = st.selectbox("사업장", options=wp_opts, index=0, key="dlg_add_emp_wp")
+    else:
+        wp_val = R.DEFAULT_WORKPLACE_NAME
+
+    c1, c2 = st.columns(2)
+    with c1:
+        name_in = st.text_input("성명 *", placeholder="예: 홍길동", key="dlg_add_emp_name")
+        hire_in = st.text_input("입사일 * (YYYY-MM-DD)", placeholder="예: 2026-04-01", key="dlg_add_emp_hire")
+        retire_in = st.text_input("퇴사일 (선택, YYYY-MM-DD)", placeholder="재직 중이면 비워두세요", key="dlg_add_emp_retire")
+        mil_in = st.number_input(
+            "병역개월 (선택, 기본 0)",
+            min_value=0,
+            max_value=R.MILITARY_MAX_MONTHS,
+            value=0,
+            step=1,
+            key="dlg_add_emp_mil",
+        )
+    with c2:
+        birth_in = st.text_input("생년월일 * (YYYY-MM-DD)", placeholder="예: 1995-05-15", key="dlg_add_emp_birth")
+        default_emp_idx = R.EMP_TYPES.index(R.EMP_REGULAR) if R.EMP_REGULAR in R.EMP_TYPES else 0
+        emp_in = st.selectbox("고용형태 *", options=R.EMP_TYPES, index=default_emp_idx, key="dlg_add_emp_type")
+        contract_in = st.text_input(
+            "근로계약 체결일 (선택, 비우면 입사일)",
+            placeholder="비워두면 입사일과 동일하게 적용",
+            key="dlg_add_emp_contract",
+        )
+
+    name_str = (name_in or "").strip()
+    birth_raw = (birth_in or "").strip()
+    hire_raw = (hire_in or "").strip()
+    retire_raw = (retire_in or "").strip()
+    contract_raw = (contract_in or "").strip()
+
+    birth_dt = H.parse_date(birth_raw) if birth_raw else None
+    hire_dt = H.parse_date(hire_raw) if hire_raw else None
+    retire_dt = H.parse_date(retire_raw) if retire_raw else None
+    contract_dt = H.parse_date(contract_raw) if contract_raw else hire_dt
+
+    if birth_raw and birth_dt is None:
+        st.error("생년월일 형식이 올바르지 않습니다. (예: 1995-05-15)")
+    if hire_raw and hire_dt is None:
+        st.error("입사일 형식이 올바르지 않습니다. (예: 2026-04-01)")
+
+    opt_date_err = False
+    if retire_raw and retire_dt is None:
+        st.error("퇴사일 형식이 올바르지 않습니다. (예: 2026-03-31)")
+        opt_date_err = True
+    if contract_raw and H.parse_date(contract_raw) is None:
+        st.error("근로계약 체결일 형식이 올바르지 않습니다. (예: 2026-04-01)")
+        opt_date_err = True
+
+    missing_req = not (name_str and birth_dt and hire_dt and emp_in)
+
+    retire_order_err = False
+    if hire_dt and retire_dt and hire_dt > retire_dt:
+        st.error("입사일이 퇴사일보다 늦습니다 (입사일 > 퇴사일). 날짜를 확인해 주세요.")
+        retire_order_err = True
+
+    if hire_dt and shown_years:
+        min_yr, max_yr = min(shown_years), max(shown_years)
+        if hire_dt.year < min_yr or hire_dt.year > max_yr:
+            st.warning(
+                f"입사일({hire_dt.isoformat()})이 현재 표시 연도 범위({min_yr}~{max_yr}년) 밖입니다. "
+                f"(추가는 가능하며 재직 연도에 자동 반영됩니다)"
+            )
+
+    is_dup = False
+    if name_str and birth_dt:
+        for ep in (s.get("people") or {}).values():
+            if str(ep.get("성명") or "").strip() == name_str and H.parse_date(ep.get("생년월일")) == birth_dt:
+                is_dup = True
+                break
+
+    if is_dup:
+        st.warning(
+            f"⚠️ 같은 성명({name_str})·생년월일({birth_dt.isoformat()}) 사원이 이미 존재합니다 (중복 가능성). "
+            f"동일인이 아닌 경우 [그래도 추가] 버튼을 눌러 추가하세요."
+        )
+
+    cannot_add = missing_req or opt_date_err or retire_order_err
+
+    def _clear_dlg_keys():
+        for k in (
+            "dlg_add_emp_name",
+            "dlg_add_emp_birth",
+            "dlg_add_emp_hire",
+            "dlg_add_emp_retire",
+            "dlg_add_emp_contract",
+            "dlg_add_emp_mil",
+            "dlg_add_emp_type",
+            "dlg_add_emp_wp",
+        ):
+            st.session_state.pop(k, None)
+
+    def _commit_new_employee():
+        seq = int(s.get("next_pid_seq", 1))
+        s["next_pid_seq"] = seq + 1
+        pid = f"manual_{seq}_{uuid.uuid4().hex[:6]}"
+        eff_contract = (contract_dt or hire_dt).isoformat()
+        eff_retire = retire_dt.isoformat() if retire_dt else ""
+        s["people"][pid] = {
+            "pid": pid,
+            "_manual": True,
+            "사업장명": wp_val,
+            "연도별_사업장명": {},
+            "성명": name_str,
+            "생년월일": birth_dt.isoformat(),
+            "입사일": hire_dt.isoformat(),
+            "퇴사일": eff_retire,
+            "계약체결일": eff_contract,
+            "병역개월": int(mil_in or 0),
+            "월급여": {},
+            "연도별_퇴사일": {},
+            "_confirmed": [],
+        }
+        s["emp_quick_filter"] = "ALL"
+        target_yrs = set(_all_possible_years(s)) | {hire_dt.year}
+        for y in target_yrs:
+            yrec = P.new_year_rec()
+            yrec["고용유형"] = emp_in
+            if emp_in != R.EMP_REGULAR:
+                yrec["_user_set"] = ["고용유형"]
+            s["year_recs"].setdefault(y, {})[pid] = yrec
+            s["grid_ver"][y] = s["grid_ver"].get(y, 0) + 1
+        st.session_state.pop(_CALC_CACHE_KEY, None)
+        s.pop("totals_snapshot", None)
+        s.pop("_report_artifact_cache", None)
+        _clear_dlg_keys()
+        _save_ec_to_disk(s)
+        st.rerun()
+
+    st.markdown("<div class='ec-nav-divider' style='margin:10px 0;'></div>", unsafe_allow_html=True)
+    if is_dup:
+        c_ok, c_force, c_cancel = st.columns([1.2, 1.4, 1.2])
+        with c_ok:
+            st.button("확인", type="primary", use_container_width=True, disabled=True, key="btn_dlg_add_emp_ok")
+        with c_force:
+            if st.button("그래도 추가", type="primary", use_container_width=True, disabled=cannot_add, key="btn_dlg_add_emp_force"):
+                _commit_new_employee()
+        with c_cancel:
+            if st.button("취소", use_container_width=True, key="btn_dlg_add_emp_cancel"):
+                _clear_dlg_keys()
+                st.rerun()
+    else:
+        c_ok, c_cancel = st.columns([1.5, 1.5])
+        with c_ok:
+            if st.button("확인", type="primary", use_container_width=True, disabled=cannot_add, key="btn_dlg_add_emp_ok"):
+                _commit_new_employee()
+        with c_cancel:
+            if st.button("취소", use_container_width=True, key="btn_dlg_add_emp_cancel"):
+                _clear_dlg_keys()
+                st.rerun()
+
+
 def _grid_options(
     df: pd.DataFrame,
     totals: dict,
@@ -501,11 +676,12 @@ def _grid_options(
             "field": "성명",
             "headerName": "성명",
             "pinned": "left",
-            "width": 78,
-            "minWidth": 78,
+            "width": 98,
+            "minWidth": 88,
             "suppressSizeToFit": True,
             "editable": JS_LOCKED,
             "cellStyle": JS_STYLE,
+            "valueFormatter": JS_NAME_FMT,
         },
     ]
 
@@ -1274,6 +1450,11 @@ def _render_prev_filing_summary_card(s: dict, shown_years: list[int]):
 def _page_employees(room_key: str, log_tokens_fn=None):
     s = _S()
     _ensure_built_for_tax_year(s)
+    _prune_manual_without_hire(s)
+    pruned_n = int(s.pop("_pruned_manual_no_hire_count", 0) or 0)
+    if pruned_n > 0:
+        st.warning(f"ℹ️ 입사일 미입력 수기 사원 {pruned_n}명 제외")
+        _save_ec_to_disk(s)
     tax_yr = int(s["tax_year"])
     shown_years = _years(s)
 
@@ -1368,6 +1549,7 @@ def _page_employees(room_key: str, log_tokens_fn=None):
             "<span style='background:#e0f2fe;color:#0369a1;border:1px solid #7dd3fc'>🟦 미도래 월 연말재직 가정(자동 1)</span>"
             "<span style='background:#ffedd5;color:#c2410c;border:1px solid #fdba74'>🟧 급여 0원 월 (입사월 익월지급 산입 / 기중 무급 0 제외)</span>"
             "<span style='background:#ffffff;color:#0f172a;border:2px solid #f59e0b'>🔧 직접 수정한 값</span>"
+            "<span style='background:#f3e8ff;color:#6b21a8;border:1px solid #d8b4fe'>✍️ [수기 추가] 수기 입력 사원</span>"
             "</div>",
             unsafe_allow_html=True,
         )
@@ -1443,30 +1625,7 @@ def _page_employees(room_key: str, log_tokens_fn=None):
 
     c_add, _ = st.columns([1.3, 5.8])
     if c_add.button("➕ 사원 추가", use_container_width=True):
-        seq = int(s.get("next_pid_seq", 1))
-        s["next_pid_seq"] = seq + 1
-        pid = f"manual_{seq}_{uuid.uuid4().hex[:6]}"
-        s["people"][pid] = {
-            "pid": pid,
-            "_manual": True,
-            "사업장명": _default_workplace_label(s),
-            "연도별_사업장명": {},
-            "성명": f"신규사원{seq}",
-            "생년월일": "",
-            "입사일": "",
-            "퇴사일": "",
-            "계약체결일": "",
-            "병역개월": 0,
-            "월급여": {},
-            "연도별_퇴사일": {},
-            "_confirmed": [],
-        }
-        s["emp_quick_filter"] = "ALL"
-        for y in _all_possible_years(s):
-            s["year_recs"].setdefault(y, {})[pid] = P.new_year_rec()
-            s["grid_ver"][y] = s["grid_ver"].get(y, 0) + 1
-        _save_ec_to_disk(s)
-        st.rerun()
+        _dlg_add_employee()
 
     # ── 하단 네비게이션 바: [< 이전] ... [📕 전체 PDF 다운] [🔍 오류 검토] [다음(3단계)] ──
     corp_nm = (s.get("biz", {}).get("상호") or "상호미입력").strip()

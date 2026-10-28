@@ -86,14 +86,22 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
     pay_obj = (person.get("월급여") or {}).get(str(year))
     has_any_pay_data = _has_any_pay_record(pay_obj)
     weight = R.EMP_WEIGHT.get(emp_type, 1.0)
+    is_manual = bool(person.get("_manual") or str(person.get("pid") or "").startswith("manual_"))
 
     # 그해 원천징수부가 올라와 있는데 그 안에 없는 사람(다른 연도 자료에만 있음)은 그해 이 회사에서 근무하지 않은 것으로 봄
+    # 단, 수기 추가(_manual) 사원은 급여 기록 없이 입사일·퇴사일 기준으로 재직을 판정하므로 제외하지 않음
     wht_years = {int(y) for y in (ctx.get("wht_years") or [])}
     other_year_pay = any(
         _has_any_pay_record(v) for k, v in (person.get("월급여") or {}).items() if str(k) != str(year)
     )
     user_activated_row = yrec.get("상시_override") == "O"
-    absent_in_wht = int(year) in wht_years and not has_any_pay_data and other_year_pay and not user_activated_row
+    absent_in_wht = (
+        not is_manual
+        and int(year) in wht_years
+        and not has_any_pay_data
+        and other_year_pay
+        and not user_activated_row
+    )
 
     # 기중양도(고용승계 포함, 조특령 제23조 제13항 준용): 양도일 현재 근무자는 개시일에 승계시킨 것으로 보아 그해 0
     tr_out_map = ctx.get("transfer_out_map") or {}
@@ -144,6 +152,19 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
 
             if not emp_ok:
                 val = 0.0
+            elif is_manual:
+                # _manual 사원: 급여 기록이 없어도 입사일·퇴사일 기준으로 월말 재직 판정 (급여 0원 월 무급 제외 미적용)
+                # 미도래 월(last_paid_month < 12 이고 m > last_paid_month) 연말재직 가정은 일반 사원과 동일하게 적용
+                if last_paid_month < 12 and m > last_paid_month and not paid:
+                    still_employed_at_cut = employed_at_month_end(hire, retire, year, last_paid_month)
+                    hired_after_cut = bool(hire and hire > month_end(year, last_paid_month))
+                    if assume_year_end and (still_employed_at_cut or hired_after_cut):
+                        val = weight
+                        projected_months.append(m)
+                    else:
+                        val = 0.0
+                else:
+                    val = weight
             else:
                 if has_any_pay_data:
                     if paid:
