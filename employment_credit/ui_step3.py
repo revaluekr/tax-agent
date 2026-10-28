@@ -1284,6 +1284,87 @@ def _build_step3_calculation_pdf_bytes(
     return buf.getvalue()
 
 
+
+def _build_prior_new_law_recalc_warnings(
+    s: dict,
+    tax_yr: int,
+    corp_size: str,
+    is_capital: bool,
+    totals_all: dict[int, dict[str, Any]],
+    ps: dict[str, Any],
+) -> list[str]:
+    """
+    [다년도(2027·2028년) 계산 시 직전·전전 신법 과세연도(2026년 이후) 사후 재산정 경고 생성기]
+    - 조건: 직전·전전 비교연도(y >= 2026)의 재산정 비교인원(nr_상시_평균)이 그 연도의 당해 신고 인원(상시_평균 또는 기신고 상시)과 다를 때
+    - 문구: “○○년 인원이 신고 당시 ○○명 → 재산정 ○○명으로 변경됨 (1년 미만 퇴사 확정). ○○년 공제액 차이 ○○원, 수정신고 여부 검토 필요”
+    """
+    warnings_out: list[str] = []
+    if int(tax_yr) <= H.NEW_TENURE_RULE_FROM:
+        return warnings_out
+
+    for y_chk in range(H.NEW_TENURE_RULE_FROM, int(tax_yr)):
+        t_y = totals_all.get(y_chk) or {}
+        if not t_y.get("has_data"):
+            continue
+        nr_reg = t_y.get("nr_상시_평균")
+        if nr_reg is None:
+            continue
+        recalc_reg = round(float(nr_reg), 2)
+        recalc_yth = round(float(t_y.get("nr_청년등_평균", t_y.get("청년등_평균", 0.0)) or 0.0), 2)
+        recalc_gen = round(max(0.0, recalc_reg - recalc_yth), 2)
+
+        f_y = (ps or {}).get(str(y_chk)) or {}
+        orig_reg = round(float(f_y["상시"] if f_y.get("상시") is not None else (t_y.get("상시_평균", t_y.get("b1_reg", 0.0)) or 0.0)), 2)
+        orig_yth = round(float(f_y["청년등"] if f_y.get("청년등") is not None else (t_y.get("청년등_평균", t_y.get("b1_yth", 0.0)) or 0.0)), 2)
+        orig_gen = round(max(0.0, orig_reg - orig_yth), 2)
+
+        if abs(recalc_reg - orig_reg) < 0.01 and abs(recalc_yth - orig_yth) < 0.01:
+            continue
+
+        coh_cap = _cohort_capital(s, y_chk, is_capital)
+        sim_orig = dict(totals_all)
+        sim_orig[y_chk] = dict(t_y, 상시_평균=orig_reg, 청년등_평균=orig_yth, 청년외_평균=orig_gen)
+        sim_recalc = dict(totals_all)
+        sim_recalc[y_chk] = dict(t_y, 상시_평균=recalc_reg, 청년등_평균=recalc_yth, 청년외_평균=recalc_gen)
+
+        try:
+            res_orig = H.calculate_tax_year_package(
+                tax_year=y_chk,
+                corp_size=corp_size,
+                is_capital=coh_cap,
+                summaries=sim_orig,
+                prior_filings={},
+                additional_inputs={},
+                scheme_2026="new_2026",
+                pm_basis=R.PM_BASIS_FILED,
+            )
+            res_recalc = H.calculate_tax_year_package(
+                tax_year=y_chk,
+                corp_size=corp_size,
+                is_capital=coh_cap,
+                summaries=sim_recalc,
+                prior_filings={},
+                additional_inputs={},
+                scheme_2026="new_2026",
+                pm_basis=R.PM_BASIS_FILED,
+            )
+            orig_won = int(f_y["공제세액"]) if f_y.get("공제세액") is not None else int(res_orig.get("cur_base_credit_won") or 0)
+            recalc_won = int(res_recalc.get("cur_base_credit_won") or 0)
+            diff_won = abs(orig_won - recalc_won)
+        except Exception:
+            diff_won = 0
+
+        nr_names = t_y.get("nr_names") or []
+        names_sfx = f": {', '.join(nr_names)}" if nr_names else ""
+        warnings_out.append(
+            f"⚠️ <b>[기신고 과세연도 사후 재산정 안내]</b> "
+            f"<b>{y_chk}년</b> 인원이 신고 당시 <b>{orig_reg:.2f}명</b> → 재산정 <b>{recalc_reg:.2f}명</b>으로 변경됨 "
+            f"(1년 미만 퇴사 확정{names_sfx}). "
+            f"<b>{y_chk}년 공제액 차이 {diff_won:,}원</b>, 수정신고 여부 검토 필요"
+        )
+    return warnings_out
+
+
 def _page_calculation():
     s = _S()
     _ensure_built_for_tax_year(s)
@@ -1383,6 +1464,10 @@ def _page_calculation():
     )
     yr_list = [tax_yr - 3, tax_yr - 2, tax_yr - 1, tax_yr]
     matrix_cols = _enrich_matrix_cols_with_cohort_consistency(matrix_cols, yr_list)
+
+    # 직전·전전 신법 과세연도(2026년 이후)가 차년도 1년 미만 퇴사 확정으로 재산정된 경우 주황 경고 표시
+    for _warn_html in _build_prior_new_law_recalc_warnings(s, tax_yr, corp_size, is_capital, totals_all, ps):
+        st.markdown(f"<div class='ec-warn-banner'>{_warn_html}</div>", unsafe_allow_html=True)
 
     # 상단 3대 KPI 요약 카드 (당해 확정 공제세액 · 추징/농특세 · 실질 순절세액) 및 5대 수리·법령 정합성 배지
     st.markdown(_build_top_kpi_cards_html(pkg, tax_yr), unsafe_allow_html=True)

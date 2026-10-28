@@ -25,8 +25,8 @@ from datetime import date
 from typing import Any
 
 from . import rules as R
-R.install_consistent_comparative_headcount_engine()
 from .headcount import parse_date, default_months_for_year, get_unit_rates, calc_increase_with_cap
+R.install_consistent_comparative_headcount_engine()
 
 MAX_TEXT_CHARS = 120_000
 FILE_WP_MARKER_RE = re.compile(r"^<<<FILE_WP:(.*?)>>>$")

@@ -495,7 +495,10 @@ LAFOCARE_GOLDEN_FIXTURE = {
         "2023": {
             "상시": 0.50,
             "청년등": 0.00,
-            "청년등_증가": 0.25,  # 2022.05.11. 창업(8개월, 2022년 상시 0.25명) -> 2023년 0.50명 (+0.25명 증가 × 1,550만원 = 3,875,000원)
+            # ※ 기신고 세액공제조정명세서(3)상 2024년 2차·2025년 3차 연속공제액이 3,875,000원(0.25명 × 비수도권 청년등 1,550만원)으로 신고됨.
+            #    단, 세법원칙(조특령 제26조의8 제4항 제1호)상 김우주는 2023년 단시간근로자(0.5명)로 청년등에서 제외되므로
+            #    법령 기준 정당 공제액은 청년등외 0.25명 × 950만원 = 2,375,000원(기신고 3,875,000원은 연간 1,500,000원 과다공제 위험 존재).
+            "청년등_증가": 0.25,
             "청년등외_증가": 0.00,
             "공제세액": 3_875_000,
             "이월세액": 0,
@@ -937,6 +940,23 @@ def verify_golden_case_invariants() -> tuple[bool, list[str]]:
     # 2027 B: min(2027 14.00, 2026 nr 11.50) - 2025 nr(3.50) = 11.50 - 3.50 = +8.00 (청년 10.25 - 3.50 = +6.75, 일반 +1.25)
     if round(float(tier_b_2027["total_inc"]), 2) != 8.00 or round(float(tier_b_2027["youth_inc"]), 2) != 6.75 or round(float(tier_b_2027["non_youth_inc"]), 2) != 1.25:
         errors.append(f"2027년 B(전전 2025년 3.50명 & 직전 2026년 11.50명 비교) 유지인원 불일치: {tier_b_2027}")
+
+    # 도은주 2027년 중 1년 미만 퇴사 시 2026년 자체 공제액 재산정 차이(53,570,000원 -> 52,250,000원, 차이 1,320,000원) 검증
+    res_2026_recalc_after_2027 = H.calculate_tax_year_package(
+        tax_year=2026,
+        corp_size=fx["corp_size"],
+        is_capital=fx["is_capital"],
+        summaries={
+            2025: summaries[2025],
+            2026: dict(summaries[2026], 상시_평균=t_2026_nr["상시_평균"], 청년등_평균=t_2026_nr["청년등_평균"], 청년외_평균=t_2026_nr["청년외_평균"]),
+        },
+        prior_filings={},
+        additional_inputs={},
+        scheme_2026="new_2026",
+        pm_basis=PM_BASIS_FILED,
+    )
+    if int(res_2026_recalc_after_2027["cur_base_credit_won"]) != 52_250_000 or (c1_won - int(res_2026_recalc_after_2027["cur_base_credit_won"])) != 1_320_000:
+        errors.append(f"2026년 신고분 사후 재산정 세액 차이 불일치: {c1_won - int(res_2026_recalc_after_2027['cur_base_credit_won']):,} != 1,320,000")
 
     return (len(errors) == 0), errors
 
