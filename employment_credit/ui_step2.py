@@ -1253,11 +1253,20 @@ def _page_employees(room_key: str, log_tokens_fn=None):
 
     computed_all, totals_all, ctx_all = {}, {}, {}
     if s.get("use_year_tabs", False) and len(shown_years) > 1:
+        from .ui_step3 import _build_compact_bridge_info, _render_compact_bridge
         tab_objs = st.tabs([f"📅 {y}년 귀속 명세" for y in shown_years])
         for tab_o, y in zip(tab_objs, shown_years):
             with tab_o:
                 computed_all[y], totals_all[y] = _render_year(s, y, room_key)
                 ctx_all[y] = _ctx(s, y)
+                if (y - 1) in shown_years:
+                    _br_tab = _build_compact_bridge_info(
+                        s,
+                        y - 1,
+                        y,
+                        use_new_rule_prev=(y >= H.NEW_TENURE_RULE_FROM and (y - 1) == H.NEW_TENURE_RULE_FROM - 1),
+                    )
+                    _render_compact_bridge(_br_tab, between_tables=False)
     else:
         from .ui_step3 import _build_compact_bridge_info, _render_compact_bridge
         for idx_y, y in enumerate(shown_years):

@@ -746,7 +746,7 @@ def _enrich_matrix_cols_with_cohort_consistency(
 ) -> dict[int, dict[str, Any]]:
     """
     총괄표(4개 과세연도 요약표) 정합성 보정:
-    - T-3(예: 2023년) 1차 공제액이 0원인데 T-2(2024년) 2차 또는 T-1(2025년) 3차 연속공제액이 존재하는 경우(예: 3,875,000원),
+    - T-3(예: 2023년) 1차 공제액이 0원인데 T-2(2024년) 2차 또는 T-1(2025년) 3차 연속공제액이 존재하는 경우,
       구법(구 조특법 제29조의8 제1항)상 2·3차년도 연속공제액은 최초 1차년도 공제세액과 동일하므로 T-3 1차 공제액에 해당 금액을 복원합니다.
     - 또한 T-3 이전 과세연도(2021·2022년) 귀속분 사후관리에 해당하는 T-3의 2·3차 및 T-2의 3차 칸이 0원(검토범위 외)인 경우
       `r2_na` / `r3_na` 플래그를 부여하여 '0원' 대신 '-' (대상외)로 명확히 표시합니다.
@@ -1029,7 +1029,6 @@ def _build_step3_calculation_pdf_bytes(
 
     # 1) 상단 4개년 요약 매트릭스 표
     yr_list = [tax_yr - 3, tax_yr - 2, tax_yr - 1, tax_yr]
-    matrix_cols = _enrich_matrix_cols_with_cohort_consistency(matrix_cols, yr_list)
     matrix_cols = _enrich_matrix_cols_with_cohort_consistency(matrix_cols, yr_list)
     story.append(Paragraph(_pdf_text(f"■ 연도별 통합고용세액공제 요약표 ({corp_size} · {loc_label})"), st_sec))
 
@@ -1361,7 +1360,7 @@ def _page_calculation():
     yr_list = [tax_yr - 3, tax_yr - 2, tax_yr - 1, tax_yr]
     matrix_cols = _enrich_matrix_cols_with_cohort_consistency(matrix_cols, yr_list)
 
-    # 상단 4대 KPI 요약 카드 (확정 순절세액 vs 주황색 조건부 경정청구 실익 분리) 및 5대 수리·법령 정합성 배지
+    # 상단 3대 KPI 요약 카드 (당해 확정 공제세액 · 추징/농특세 · 실질 순절세액) 및 5대 수리·법령 정합성 배지
     st.markdown(_build_top_kpi_cards_html(pkg, tax_yr), unsafe_allow_html=True)
     ok_math, math_issues = _verify_step3_math_integrity(pkg, matrix_cols, yr_list)
     if ok_math:

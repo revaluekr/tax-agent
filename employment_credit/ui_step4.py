@@ -580,30 +580,8 @@ def _build_report_markdown(s: dict, log_tokens_fn=None, room_key: str = "") -> s
         active_pm_basis=active_pm_basis,
     )
     yr_list = [tax_yr - 3, tax_yr - 2, tax_yr - 1, tax_yr]
-    # T-3(2023년) 1차 공제액 복원 및 T-3의 2·3차, T-2의 3차(검토범위 외) '-' 표시 보정
-    if len(yr_list) >= 3:
-        y0, y1, y2 = yr_list[0], yr_list[1], yr_list[2]
-        m0, m1, m2 = matrix_cols.get(y0), matrix_cols.get(y1), matrix_cols.get(y2)
-        if isinstance(m0, dict) and isinstance(m1, dict) and isinstance(m2, dict):
-            if int(m0.get("r1_credit") or 0) == 0 and int(m0.get("r1_claw") or 0) == 0:
-                inferred_r1 = int(m1.get("r2_credit") or 0) or int(m2.get("r3_credit") or 0)
-                if inferred_r1 > 0:
-                    m0["r1_credit"] = inferred_r1
-                    m0["r1_inferred_from_continued"] = True
-                    m0["net_total"] = (
-                        int(m0.get("r1_credit") or 0)
-                        + int(m0.get("r2_credit") or 0)
-                        + int(m0.get("r3_credit") or 0)
-                        - int(m0.get("r1_claw") or 0)
-                        - int(m0.get("r2_claw") or 0)
-                        - int(m0.get("r3_claw") or 0)
-                    )
-            if int(m0.get("r2_credit") or 0) == 0 and int(m0.get("r2_claw") or 0) == 0:
-                m0["r2_na"] = True
-            if int(m0.get("r3_credit") or 0) == 0 and int(m0.get("r3_claw") or 0) == 0:
-                m0["r3_na"] = True
-            if int(m1.get("r3_credit") or 0) == 0 and int(m1.get("r3_claw") or 0) == 0:
-                m1["r3_na"] = True
+    from .ui_step3 import _enrich_matrix_cols_with_cohort_consistency
+    matrix_cols = _enrich_matrix_cols_with_cohort_consistency(matrix_cols, yr_list)
 
     pm1 = pkg["pm_y1"]
     pm2 = pkg["pm_y2"]
@@ -685,7 +663,7 @@ def _build_report_markdown(s: dict, log_tokens_fn=None, room_key: str = "") -> s
     # 직전연도 비교인원 보수적 산정(방식 2) 및 청년등외 정본 산식(전체 - 청년등) 안내 불릿
     prev_basis_bullets = [
         f"- **산정 방법**: 매월 말 현재 상시근로자 수의 연간 합계(연인원)를 해당 과세연도 개월 수({cur_s['months_in_year']}개월)로 나눈 뒤 소수점 셋째 자리에서 버림(100분의 1 미만 절사, [조문:조세특례제한법 시행령 제26조의8 제6항] 및 [조문:조세특례제한법 시행령 제11조의2 제8항] 준용)하여 산정하였습니다.",
-        f"- **청년등 외 상시근로자 수 정본(Canonical) 산식 근거 및 청년등 증가인원 한도(Cap)**: [조문:조세특례제한법 시행령 제26조의8 제6항]이 준용하는 [조문:조세특례제한법 시행령 제11조의2 제8항] 제1호는 **가목(전체 상시근로자 수)**과 **나목(청년등 상시근로자 수)**에 대해서만 개별 합산 후 소수점 셋째 자리 버림(100분의 1 미만 절사) 산식을 규정하며 청년등 외 상시근로자의 별도 절사 산식을 두지 않고, 조세특례제한법 시행규칙 별지 제10호의9서식(1) 작성방법 제4호에서 *'청년등 외 상시근로자란 상시근로자 중 청년등상시근로자가 아닌 상시근로자를 말합니다'*라고 정의하고 있습니다. 이에 따라 **① 전체 상시근로자 수(절사 후) − ② 청년등 상시근로자 수(절사 후) = ③ 청년등 외 상시근로자 수**를 정본으로 산정하고(직전연도 {prev_s['regular']:.2f}명 − {prev_s['youth']:.2f}명 = **{prev_s['non_youth']:.2f}명**[개별 절사 0.41명 미적용], 당해연도 {cur_s['regular']:.2f}명 − {cur_s['youth']:.2f}명 = **{cur_s['non_youth']:.2f}명**), [조문:조세특례제한법 제29조의8 제1항] 제2호의 청년등 외 증가인원을 **{cur_s['non_youth']:.2f}명 − {prev_s['non_youth']:.2f}명 = +{cur_inc['non_youth_inc']:.2f}명**으로 산출하여 **전체 증가인원(+{cur_inc['total_inc']:.2f}명) = 청년등 증가(+{cur_inc['youth_inc']:.2f}명) + 청년등 외 증가(+{cur_inc['non_youth_inc']:.2f}명)** 항등식을 0.01명 단수 오차 없이 완벽히 일치시켰습니다. 아울러 청년등 상시근로자 증가인원(+{cur_inc['youth_inc']:.2f}명)은 **[조문:조세특례제한법 제29조의8 제1항] 제1호 괄호 규정**에 따라 전체 상시근로자 증가인원(+{cur_inc['total_inc']:.2f}명)을 한도로 적용하였습니다.",
+        f"- **청년등 외 상시근로자 수 정본(Canonical) 산식 근거 및 청년등 증가인원 한도(Cap)**: [조문:조세특례제한법 시행령 제26조의8 제6항]이 준용하는 [조문:조세특례제한법 시행령 제11조의2 제8항] 제1호는 **가목(전체 상시근로자 수)**과 **나목(청년등 상시근로자 수)**에 대해서만 개별 합산 후 소수점 셋째 자리 버림(100분의 1 미만 절사) 산식을 규정하며 청년등 외 상시근로자의 별도 절사 산식을 두지 않고, 조세특례제한법 시행규칙 별지 제10호의9서식(1) 작성방법 제4호에서 *'청년등 외 상시근로자란 상시근로자 중 청년등상시근로자가 아닌 상시근로자를 말합니다'*라고 정의하고 있습니다. 이에 따라 **① 전체 상시근로자 수(절사 후) − ② 청년등 상시근로자 수(절사 후) = ③ 청년등 외 상시근로자 수**를 정본으로 산정하고(직전연도 {prev_s['regular']:.2f}명 − {prev_s['youth']:.2f}명 = **{prev_s['non_youth']:.2f}명**[개별 절사 미적용], 당해연도 {cur_s['regular']:.2f}명 − {cur_s['youth']:.2f}명 = **{cur_s['non_youth']:.2f}명**), [조문:조세특례제한법 제29조의8 제1항] 제2호의 청년등 외 증가인원을 **{cur_s['non_youth']:.2f}명 − {prev_s['non_youth']:.2f}명 = +{cur_inc['non_youth_inc']:.2f}명**으로 산출하여 **전체 증가인원(+{cur_inc['total_inc']:.2f}명) = 청년등 증가(+{cur_inc['youth_inc']:.2f}명) + 청년등 외 증가(+{cur_inc['non_youth_inc']:.2f}명)** 항등식을 0.01명 단수 오차 없이 완벽히 일치시켰습니다. 아울러 청년등 상시근로자 증가인원(+{cur_inc['youth_inc']:.2f}명)은 **[조문:조세특례제한법 제29조의8 제1항] 제1호 괄호 규정**에 따라 전체 상시근로자 증가인원(+{cur_inc['total_inc']:.2f}명)을 한도로 적용하였습니다.",
     ]
     if prev_s.get("old_rule_regular") is not None or cons_prev_names:
         old_rv = float(prev_s.get("old_rule_regular") if prev_s.get("old_rule_regular") is not None else prev_s["regular"])
@@ -1332,7 +1310,7 @@ def _page_report(room_key: str = "", log_tokens_fn=None):
             "xlsx": xlsx_report_bytes,
         }
 
-    # ⑨ 상단 4대 KPI 요약 카드 표시 (확정 순절세액과 주황색 조건부 경정청구 실익 분리)
+    # ⑨ 상단 3대 KPI 요약 카드 표시 (당해 확정 공제세액 · 추징/농특세 · 실질 순절세액)
     pkg_now = s.get("calc_pkg")
     if isinstance(pkg_now, dict):
         try:
