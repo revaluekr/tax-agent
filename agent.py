@@ -126,8 +126,18 @@ def register_prewarmed_law_ids(law_prom_map: dict) -> None:
         if not isinstance(info, dict):
             continue
         lid = str(info.get("mst_id") or info.get("law_id") or "").strip()
-        if clean_name and lid:
-            _cache_set(("law_name_to_id", today_ymd, clean_name.replace(" ", "")), lid)
+        cname_norm = clean_name.replace(" ", "")
+        if cname_norm and lid:
+            enf_raw = str(info.get("enf_raw") or info.get("enf_date") or "").replace("-", "").strip()
+            prom_no = str(info.get("prom_no") or "").strip()
+            _cache_set(("law_name_to_id", today_ymd, cname_norm), lid)
+            _cache_set(("law_name_meta", cname_norm), {
+                "doc_id": lid,
+                "enf_raw": enf_raw,
+                "prom_no": prom_no,
+                "prom_date": str(info.get("prom_date") or ""),
+                "enf_date": str(info.get("enf_date") or ""),
+            })
 
 def _http_get_bytes_fast(url: str, timeout: int = 15) -> bytes:
     """
@@ -375,8 +385,11 @@ def _new_trace(unleash: bool = False) -> dict:
         "detail": [],
         "articles": set(),
         "fetched_laws": set(),
+        "fetched_addenda": set(),
         "mentioned_articles": set(),
         "article_texts": {},
+        "addenda_texts": {},
+        "law_meta": {},
         "counts": {},
         "id_map": {},
         "meta_map": {},
@@ -415,10 +428,12 @@ def _record(kind: str, text: str) -> str:
 
 def _record_law_articles(text: str) -> None:
     """
-    [보강]
-    1) 조문 제목 괄호가 없는 시행규칙이나 공백이 섞인 조문(`제10조 ` 등)도 누락 없이 조회 목록에 등록합니다.
-    2) 조회한 조문 원문 본문 안에서 직접 인용·언급하고 있는 타 법령 조문(예: 조특법 제29조의8 본문 내 '중소기업기본법 제2조')을
-       `mentioned_articles`에 함께 기록하여, AI가 조문 원문 문구를 그대로 설명할 때 억울한 미조회 판정(재작성 루프)이 발생하지 않도록 보호합니다.
+    [본칙(articles)과 부칙(fetched_addenda) 완전 분리 기록 + API 공포번호·시행일자 메타데이터 보존]
+    1) 본칙 조문(`제N조`)은 `trace["articles"]` 및 `trace["article_texts"]`에 기록합니다.
+    2) 부칙 블록(`부칙 <...>` 또는 `📌 [...부칙...]`) 내부의 부칙 조문(`제N조`)은 `trace["fetched_addenda"]` 및
+       `trace["addenda_texts"]`에만 분리 기록하여, 부칙 제34조·제2조·제11조를 조회했을 때 본칙 제34조·제2조·제11조가
+       허용되는 키 충돌 문제를 원천 차단합니다.
+    3) 본칙 원문 본문 안에서 직접 인용·언급하고 있는 타 법령 본칙 조문은 `mentioned_articles`에, 부칙 조문은 `fetched_addenda`에 각각 분리 기록합니다.
     """
     trace = _TOOL_TRACE.get()
     if trace is None or not text:
@@ -426,20 +441,56 @@ def _record_law_articles(text: str) -> None:
     m = re.search(r"📘 \[(.+?)\]", text)
     if not m:
         return
-    raw_header = m.group(1).split("|")[0].strip()
+    header_full = m.group(1)
+    raw_header = header_full.split("|")[0].strip()
     title = _norm(raw_header)
     if title:
         trace.setdefault("fetched_laws", set()).add(title)
-    starts = list(re.finditer(r"(?m)^\s*제\s*(\d+)\s*조(?:\s*의\s*(\d+))?(?:\s*\(|\s+)", text))
+        m_pno = re.search(r"공포번호:\s*([^|\]]+)", header_full)
+        m_pdt = re.search(r"공포일자?:\s*([^|\]]+)", header_full)
+        m_edt = re.search(r"시행일자?:\s*([^|\]]+)", header_full)
+        if m_pno or m_pdt or m_edt:
+            trace.setdefault("law_meta", {})[title] = {
+                "prom_no": m_pno.group(1).strip() if m_pno else "",
+                "prom_date": m_pdt.group(1).strip() if m_pdt else "",
+                "enf_date": m_edt.group(1).strip() if m_edt else "",
+            }
+
+    # 본칙 영역과 부칙 영역 분리
+    add_split = re.search(r"(?m)^(?:\s*📌\s*\[[^\n]*부칙|\s*\[?부칙\s*<)", text)
+    if add_split:
+        main_part = text[:add_split.start()]
+        addenda_part = text[add_split.start():]
+    else:
+        main_part = text
+        addenda_part = ""
+
+    starts = list(re.finditer(r"(?m)^\s*제\s*(\d+)\s*조(?:\s*의\s*(\d+))?(?:\s*\(|\s+)", main_part))
     for n, am in enumerate(starts):
         key = (title, int(am.group(1)), int(am.group(2) or 0))
         trace["articles"].add(key)
-        end = starts[n + 1].start() if n + 1 < len(starts) else len(text)
-        trace["article_texts"][key] = text[am.start():end].strip()
+        end = starts[n + 1].start() if n + 1 < len(starts) else len(main_part)
+        trace["article_texts"][key] = main_part[am.start():end].strip()
+
+    if addenda_part and title:
+        fetched_add = trace.setdefault("fetched_addenda", set())
+        add_texts = trace.setdefault("addenda_texts", {})
+        add_starts = list(re.finditer(r"(?m)^\s*제\s*(\d+)\s*조(?:\s*의\s*(\d+))?(?:\s*\(|\s+)", addenda_part))
+        for n, am in enumerate(add_starts):
+            akey = (title, int(am.group(1)), int(am.group(2) or 0))
+            fetched_add.add(akey)
+            end = add_starts[n + 1].start() if n + 1 < len(add_starts) else len(addenda_part)
+            chunk_txt = addenda_part[am.start():end].strip()
+            if akey not in add_texts or len(chunk_txt) > len(add_texts[akey]):
+                add_texts[akey] = chunk_txt
 
     mentioned = trace.setdefault("mentioned_articles", set())
-    for m_ref in _find_article_refs(text, trace):
-        mentioned.add(m_ref)
+    fetched_add = trace.setdefault("fetched_addenda", set())
+    for law_nm, jo, gaji, is_add in _find_article_refs_with_kind(main_part, trace):
+        if is_add:
+            fetched_add.add((law_nm, jo, gaji))
+        else:
+            mentioned.add((law_nm, jo, gaji))
 
 _CASE_NO_PATTERNS = [
     re.compile(r"(?<!\d)((?:19|20)?\d{2})\s?(재두|재다|가합|가단|구합|구단|헌바|헌마|헌가|헌나|헌라|헌사|헌아|두|누|다|도|나|후|허|므|구|부|노|고단|고합)\s?(\d{1,6})(?!\d)"),
@@ -563,13 +614,12 @@ _ADDENDUM_SUFFIX_RE = re.compile(
     r"(?:\s*부칙(?:\s*<[^>]*>|\s*\([^)]*\)|\s*제\s*\d+\s*호|\s*\d{4}\.\s*\d{1,2}\.\s*\d{1,2}\.?)?)+[\s「」『』\[\]:(),·ㆍ]*$"
 )
 
-def _find_article_refs(text: str, trace: dict = None) -> list[tuple]:
+def _find_article_refs_with_kind(text: str, trace: dict = None) -> list[tuple]:
     """
-    조문 번호 앞의 법령명을 추출합니다.
-    1) '~법', '~령', '~규칙'뿐 아니라 '국제조세조정에 관한 법률', '주식회사 등의 외부감사에 관한 법률' 등
-       '~법률'(`률`)로 끝나는 모든 법률명을 누락 없이 인식합니다.
-    2) '조세특례제한법 부칙 제2조', '법인세법 부칙(제21065호) 제1조'처럼 법령명과 조문번호 사이에
-       '부칙' 표기가 들어간 경우에도 부칙 수식어를 걷어내고 정식 법령명을 정확히 추출합니다.
+    조문 번호 앞의 법령명과 '부칙 여부(is_addendum)'를 함께 추출합니다.
+    반환: [(law_name, jo, gaji, is_addendum), ...]
+    - '조세특례제한법 부칙 제34조', '[부칙:조세특례제한법 부칙 제34조]' -> ('조세특례제한법', 34, 0, True)
+    - '조세특례제한법 제34조' -> ('조세특례제한법', 34, 0, False)
     """
     text = text or ""
     titles = _known_law_titles(trace)
@@ -578,7 +628,9 @@ def _find_article_refs(text: str, trace: dict = None) -> list[tuple]:
     for m in _ARTICLE_NO.finditer(text):
         prefix = text[max(last_end, m.start() - 65):m.start()]
         last_end = m.end()
-        stripped = _ADDENDUM_SUFFIX_RE.sub("", prefix.rstrip())
+        raw_r = prefix.rstrip()
+        is_addendum = bool(_ADDENDUM_SUFFIX_RE.search(raw_r)) or ("부칙" in raw_r[-30:])
+        stripped = _ADDENDUM_SUFFIX_RE.sub("", raw_r)
         stripped = re.sub(r"[\s「」『』\[\]:(),·ㆍ]+$", "", stripped)
         stripped = _ADDENDUM_SUFFIX_RE.sub("", stripped)
         stripped = re.sub(r"[\s「」『』\[\]:(),·ㆍ]+$", "", stripped)
@@ -587,20 +639,36 @@ def _find_article_refs(text: str, trace: dict = None) -> list[tuple]:
         name = _resolve_law_name(stripped, titles)
         if not name:
             continue
-        ref = (name, int(m.group(1)), int(m.group(2) or 0))
+        ref = (name, int(m.group(1)), int(m.group(2) or 0), is_addendum)
         if ref not in refs:
             refs.append(ref)
     return refs
 
-def _article_label(ref: tuple) -> str:
-    name, jo, gaji = ref
-    return f"{name} 제{jo}조" + (f"의{gaji}" if gaji else "")
+def _find_article_refs(text: str, trace: dict = None) -> list[tuple]:
+    """하위 호환용 3-튜플 (law_name, jo, gaji) 리스트 반환."""
+    out = []
+    for name, jo, gaji, _ in _find_article_refs_with_kind(text, trace):
+        r3 = (name, jo, gaji)
+        if r3 not in out:
+            out.append(r3)
+    return out
+
+def _article_label(ref: tuple, is_addendum: bool = False) -> str:
+    name, jo, gaji = ref[:3]
+    buchik_str = " 부칙" if (is_addendum or (len(ref) >= 4 and ref[3])) else ""
+    return f"{name}{buchik_str} 제{jo}조" + (f"의{gaji}" if gaji else "")
 
 def _scan_violations(answer: str, trace: dict) -> list[tuple]:
-    """답변을 줄 단위로 검사해 [(줄번호, [위반 설명...], in_refs_section), ...]을 돌려줍니다."""
+    """
+    답변을 줄 단위로 검사해 [(줄번호, [위반 설명...], in_refs_section), ...]을 돌려줍니다.
+    - 본칙 조문(is_addendum=False)은 오직 `trace["articles"]`(또는 본문 내 `mentioned_articles`)에 있을 때만 통과시킵니다.
+    - 부칙 조문(is_addendum=True)은 `trace["fetched_addenda"]`에 있을 때만 통과시켜,
+      부칙 제34조·제2조·제11조 허용이 본칙 제34조·제2조·제11조 허용으로 번지는 현상을 100% 차단합니다.
+    """
     detail_blob = _norm(" ".join(trace["detail"]))
     list_blob = _norm(" ".join(trace["list"]))
     fetched = trace["articles"]
+    fetched_addenda = trace.get("fetched_addenda", set())
     fetched_laws = trace.get("fetched_laws", set()) | {t for (t, _, _) in fetched}
     mentioned = trace.get("mentioned_articles", set())
     known_titles = _known_law_titles(trace)
@@ -639,13 +707,18 @@ def _scan_violations(answer: str, trace: dict) -> list[tuple]:
             else:
                 problems.append(f"판례·심판례 {no} (조회 기록 없음)")
 
-        for ref in _find_article_refs(line, trace):
-            if ref in fetched or (not in_refs_section and ref in mentioned):
-                verified_source = True
-            elif "부칙" in line and (ref[0] in fetched_laws or ref[0] in detail_blob):
-                verified_source = True
+        for law_nm, jo, gaji, is_add in _find_article_refs_with_kind(line, trace):
+            ref3 = (law_nm, jo, gaji)
+            if is_add:
+                if ref3 in fetched_addenda:
+                    verified_source = True
+                else:
+                    problems.append(f"{_article_label(ref3, is_addendum=True)} (부칙 조문 원문 미조회)")
             else:
-                problems.append(f"{_article_label(ref)} (조문 원문 미조회)")
+                if ref3 in fetched or (not in_refs_section and ref3 in mentioned):
+                    verified_source = True
+                else:
+                    problems.append(f"{_article_label(ref3, is_addendum=False)} (본칙 조문 원문 미조회)")
 
         for no in _EXEC_STD.findall(line):
             if _norm(no) in detail_blob:
@@ -655,9 +728,29 @@ def _scan_violations(answer: str, trace: dict) -> list[tuple]:
 
         for kind, val in _TAG.findall(line):
             if kind in ("조문", "부칙"):
-                refs = _find_article_refs(val, trace)
-                if refs:
-                    if any(r in fetched or r[0] in fetched_laws or r in mentioned for r in refs):
+                refs_kind = _find_article_refs_with_kind(val, trace)
+                if refs_kind:
+                    all_ok = True
+                    for r_ln, r_jo, r_gaji, r_is_add in refs_kind:
+                        r3 = (r_ln, r_jo, r_gaji)
+                        eff_add = r_is_add or (kind == "부칙") or ("부칙" in val)
+                        if eff_add:
+                            if r3 in fetched_addenda:
+                                verified_source = True
+                            else:
+                                all_ok = False
+                                lbl_p = f"{_article_label(r3, is_addendum=True)} (부칙 조문 원문 미조회)"
+                                if lbl_p not in problems:
+                                    problems.append(lbl_p)
+                        else:
+                            if r3 in fetched or (not in_refs_section and r3 in mentioned):
+                                verified_source = True
+                            else:
+                                all_ok = False
+                                lbl_p = f"{_article_label(r3, is_addendum=False)} (본칙 조문 원문 미조회)"
+                                if lbl_p not in problems:
+                                    problems.append(lbl_p)
+                    if all_ok:
                         verified_source = True
                 elif "부칙" in val or kind == "부칙":
                     law_prefix = re.sub(r"부칙.*", "", val).strip()
@@ -914,11 +1007,15 @@ def _extract_claims(answer: str, trace: dict, max_claims: int = 20) -> tuple[lis
         stack.append((indent, line_cases))
 
         src_ids = []
+        add_texts = trace.get("addenda_texts", {})
         for kind, val in tags:
             if kind in ("조문", "부칙"):
-                for ref in _find_article_refs(val, trace):
-                    if ref in art_texts:
-                        src_ids.append(_src_id(_article_label(ref), art_texts[ref]))
+                for r_ln, r_jo, r_gaji, r_is_add in _find_article_refs_with_kind(val, trace):
+                    ref = (r_ln, r_jo, r_gaji)
+                    if (r_is_add or kind == "부칙" or "부칙" in val) and ref in add_texts:
+                        src_ids.append(_src_id(_article_label(ref, is_addendum=True), add_texts[ref]))
+                    elif ref in art_texts:
+                        src_ids.append(_src_id(_article_label(ref, is_addendum=False), art_texts[ref]))
                 if "부칙" in val or kind == "부칙":
                     for d in details:
                         if "부칙" in d:
@@ -1093,6 +1190,13 @@ def _fetch_full_law_xml_direct(doc_id: str, query_filter: str = "") -> str:
             lname = (root.findtext(".//법령명_한글") or root.findtext(".//법령명한글") or "").strip()
             if not lname:
                 continue
+            law_prom_no = (root.findtext(".//공포번호") or "").strip()
+            law_prom_dt = re.sub(r"\D", "", root.findtext(".//공포일자") or "")
+            law_eff_dt = re.sub(r"\D", "", root.findtext(".//시행일자") or "")
+            prom_no_str = f" | 공포번호: 제{law_prom_no}호" if law_prom_no else ""
+            prom_dt_str = f" | 공포일자: {law_prom_dt[:4]}.{law_prom_dt[4:6]}.{law_prom_dt[6:]}" if len(law_prom_dt) == 8 else ""
+            eff_dt_str = f" | 시행일자: {law_eff_dt[:4]}.{law_eff_dt[4:6]}.{law_eff_dt[6:]}" if len(law_eff_dt) == 8 else ""
+            header_meta_suffix = f"{prom_no_str}{prom_dt_str}{eff_dt_str}" 
             article_blocks = []
             for unit in root.findall(".//조문단위"):
                 jo_content = (unit.findtext("조문내용") or "").strip()
@@ -1128,8 +1232,10 @@ def _fetch_full_law_xml_direct(doc_id: str, query_filter: str = "") -> str:
             for _, a_blk in addenda_units[:15]:
                 article_blocks.append(a_blk)
             if article_blocks:
-                full_text = f"📘 [{lname}]\n\n" + "\n\n".join(article_blocks)
+                full_text = f"📘 [{lname}{header_meta_suffix}]\n\n" + "\n\n".join(article_blocks)
                 _cache_set(full_cache_key, full_text)
+                if law_eff_dt or law_prom_no:
+                    _cache_set(("full_law_xml_ver", lname.replace(" ", ""), law_eff_dt, law_prom_no), full_text)
                 return full_text
         except Exception:
             continue
@@ -1224,9 +1330,10 @@ def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
             blk_clean = blk_s.replace(" ", "")
             is_add_blk = blk_s.startswith("부칙") or blk_s.startswith("[부칙") or blk_s.startswith("📌")
             if is_add_blk:
-                addenda_all.append(blk_s)
-                if any(tp in blk_clean for tp in target_prefixes):
-                    addenda_matches.append(blk_s)
+                slim_blk = law_api._slim_large_addendum_block(blk_s, query_filter) if hasattr(law_api, "_slim_large_addendum_block") else blk_s
+                addenda_all.append(slim_blk)
+                if any(tp in blk_clean for tp in target_prefixes) or any(kw in blk_clean for kw in ("통합고용", "고용증대", "경과조치")):
+                    addenda_matches.append(slim_blk)
                 continue
             if any(
                 blk_clean.startswith(tp + "(") or blk_clean.startswith(tp + " ") or blk_clean == tp

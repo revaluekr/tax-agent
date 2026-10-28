@@ -1768,12 +1768,12 @@ def create_pdf_report(report_text: str) -> bytes:
     style_h2 = ParagraphStyle(
         "DocH2", parent=styles["Normal"], fontName=bold_font,
         fontSize=13, leading=19, textColor=colors.HexColor("#1f4e78"),
-        spaceBefore=12, spaceAfter=6
+        spaceBefore=12, spaceAfter=6, keepWithNext=True
     )
     style_h3 = ParagraphStyle(
         "DocH3", parent=styles["Normal"], fontName=bold_font,
         fontSize=11, leading=16, textColor=colors.HexColor("#2e5cb8"),
-        spaceBefore=10, spaceAfter=4
+        spaceBefore=10, spaceAfter=4, keepWithNext=True
     )
     style_body = ParagraphStyle(
         "DocBody", parent=styles["Normal"], fontName=reg_font,
@@ -1825,8 +1825,14 @@ def create_pdf_report(report_text: str) -> bytes:
                 i += 1
 
             rows_data = []
+            col_aligns = []
             for r_str in table_lines:
                 if re.match(r"^\|[\s\-:|]+\|$", r_str):
+                    sep_cells = [c.strip() for c in r_str.strip("|").split("|")]
+                    col_aligns = [
+                        (1 if (sc.startswith(":") and sc.endswith(":")) else (2 if sc.endswith(":") else 0))
+                        for sc in sep_cells
+                    ]
                     continue
                 cells = [c.strip() for c in r_str.strip("|").split("|")]
                 rows_data.append(cells)
@@ -1834,6 +1840,8 @@ def create_pdf_report(report_text: str) -> bytes:
             if rows_data:
                 max_cols = max(len(r) for r in rows_data)
                 padded_rows = [r + [""] * (max_cols - len(r)) for r in rows_data]
+                while len(col_aligns) < max_cols:
+                    col_aligns.append(0)
 
                 # 열 개수에 따라 폰트 크기·패딩을 자동 조절하고, 각 열의 텍스트 길이에 비례하여 열 너비를 동적 배분
                 if max_cols >= 8:
@@ -1865,26 +1873,62 @@ def create_pdf_report(report_text: str) -> bytes:
                 scale_factor = usable_width / (sum(raw_widths) or usable_width)
                 col_widths = [w * scale_factor for w in raw_widths]
 
+                cur_th_c = ParagraphStyle("DocTH_C", parent=cur_th, alignment=1)
+                cur_th_r = ParagraphStyle("DocTH_R", parent=cur_th, alignment=2)
+                cur_td_c = ParagraphStyle("DocTD_C", parent=cur_td, alignment=1)
+                cur_td_r = ParagraphStyle("DocTD_R", parent=cur_td, alignment=2)
+                cur_td_tot_l = ParagraphStyle("DocTD_TotL", parent=cur_td, fontName=bold_font, alignment=0, textColor=colors.HexColor("#0f172a"))
+                cur_td_tot_c = ParagraphStyle("DocTD_TotC", parent=cur_td, fontName=bold_font, alignment=1, textColor=colors.HexColor("#0f172a"))
+                cur_td_tot_r = ParagraphStyle("DocTD_TotR", parent=cur_td, fontName=bold_font, alignment=2, textColor=colors.HexColor("#1e3a8a"))
+
                 pdf_table_data = []
+                summary_row_indices = []
                 for r_idx, padded_r in enumerate(padded_rows):
                     row_paras = []
-                    for c_text in padded_r:
+                    first_cell_plain = re.sub(r"\*\*|`|<[^>]+>", "", str(padded_r[0] or "")).strip()
+                    is_summary_row = r_idx > 0 and any(
+                        first_cell_plain.startswith(k) or k in first_cell_plain
+                        for k in ("합계", "최종 실질 순절세액", "총 공제세액")
+                    )
+                    if is_summary_row:
+                        summary_row_indices.append(r_idx)
+
+                    for c_idx, c_text in enumerate(padded_r):
+                        c_plain = re.sub(r"\*\*|`", "", str(c_text or "")).strip()
+                        align_code = col_aligns[c_idx] if c_idx < len(col_aligns) else 0
+                        if r_idx > 0 and align_code == 0:
+                            if re.match(r"^[+\-]?[\d,]+(?:\.\d+)?\s*(?:원|명|%)?$", c_plain):
+                                align_code = 2
+                            elif c_plain in ("-", "1차", "2차", "3차", "순액"):
+                                align_code = 1
+                        if is_summary_row and "**" not in c_text and c_text.strip():
+                            c_text = f"**{c_text.strip()}**"
                         cell_xml = _md_to_rl_xml(c_text, bold_font)
-                        row_paras.append(Paragraph(cell_xml, cur_th if r_idx == 0 else cur_td))
+                        if r_idx == 0:
+                            st_use = cur_th_c if align_code == 1 else (cur_th_r if align_code == 2 else cur_th)
+                        elif is_summary_row:
+                            st_use = cur_td_tot_c if align_code == 1 else (cur_td_tot_r if align_code == 2 else cur_td_tot_l)
+                        else:
+                            st_use = cur_td_c if align_code == 1 else (cur_td_r if align_code == 2 else cur_td)
+                        row_paras.append(Paragraph(cell_xml, st_use))
                     pdf_table_data.append(row_paras)
 
                 pdf_table = Table(pdf_table_data, colWidths=col_widths, repeatRows=1)
                 t_style = [
                     ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e2e8f0")),
                     ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                     ("TOPPADDING", (0, 0), (-1, -1), v_pad),
                     ("BOTTOMPADDING", (0, 0), (-1, -1), v_pad),
                     ("LEFTPADDING", (0, 0), (-1, -1), h_pad),
                     ("RIGHTPADDING", (0, 0), (-1, -1), h_pad),
                 ]
                 for r_idx in range(1, len(pdf_table_data)):
-                    if r_idx % 2 == 0:
+                    if r_idx in summary_row_indices:
+                        t_style.append(("BACKGROUND", (0, r_idx), (-1, r_idx), colors.HexColor("#eff6ff")))
+                        t_style.append(("LINEABOVE", (0, r_idx), (-1, r_idx), 0.9, colors.HexColor("#93c5fd")))
+                        t_style.append(("LINEBELOW", (0, r_idx), (-1, r_idx), 1.0, colors.HexColor("#3b82f6")))
+                    elif r_idx % 2 == 0:
                         t_style.append(("BACKGROUND", (0, r_idx), (-1, r_idx), colors.HexColor("#f8fafc")))
                 pdf_table.setStyle(TableStyle(t_style))
                 story.append(Spacer(1, 4))

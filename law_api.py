@@ -190,11 +190,60 @@ def _fetch_xml_root(url: str, params: dict):
     except Exception:
         return None
 
+def _slim_large_addendum_block(full_blk: str, query_filter: str = "") -> str:
+    """
+    대용량 부칙 블록(예: 법률 제21223호 부칙 60여 개 조문)에서 앞부분 3,000~4,500자 절삭으로 인해
+    중간에 위치한 핵심 경과조치(예: 제34조 통합고용세액공제에 관한 경과조치)가 잘려 나가는 문제를 방지합니다.
+    - 부칙 헤더 + 제1조(시행일) + 제2조(일반적 적용례) + query_filter의 조문번호/키워드 또는 고용세액공제 관련 조문만 정밀 발췌합니다.
+    """
+    if not full_blk or len(full_blk) <= 2000:
+        return full_blk
+
+    lines = full_blk.splitlines()
+    header_line = lines[0] if lines else "부칙"
+    body_text = "\n".join(lines[1:])
+
+    art_starts = list(re.finditer(r"(?m)^\s*제\s*(\d+)\s*조(?:\s*의\s*(\d+))?(?:\s*\(|\s+)", body_text))
+    if len(art_starts) <= 3:
+        return full_blk[:4500]
+
+    qf_nospace = (query_filter or "").replace(" ", "")
+    req_arts = [a.replace(" ", "") for a in re.findall(r"제\s*\d+\s*조(?:\s*의\s*\d+)?", query_filter or "")]
+    priority_keywords = ["통합고용", "고용증대", "상시근로자", "경과조치", "적용례"]
+    for kw in re.split(r"[,\s]+", re.sub(r"부칙|제\s*\d+\s*조(?:\s*의\s*\d+)?", " ", query_filter or "")):
+        kw_s = kw.strip()
+        if len(kw_s) >= 2 and kw_s not in priority_keywords:
+            priority_keywords.append(kw_s)
+
+    kept_chunks = []
+    for idx, m in enumerate(art_starts):
+        jo_num = int(m.group(1))
+        gaji_num = int(m.group(2) or 0)
+        art_label = f"제{jo_num}조" + (f"의{gaji_num}" if gaji_num else "")
+        end_pos = art_starts[idx + 1].start() if idx + 1 < len(art_starts) else len(body_text)
+        chunk = body_text[m.start():end_pos].strip()
+        chunk_ns = chunk.replace(" ", "")
+
+        # 제1조(시행일), 제2조(적용례)는 기본 유지하고, 요청 조문번호나 핵심 키워드가 포함된 부칙 조문을 최우선 보존
+        if jo_num in (1, 2) and len(chunk) <= 800:
+            kept_chunks.append(chunk)
+        elif art_label in req_arts or any(ra in chunk_ns for ra in req_arts):
+            kept_chunks.append(chunk)
+        elif any(pk in chunk_ns for pk in ("통합고용", "고용증대", "제29조의8", "제26조의8")):
+            kept_chunks.append(chunk)
+        elif qf_nospace and any(pk in chunk_ns for pk in priority_keywords if pk not in ("경과조치", "적용례")):
+            kept_chunks.append(chunk)
+
+    if not kept_chunks:
+        return full_blk[:4000]
+    return header_line + "\n" + "\n\n".join(kept_chunks)
+
+
 def _extract_addenda_blocks(root, query_filter: str = "", max_recent: int = 8) -> list[str]:
     """
     법제처 법령 XML의 <부칙단위>에서 공포일자·공포번호·부칙내용을 최신순으로 추출합니다.
-    - query_filter에 특정 조문번호(예: '제29조의8'), 연도(예: '2026'), 공포번호(예: '35999') 또는 키워드가 있으면
-      해당 키워드를 포함한 부칙을 최우선 추출하고, 없으면 최신 개정 부칙 상위 max_recent개를 반환합니다.
+    - 최신 타법개정(예: 법률 제21467호) 뒤에 있는 본 개정 부칙(예: 법률 제21223호 부칙 제34조)도 누락 없이 포착하며,
+      대용량 부칙은 `_slim_large_addendum_block`으로 핵심 조문을 발췌하여 반환합니다.
     """
     raw_units = root.findall(".//부칙단위")
     if not raw_units:
@@ -226,17 +275,17 @@ def _extract_addenda_blocks(root, query_filter: str = "", max_recent: int = 8) -
     for dt_int, anc_no, blk in parsed_units:
         blk_nospace = blk.replace(" ", "")
         if art_refs and any(a.replace(" ", "") in blk_nospace for a in art_refs):
-            matched_blocks.append(blk)
+            matched_blocks.append(_slim_large_addendum_block(blk, query_filter))
         elif no_refs and any(n in anc_no or n in blk_nospace for n in no_refs):
-            matched_blocks.append(blk)
+            matched_blocks.append(_slim_large_addendum_block(blk, query_filter))
         elif yr_refs and any(str(dt_int).startswith(y) or y in blk_nospace for y in yr_refs):
-            matched_blocks.append(blk)
+            matched_blocks.append(_slim_large_addendum_block(blk, query_filter))
         elif qf_clean and not art_refs and qf_clean.replace(" ", "") in blk_nospace:
-            matched_blocks.append(blk)
+            matched_blocks.append(_slim_large_addendum_block(blk, query_filter))
 
     if matched_blocks:
         return matched_blocks[:max_recent]
-    return [blk for _, _, blk in parsed_units[:max_recent]]
+    return [_slim_large_addendum_block(blk, query_filter) for _, _, blk in parsed_units[:max_recent]]
 
 
 def _get_statute_articles(doc_id: str, query_filter: str = "") -> str:
@@ -272,9 +321,13 @@ def _get_statute_articles(doc_id: str, query_filter: str = "") -> str:
 
         found_any_law = True
         title = (root.findtext(".//법령명_한글") or root.findtext(".//법령명한글") or title).strip()
+        law_prom_no = (root.findtext(".//공포번호") or "").strip()
+        law_prom_dt = re.sub(r"\D", "", root.findtext(".//공포일자") or "")
         law_eff = re.sub(r"\D", "", root.findtext(".//시행일자") or "")
-        eff_note = f" | 법령 시행일자: {law_eff[:4]}.{law_eff[4:6]}.{law_eff[6:]}" if len(law_eff) == 8 else ""
-        header = f"📘 [{title}] (일련번호: {doc_id}{eff_note})"
+        prom_no_note = f" | 공포번호: 제{law_prom_no}호" if law_prom_no else ""
+        prom_dt_note = f" | 공포일자: {law_prom_dt[:4]}.{law_prom_dt[4:6]}.{law_prom_dt[6:]}" if len(law_prom_dt) == 8 else ""
+        eff_note = f" | 시행일자: {law_eff[:4]}.{law_eff[4:6]}.{law_eff[6:]}" if len(law_eff) == 8 else ""
+        header = f"📘 [{title}{prom_no_note}{prom_dt_note}{eff_note}] (일련번호: {doc_id})"
 
         # 1) '부칙' 단독 또는 '제29조의8, 부칙' 복합 조회
         if wants_addendum:
