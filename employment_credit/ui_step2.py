@@ -858,22 +858,21 @@ def _same_num(a: str, b: str) -> bool:
 
 
 def _year_role_description(s: dict, tax_year: int, year: int) -> str:
-    b3_title, b4_title, b5_title = _block_titles_for_year(year, two_line=False)
     has_y1 = _has_year_data(s, year - 1)
     has_y2 = _has_year_data(s, year - 2)
-    active_parts = [b3_title]
+    active_parts = [f"{year%100:02d}년 세액공제"]
     if has_y1:
-        active_parts.append(b4_title)
+        active_parts.append(f"{(year-1)%100:02d}년 1차 사후관리")
     if has_y2:
-        active_parts.append(b5_title)
+        active_parts.append(f"{(year-2)%100:02d}년 2차 사후관리")
     omitted = []
     if not has_y1:
-        omitted.append(f"{(year-1)%100:02d}년 1차 사후관리")
+        omitted.append(f"{(year-1)%100:02d}년 1차")
     if not has_y2:
-        omitted.append(f"{(year-2)%100:02d}년 2차 사후관리")
-    omit_note = f" (미업로드 생략: {', '.join(omitted)})" if omitted else ""
+        omitted.append(f"{(year-2)%100:02d}년 2차")
+    omit_note = f" (미업로드 생략: {', '.join(omitted)} 사후관리)" if omitted else ""
     prefix = "당해 귀속" if year == tax_year else ("직전 귀속" if year == tax_year - 1 else "전전 귀속")
-    return f"{prefix} [{ ' · '.join(active_parts) }]{omit_note}"
+    return f"{prefix} · {' · '.join(active_parts)}{omit_note}"
 
 
 def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
@@ -919,11 +918,8 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
         f"<span style='{m_pill_style}padding:2px 8px;border-radius:999px;font-size:0.76rem;font-weight:800;margin-left:6px;'>"
         f"📐 {m_lbl_yr}</span>"
     )
-    yr_sz_badge_html = (
-        f"<span style='{sz_pill_color}padding:2px 8px;border-radius:999px;font-size:0.78rem;font-weight:800;margin-left:6px;'>"
-        f"🏢 {year%100:02d}년 기업규모: {cur_yr_sz_lbl}"
-        f"</span>{diff_pill_html}{method_badge_html}"
-    )
+    # 우측에 이미 연도별 기업규모 드롭다운이 있으므로 헤더 좌측에는 계산방식 배지(+기본값과 다를 때만 알림 배지)만 간결히 표시
+    yr_sz_badge_html = f"{method_badge_html}{diff_pill_html}"
     c_hdr, c_sz, c_pdf = st.columns([4.90, 1.25, 0.85], vertical_alignment="center")
     with c_hdr:
         st.markdown(
@@ -1337,44 +1333,44 @@ def _page_employees(room_key: str, log_tokens_fn=None):
                 _save_ec_to_disk(s)
                 st.rerun()
 
-        filter_opts = ["ALL", "CHECK", "SAVING", "MOVED"]
-        filter_labels = {
-            "ALL": "👥 전체 사원 보기",
-            "CHECK": "🚨 제외·확인 필요 사원만 (상시X·누락·무급월)",
-            "SAVING": "💰 청년·병역 절세 후보만 (35~40세 병역미입력·청년우대)",
-            "MOVED": "🔄 중도 입·퇴사 · 사업장 전출입자만",
-        }
-        cur_qf = str(s.get("emp_quick_filter") or "ALL")
-        if cur_qf not in filter_opts:
-            cur_qf = "ALL"
-        chosen_qf = st.radio(
-            "🔎 사원 빠른 필터 (필터 상태에서도 하단 합산합계는 전체 인원 기준으로 유지됩니다)",
-            options=filter_opts,
-            index=filter_opts.index(cur_qf),
-            format_func=lambda k: filter_labels.get(k, k),
-            horizontal=True,
-            key="ec_emp_quick_filter_radio",
+        has_people = bool(s.get("people"))
+        if has_people:
+            filter_opts = ["ALL", "CHECK", "SAVING", "MOVED"]
+            filter_labels = {
+                "ALL": "👥 전체 사원 보기",
+                "CHECK": "🚨 제외·확인 필요 사원만 (상시X·누락·무급월)",
+                "SAVING": "💰 청년·병역 절세 후보만 (35~40세 병역미입력·청년우대)",
+                "MOVED": "🔄 중도 입·퇴사 · 사업장 전출입자만",
+            }
+            cur_qf = str(s.get("emp_quick_filter") or "ALL")
+            if cur_qf not in filter_opts:
+                cur_qf = "ALL"
+            chosen_qf = st.radio(
+                "🔎 사원 빠른 필터 (필터 상태에서도 하단 합산합계는 전체 인원 기준으로 유지됩니다)",
+                options=filter_opts,
+                index=filter_opts.index(cur_qf),
+                format_func=lambda k: filter_labels.get(k, k),
+                horizontal=True,
+                key="ec_emp_quick_filter_radio",
+            )
+            if chosen_qf != cur_qf:
+                s["emp_quick_filter"] = chosen_qf
+                _save_ec_to_disk(s)
+                st.rerun()
+
+    if has_people:
+        st.markdown(
+            "<div class='ec-legend'>"
+            "<span style='background:#e2e8f0;color:#0f172a;border:1px solid #cbd5e1'>🔒 서류 확인값 (상시 O/X 전환 시 잠금해제)</span>"
+            "<span style='background:#ffffff;color:#1d4ed8;border:1px solid #93c5fd'>✏️ 입력·선택 가능</span>"
+            "<span style='background:#dbeafe;color:#1e40af;border:1px solid #93c5fd'>🏢 사업장 간 전출입·승계 합산(A→B)</span>"
+            "<span style='background:#dcfce7;color:#14532d;border:1px solid #86efac'>🌱 청년등 인정 월</span>"
+            "<span style='background:#e0f2fe;color:#0369a1;border:1px solid #7dd3fc'>🟦 미도래 월 연말재직 가정(자동 1)</span>"
+            "<span style='background:#ffedd5;color:#c2410c;border:1px solid #fdba74'>🟧 급여 0원 월 (입사월 익월지급 산입 / 기중 무급 0 제외)</span>"
+            "<span style='background:#ffffff;color:#0f172a;border:2px solid #f59e0b'>🔧 직접 수정한 값</span>"
+            "</div>",
+            unsafe_allow_html=True,
         )
-        if chosen_qf != cur_qf:
-            s["emp_quick_filter"] = chosen_qf
-            _save_ec_to_disk(s)
-            st.rerun()
-
-    st.markdown(
-        "<div class='ec-legend'>"
-        "<span style='background:#e2e8f0;color:#0f172a;border:1px solid #cbd5e1'>🔒 서류 확인값 (상시 O/X 전환 시 잠금해제)</span>"
-        "<span style='background:#ffffff;color:#1d4ed8;border:1px solid #93c5fd'>✏️ 입력·선택 가능</span>"
-        "<span style='background:#dbeafe;color:#1e40af;border:1px solid #93c5fd'>🏢 사업장 간 전출입·승계 합산(A→B)</span>"
-        "<span style='background:#dcfce7;color:#14532d;border:1px solid #86efac'>🌱 청년등 인정 월</span>"
-        "<span style='background:#e0f2fe;color:#0369a1;border:1px solid #7dd3fc'>🟦 미도래 월 연말재직 가정(자동 1)</span>"
-        "<span style='background:#ffedd5;color:#c2410c;border:1px solid #fdba74'>🟧 급여 0원 월 (입사월 익월지급 산입 / 기중 무급 0 제외)</span>"
-        "<span style='background:#ffffff;color:#0f172a;border:2px solid #f59e0b'>🔧 직접 수정한 값</span>"
-        "</div>",
-        unsafe_allow_html=True,
-    )
-
-    if not s["people"]:
-        st.info("읽어온 근로자가 없습니다. 아래 [➕ 사원 추가] 버튼으로 직접 입력하시거나 [< 이전]을 눌러 원천징수부를 업로드하세요.")
 
     computed_all, totals_all, ctx_all = {}, {}, {}
     if s.get("use_year_tabs", False) and len(shown_years) > 1:
@@ -1384,7 +1380,7 @@ def _page_employees(room_key: str, log_tokens_fn=None):
             with tab_o:
                 computed_all[y], totals_all[y] = _render_year(s, y, room_key)
                 ctx_all[y] = _ctx(s, y)
-                if (y - 1) in shown_years:
+                if has_people and (y - 1) in shown_years:
                     _br_tab = _build_compact_bridge_info(
                         s,
                         y - 1,
@@ -1395,7 +1391,7 @@ def _page_employees(room_key: str, log_tokens_fn=None):
     else:
         from .ui_step3 import _build_compact_bridge_info, _render_compact_bridge
         for idx_y, y in enumerate(shown_years):
-            if idx_y > 0:
+            if has_people and idx_y > 0:
                 y_upper = shown_years[idx_y - 1]
                 if y_upper - y == 1:
                     _br_between = _build_compact_bridge_info(
@@ -1410,7 +1406,7 @@ def _page_employees(room_key: str, log_tokens_fn=None):
 
     _render_prev_filing_summary_card(s, shown_years)
 
-    if tax_yr in totals_all and (tax_yr - 1) in totals_all:
+    if has_people and tax_yr in totals_all and (tax_yr - 1) in totals_all:
         snap_all = _ensure_totals_snapshot(s)
         cur_t = snap_all.get(tax_yr) or totals_all[tax_yr]
         _, suc_reg, ded_reg = _adjusted_prev_totals(s, totals_all[tax_yr - 1])
@@ -1452,6 +1448,7 @@ def _page_employees(room_key: str, log_tokens_fn=None):
         pid = f"manual_{seq}_{uuid.uuid4().hex[:6]}"
         s["people"][pid] = {
             "pid": pid,
+            "_manual": True,
             "사업장명": _default_workplace_label(s),
             "연도별_사업장명": {},
             "성명": f"신규사원{seq}",
@@ -1464,6 +1461,7 @@ def _page_employees(room_key: str, log_tokens_fn=None):
             "연도별_퇴사일": {},
             "_confirmed": [],
         }
+        s["emp_quick_filter"] = "ALL"
         for y in _all_possible_years(s):
             s["year_recs"].setdefault(y, {})[pid] = P.new_year_rec()
             s["grid_ver"][y] = s["grid_ver"].get(y, 0) + 1
