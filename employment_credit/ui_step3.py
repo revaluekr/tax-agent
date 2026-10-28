@@ -825,10 +825,10 @@ def _build_pm_formula_lines(
 
     if pm.get("base_missing"):
         return (
-            f"{cohort_year}년 귀속분 기초자료 미입력 ({pm.get('case_code', '기초값 없음')})",
+            f"{cohort_year}년 귀속분 기신고 기초자료 미입력 ({pm.get('case_code', '기초값 없음 — 사후관리 계산 보류')})",
             [
-                f"• {cohort_year}년 최초공제연도의 상시·청년등 인원 또는 증가인원 기초값이 없습니다.",
-                "• 상단 계산 기준을 『⚖️ 2단계 사원표(세법원칙) 기준 계산』으로 선택하거나 아래 기신고 기초값을 입력해 주세요.",
+                f"• [발생 사유] 현재 『📋 기신고 서식 숫자 기준』 모드이나, {cohort_year}년 최초 공제연도의 기신고 인원·증가인원·공제세액 기초값이 비어 있어 사후관리 계산이 0원으로 보류된 상태입니다.",
+                f"• [해결 방법] 바로 아래 초록색 『🔄 {cohort_year}년 사원표 재계산 값을 기신고 기초값에 바로 반영』 버튼을 누르면 2단계 사원표 계산값이 1클릭으로 입력되어 즉시 산출됩니다. (또는 상단 계산 기준을 『⚖️ 2단계 사원표(세법원칙) 기준 계산』으로 전환하세요.)",
             ],
             "세액공제액 / 추가납부액",
             0,
@@ -1365,7 +1365,251 @@ def _build_prior_new_law_recalc_warnings(
     return warnings_out
 
 
+_STEP3_QUICK_FILL_CSS = """
+<style>
+@keyframes ecQuickFillPulse {
+    0% {
+        box-shadow: 0 0 0 0 rgba(22, 163, 74, 0.62), 0 4px 14px rgba(21, 128, 61, 0.30);
+        transform: scale(1);
+    }
+    50% {
+        box-shadow: 0 0 0 9px rgba(22, 163, 74, 0), 0 7px 20px rgba(21, 128, 61, 0.48);
+        transform: scale(1.018);
+    }
+    100% {
+        box-shadow: 0 0 0 0 rgba(22, 163, 74, 0), 0 4px 14px rgba(21, 128, 61, 0.30);
+        transform: scale(1);
+    }
+}
+@keyframes ecQuickFillShimmer {
+    0% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+}
+div[class*="st-key-btn_quick_fill_"] [data-testid="stButton"] > button,
+div[class*="st-key-btn_quick_fill_"] button {
+    background: linear-gradient(135deg, #16a34a 0%, #059669 50%, #15803d 100%) !important;
+    background-size: 200% 200% !important;
+    color: #ffffff !important;
+    border: 2px solid #bbf7d0 !important;
+    border-bottom: 3px solid #14532d !important;
+    border-radius: 10px !important;
+    min-height: 54px !important;
+    padding: 10px 16px !important;
+    font-family: 'Pretendard', 'Malgun Gothic', sans-serif !important;
+    font-size: 0.96rem !important;
+    font-weight: 800 !important;
+    letter-spacing: -0.2px !important;
+    animation: ecQuickFillPulse 1.85s infinite ease-in-out, ecQuickFillShimmer 4s infinite ease !important;
+    transition: all 0.18s ease !important;
+    cursor: pointer !important;
+}
+div[class*="st-key-btn_quick_fill_"] [data-testid="stButton"] > button:hover,
+div[class*="st-key-btn_quick_fill_"] button:hover {
+    background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%) !important;
+    border-color: #ffffff !important;
+    box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.32), 0 8px 22px rgba(21, 128, 61, 0.50) !important;
+    transform: translateY(-2px) scale(1.02) !important;
+    animation-play-state: paused !important;
+}
+div[class*="st-key-btn_quick_fill_"] [data-testid="stButton"] > button p,
+div[class*="st-key-btn_quick_fill_"] button p {
+    color: #ffffff !important;
+    font-weight: 800 !important;
+    font-size: 0.96rem !important;
+}
+.ec-qf-card {
+    background: linear-gradient(90deg, #f0fdf4 0%, #ecfdf5 65%, #f8fafc 100%);
+    border: 1.5px solid #86efac;
+    border-left: 6px solid #16a34a;
+    border-radius: 10px;
+    padding: 11px 15px;
+    margin: -4px 0 10px 0;
+    box-shadow: 0 2px 8px rgba(22, 163, 74, 0.08);
+    font-family: 'Pretendard', 'Malgun Gothic', sans-serif;
+}
+.ec-qf-top-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 4px;
+}
+.ec-qf-why-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: #dcfce7;
+    color: #166534;
+    border: 1px solid #86efac;
+    font-size: 0.82rem;
+    font-weight: 800;
+    padding: 2px 9px;
+    border-radius: 999px;
+}
+.ec-qf-hover-pill {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: #1e293b;
+    color: #ffffff;
+    font-size: 0.78rem;
+    font-weight: 700;
+    padding: 2px 9px;
+    border-radius: 999px;
+    cursor: help;
+}
+.ec-qf-hover-pill .ec-qf-tooltip-box {
+    visibility: hidden;
+    opacity: 0;
+    position: absolute;
+    bottom: 130%;
+    right: 0;
+    width: 420px;
+    max-width: 82vw;
+    background: #0f172a;
+    color: #f8fafc;
+    border: 1px solid #334155;
+    border-left: 4px solid #22c55e;
+    border-radius: 10px;
+    padding: 12px 14px;
+    font-size: 0.85rem;
+    font-weight: 500;
+    line-height: 1.58;
+    box-shadow: 0 10px 25px rgba(15, 23, 42, 0.38);
+    z-index: 9999;
+    transition: opacity 0.16s ease, visibility 0.16s ease;
+    pointer-events: none;
+    text-align: left;
+    word-break: keep-all;
+}
+.ec-qf-hover-pill:hover .ec-qf-tooltip-box {
+    visibility: visible;
+    opacity: 1;
+}
+.ec-qf-desc {
+    font-size: 0.92rem;
+    color: #1e293b;
+    line-height: 1.55;
+    font-weight: 600;
+}
+.ec-qf-preview {
+    margin-top: 4px;
+    font-size: 0.90rem;
+    color: #14532d;
+    font-weight: 700;
+}
+</style>
+"""
+
+
+def _render_pm_quick_fill_banner(
+    s: dict,
+    pkg: dict,
+    ps: dict,
+    _coh_yr: int,
+    _pm_cur: dict,
+    _pm_rc: dict,
+    _base_key: str,
+    tax_yr: int,
+    corp_size: str,
+    is_capital: bool,
+    nth_label: str,
+) -> None:
+    """
+    사후관리 박스((3) 2차년도 / (4) 3차년도) 바로 아래에 직결 배치되는
+    기신고 기초값 1클릭 자동반영 안내 배너 및 애니메이션 초록 버튼.
+    """
+    if not (_pm_cur.get("base_missing") and not _pm_rc.get("base_missing")):
+        return
+
+    _rc_reg = float(_pm_rc.get("init_reg") or 0.0)
+    _rc_yth = float(_pm_rc.get("init_yth") or 0.0)
+    _rc_y_inc = float(_pm_rc.get("init_yth_inc") or 0.0)
+    _rc_g_inc = float(_pm_rc.get("init_gen_inc") or 0.0)
+    _rc_tot_inc = _rc_y_inc + _rc_g_inc
+    _rc_cont_won = int(_pm_rc.get("continued_credit_won") or 0)
+    _rc_claw_won = int(_pm_rc.get("clawback_net_payable_won") or 0)
+    _rc_rates = H.get_unit_rates(
+        corp_size,
+        _cohort_capital(s, _coh_yr, is_capital),
+        scheme="legacy",
+        retention_year=1,
+    )
+    _est_c1_won = int(
+        round((_rc_y_inc * _rc_rates["청년등"] + _rc_g_inc * _rc_rates["청년등외"]) * 10_000)
+    )
+
+    _btn_help_md = (
+        f"📌 [왜 이 버튼이 나타났나요?]\n"
+        f"• 현재 계산 기준이 『📋 기신고 서식 숫자 기준』으로 선택되어 있으나, {_coh_yr}년 기신고 서류(공제감면세액계산서 등)가 없거나 "
+        f"기초값(상시·청년등 인원, 증가인원, 최초 공제세액)이 비어 있어 바로 위 {nth_label} 사후관리 계산이 0원으로 보류된 상태입니다.\n"
+        f"• 반면 2단계 사원표에는 원천징수부 급여대장으로 산출된 {_coh_yr}년 재계산 데이터가 준비되어 있어 원클릭 연동을 안내합니다.\n\n"
+        f"⚡ [누르면 어떤 동작이 실행되나요?]\n"
+        f"• 하단 기신고 입력칸을 일일이 수기로 열지 않고도, 2단계 사원표의 {_coh_yr}년 상시({_rc_reg:.2f}명)·청년등({_rc_yth:.2f}명)·"
+        f"고용증가(+{_rc_tot_inc:.2f}명)·최초 공제세액({_est_c1_won:,}원)을 기신고 기초값에 즉시 복사·저장합니다.\n"
+        f"• 반영 즉시 위 {nth_label} 사후관리 결과가 『{_pm_rc.get('case_code')}』(공제 +{_rc_cont_won:,}원 / 추징 -{_rc_claw_won:,}원)으로 자동 계산됩니다."
+    )
+
+    _c_w, _c_b = st.columns([3.7, 2.3], vertical_alignment="center")
+    with _c_w:
+        st.markdown(
+            f"<div class='ec-qf-card'>"
+            f"<div class='ec-qf-top-row'>"
+            f"<span class='ec-qf-why-badge'>⚡ 왜 0원인가요? {_coh_yr}년 기신고 기초값 미입력 (사후관리 보류 중)</span>"
+            f"<span class='ec-qf-hover-pill'>💬 버튼 상세설명 (마우스 오버)"
+            f"<span class='ec-qf-tooltip-box'>"
+            f"<b style='color:#4ade80;'>① 왜 이 버튼이 나타났나요?</b><br>"
+            f"원천징수부만 업로드하고 {_coh_yr}년 기신고 세액공제 서식을 넣지 않았거나 기초값이 비어 있어, "
+            f"위 {nth_label} 사후관리 세액이 <b>0원(보류)</b>으로 멈춰 있기 때문입니다.<br><br>"
+            f"<b style='color:#4ade80;'>② 우측 초록 버튼을 누르면 무엇이 실행되나요?</b><br>"
+            f"2단계 사원표에서 계산된 <b>{_coh_yr}년 상시({_rc_reg:.2f}명)·청년등({_rc_yth:.2f}명)·증가(+{_rc_tot_inc:.2f}명)·"
+            f"최초 공제세액({_est_c1_won:,}원)</b>을 기신고 기초값에 1클릭으로 자동 입력하여 위 사후관리 세액을 즉시 산출합니다."
+            f"</span></span>"
+            f"</div>"
+            f"<div class='ec-qf-desc'>"
+            f"원천징수부 기준으로 계산된 <b>2단계 사원표({_coh_yr}년 귀속)</b> 수치가 준비되어 있습니다. 우측 초록 버튼을 누르면 하단 기신고 입력칸에 즉시 반영됩니다."
+            f"</div>"
+            f"<div class='ec-qf-preview'>"
+            f"👉 <b>반영될 사원표 기초값</b>: 상시 <b>{_rc_reg:.2f}명</b> (청년등 <b>{_rc_yth:.2f}명</b>) · 증가 <b>+{_rc_tot_inc:.2f}명</b> "
+            f"→ <b>사후관리 산출: {_pm_rc.get('case_code')} (공제 +{_rc_cont_won:,}원 / 추징 -{_rc_claw_won:,}원)</b>"
+            f"</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+    with _c_b:
+        if st.button(
+            f"🔄 {_coh_yr}년 사원표 재계산 값을 기신고 기초값에 바로 반영 ({nth_label} 산출)",
+            type="primary",
+            use_container_width=True,
+            key=f"btn_quick_fill_{_coh_yr}_{tax_yr}",
+            help=_btn_help_md,
+        ):
+            _fd = ps.setdefault(str(_coh_yr), {})
+            _brc = (pkg.get(_base_key) or {}).get("recalc") or {}
+            if _brc.get("init_reg") is not None:
+                _fd["상시"] = float(_brc["init_reg"])
+            if _brc.get("init_yth") is not None:
+                _fd["청년등"] = float(_brc["init_yth"])
+            if _brc.get("init_reg_total") is not None and _fd.get("상시_총인원") is None:
+                _fd["상시_총인원"] = float(_brc["init_reg_total"])
+            if _brc.get("init_yth_total") is not None and _fd.get("청년등_총인원") is None:
+                _fd["청년등_총인원"] = float(_brc["init_yth_total"])
+            if _brc.get("init_yth_inc") is not None:
+                _fd["청년등_증가"] = float(_brc["init_yth_inc"])
+            if _brc.get("init_gen_inc") is not None:
+                _fd["청년등외_증가"] = float(_brc["init_gen_inc"])
+            if _fd.get("공제세액") is None:
+                _fd["공제세액"] = _est_c1_won
+            s["fill_ver"] = int(s.get("fill_ver", 0)) + 1
+            _save_ec_to_disk(s)
+            st.rerun()
+
+
 def _page_calculation():
+    st.markdown(_STEP3_QUICK_FILL_CSS, unsafe_allow_html=True)
     s = _S()
     _ensure_built_for_tax_year(s)
     tax_yr = int(s["tax_year"])
@@ -1829,6 +2073,19 @@ def _page_calculation():
         f"</div>",
         unsafe_allow_html=True,
     )
+    _render_pm_quick_fill_banner(
+        s=s,
+        pkg=pkg,
+        ps=ps,
+        _coh_yr=tax_yr - 1,
+        _pm_cur=pkg["pm_y1"],
+        _pm_rc=pkg["pm_y1_recalc"],
+        _base_key="base_y1",
+        tax_yr=tax_yr,
+        corp_size=corp_size,
+        is_capital=is_capital,
+        nth_label="2차년도(1차 사후관리)",
+    )
 
     st.markdown(
         f"<div class='ec-sub-header'><span class='ec-sub-num'>(4)</span><span>3차년도 사후관리 계산 ({tax_yr - 2}년 귀속분 → {tax_yr}년 2차 사후관리)</span></div>",
@@ -1876,48 +2133,19 @@ def _page_calculation():
         f"</div>",
         unsafe_allow_html=True,
     )
-    for _coh_yr, _pm_cur, _pm_rc, _base_key in (
-        (tax_yr - 1, pkg["pm_y1"], pkg["pm_y1_recalc"], "base_y1"),
-        (tax_yr - 2, pkg["pm_y2"], pkg["pm_y2_recalc"], "base_y2"),
-    ):
-        if _pm_cur.get("base_missing") and not _pm_rc.get("base_missing"):
-            _c_w, _c_b = st.columns([3.8, 2.2])
-            with _c_w:
-                st.info(
-                    f"💡 **2단계 사원표 기준 {_coh_yr}년 귀속분 재계산 값**: "
-                    f"상시 **{_pm_rc.get('init_reg', 0):.2f}명** (청년등 **{_pm_rc.get('init_yth', 0):.2f}명**), "
-                    f"증가 **+{_pm_rc.get('init_yth_inc', 0) + _pm_rc.get('init_gen_inc', 0):.2f}명** → "
-                    f"사후관리 **{_pm_rc.get('case_code')}** "
-                    f"(공제 **+{_pm_rc.get('continued_credit_won', 0):,}원** / 추징 **-{_pm_rc.get('clawback_net_payable_won', 0):,}원**)"
-                )
-            with _c_b:
-                if st.button(
-                    f"🔄 {_coh_yr}년 사원표 재계산 값을 기신고 기초값에 바로 반영",
-                    type="primary",
-                    use_container_width=True,
-                    key=f"btn_quick_fill_{_coh_yr}_{tax_yr}",
-                ):
-                    _fd = ps.setdefault(str(_coh_yr), {})
-                    _brc = (pkg.get(_base_key) or {}).get("recalc") or {}
-                    if _brc.get("init_reg") is not None:
-                        _fd["상시"] = float(_brc["init_reg"])
-                    if _brc.get("init_yth") is not None:
-                        _fd["청년등"] = float(_brc["init_yth"])
-                    if _brc.get("init_yth_inc") is not None:
-                        _fd["청년등_증가"] = float(_brc["init_yth_inc"])
-                    if _brc.get("init_gen_inc") is not None:
-                        _fd["청년등외_증가"] = float(_brc["init_gen_inc"])
-                    if _fd.get("공제세액") is None:
-                        _rc_rates = H.get_unit_rates(corp_size, _cohort_capital(s, _coh_yr, is_capital), scheme="legacy", retention_year=1)
-                        _fd["공제세액"] = int(
-                            round(
-                                (float(_fd.get("청년등_증가") or 0.0) * _rc_rates["청년등"]
-                                 + float(_fd.get("청년등외_증가") or 0.0) * _rc_rates["청년등외"]) * 10_000
-                            )
-                        )
-                    s["fill_ver"] = int(s.get("fill_ver", 0)) + 1
-                    _save_ec_to_disk(s)
-                    st.rerun()
+    _render_pm_quick_fill_banner(
+        s=s,
+        pkg=pkg,
+        ps=ps,
+        _coh_yr=tax_yr - 2,
+        _pm_cur=pkg["pm_y2"],
+        _pm_rc=pkg["pm_y2_recalc"],
+        _base_key="base_y2",
+        tax_yr=tax_yr,
+        corp_size=corp_size,
+        is_capital=is_capital,
+        nth_label="3차년도(2차 사후관리)",
+    )
 
     if pkg["additional_credit_won"] > 0 or pkg["additional_clawback_won"] > 0 or pkg["rural_special_tax_won"] > 0:
         add_net = pkg["additional_credit_won"] - pkg["additional_clawback_won"]
@@ -1971,6 +2199,12 @@ def _page_calculation():
                 "🔄 2단계 사원표 재계산 값으로 빈칸 자동 채우기",
                 use_container_width=True,
                 key=f"btn_fill_from_recalc_{tax_yr}",
+                help=(
+                    f"📌 [왜 이 버튼이 필요한가요?]\n"
+                    f"• {tax_yr-1}년·{tax_yr-2}년 기신고 서식을 업로드하지 않았거나 일부 칸이 비어 있을 때 수기로 하나씩 타이핑하는 번거로움을 덜어줍니다.\n\n"
+                    f"⚡ [누르면 어떤 동작이 실행되나요?]\n"
+                    f"• 현재 비어 있는 기신고 입력칸(상시·청년등 연인원/평균인원, 고용증가 인원, 최초 공제세액, 2차 공제세액)에 2단계 사원표 재계산 값을 한 번에 채워 넣습니다. (이미 직접 입력한 칸은 덮어쓰지 않고 보존합니다.)"
+                ),
             ):
                 for cohort, t_init, t_before in (
                     (tax_yr - 1, prev_t, prev2_t),
