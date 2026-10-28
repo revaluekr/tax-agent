@@ -1221,6 +1221,38 @@ div[role="dialog"] p {
     background: #f8fafc;
 }
 
+/* 🗑️ 입체감이 살아있는 [🔄 자료 초기화 (내용 비우기)] 3D 버튼 스타일 */
+.st-key-btn_ec_sidebar_reset_ask button {
+    background: linear-gradient(180deg, #ffffff 0%, #f1f5f9 100%) !important;
+    border: 1px solid #94a3b8 !important;
+    border-bottom: 2.5px solid #64748b !important;
+    border-radius: 8px !important;
+    min-height: 2.25rem !important;
+    font-size: 0.86rem !important;
+    font-weight: 700 !important;
+    color: #1e293b !important;
+    box-shadow: 0 2px 4px rgba(15, 23, 42, 0.08) !important;
+    transition: all 0.12s ease !important;
+}
+.st-key-btn_ec_sidebar_reset_ask button:hover:not(:disabled) {
+    background: linear-gradient(180deg, #fff1f2 0%, #ffe4e6 100%) !important;
+    border-color: #f43f5e !important;
+    border-bottom-color: #e11d48 !important;
+    color: #be123c !important;
+    transform: translateY(-1px) !important;
+}
+.st-key-btn_ec_sidebar_reset_ask button:active:not(:disabled) {
+    transform: translateY(1px) !important;
+    border-bottom-width: 1px !important;
+}
+.st-key-btn_ec_sidebar_reset_ask button:disabled {
+    background: linear-gradient(180deg, #f8fafc 0%, #e2e8f0 100%) !important;
+    border: 1px solid #cbd5e1 !important;
+    border-bottom: 2.5px solid #94a3b8 !important;
+    color: #64748b !important;
+    opacity: 0.78 !important;
+}
+
 /* 📕 붉은색 PDF 다운로드 버튼 전용 스타일 (연도별 우측 상단 & 하단 전체 PDF 다운) */
 div[class*="st-key-ec_btn_pdf_"] [data-testid="stDownloadButton"] > button,
 div[class*="st-key-ec_btn_pdf_"] button {
