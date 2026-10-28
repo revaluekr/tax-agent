@@ -443,10 +443,10 @@ def _fetch_live_employment_law_context() -> tuple[str, dict | None]:
                 ):
                     verified_buchik.add(("조세특례제한법", 34, 0))
                 if clean_lnm == "조세특례제한법시행령":
-                    if "제26조의8" in res_compact and "제11조의2제8항" in res_compact:
+                    mut_sent = _extract_26_8_mutatis_sentence(res_s, is_already_sliced=False)
+                    if mut_sent:
                         trace["verified_26_8_6_mutatis_11_2_8"] = True
-                        global _VERIFIED_26_8_6_MUTATIS_SESSION
-                        _VERIFIED_26_8_6_MUTATIS_SESSION = True
+                        trace["verified_26_8_6_mutatis_sentence"] = mut_sent
                     if "부칙" in res_s:
                         if "제2조(통합고용세액공제에관한경과조치)" in res_compact:
                             verified_buchik.add(("조세특례제한법시행령", 2, 0))
@@ -457,32 +457,249 @@ def _fetch_live_employment_law_context() -> tuple[str, dict | None]:
         trace.setdefault("fetched_laws", set()).update(ok_laws)
         trace.setdefault("fetched_addenda", set()).update(verified_buchik)
         trace.setdefault("verified_26_8_6_mutatis_11_2_8", False)
+        trace.setdefault("verified_26_8_6_mutatis_sentence", "")
     finally:
         agent._TOOL_TRACE.reset(tok)
 
     return "\n\n".join(fetched_snippets)[:15000], trace
 
 
-_VERIFIED_26_8_6_MUTATIS_SESSION = False
+def _extract_26_8_mutatis_sentence(raw_text: str, is_already_sliced: bool = False) -> str:
+    """
+    조회된 법령 텍스트에서 오직 『제26조의8』 조문 본문 구간만 잘라내어,
+    그 구간 안에 준용 문언(공백 제거 후 '제11조의2제8항을준용')이 있을 때만
+    해당 원문 문장 전체(공백 보존)를 반환합니다.
+    """
+    if not raw_text:
+        return ""
+    s_txt = str(raw_text)
+    if is_already_sliced:
+        art_26_8_body = s_txt
+    else:
+        add_split = re.search(r"(?m)^(?:\s*📌\s*\[[^\n]*부칙|\s*\[?부칙\s*<)", s_txt)
+        main_part = s_txt[:add_split.start()] if add_split else s_txt
+        starts = list(re.finditer(r"(?m)^\s*제\s*(\d+)\s*조(?:\s*의\s*(\d+))?(?:\s*\(|\s+)", main_part))
+        art_26_8_body = ""
+        for idx, am in enumerate(starts):
+            jo_no = int(am.group(1))
+            gaji_no = int(am.group(2) or 0)
+            if (jo_no, gaji_no) == (26, 8):
+                end_pos = starts[idx + 1].start() if idx + 1 < len(starts) else len(main_part)
+                art_26_8_body = main_part[am.start():end_pos].strip()
+                break
+
+    if not art_26_8_body:
+        return ""
+    body_compact = re.sub(r"\s+", "", art_26_8_body)
+    if "제11조의2제8항을준용" not in body_compact:
+        return ""
+
+    m_sent = re.search(
+        r"([①-⑳][^\n]*?제\s*11\s*조\s*의\s*2\s*제\s*8\s*항\s*을\s*준용[^\n.]*\.)",
+        art_26_8_body,
+    )
+    if m_sent:
+        return m_sent.group(1).strip()
+
+    for ln in art_26_8_body.splitlines():
+        if "제11조의2제8항을준용" in re.sub(r"\s+", "", ln):
+            return ln.strip()
+    return art_26_8_body.strip()
 
 
 def is_26_8_6_mutatis_verified(trace: dict | None = None) -> bool:
     """
-    조세특례제한법 시행령 제26조의8 제6항이 제11조의2 제8항을 준용한다는 문언이
-    law_api 원문 조회를 통해 trace(또는 현재 세션의 법제처 API 조회 결과)에 기록되었는지 여부를 반환합니다.
+    전달받은 trace 딕셔너리만으로 조세특례제한법 시행령 제26조의8 본문 구간 내
+    '제11조의2제8항을 준용' 문언 확인 여부를 판정합니다.
+    - 전역 세션 플래그를 일절 사용하지 않으며, trace가 None이거나 플래그가 False이면 False를 반환합니다.
     """
-    global _VERIFIED_26_8_6_MUTATIS_SESSION
-    if isinstance(trace, dict) and bool(trace.get("verified_26_8_6_mutatis_11_2_8")):
-        _VERIFIED_26_8_6_MUTATIS_SESSION = True
+    if not isinstance(trace, dict):
+        return False
+    if "verified_26_8_6_mutatis_11_2_8" in trace:
+        if not bool(trace.get("verified_26_8_6_mutatis_11_2_8")):
+            return False
+        if str(trace.get("verified_26_8_6_mutatis_sentence") or "").strip():
+            return True
+
+    art_texts = trace.get("article_texts") or {}
+    if isinstance(art_texts, dict):
+        art_body = art_texts.get(("조세특례제한법시행령", 26, 8)) or ""
+        sent = _extract_26_8_mutatis_sentence(art_body, is_already_sliced=True)
+        if sent:
+            trace["verified_26_8_6_mutatis_11_2_8"] = True
+            trace["verified_26_8_6_mutatis_sentence"] = sent
+            return True
+
+    for d_txt in (trace.get("detail") or []):
+        sent = _extract_26_8_mutatis_sentence(str(d_txt or ""), is_already_sliced=False)
+        if sent:
+            trace["verified_26_8_6_mutatis_11_2_8"] = True
+            trace["verified_26_8_6_mutatis_sentence"] = sent
+            return True
+
+    if bool(trace.get("verified_26_8_6_mutatis_11_2_8")):
         return True
+    trace["verified_26_8_6_mutatis_11_2_8"] = False
+    return False
+
+
+def get_verified_26_8_6_mutatis_sentence(trace: dict | None = None) -> str:
+    """trace에서 검증·저장된 제26조의8 제6항의 준용 원문 문장(공백 보존)을 반환합니다."""
+    if not is_26_8_6_mutatis_verified(trace) or not isinstance(trace, dict):
+        return ""
+    return str(trace.get("verified_26_8_6_mutatis_sentence") or "").strip()
+
+
+def verify_and_redact_unmatched_quotes(text: str, trace: dict | None = None) -> tuple[str, int]:
+    """
+    [4번 요구사항 — AI 출력물의 인용문 사후 대조 (파이썬 결정론적 검증, 추가 AI 호출 0회)]
+    - 큰따옴표(" ", “ ”), 작은따옴표(' ', ‘ ’), 낫표(「 」, 『 』)로 감싼 문장과
+      [조문:...] 태그 바로 뒤의 인용 문장을 추출합니다.
+    - 각 인용문이 (a) 현 호출의 trace에 기록된 법령 원문(trace["detail"], trace["article_texts"], trace["addenda_texts"])
+      또는 (b) rules.ADMIN_RULINGS_AND_NOTICES의 "원문" 필드에 공백 제거 후 부분 문자열로 존재하는지 검사합니다.
+    - 일치하지 않는 인용문은 삭제하고 "(원문 대조 불일치로 인용 삭제)"로 대체하며, (교정된_텍스트, 삭제_건수)를 반환합니다.
+    - 따옴표 인용은 법령·안내문 인용으로 보이는 경우에만 대조합니다(_needs_source_check 참조).
+      금액·숫자, 12자 미만 짧은 용어, 법령명·서식명 표기, 일반 강조·대화 인용은 그대로 둡니다.
+    """
+    if not text:
+        return "", 0
+
+    allowed_compact_sources: list[str] = []
     if isinstance(trace, dict):
-        for d_txt in (trace.get("detail") or []):
-            compact = re.sub(r"\s+", "", str(d_txt or ""))
-            if "제26조의8" in compact and "제11조의2제8항" in compact:
-                trace["verified_26_8_6_mutatis_11_2_8"] = True
-                _VERIFIED_26_8_6_MUTATIS_SESSION = True
-                return True
-    return bool(_VERIFIED_26_8_6_MUTATIS_SESSION)
+        for d_item in (trace.get("detail") or []):
+            c_str = re.sub(r"\s+", "", str(d_item or ""))
+            if c_str:
+                allowed_compact_sources.append(c_str)
+        art_map = trace.get("article_texts") or {}
+        if isinstance(art_map, dict):
+            for a_val in art_map.values():
+                c_str = re.sub(r"\s+", "", str(a_val or ""))
+                if c_str:
+                    allowed_compact_sources.append(c_str)
+        add_map = trace.get("addenda_texts") or {}
+        if isinstance(add_map, dict):
+            for ad_val in add_map.values():
+                c_str = re.sub(r"\s+", "", str(ad_val or ""))
+                if c_str:
+                    allowed_compact_sources.append(c_str)
+
+    rulings_dict = getattr(R, "ADMIN_RULINGS_AND_NOTICES", {}) or {}
+    if isinstance(rulings_dict, dict):
+        for r_item in rulings_dict.values():
+            if isinstance(r_item, dict):
+                v_orig = str(r_item.get("원문") or "")
+                c_str = re.sub(r"\s+", "", v_orig)
+                if c_str:
+                    allowed_compact_sources.append(c_str)
+
+    def _is_verbatim_in_sources(candidate: str) -> bool:
+        cand_compact = re.sub(r"\s+", "", str(candidate or ""))
+        if not cand_compact:
+            return True
+        return any(cand_compact in src for src in allowed_compact_sources)
+
+    work = str(text)
+    masks: dict[str, str] = {}
+
+    def _mask_pattern(pat: str, prefix: str, src_txt: str) -> str:
+        def _m_repl(m: re.Match) -> str:
+            key = f"__{prefix}_{len(masks)}__"
+            masks[key] = m.group(0)
+            return key
+        return re.sub(pat, _m_repl, src_txt)
+
+    # 1) HTML 태그, 마크다운 링크, [조문:...] 등 인용 배지 자체 및 연도 축약 아포스트로피('25년, '26.2.27. 등) 보호
+    work = _mask_pattern(r"<[^>]+>", "HTMLTAG", work)
+    work = _mask_pattern(r"\[[^\]]+\]\(https?://[^)\s]+\)", "MDLINK", work)
+    work = _mask_pattern(r"\[(?:조문|부칙|별표|서식|예규|판례|심판|헌재|행정해석)\s*[:：]\s*[^\]]+\]", "CITETAG", work)
+    work = _mask_pattern(r"'(?=\d{2}\s*(?:년|\.|\s*귀속|\s*사업연도))", "YRAPOS", work)
+
+    deleted_count = 0
+
+    # 2) [조문:...] 태그 바로 뒤에 따옴표 없이 이어지는 조문 항 번호(①~⑳) 직접 인용 문장 검사
+    def _repl_after_cite(m: re.Match) -> str:
+        nonlocal deleted_count
+        prefix_part = m.group(1)
+        clause_part = m.group(2)
+        if _is_verbatim_in_sources(clause_part):
+            return m.group(0)
+        deleted_count += 1
+        return f"{prefix_part}(원문 대조 불일치로 인용 삭제)"
+
+    work = re.sub(
+        r"((?:__CITETAG_\d+__|__MDLINK_\d+__)(?:\([^)]*\))?\s*[:：]?\s*)([①-⑳][^\n.]+(?:\.|$))",
+        _repl_after_cite,
+        work,
+    )
+
+    # 3) 큰따옴표(" ", “ ”), 작은따옴표(' ', ‘ ’), 낫표(「 」, 『 』) 인용문 전수 검사
+    quote_patterns = [
+        r'"([^"\n]+)"',
+        r"“([^”\n]+)”",
+        r"'([^'\n]+)'",
+        r"‘([^’\n]+)’",
+        r"「([^」\n]+)」",
+        r"『([^』\n]+)』",
+    ]
+
+    # 3-1) 검사 범위 판정: 법령·안내문 인용으로 보이는 따옴표만 원문 대조한다.
+    #  - 제외(그대로 유지): 숫자·금액·인원·날짜만으로 된 내용, 공백 제거 기준 12자 미만의 짧은 용어,
+    #    「…법」·「…령」·「…규칙」 등 법령명·서식명 표기
+    #  - 대조 대상: 공백 제거 기준 12자 이상이면서 (a) 바로 앞 30자 이내에 인용 표지(조문 태그·법령명·"규정"·"원문"·"안내문"·"서식")가 있거나
+    #    (b) 법령·안내문 문장 어미로 끝나는 경우
+    _MIN_QUOTE_LEN = 12
+    _NUMERIC_ONLY_RE = re.compile(r"^[\d,.\-~·/()%]+(?:원|명|%|개월|년|월|일|회|건|만원|천원)?$")
+    _LAW_NAME_RE = re.compile(r"(?:법|법률|령|규칙|특별법|서식|기본통칙|집행기준)$")
+    _CONTEXT_MARKERS = (
+        "__CITETAG_", "__MDLINK_", "규정", "원문", "안내문", "서식", "법」", "령」", "규칙」", "조문", "부칙",
+    )
+    _LEGAL_ENDINGS = (
+        "한다", "본다", "말한다", "아니한다", "적습니다", "적용", "절사", "준용한다", "같다",
+        "포함한다", "제외한다", "따른다", "공제한다", "납부하여야 한다", "납부해야 한다", "합계",
+    )
+
+    def _needs_source_check(inner: str, preceding: str, is_bracket: bool = False) -> bool:
+        compact = re.sub(r"\s+", "", str(inner or ""))
+        if not compact:
+            return False
+        if _NUMERIC_ONLY_RE.match(compact):
+            return False
+        if len(compact) < _MIN_QUOTE_LEN:
+            return False
+        # 낫표(「 」, 『 』)로 감싼 법령명·서식명 표기는 인용문이 아니므로 제외
+        if is_bracket and _LAW_NAME_RE.search(compact) and len(compact) <= 40:
+            return False
+        if any(mk in preceding for mk in _CONTEXT_MARKERS):
+            return True
+        tail = re.sub(r"[\s.。,;:!?\)\]」』\"'”’]+$", "", str(inner or ""))
+        tail_compact = re.sub(r"\s+", "", tail)
+        return any(tail_compact.endswith(re.sub(r"\s+", "", e)) for e in _LEGAL_ENDINGS)
+
+    def _repl_quote(m: re.Match) -> str:
+        nonlocal deleted_count
+        inner = m.group(1)
+        if inner.strip() == "(원문 대조 불일치로 인용 삭제)":
+            return m.group(0)
+        preceding = m.string[max(0, m.start() - 30): m.start()]
+        is_bracket = str(m.group(0)).startswith(("「", "『"))
+        if not _needs_source_check(inner, preceding, is_bracket):
+            return m.group(0)
+        if _is_verbatim_in_sources(inner):
+            return m.group(0)
+        deleted_count += 1
+        return "(원문 대조 불일치로 인용 삭제)"
+
+    for q_pat in quote_patterns:
+        work = re.sub(q_pat, _repl_quote, work)
+
+    # 4) 보호 마스크 복원 (역순)
+    for k, v in reversed(list(masks.items())):
+        work = work.replace(k, v)
+
+    if isinstance(trace, dict):
+        trace["quote_redacted_count"] = int(trace.get("quote_redacted_count", 0) or 0) + deleted_count
+
+    return work, deleted_count
 
 
 def _sanitize_law_citation_tags(md_text: str) -> str:
@@ -595,12 +812,17 @@ def call_pro_argon_audit_commentary(summary_context: str | dict, log_tokens_fn=N
 
     live_law_text, trace = _fetch_live_employment_law_context()
     mutatis_verified = is_26_8_6_mutatis_verified(trace)
+    mutatis_sent = get_verified_26_8_6_mutatis_sentence(trace)
     admin_ruling_text = R.format_admin_rulings_for_prompt() if hasattr(R, "format_admin_rulings_for_prompt") else ""
-    calc_law_cite_str = (
-        "[조문:조세특례제한법 시행령 제26조의8 제6항]([조문:조세특례제한법 시행령 제11조의2 제8항] 준용) 및 국세청 '26.3월 안내(A/B 적용 구분)"
-        if mutatis_verified
-        else "[조문:조세특례제한법 시행령 제26조의8 제6항] 및 국세청 '26.3월 안내(A/B 적용 구분)"
-    )
+    if mutatis_verified and mutatis_sent:
+        calc_law_cite_str = (
+            f'[조문:조세특례제한법 시행령 제26조의8 제6항]("{mutatis_sent}" — [조문:조세특례제한법 시행령 제11조의2 제8항] 준용) '
+            "및 국세청 '26.3월 안내(A/B 적용 구분)"
+        )
+    elif mutatis_verified:
+        calc_law_cite_str = "[조문:조세특례제한법 시행령 제26조의8 제6항]([조문:조세특례제한법 시행령 제11조의2 제8항] 준용) 및 국세청 '26.3월 안내(A/B 적용 구분)"
+    else:
+        calc_law_cite_str = "[조문:조세특례제한법 시행령 제26조의8 제6항] 및 국세청 '26.3월 안내(A/B 적용 구분)"
 
     keys = _get_gemini_api_keys()
     models = _get_gemini_models(prefer_pro=True)
@@ -726,6 +948,9 @@ def call_pro_argon_audit_commentary(summary_context: str | dict, log_tokens_fn=N
                             if viols:
                                 txt = _ag._redact_lines(txt, viols)
 
+                        # 1-2단계: 인용문 원문 대조 사후 검증 (_scan_violations / _redact_lines 직후 파이썬 단독 수행, 추가 AI 호출 없음)
+                        txt, quote_del_cnt = verify_and_redact_unmatched_quotes(txt, trace)
+
                         # 2단계: Flash 감수 모델을 통한 의미·수치 정합성 2중 검증 (_semantic_verify)
                         if getattr(_ag, "SEMANTIC_VERIFY_ON", True) and hasattr(_ag, "_extract_claims") and hasattr(_ag, "_semantic_verify"):
                             try:
@@ -743,7 +968,7 @@ def call_pro_argon_audit_commentary(summary_context: str | dict, log_tokens_fn=N
 
                         # 3단계: 국가법령정보센터 원문 직링크 결합 (_inject_direct_law_links)
                         txt = inject_verified_law_links(txt, trace)
-                        return f"[적용 모델: {model_id}]\n\n{txt}"
+                        return f"[적용 모델: {model_id} | 인용삭제: {quote_del_cnt}건]\n\n{txt}"
                     except Exception:
                         continue
                     finally:
@@ -819,7 +1044,7 @@ def call_pro_argon_audit_commentary(summary_context: str | dict, log_tokens_fn=N
     )
 
     b3 = [
-        "**외국인 근로자의 내국인(소득세법상 거주자) 요건 및 증빙 확인**: [조문:조세특례제한법 시행령 제26조의8 제2항] 본문의 '내국인 근로자'란 [조문:조세특례제한법 제2조] 제1항 제1호 및 시행규칙 별지 제10호의10서식, 국세청 사전-2020-법령해석소득-0239에 따라 국적과 무관하게 국내에 주소를 두거나 183일 이상 거소를 둔 '소득세법상 거주자'인 외국인 근로자를 포함하며 비거주자만 제외합니다. 따라서 외국인 근로자의 국내 거소 기간(183일 이상 여부), 외국인등록증 및 근로계약서를 구비하여 거주자 요건 충족 여부를 최종 확인하시기 바랍니다.",
+        "**외국인 근로자의 내국인(소득세법상 거주자) 요건 및 증빙 확인**: [조문:조세특례제한법 시행령 제26조의8 제2항] 본문의 내국인 근로자란 [조문:조세특례제한법 제2조] 제1항 제1호 및 시행규칙 별지 제10호의10서식, 국세청 사전-2020-법령해석소득-0239에 따라 국적과 무관하게 국내에 주소를 두거나 183일 이상 거소를 둔 소득세법상 거주자인 외국인 근로자를 포함하며 비거주자만 제외합니다. 따라서 외국인 근로자의 국내 거소 기간(183일 이상 여부), 외국인등록증 및 근로계약서를 구비하여 거주자 요건 충족 여부를 최종 확인하시기 바랍니다.",
         "**중도퇴사자 근로계약 형태 확인 및 병역증명서·제외대상자 대사**: 2025년 귀속에 종전 규정(부칙 경과조치)에 따라 기간의 정함이 없는 근로계약자로 보아 산입한 중도퇴사자는 실제 근로계약서상 계약기간이 1년 이상(정규직)이었는지 반드시 확인해야 하며, 병역차감 후보자의 병적증명서(또는 주민등록초본 병역사항)와 등기임원·최대주주·친족([조문:조세특례제한법 시행령 제26조의8 제2항] 제3호~제5호) 제외 여부를 최종 대사하시기 바랍니다.",
     ]
     b4 = [_strip_report_icons(x) for x in (ctx_dict.get("기신고_대비_세법원칙_차이분석") or []) if str(x).strip()]
@@ -841,7 +1066,9 @@ def call_pro_argon_audit_commentary(summary_context: str | dict, log_tokens_fn=N
             "#### (4) 직전 과세연도 비교 인원 산정 기준 및 경과조치 법령 근거",
             *[f"- {line}" for line in b4],
         ])
-    return inject_verified_law_links("\n".join(fallback_lines), trace)
+    fb_body, fb_del_cnt = verify_and_redact_unmatched_quotes("\n".join(fallback_lines[2:]), trace)
+    fb_full = f"[적용 모델: gemini-2.5-pro (법제처 API 직결 세무진단 엔진) | 인용삭제: {fb_del_cnt}건]\n\n{fb_body}"
+    return inject_verified_law_links(fb_full, trace)
 
 PROMPT_BIZ = """다음은 사업자등록증입니다(본점·지점 또는 양도·양수 사업장 등 복수일 수 있음). 아래 JSON 형식으로 정확히 읽어주세요.
 {"상호":"", "사업자번호":"000-00-00000", "대표자":"", "개업일":"YYYY-MM-DD", "법인등록번호앞6자리":"", "사업장소재지":"", "업태":"", "종목":"", "추가사업장":[{"구분":"지점(법인 본·지점 합산)/포괄양수 사업장(기중 양수)/기중양도 사업장(종전 사업장)", "상호":"", "사업자번호":"", "사업장소재지":"", "업태":"", "종목":"", "개업일":""}]}"""
