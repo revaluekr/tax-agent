@@ -407,11 +407,14 @@ def _fetch_live_employment_law_context() -> tuple[str, dict | None]:
 
         def _worker_fetch(item: tuple[str, str]) -> tuple[str, str, str]:
             lnm, qf = item
+            w_tok = agent._TOOL_TRACE.set(agent._new_trace(unleash=True))
             try:
                 r = agent.get_law_details_for_gemini(doc_id=lnm, target="law", query_filter=qf)
                 return lnm, qf, str(r or "")
             except Exception:
                 return lnm, qf, ""
+            finally:
+                agent._TOOL_TRACE.reset(w_tok)
 
         results_ordered: list[tuple[str, str, str]] = []
         try:
@@ -432,16 +435,17 @@ def _fetch_live_employment_law_context() -> tuple[str, dict | None]:
                 clean_lnm = law_nm.replace(" ", "")
                 ok_laws.add(clean_lnm)
 
-                # 잘라내기 전 전체 원문(res_s)에서 경과조치 문구가 실제로 존재하는지 확인 후 부칙 전용 허용 목록(fetched_addenda)에만 등록
+                # 잘라내기 전 전체 원문(res_s)에서 실제 부칙 조문 제목이 존재하는지 엄격 확인 후 부칙 전용 허용 목록(fetched_addenda)에만 등록
+                res_compact = res_s.replace(" ", "")
                 if clean_lnm == "조세특례제한법" and (
-                    "통합고용세액공제에 관한 경과조치" in res_s
-                    or ("제34조" in res_s and "부칙" in res_s and "제29조의8" in res_s)
+                    "제34조(통합고용세액공제에관한경과조치)" in res_compact
+                    or "통합고용세액공제에관한경과조치" in res_compact
                 ):
                     verified_buchik.add(("조세특례제한법", 34, 0))
-                if clean_lnm == "조세특례제한법시행령" and "통합고용세액공제" in res_s and "부칙" in res_s:
-                    if "제2조" in res_s:
+                if clean_lnm == "조세특례제한법시행령" and "부칙" in res_s:
+                    if "제2조(통합고용세액공제에관한경과조치)" in res_compact:
                         verified_buchik.add(("조세특례제한법시행령", 2, 0))
-                    if "제11조" in res_s:
+                    if "제11조(통합고용세액공제에관한적용례등)" in res_compact:
                         verified_buchik.add(("조세특례제한법시행령", 11, 0))
 
         # 실제로 조회에 성공한 법령과 원문에서 확인된 부칙만 인용 허용 목록에 등록 (본칙 mentioned_articles 오염 원천 차단)
