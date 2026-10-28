@@ -321,18 +321,7 @@ def render_credit_sidebar():
                     _save_ec_to_disk(s)
                     st.rerun()
 
-        if hasattr(R, "verify_golden_case_invariants"):
-            ok_g, errs_g = R.verify_golden_case_invariants()
-            if ok_g:
-                st.markdown(
-                    "<div style='margin-top:4px;padding:4px 8px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;"
-                    "font-size:0.76rem;font-weight:700;color:#15803d;text-align:center;'>"
-                    "🛡️ 정본 산식 · 단가 회귀검증(0.01명·1원 무오차) 정상"
-                    "</div>",
-                    unsafe_allow_html=True,
-                )
-            else:
-                st.error("⚠️ 산식 회귀검증 경고: " + "; ".join(errs_g))
+
 
         # ── 하단: 제2사업장 등 추가 합산 사업장 표시 영역 ──
         if sub_list:

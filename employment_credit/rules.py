@@ -14,7 +14,7 @@
      기본 상시근로자 수가 과소 산정되지 않도록 보호.
 3. 1단계 업로드 목록에 세액공제 및 사후관리(추가납부) 적법 계산을 위한 필수·핵심 서류를 명확히 안내하고,
    사후관리 기준('기신고 기준' 원칙 vs '세법원칙 기준' 선택) 상수 지원.
-4. 법인 본·지점 합산 및 개인사업자 기중 사업 양도·포괄양수(조특령 제26조의8 제10항) 복수 사업장 구분 상수 지원.
+4. 법인 본·지점 합산 및 개인사업자 기중 사업 양도·포괄양수(조특령 제26조의8 제8항 및 제23조 제13항 준용) 복수 사업장 구분 상수 지원.
 """
 from __future__ import annotations
 
@@ -93,7 +93,7 @@ EMP_AUTO_EXCLUDE = {
 EXCLUDED_BY_EMP_TYPE = EMP_AUTO_EXCLUDE
 
 # 단시간·기간제(계약직)는 청년(15~34세) 연령 요건으로는 청년등 상시근로자가 될 수 없음
-# (조특령 제26조의8 제3항 제1호: 상시근로자 중 단시간·기간제 제외. 단, 장애인·60세이상·경력단절·북한이탈주민은 가능)
+# (조특령 제26조의8 제4항 제1호: 상시근로자 중 단시간·기간제 제외. 단, 장애인·60세이상·경력단절·북한이탈주민은 가능)
 EMP_NOT_YOUTH_REGULAR = {EMP_PT_050, EMP_PT_075, EMP_FIXED}
 
 # ── 상시근로자 제외사유 (조특령 제26조의8 제2항 제1호~제6호, 제11조의2 제7항) ──
@@ -119,7 +119,7 @@ EXCL_REASONS = [
 ]
 EXCLUSION_REASONS = EXCL_REASONS
 
-# ── 청년등 상시근로자 구분 (조특령 제26조의8 제3항) ──
+# ── 청년등 상시근로자 구분 (조특령 제26조의8 제4항) ──
 YOUTH_NONE = "해당없음(일반)"
 YOUTH_YOUNG = "취업시 청년(4년)"
 YOUTH_SENIOR = "취업시 60세 이상"
@@ -439,71 +439,270 @@ def get_unit_rates(
     return dict(UNIT_RATES_LEGACY.get((cs, reg), {"청년등": 0, "청년등외": 0}))
 
 
+# ── 법제처 원문 확인 완료 조문 번호 상수 (2026.2.27. 대통령령 제36127호 개정 기준 단일 상수) ──
+LAW_ART_BASIC = "조세특례제한법 제29조의8 제1항"          # 기본공제(A+B+C 구조) 및 제1호 괄호 청년등 증가한도(Cap)
+LAW_ART_CAREER_BREAK = "조세특례제한법 제29조의8 제2항"   # 경력단절 근로자 요건 정의
+LAW_ART_REG_CONV = "조세특례제한법 제29조의8 제4항"       # 정규직 전환 추가공제 (~2024년 전환분 한정)
+LAW_ART_PARENTAL_RET = "조세특례제한법 제29조의8 제5항"   # 육아휴직 복귀자 추가공제
+LAW_ART_ADDENDUM_34 = "조세특례제한법 부칙 제34조"        # 법률 제21223호(2025.12.23.) 2024·2025년분 경과조치
+DEC_ART_EXCL_IND = "조세특례제한법 시행령 제26조의8 제1항"    # 소비성서비스업 제외
+DEC_ART_REG_SCOPE = "조세특례제한법 시행령 제26조의8 제2항"   # 상시근로자 범위 및 제1호~제6호 제외대상
+DEC_ART_MIN_HURDLE = "조세특례제한법 시행령 제26조의8 제3항"  # 최소고용증가인원수 (중견 5명 · 일반 10명)
+DEC_ART_YOUTH_SCOPE = "조세특례제한법 시행령 제26조의8 제4항" # 청년등 상시근로자 범위 (제1호: 15~34세, 병역 6년 차감, 4년 유지)
+DEC_ART_CALC_METHOD = "조세특례제한법 시행령 제26조의8 제6항" # 상시근로자 수 및 청년등 상시근로자 수 계산식(제11조의2 제8항 준용)
+DEC_ART_MATERNITY = "조세특례제한법 시행령 제26조의8 제7항"   # 출산전후휴가자 대체인력 특례
+DEC_ART_SUCCESSION = "조세특례제한법 시행령 제26조의8 제8항"  # 창업·포괄양수·합병·분할·법인전환 고용승계 특례(제23조 제13항 준용)
+
+
+# ── 라포케어 20명 실제 사원 데이터 (엔진 회귀 테스트 전용 고정 픽스처) ──
+LAFOCARE_GOLDEN_FIXTURE = {
+    "tax_year": 2026,
+    "corp_size": "중소기업",
+    "is_capital": True,
+    "biz": {
+        "상호": "주식회사 라포케어",
+        "사업자번호": "173-88-02279",
+        "사업장소재지": "서울특별시 금천구 가산디지털2로 98",
+        "업태": "도매 및 소매업",
+        "종목": "전자상거래업",
+        "설립일": "2022-05-11",
+        "기업구분": "중소기업",
+        "전전년_월수": 12,
+        "전년_월수": 12,
+        "당해_월수": 12,
+    },
+    "prev_summary": {
+        "2025": {
+            "상시": 4.62,
+            "청년등": 3.88,
+            "청년등_증가": 2.30,
+            "청년등외_증가": 0.74,
+            "공제세액": 39_640_000,
+            "이월세액": 0,
+            "수도권": True,
+        },
+        "2024": {
+            "상시": 1.58,
+            "청년등": 1.58,
+            "청년등_증가": 1.08,
+            "청년등외_증가": 0.00,
+            "공제세액": 16_740_000,
+            "2차_공제세액": 16_740_000,
+            "기추징세액": 0,
+            "이월세액": 0,
+            "수도권": False,  # 2024년 최초 공제 당시 비수도권(청년등 1,550만원)
+        },
+        "2023": {
+            "상시": 0.50,
+            "청년등": 0.00,
+            "청년등_증가": 0.00,
+            "청년등외_증가": 0.50,
+            "공제세액": 3_875_000,
+            "이월세액": 0,
+            "수도권": False,
+        },
+    },
+    "employees": [
+        {"pid": "p01", "성명": "박명호", "생년월일": "1993-06-03", "입사일": "2022-09-01", "퇴사일": "", "고용유형": EMP_EXEC, "active": {2023: range(1, 13), 2024: range(1, 13), 2025: range(1, 13), 2026: range(1, 13)}},
+        {"pid": "p02", "성명": "김우주", "생년월일": "1999-02-05", "입사일": "2022-09-01", "퇴사일": "2024-10-31", "고용유형_연도별": {2023: EMP_PT_050, 2024: EMP_REGULAR}, "active": {2023: range(1, 13), 2024: range(1, 11)}},
+        {"pid": "p03", "성명": "김성은", "생년월일": "1998-07-30", "입사일": "2024-04-01", "퇴사일": "2026-01-14", "고용유형": EMP_REGULAR, "active": {2024: range(4, 13), 2025: range(1, 13), 2026: range(1, 2)}},
+        {"pid": "p04", "성명": "서성관", "생년월일": "1998-01-24", "입사일": "2025-05-01", "퇴사일": "", "고용유형": EMP_REGULAR, "active": {2025: range(5, 13), 2026: range(1, 13)}},
+        {"pid": "p05", "성명": "이병주", "생년월일": "1994-11-25", "입사일": "2025-05-01", "퇴사일": "", "고용유형": EMP_REGULAR, "active": {2025: range(5, 13), 2026: range(1, 13)}},
+        {"pid": "p06", "성명": "이진우", "생년월일": "1989-06-08", "입사일": "2025-05-01", "퇴사일": "2025-09-23", "고용유형": EMP_REGULAR, "active": {2025: range(5, 10)}},
+        {"pid": "p07", "성명": "정우람", "생년월일": "1997-12-24", "입사일": "2025-05-01", "퇴사일": "", "고용유형": EMP_REGULAR, "active": {2025: range(5, 13), 2026: range(1, 13)}},
+        {"pid": "p08", "성명": "박소연", "생년월일": "1998-03-03", "입사일": "2025-08-01", "퇴사일": "2026-07-03", "고용유형": EMP_REGULAR, "active": {2025: range(8, 13), 2026: range(1, 8)}},
+        {"pid": "p09", "성명": "김범주", "생년월일": "1994-10-21", "입사일": "2025-08-01", "퇴사일": "", "고용유형": EMP_REGULAR, "active": {2025: range(8, 13), 2026: range(1, 13)}},
+        {"pid": "p10", "성명": "차백준", "생년월일": "1989-01-20", "입사일": "2025-08-01", "퇴사일": "2026-03-31", "고용유형": EMP_REGULAR, "active": {2025: range(8, 13), 2026: range(1, 4)}},
+        {"pid": "p11", "성명": "최가연", "생년월일": "2000-11-25", "입사일": "2025-12-01", "퇴사일": "", "고용유형": EMP_REGULAR, "active": {2025: range(12, 13), 2026: range(1, 13)}},
+        {"pid": "p12", "성명": "이재빈", "생년월일": "1990-11-24", "입사일": "2026-03-01", "퇴사일": "", "고용유형": EMP_REGULAR, "active": {2026: range(3, 13)}},
+        {"pid": "p13", "성명": "김주연", "생년월일": "1998-04-22", "입사일": "2026-04-01", "퇴사일": "", "고용유형": EMP_REGULAR, "active": {2026: range(4, 13)}},
+        {"pid": "p14", "성명": "이화준", "생년월일": "2002-03-05", "입사일": "2026-04-01", "퇴사일": "", "고용유형": EMP_REGULAR, "active": {2026: range(4, 13)}},
+        {"pid": "p15", "성명": "오수민", "생년월일": "2000-03-08", "입사일": "2026-04-01", "퇴사일": "", "고용유형": EMP_REGULAR, "active": {2026: range(4, 13)}},
+        {"pid": "p16", "성명": "여인서", "생년월일": "1997-06-18", "입사일": "2026-04-01", "퇴사일": "", "고용유형": EMP_REGULAR, "active": {2026: range(4, 13)}},
+        {"pid": "p17", "성명": "오혜성", "생년월일": "2002-04-20", "입사일": "2026-06-01", "퇴사일": "", "고용유형": EMP_REGULAR, "active": {2026: range(6, 13)}},
+        {"pid": "p18", "성명": "서금빈", "생년월일": "2000-11-18", "입사일": "2026-06-01", "퇴사일": "", "고용유형": EMP_REGULAR, "active": {2026: range(6, 13)}},
+        {"pid": "p19", "성명": "류슬기", "생년월일": "1993-04-22", "입사일": "2026-06-01", "퇴사일": "", "고용유형": EMP_REGULAR, "active": {2026: range(6, 13)}},
+        {"pid": "p20", "성명": "정태환", "생년월일": "1995-09-03", "입사일": "2026-07-01", "퇴사일": "", "고용유형": EMP_REGULAR, "active": {2026: range(7, 13)}},
+        {"pid": "p21", "성명": "이정욱", "생년월일": "1977-02-20", "입사일": "2026-08-01", "퇴사일": "", "고용유형": EMP_REGULAR, "active": {2026: range(8, 13)}},
+        {"pid": "p22", "성명": "도은주", "생년월일": "1991-01-26", "입사일": "2026-09-01", "퇴사일": "", "고용유형": EMP_REGULAR, "active": {2026: range(9, 13)}},
+    ],
+}
+
+
 def verify_golden_case_invariants() -> tuple[bool, list[str]]:
     """
-    [정답지 회귀 테스트 (Golden-Case Regression Test Suite)]
-    - 코드가 수정될 때마다 핵심 법령 단가 및 검증 완료된 정본 사례(주식회사 라포케어 2026년 귀속 등)의
-      0.01명·1원 단위 수리 항등식이 깨지지 않았는지 자동 검증합니다.
+    [실제 계산 엔진(headcount.py) 기반 정답지 회귀 테스트]
+    - 일반 거래처 화면 계산 흐름에서는 호출하지 않으며, 독립 테스트 시 실제 `headcount.py` 엔진에
+      라포케어 사원 데이터를 넣어 1차 49,020,000원 / 2차 39,640,000원(재계산 40,160,000원) / 3차 16,740,000원 /
+      합계 105,400,000원이 정확히 산출되는지 검증합니다.
     """
     errors: list[str] = []
+    try:
+        from . import headcount as H
+    except Exception:
+        try:
+            import os as _os, sys as _sys, types as _types, importlib as _importlib
+            _pkg_dir = _os.path.dirname(_os.path.abspath(__file__))
+            if "employment_credit" not in _sys.modules:
+                _pkg = _types.ModuleType("employment_credit")
+                _pkg.__path__ = [_pkg_dir]
+                _pkg.__package__ = "employment_credit"
+                _sys.modules["employment_credit"] = _pkg
+            _sys.modules.setdefault("employment_credit.rules", _sys.modules[__name__])
+            H = _importlib.import_module("employment_credit.headcount")
+        except Exception as e:
+            return False, [f"headcount 모듈 로드 실패: {e}"]
 
-    # 1. 2026 신법 및 구법 공제단가 검증
-    r_2026_cap = get_unit_rates("중소기업", True, tax_year=2026, retention_year=1, scheme="new_2026")
-    if r_2026_cap != {"청년등": 700, "청년등외": 400}:
-        errors.append(f"2026 신법 수도권 중소 1년차 단가 불일치: {r_2026_cap}")
+    fx = LAFOCARE_GOLDEN_FIXTURE
+    people: dict[str, dict] = {}
+    year_recs: dict[int, dict[str, dict]] = {y: {} for y in (2023, 2024, 2025, 2026)}
 
-    r_2026_noncap_y2 = get_unit_rates("중소기업", False, tax_year=2026, retention_year=2, scheme="new_2026")
-    if r_2026_noncap_y2 != {"청년등": 1900, "청년등외": 1200}:
-        errors.append(f"2026 신법 비수도권 중소 2년차 단가 불일치: {r_2026_noncap_y2}")
+    for emp in fx["employees"]:
+        pid = emp["pid"]
+        pay_by_yr = {}
+        yr_ret = {}
+        for y in (2023, 2024, 2025, 2026):
+            act_m = emp["active"].get(y, ())
+            pay_by_yr[str(y)] = {str(m): (3_000_000.0 if m in act_m else 0.0) for m in range(1, 13)}
+            if emp["퇴사일"] and emp["퇴사일"].startswith(f"{y}-"):
+                yr_ret[str(y)] = emp["퇴사일"]
+        people[pid] = {
+            "pid": pid,
+            "사업장명": "본점",
+            "연도별_사업장명": {},
+            "성명": emp["성명"],
+            "생년월일": emp["생년월일"],
+            "입사일": emp["입사일"],
+            "퇴사일": emp["퇴사일"],
+            "연도별_퇴사일": yr_ret,
+            "계약체결일": emp["입사일"],
+            "병역개월": 0,
+            "월급여": pay_by_yr,
+        }
+        for y in (2023, 2024, 2025, 2026):
+            emp_t = (emp.get("고용유형_연도별") or {}).get(y) or emp.get("고용유형") or EMP_REGULAR
+            year_recs[y][pid] = {
+                "고용유형": emp_t,
+                "제외사유": "",
+                "청년등": "",
+                "상시_override": "",
+                "월_override": {},
+                "_user_set": ["고용유형"] if "고용유형_연도별" in emp else [],
+            }
 
-    r_leg_cap = get_unit_rates("중소기업", True, tax_year=2025, retention_year=1, scheme="legacy")
-    if r_leg_cap != {"청년등": 1450, "청년등외": 850}:
-        errors.append(f"구법 수도권 중소 단가 불일치: {r_leg_cap}")
+    # 연도별 실제 엔진(H.compute_row + H.year_totals) 실행
+    summaries: dict[int, dict] = {}
+    cohort_maps: dict[int, dict[str, bool]] = {}
+    for y in (2023, 2024, 2025, 2026):
+        ctx_y = {
+            "corp_size": fx["corp_size"],
+            "months_in_year": 12,
+            "assume_year_end": True,
+            "include_unpaid_hire_month": True,
+            "last_paid_month": 9 if y == 2026 else 12,
+            "cohort_youth_y1": cohort_maps.get(y - 1, {}),
+            "cohort_youth_y2": cohort_maps.get(y - 2, {}),
+            "old_tenure_rule": y < H.NEW_TENURE_RULE_FROM,
+        }
+        comp_y = {}
+        c_map = {}
+        for pid, p in people.items():
+            if not H.worked_in_year(p, y):
+                continue
+            c_row = H.compute_row(p, year_recs[y][pid], y, ctx_y)
+            comp_y[pid] = c_row
+            c_map[pid] = (c_row["상시"] == "O") and (c_row["청년등"] != YOUTH_NONE)
+        cohort_maps[y] = c_map
+        tot_y = H.year_totals(list(comp_y.values()), 12, year=y)
+        tot_y["has_data"] = True
 
-    r_leg_noncap = get_unit_rates("중소기업", False, tax_year=2024, retention_year=1, scheme="legacy")
-    if r_leg_noncap != {"청년등": 1550, "청년등외": 950}:
-        errors.append(f"구법 비수도권 중소 단가 불일치: {r_leg_noncap}")
+        # 경과조치(2026년 표의 구법 사후관리 b2·b3 재계산 및 2025년 표의 신법 비교인원 nr_ 재계산)
+        if y == 2026:
+            ctx_old = dict(ctx_y, old_tenure_rule=True)
+            alt_old = {
+                pid: H.compute_row(people[pid], year_recs[y][pid], y, ctx_old)
+                for pid, c in comp_y.items()
+                if c["제외사유"] == EXCL_UNDER_1Y
+            }
+            t_old = H.year_totals([alt_old.get(pid, c) for pid, c in comp_y.items()], 12, year=y)
+            for blk in ("b2", "b3"):
+                for k in ("yth", "gen", "reg", "yth_act"):
+                    tot_y[f"{blk}_{k}"] = t_old[f"{blk}_{k}"]
+                for k in ("청년등_합계", "청년외_합계"):
+                    tot_y[f"{blk}_{k}"] = t_old[f"{blk}_{k}"]
+        elif y == 2025:
+            ctx_new = dict(ctx_y, old_tenure_rule=False)
+            alt_new = {
+                pid: H.compute_row(people[pid], year_recs[y][pid], y, ctx_new)
+                for pid, c in comp_y.items()
+                if c["상시"] == "O" and H.tenure_under_1y(people[pid], y)
+            }
+            t_new = H.year_totals([alt_new.get(pid, c) for pid, c in comp_y.items()], 12, year=y)
+            tot_y["nr_상시_평균"] = t_new["상시_평균"]
+            tot_y["nr_청년등_평균"] = t_new["청년등_평균"]
+            tot_y["nr_청년외_평균"] = t_new["청년외_평균"]
+        summaries[y] = tot_y
 
-    # 2. 정본 산식(절사 후 전체 상시 - 절사 후 청년등 상시 = 청년등 외 상시) 및 라포케어 정답 수치 검증
-    prev_reg, prev_yth = 4.33, 3.91
-    cur_reg, cur_yth = 11.83, 10.25
-    prev_non_yth = round(prev_reg - prev_yth, 2)
-    cur_non_yth = round(cur_reg - cur_yth, 2)
-    if prev_non_yth != 0.42:
-        errors.append(f"2025년 비교 청년등 외 인원 오차: {prev_non_yth} != 0.42")
-    if cur_non_yth != 1.58:
-        errors.append(f"2026년 당해 청년등 외 인원 오차: {cur_non_yth} != 1.58")
+    ps = fx["prev_summary"]
+    prior_filings = {
+        cohort: {
+            "init_reg": f.get("상시"),
+            "init_yth": f.get("청년등"),
+            "init_yth_inc": f.get("청년등_증가"),
+            "init_gen_inc": f.get("청년등외_증가"),
+            "claimed_won": f.get("공제세액"),
+            "carryforward_won": f.get("이월세액"),
+            "y1_continued_won": f.get("2차_공제세액") if cohort == 2024 else None,
+            "prior_clawback_paid_won": f.get("기추징세액") if cohort == 2024 else None,
+            "is_capital": f.get("수도권"),
+        }
+        for cohort, f in ((2025, ps["2025"]), (2024, ps["2024"]))
+    }
 
-    tot_inc = round(cur_reg - prev_reg, 2)
-    yth_inc = min(tot_inc, round(cur_yth - prev_yth, 2))
-    non_yth_inc = round(tot_inc - yth_inc, 2)
-    if (tot_inc, yth_inc, non_yth_inc) != (7.50, 6.34, 1.16):
-        errors.append(f"증가인원 분해 오차: {(tot_inc, yth_inc, non_yth_inc)} != (7.50, 6.34, 1.16)")
-    if round((cur_non_yth - prev_non_yth), 2) != non_yth_inc:
-        errors.append(f"청년등 외 직접 차감 증가분과 한도 차감분 불일치: {cur_non_yth - prev_non_yth:.2f} vs {non_yth_inc:.2f}")
+    pkg = H.calculate_tax_year_package(
+        tax_year=2026,
+        corp_size=fx["corp_size"],
+        is_capital=fx["is_capital"],
+        summaries=summaries,
+        prior_filings=prior_filings,
+        additional_inputs={},
+        scheme_2026="new_2026",
+        pm_basis=PM_BASIS_FILED,
+    )
 
-    # 3. 1차·2차·3차 공제세액 및 농특세·순절세액 1원 단위 검증
-    c1_won = int(round((yth_inc * r_2026_cap["청년등"] + non_yth_inc * r_2026_cap["청년등외"]) * 10_000))
-    c2_won = int(round((2.62 * r_leg_cap["청년등"] + 0.34 * r_leg_cap["청년등외"]) * 10_000))
-    c2_recalc_won = int(round((2.65 * r_leg_cap["청년등"] + 0.35 * r_leg_cap["청년등외"]) * 10_000))
-    if c2_recalc_won - c2_won != 520_000:
-        errors.append(f"2025년 재계산 경정청구 연간 차액 오차: {c2_recalc_won - c2_won:,} != 520,000")
-    c3_won = int(round((1.00 * r_leg_noncap["청년등"] + 0.00 * r_leg_noncap["청년등외"]) * 10_000))
-    tot_gross = c1_won + c2_won + c3_won
-    rural_tax = int(round(tot_gross * RURAL_SPECIAL_TAX_RATE))
-    net_saving = tot_gross - rural_tax
+    c1_won = int(pkg["cur_base_credit_won"])
+    c2_filed_won = int(pkg["pm_y1_filed"]["continued_credit_won"])
+    c2_recalc_won = int(pkg["pm_y1_recalc"]["continued_credit_won"])
+    c3_won = int(pkg["pm_y2_filed"]["continued_credit_won"])
+    tot_gross = int(pkg["total_credit_gross_won"])
+    rural_tax = int(pkg["rural_special_tax_won"])
+    net_saving = int(pkg["net_after_rural_tax_won"])
 
+    if round(float(summaries[2026]["상시_평균"]), 2) != 11.83 or round(float(summaries[2026]["청년등_평균"]), 2) != 10.25 or round(float(summaries[2026]["청년외_평균"]), 2) != 1.58:
+        errors.append(f"2026년 당해 상시근로자 수 불일치: {summaries[2026]['상시_평균']}/{summaries[2026]['청년등_평균']}/{summaries[2026]['청년외_평균']}")
+    if round(float(summaries[2026]["b2_reg"]), 2) != 12.58 or round(float(summaries[2026]["b2_yth"]), 2) != 10.75 or round(float(summaries[2026]["b2_gen"]), 2) != 1.83:
+        errors.append(f"2026년 구법 사후관리 인원 불일치: {summaries[2026]['b2_reg']}/{summaries[2026]['b2_yth']}/{summaries[2026]['b2_gen']}")
+    if round(float(pkg["pm_y1_filed"]["init_yth_inc"]), 2) != 2.30 or round(float(pkg["pm_y1_filed"]["init_gen_inc"]), 2) != 0.74:
+        errors.append(f"2025년 기신고 증가인원 불일치: 청년 {pkg['pm_y1_filed']['init_yth_inc']}, 일반 {pkg['pm_y1_filed']['init_gen_inc']}")
+    if round(float(pkg["pm_y1_recalc"]["init_yth_inc"]), 2) != 2.33 or round(float(pkg["pm_y1_recalc"]["init_gen_inc"]), 2) != 0.75:
+        errors.append(f"2025년 재계산 증가인원 불일치: 청년 {pkg['pm_y1_recalc']['init_yth_inc']}, 일반 {pkg['pm_y1_recalc']['init_gen_inc']}")
+    if round(float(pkg["pm_y2_filed"]["init_yth_inc"]), 2) != 1.08 or round(float(pkg["pm_y2_filed"]["init_gen_inc"]), 2) != 0.00:
+        errors.append(f"2024년 3차 연속공제 증가인원 불일치: 청년 {pkg['pm_y2_filed']['init_yth_inc']}, 일반 {pkg['pm_y2_filed']['init_gen_inc']}")
     if c1_won != 49_020_000:
-        errors.append(f"2026년 1차 공제액 오차: {c1_won:,} != 49,020,000")
-    if c2_won != 40_880_000:
-        errors.append(f"2026년 2차 연속공제액 오차: {c2_won:,} != 40,880,000")
-    if c3_won != 15_500_000:
-        errors.append(f"2026년 3차 연속공제액 오차: {c3_won:,} != 15,500,000")
+        errors.append(f"2026년 1차 공제액 불일치: {c1_won:,} != 49,020,000")
+    if c2_filed_won != 39_640_000:
+        errors.append(f"2026년 2차 연속공제액(기신고) 불일치: {c2_filed_won:,} != 39,640,000")
+    if c2_recalc_won != 40_160_000:
+        errors.append(f"2026년 2차 연속공제액(재계산) 불일치: {c2_recalc_won:,} != 40,160,000")
+    if (c2_recalc_won - c2_filed_won) != 520_000:
+        errors.append(f"2025년 귀속 경정청구 연간 차액 불일치: {c2_recalc_won - c2_filed_won:,} != 520,000")
+    if c3_won != 16_740_000:
+        errors.append(f"2026년 3차 연속공제액(2024년 비수도권 단가 승계) 불일치: {c3_won:,} != 16,740,000")
     if tot_gross != 105_400_000:
-        errors.append(f"총 공제세액 합계 오차: {tot_gross:,} != 105,400,000")
+        errors.append(f"당해 총 공제세액 합계 불일치: {tot_gross:,} != 105,400,000")
     if rural_tax != 21_080_000:
-        errors.append(f"농어촌특별세(20%) 오차: {rural_tax:,} != 21,080,000")
+        errors.append(f"농어촌특별세(20%) 불일치: {rural_tax:,} != 21,080,000")
     if net_saving != 84_320_000:
-        errors.append(f"실질 순절세액 오차: {net_saving:,} != 84,320,000")
+        errors.append(f"실질 순절세액 불일치: {net_saving:,} != 84,320,000")
 
     return (len(errors) == 0), errors
