@@ -392,7 +392,13 @@ def _fetch_live_employment_law_context() -> tuple[str, dict | None]:
     try:
         import agent
     except Exception:
-        return "", None
+        return "", {
+            "detail": [],
+            "article_texts": {},
+            "addenda_texts": {},
+            "verified_26_8_6_mutatis_11_2_8": False,
+            "verified_26_8_6_mutatis_sentence": "",
+        }
 
     trace = agent._new_trace(unleash=True)
     tok = agent._TOOL_TRACE.set(trace)
@@ -550,6 +556,17 @@ def get_verified_26_8_6_mutatis_sentence(trace: dict | None = None) -> str:
     return str(trace.get("verified_26_8_6_mutatis_sentence") or "").strip()
 
 
+def _get_ruling_verbatim_line(ruling_key: str, line_prefix: str) -> str:
+    """R.ADMIN_RULINGS_AND_NOTICES[ruling_key]['원문']에서 line_prefix로 시작하는 원문 줄을 그대로 반환합니다."""
+    rulings = getattr(R, "ADMIN_RULINGS_AND_NOTICES", {}) or {}
+    raw_txt = str((rulings.get(ruling_key) or {}).get("원문") or "")
+    for ln in raw_txt.splitlines():
+        s_ln = ln.strip()
+        if s_ln.startswith(line_prefix):
+            return s_ln
+    return ""
+
+
 def verify_and_redact_unmatched_quotes(text: str, trace: dict | None = None) -> tuple[str, int]:
     """
     [4번 요구사항 — AI 출력물의 인용문 사후 대조 (파이썬 결정론적 검증, 추가 AI 호출 0회)]
@@ -592,14 +609,21 @@ def verify_and_redact_unmatched_quotes(text: str, trace: dict | None = None) -> 
                 if c_str:
                     allowed_compact_sources.append(c_str)
 
+    work = str(text)
+    masks: dict[str, str] = {}
+
+    def _unmask_text(s_val: str) -> str:
+        out_s = str(s_val or "")
+        for mk_k, mk_v in reversed(list(masks.items())):
+            if mk_k in out_s:
+                out_s = out_s.replace(mk_k, mk_v)
+        return out_s
+
     def _is_verbatim_in_sources(candidate: str) -> bool:
-        cand_compact = re.sub(r"\s+", "", str(candidate or ""))
+        cand_compact = re.sub(r"\s+", "", _unmask_text(candidate))
         if not cand_compact:
             return True
         return any(cand_compact in src for src in allowed_compact_sources)
-
-    work = str(text)
-    masks: dict[str, str] = {}
 
     def _mask_pattern(pat: str, prefix: str, src_txt: str) -> str:
         def _m_repl(m: re.Match) -> str:
@@ -610,7 +634,7 @@ def verify_and_redact_unmatched_quotes(text: str, trace: dict | None = None) -> 
 
     # 1) HTML 태그, 마크다운 링크, [조문:...] 등 인용 배지 자체 및 연도 축약 아포스트로피('25년, '26.2.27. 등) 보호
     work = _mask_pattern(r"<[^>]+>", "HTMLTAG", work)
-    work = _mask_pattern(r"\[[^\]]+\]\(https?://[^)\s]+\)", "MDLINK", work)
+    work = _mask_pattern(r"\[+[^\]]+\]+\(https?://[^)\s]+\)", "MDLINK", work)
     work = _mask_pattern(r"\[(?:조문|부칙|별표|서식|예규|판례|심판|헌재|행정해석)\s*[:：]\s*[^\]]+\]", "CITETAG", work)
     work = _mask_pattern(r"'(?=\d{2}\s*(?:년|\.|\s*귀속|\s*사업연도))", "YRAPOS", work)
 
@@ -658,9 +682,17 @@ def verify_and_redact_unmatched_quotes(text: str, trace: dict | None = None) -> 
         "포함한다", "제외한다", "따른다", "공제한다", "납부하여야 한다", "납부해야 한다", "합계",
     )
 
+    _app_fixed_label_compacts = {
+        re.sub(r"\s+", "", str(lbl))
+        for lbl in (getattr(R, "APP_FIXED_LABELS", ()) or ())
+        if str(lbl).strip()
+    }
+
     def _needs_source_check(inner: str, preceding: str, is_bracket: bool = False) -> bool:
-        compact = re.sub(r"\s+", "", str(inner or ""))
+        compact = re.sub(r"\s+", "", _unmask_text(inner))
         if not compact:
+            return False
+        if compact in _app_fixed_label_compacts:
             return False
         if _NUMERIC_ONLY_RE.match(compact):
             return False
@@ -729,6 +761,12 @@ def _sanitize_law_citation_tags(md_text: str) -> str:
         lambda m: f"**[행정해석: {m.group(1).strip()}]**",
         s,
     )
+    # 3) 링크(http/https)가 아닌 일반 괄호가 법령 태그 바로 뒤에 붙은 경우 공백 한 칸 삽입 (괄호 소실 방지)
+    s = re.sub(
+        r"(\[(?:조문|부칙|별표|서식|예규|판례|심판|심판례|헌재|헌재결정례|해석례|행정해석)[^\]]+\])\((?!\s*https?://)",
+        r"\1 (",
+        s,
+    )
     return s
 
 
@@ -770,7 +808,7 @@ def _fallback_inject_law_links(md_text: str) -> str:
         return f"[{canonical}]({url})"
 
     return re.sub(
-        r"(?<!\[)\[(조문|부칙|별표)(?:\s*[:：]\s*|\s+)(?=[가-힣A-Za-z0-9「])([^\]]+)\](?!\]|\()",
+        r"(?<!\[)\[(조문|부칙|별표)(?:\s*[:：]\s*|\s+)(?=[가-힣A-Za-z0-9「])([^\]]+)\](?!\]|\(\s*https?://)",
         _repl,
         md_text,
     )
@@ -795,7 +833,12 @@ def inject_verified_law_links(md_text: str, trace: dict | None = None) -> str:
     return _dedup_law_markdown_links(_fallback_inject_law_links(cleaned))
 
 
-def call_pro_argon_audit_commentary(summary_context: str | dict, log_tokens_fn=None, room_key: str = "") -> str:
+def call_pro_argon_audit_commentary(
+    summary_context: str | dict,
+    log_tokens_fn=None,
+    room_key: str = "",
+    return_trace: bool = False,
+) -> str | tuple[str, dict | None]:
     """
     [Pro/Argon 심층 세무진단 의견 생성 — 3번 실속형 하이브리드 아키텍처]
     1) **기본 법령 4종 파이썬 고속 사전조회(0토큰)** + **국세청 '26.3월 행정해석·공문 마스터 데이터 주입**:
@@ -814,13 +857,16 @@ def call_pro_argon_audit_commentary(summary_context: str | dict, log_tokens_fn=N
     mutatis_verified = is_26_8_6_mutatis_verified(trace)
     mutatis_sent = get_verified_26_8_6_mutatis_sentence(trace)
     admin_ruling_text = R.format_admin_rulings_for_prompt() if hasattr(R, "format_admin_rulings_for_prompt") else ""
+    ruling_a_line = _get_ruling_verbatim_line("국세청_2026_03_상시근로자수_계산안내", "기존(A방식):")
+    ruling_b_line = _get_ruling_verbatim_line("국세청_2026_03_상시근로자수_계산안내", "현행(개정)(B방식):")
+    form_10_line = _get_ruling_verbatim_line("조특칙_별지_제10호의10_서식", "⑩")
     if mutatis_verified and mutatis_sent:
         calc_law_cite_str = (
-            f'[조문:조세특례제한법 시행령 제26조의8 제6항]("{mutatis_sent}" — [조문:조세특례제한법 시행령 제11조의2 제8항] 준용) '
+            f'[조문:조세특례제한법 시행령 제26조의8 제6항] ("{mutatis_sent}" — [조문:조세특례제한법 시행령 제11조의2 제8항] 준용) '
             "및 국세청 '26.3월 안내(A/B 적용 구분)"
         )
     elif mutatis_verified:
-        calc_law_cite_str = "[조문:조세특례제한법 시행령 제26조의8 제6항]([조문:조세특례제한법 시행령 제11조의2 제8항] 준용) 및 국세청 '26.3월 안내(A/B 적용 구분)"
+        calc_law_cite_str = "[조문:조세특례제한법 시행령 제26조의8 제6항] ([조문:조세특례제한법 시행령 제11조의2 제8항] 준용) 및 국세청 '26.3월 안내(A/B 적용 구분)"
     else:
         calc_law_cite_str = "[조문:조세특례제한법 시행령 제26조의8 제6항] 및 국세청 '26.3월 안내(A/B 적용 구분)"
 
@@ -834,18 +880,18 @@ def call_pro_argon_audit_commentary(summary_context: str | dict, log_tokens_fn=N
         "[절대 준수 법령 정합성 및 할루시네이션 금지 규칙]\n"
         "1. **현행 조문 및 구법 경과조치 항 번호 · 상시근로자 수 A/B 이원화 산식 엄격 준수**:\n"
         "   - [조문:조세특례제한법 제29조의8 제1항]: 기본공제 (2026년 이후 신법은 직전 3개 과세연도[2024.12.31. 이전 개시 과세연도 제외] 중 1개 이상 대비 증가 시 A[1년차]+B[2년차]+C[3년차] 구조이며, 2026년 귀속은 비교 대상이 2025년[A]뿐이므로 A만 적용됨. 또한 청년등 상시근로자 증가인원이 전체 상시근로자 증가인원을 한도(Cap)로 한다는 규정은 반드시 법률 본문인 [조문:조세특례제한법 제29조의8 제1항] 제1호 괄호 규정으로 인용할 것).\n"
-        f"   - **상시근로자 수 계산방식(A/B) 이원화 및 신뢰보호 구분**: {calc_law_cite_str}, [부칙:조세특례제한법 시행령 부칙 제11조](2026.2.27.)에 따라 2025년 이후 최초 공제 코호트(당해 1차 공제, 신법 A·B·C, 상시근로자 현황 직전전·직전·해당, 추가공제 요건 포함)는 **B방식(사원별 근무개월수 ÷ 과세연도 개월수 → 사원별 100분의 1 미만 절사 후 합계)**을 적용하고, 2024년 이하 최초 공제 코호트의 2·3차년도 연속공제·사후관리 요건은 신뢰보호 원칙에 따라 **A방식(매월 말 상시근로자 수 합계 ÷ 과세연도 개월수 → 100분의 1 미만 절사)**을 적용함(2026년 이후 평가연도에서 2024년 이하 코호트에 A방식을 적용하는 경우 '# 확인 필요: \'26.3월 국세청 안내 신뢰보호 원칙 연장 적용'을 명시할 것).\n"
-        "   - **청년등 외 상시근로자 수 정본(Canonical) 산식**: 조세특례제한법 시행규칙 별지 제10호의10서식(⑩ = ② − ⑨)에 따라 각 과세연도의 청년등 외 상시근로자 수는 **『전체 상시근로자 수(②) − 청년등 상시근로자 수(⑨) = 청년등 외 상시근로자 수(⑩)』**로 산정함(원문 미확인 인용인 '별지 제10호의9서식(1) 작성방법 제4호'나 '별지 제10호의10서식 작성방법 제25호'는 절대 인용하지 말 것).\n"
-        "   - **청년 유예기간 근거**: 2026.1.1. 이후 근로계약 체결자는 [조문:조세특례제한법 시행령 제26조의8 제4항] 제1호 후단(중소·중견 4년, 일반 3년), 2025.1.1.~2025.12.31. 근로계약 체결자는 [부칙:조세특례제한법 시행령 부칙 제11조](2026.2.27.) 제2항(중소·중견 3년, 일반 2년)을 근거로 인용하고, 2024년 이전 최초 공제 코호트에 계약일 기준 청년 간주 규정을 적용하지 않는 것은 [부칙:조세특례제한법 시행령 부칙 제11조](2026.2.27.) 제1항을 근거로 인용할 것.\n"
-        "   - **2024·2025년 귀속분의 연속공제와 사후관리 추가납부 근거**: [부칙:조세특례제한법 부칙 제34조](법률 제21223호) 및 [부칙:조세특례제한법 시행령 부칙 제2조](대통령령 제35999호) · [부칙:조세특례제한법 시행령 부칙 제11조](대통령령 제36127호)에 따라 2024·2025년 증가분은 종전 규정을 적용함.\n"
+        f"   - **상시근로자 수 계산방식(A/B) 이원화 및 신뢰보호 구분**: {calc_law_cite_str}, [부칙:조세특례제한법 시행령 부칙 제11조] (2026.2.27.)에 따라 2025년 이후 최초 공제 코호트(당해 1차 공제, 신법 A·B·C, 상시근로자 현황 직전전·직전·해당, 추가공제 요건 포함)는 **{ruling_b_line}**을 적용하고, 2024년 이하 최초 공제 코호트의 2·3차년도 연속공제·사후관리 요건은 신뢰보호 원칙에 따라 **{ruling_a_line}**을 적용함(2026년 이후 평가연도에서 2024년 이하 코호트에 A방식을 적용하는 경우 **# 확인 필요: '26.3월 국세청 안내 신뢰보호 원칙 연장 적용**을 명시할 것).\n"
+        f"   - **청년등 외 상시근로자 수 정본(Canonical) 산식**: 조세특례제한법 시행규칙 별지 제10호의10서식의 **{form_10_line}**에 따라 산정함(원문 미확인 서식 작성방법 호수는 절대 인용하지 말 것).\n"
+        "   - **청년 유예기간 근거**: 2026.1.1. 이후 근로계약 체결자는 [조문:조세특례제한법 시행령 제26조의8 제4항] 제1호 후단(중소·중견 4년, 일반 3년), 2025.1.1.~2025.12.31. 근로계약 체결자는 [부칙:조세특례제한법 시행령 부칙 제11조] (2026.2.27.) 제2항(중소·중견 3년, 일반 2년)을 근거로 인용하고, 2024년 이전 최초 공제 코호트에 계약일 기준 청년 간주 규정을 적용하지 않는 것은 [부칙:조세특례제한법 시행령 부칙 제11조] (2026.2.27.) 제1항을 근거로 인용할 것.\n"
+        "   - **2024·2025년 귀속분의 연속공제와 사후관리 추가납부 근거**: [부칙:조세특례제한법 부칙 제34조] (법률 제21223호) 및 [부칙:조세특례제한법 시행령 부칙 제2조] (대통령령 제35999호) · [부칙:조세특례제한법 시행령 부칙 제11조] (대통령령 제36127호)에 따라 2024·2025년 증가분은 종전 규정을 적용함.\n"
         "2. **사후관리 청년 인원과 당해 공제 청년 인원 차이 원인 및 병역 차감 대상 구분**:\n"
         "   - 당해 과세연도 중도퇴사(총 근속 1년 미만)로 인해 구법 사후관리에는 산입되고 신법 당해공제에서 제외되어 발생한 인원 차이를 청년 연령경과 간주 규정 때문이라고 잘못 설명하지 말 것.\n"
         "3. **최저한세([조문:조세특례제한법 제132조]) 및 미공제 이월공제([조문:조세특례제한법 제144조]) 검토 필수**.\n"
         "4. **법령 태그 표기 규칙(가독성 보장)**: 법령 인용 시 절대 백틱(`)으로 감싸지 말고 반드시 평문으로 `[조문:조세특례제한법 제29조의8 제1항]`, `[부칙:조세특례제한법 시행령 부칙 제11조]`처럼 표기하며, 태그 뒤에 괄호로 긴 웹주소(URL)를 직접 나열하지 마세요(시스템이 자동으로 클릭 가능한 배지 링크로 변환합니다).\n"
         "5. **법제처 원문(시행령 제11조의2 제8항 준용 규정 등) 및 국세청 안내문 오독·재구성 절대 금지**:\n"
-        "   - `[조문:조세특례제한법 시행령 제26조의8 제6항]`은 상시근로자 수 및 청년등상시근로자 수의 계산방법에 관하여 같은 영 제11조의2 제8항을 **준용**하는 규정이므로, 제11조의2 제8항 원문에 있는 '법 제12조의2제3항 및 제5항'이나 '연구개발 우수 인력 상시근로자 수' 문구를 통합고용세액공제(법 제29조의8)의 직접 요건인 것처럼 인용하지 마세요.\n"
-        "   - 제11조의2 제8항 제1호 가목·나목의 '상시근로자별 다음 계산식에 따라 계산한 수의 합(100분의 1 미만의 부분은 없는 것으로 한다)'(<개정 2026.2.27., 2026.5.22.>) 문언을 임의로 해석하여 현행 B방식이 '합산 후 절사'라고 뒤집어 설명하거나, 조회된 원문에 없는 법령 문장을 기억으로 재구성하여 직접 인용하지 마세요. 실제 계산방식은 국세청 '26.3월 안내 및 시행규칙 별지 제10호의10서식에 따라 **B방식([(각 상시근로자의 근무개월수 ÷ 과세연도 개월수)의 값에서 100분의 1미만 절사한 값]의 합)**과 **A방식((매월 말 현재 상시근로자 수의 합 ÷ 과세연도 개월수)의 값에서 100분의 1미만 절사)**으로 확정되어 있습니다.\n"
-        "   - 국세청 안내문 원문에 없는 앱 내부 처리 기준(예: 'A·B 방식 단수 차이에 대해 경정청구·수정신고 안내를 생략한다'는 앱 화면 기준 등)을 마치 국세청이 공식 유권해석한 것처럼 서술하지 마세요.\n\n"
+        "   - `[조문:조세특례제한법 시행령 제26조의8 제6항]`은 상시근로자 수 및 청년등상시근로자 수의 계산방법에 관하여 같은 영 제11조의2 제8항을 **준용**하는 규정이므로, 제11조의2 제8항의 연구·인력개발비 관련 문구를 통합고용세액공제(법 제29조의8)의 직접 요건인 것처럼 인용하지 마세요.\n"
+        f"   - 제11조의2 제8항 제1호 가목·나목 문언을 임의로 해석하여 현행 B방식이 합산 후 절사라고 뒤집어 설명하거나, 조회된 원문에 없는 법령 문장을 기억으로 재구성하여 직접 인용하지 마세요. 실제 계산방식은 국세청 '26.3월 안내 및 시행규칙 별지 제10호의10서식에 따라 **{ruling_b_line}** 및 **{ruling_a_line}**으로 확정되어 있습니다.\n"
+        "   - 국세청 안내문 원문에 없는 앱 내부 처리 기준(예: **계산방식(A/B) 차이 — 국세청 '26.3월 안내 기준 적용** 등 앱 화면 표기)을 마치 국세청이 공식 유권해석한 것처럼 서술하지 마세요.\n\n"
         "절대 이모지나 아이콘을 쓰지 말고, 아래 소제목 형식(`#### (1) ...`)으로 각 3개 불릿씩 핵심만 명확하게 작성하세요:\n"
         "#### (1) 추가 절세 가능성 발굴 및 세액공제 산정 정합성 검토\n"
         "#### (2) 1·2차 사후관리(추징) 리스크 방어 및 최저한세·이월공제 검토\n"
@@ -968,7 +1014,8 @@ def call_pro_argon_audit_commentary(summary_context: str | dict, log_tokens_fn=N
 
                         # 3단계: 국가법령정보센터 원문 직링크 결합 (_inject_direct_law_links)
                         txt = inject_verified_law_links(txt, trace)
-                        return f"[적용 모델: {model_id} | 인용삭제: {quote_del_cnt}건]\n\n{txt}"
+                        res_out = f"[적용 모델: {model_id} | 인용삭제: {quote_del_cnt}건]\n\n{txt}"
+                        return (res_out, trace) if return_trace else res_out
                     except Exception:
                         continue
                     finally:
@@ -1021,7 +1068,7 @@ def call_pro_argon_audit_commentary(summary_context: str | dict, log_tokens_fn=N
     _ext_trust_note_p = "# 확인 필요: '26.3월 국세청 안내 신뢰보호 원칙 연장 적용 — " if tax_yr >= 2026 else ""
     b1 = [
         b1_mil,
-        f"**{tax_yr}년 공제 구조 · 상시근로자 수 계산방식(A/B) 이원화 및 청년등 외 정본 산식**: [조문:조세특례제한법 제29조의8 제1항] 및 {calc_law_cite_str}, [부칙:조세특례제한법 시행령 부칙 제11조](2026.2.27.)에 따라 2025년 이후 최초 공제 코호트(당해 1차 공제 및 신법 A·B·C, 상시근로자 현황, 추가공제 요건)는 **B방식(사원별 근무개월수 ÷ 과세연도 개월수 → 사원별 100분의 1 미만 절사 후 합계)**으로, 2024년 이하 최초 공제 코호트의 2·3차년도 연속공제·사후관리 요건은 신뢰보호 원칙에 따라 **A방식(매월 말 상시근로자 수 합계 ÷ 과세연도 개월수 → 100분의 1 미만 절사)**으로 산정하였습니다({_ext_trust_note_p}조세특례제한법 시행규칙 별지 제10호의10서식 ⑩ = ② − ⑨에 따라 {tax_yr}년 당해 청년등 외 인원 {cur_reg_v:.2f} − {cur_yth_v:.2f} = {cur_gen_v:.2f}명 산출).{cons_clause}",
+        f"**{tax_yr}년 공제 구조 · 상시근로자 수 계산방식(A/B) 이원화 및 청년등 외 정본 산식**: [조문:조세특례제한법 제29조의8 제1항] 및 {calc_law_cite_str}, [부칙:조세특례제한법 시행령 부칙 제11조] (2026.2.27.)에 따라 2025년 이후 최초 공제 코호트(당해 1차 공제 및 신법 A·B·C, 상시근로자 현황, 추가공제 요건)는 **{ruling_b_line}**으로, 2024년 이하 최초 공제 코호트의 2·3차년도 연속공제·사후관리 요건은 신뢰보호 원칙에 따라 **{ruling_a_line}**으로 산정하였습니다({_ext_trust_note_p}조세특례제한법 시행규칙 별지 제10호의10서식 **{form_10_line}**에 따라 {tax_yr}년 당해 청년등 외 인원 {cur_reg_v:.2f} − {cur_yth_v:.2f} = {cur_gen_v:.2f}명 산출).{cons_clause}",
     ]
     if emp_converted_names:
         b1.append(
@@ -1029,7 +1076,7 @@ def call_pro_argon_audit_commentary(summary_context: str | dict, log_tokens_fn=N
         )
 
     b2 = [
-        f"**과거 귀속분({tax_yr-2}·{tax_yr-1}년) 연속공제 및 사후관리 추징 리스크 진단**: {tax_yr}년 신법([조문:조세특례제한법 제29조의8 제1항])에 따른 당해 공제분은 사후관리 추징 규정이 폐지되었으므로, 사후관리 추징 리스크는 [부칙:조세특례제한법 부칙 제34조](법률 제21223호) 및 [부칙:조세특례제한법 시행령 부칙 제2조](대통령령 제35999호) · [부칙:조세특례제한법 시행령 부칙 제11조](대통령령 제36127호) 경과조치에 따라 종전 규정(연속공제는 구 조세특례제한법 제29조의8 제1항, 감소 시 추가납부는 구 제29조의8 제3항)이 적용되는 2024·2025년 귀속분에 한정됩니다(청년 유예기간은 2025년 계약자 중소·중견 3년·일반 2년 [부칙:조세특례제한법 시행령 부칙 제11조] 제2항, 2024년 이전 코호트 미적용 [부칙:조세특례제한법 시행령 부칙 제11조] 제1항 적용).",
+        f"**과거 귀속분({tax_yr-2}·{tax_yr-1}년) 연속공제 및 사후관리 추징 리스크 진단**: {tax_yr}년 신법([조문:조세특례제한법 제29조의8 제1항])에 따른 당해 공제분은 사후관리 추징 규정이 폐지되었으므로, 사후관리 추징 리스크는 [부칙:조세특례제한법 부칙 제34조] (법률 제21223호) 및 [부칙:조세특례제한법 시행령 부칙 제2조] (대통령령 제35999호) · [부칙:조세특례제한법 시행령 부칙 제11조] (대통령령 제36127호) 경과조치에 따라 종전 규정(연속공제는 구 조세특례제한법 제29조의8 제1항, 감소 시 추가납부는 구 제29조의8 제3항)이 적용되는 2024·2025년 귀속분에 한정됩니다(청년 유예기간은 2025년 계약자 중소·중견 3년·일반 2년 [부칙:조세특례제한법 시행령 부칙 제11조] 제2항, 2024년 이전 코호트 미적용 [부칙:조세특례제한법 시행령 부칙 제11조] 제1항 적용).",
     ]
     if under1y_diff_names:
         b2.append(
@@ -1068,7 +1115,8 @@ def call_pro_argon_audit_commentary(summary_context: str | dict, log_tokens_fn=N
         ])
     fb_body, fb_del_cnt = verify_and_redact_unmatched_quotes("\n".join(fallback_lines[2:]), trace)
     fb_full = f"[적용 모델: gemini-2.5-pro (법제처 API 직결 세무진단 엔진) | 인용삭제: {fb_del_cnt}건]\n\n{fb_body}"
-    return inject_verified_law_links(fb_full, trace)
+    fb_out = inject_verified_law_links(fb_full, trace)
+    return (fb_out, trace) if return_trace else fb_out
 
 PROMPT_BIZ = """다음은 사업자등록증입니다(본점·지점 또는 양도·양수 사업장 등 복수일 수 있음). 아래 JSON 형식으로 정확히 읽어주세요.
 {"상호":"", "사업자번호":"000-00-00000", "대표자":"", "개업일":"YYYY-MM-DD", "법인등록번호앞6자리":"", "사업장소재지":"", "업태":"", "종목":"", "추가사업장":[{"구분":"지점(법인 본·지점 합산)/포괄양수 사업장(기중 양수)/기중양도 사업장(종전 사업장)", "상호":"", "사업자번호":"", "사업장소재지":"", "업태":"", "종목":"", "개업일":""}]}"""

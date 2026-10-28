@@ -657,6 +657,23 @@ def calc_method_badge_label(cohort_year_or_method: int | str) -> str:
     return "B방식(사원별 절사)" if m == "B" else "A방식(합계 절사·신뢰보호)"
 
 
+# ── 앱 고정 표기(배지·상태 문구) 목록: 인용문 사후 대조(verify_and_redact_unmatched_quotes) 검사 제외 대상 ──
+# 이 목록은 '앱 표기'로만 쓰며 법령·안내문 원문 출처 목록(allowed_compact_sources)에는 넣지 않는다.
+APP_FIXED_LABELS: tuple[str, ...] = (
+    calc_method_badge_label("B"),
+    calc_method_badge_label("A"),
+    "# 확인 필요: '26.3월 국세청 안내 신뢰보호 원칙 연장 적용",
+    "계산방식(A/B) 차이 — 국세청 '26.3월 안내 기준 적용",
+    "사원표 재계산값 임시 입력 · 신고서 확인 필요",
+    "신고서 확인 필요",
+    "신고서 미입력",
+    "차이 없음",
+    "기신고·재계산 차이 발생",
+    PM_BASIS_LABELS[PM_BASIS_FILED],
+    PM_BASIS_LABELS[PM_BASIS_RECALC],
+)
+
+
 # ── 행정해석 · 국세청 공문 · 법정서식 원문 데이터 ──
 # [원칙]
 # - "원문" 필드: 사용자가 제공한 원본(안내문 이미지·서식 PDF)의 글자를 그대로 옮긴 것. 요약·재구성·기호 변경 금지.
@@ -1506,5 +1523,31 @@ def verify_golden_case_invariants() -> tuple[bool, list[str]]:
     out_ok, cnt_ok = P.verify_and_redact_unmatched_quotes(ok_legal, {"detail": ["청년등상시근로자의 증가 인원 수(전체 상시근로자의 증가 인원 수를 한도로 한다)"]})
     if cnt_ok != 0:
         errors.append(f"8-5 실패(원문 일치 법령 인용 삭제됨): {out_ok}")
+
+    # (8-6) APP_FIXED_LABELS 검사 제외 확인 (원문 출처가 없어도 삭제되지 않아야 함)
+    for app_lbl in APP_FIXED_LABELS:
+        q_lbl = f'[조문:조세특례제한법 시행령 제26조의8 제6항] "{app_lbl}"'
+        out_lbl, cnt_lbl = P.verify_and_redact_unmatched_quotes(q_lbl, {"detail": []})
+        if cnt_lbl != 0 or app_lbl not in out_lbl:
+            errors.append(f"8-6 실패(APP_FIXED_LABELS 삭제됨): {app_lbl} -> {out_lbl}")
+
+    # (8-7) "](" 괄호 소실 방지 검증: "[부칙:조세특례제한법 시행령 부칙 제11조](2026.2.27.)" 입력 시 "(2026.2.27.)" 유지
+    raw_add_paren = "[부칙:조세특례제한법 시행령 부칙 제11조](2026.2.27.)"
+    linked_add_paren = P.inject_verified_law_links(raw_add_paren)
+    if "(2026.2.27.)" not in linked_add_paren or "https://www.law.go.kr/" not in linked_add_paren:
+        errors.append(f"8-7 실패(부칙 뒤 괄호 소실 또는 링크 미결합): {linked_add_paren}")
+
+    # (8-8) 이중 대괄호 링크 마스킹 검증: [[조문: ...]](https://...) 뒤의 불일치 인용문이 정상 삭제되는지 확인
+    dbl_link_quote = (
+        '[[조문: 조세특례제한법 제29조의8 제1항]](https://www.law.go.kr/법령/조세특례제한법/제29조의8) '
+        '"원문에 없는 가짜 조문 문장이라고 규정한다"'
+    )
+    out_dbl, cnt_dbl = P.verify_and_redact_unmatched_quotes(dbl_link_quote, {"detail": []})
+    if (
+        cnt_dbl != 1
+        or "(원문 대조 불일치로 인용 삭제)" not in out_dbl
+        or "[[조문: 조세특례제한법 제29조의8 제1항]](https://www.law.go.kr/법령/조세특례제한법/제29조의8)" not in out_dbl
+    ):
+        errors.append(f"8-8 실패(이중 대괄호 링크 뒤 불일치 인용 미삭제 또는 링크 훼손): cnt={cnt_dbl}, out={out_dbl}")
 
     return (len(errors) == 0), errors
