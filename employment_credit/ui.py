@@ -183,6 +183,10 @@ from .ui_step4 import (  # noqa: F401
 # ══════════════════════════════════════════════════════════════════
 # 8. 진입점
 # ══════════════════════════════════════════════════════════════════
+if hasattr(R, "install_consistent_comparative_headcount_engine"):
+    R.install_consistent_comparative_headcount_engine()
+
+
 def render_credit_wizard(extract_file_fn, log_tokens_fn=None, active_room_key: str = "", **_):
     s = _S()
     try:

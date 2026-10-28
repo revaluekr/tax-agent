@@ -306,8 +306,9 @@ def _build_schedule_pdf_bytes(s: dict, target_years: list[int], include_summary:
         snap_all = _ensure_totals_snapshot(s)
         cur_t = snap_all.get(tax_yr) or totals_by_yr[tax_yr]
         prv_snap = snap_all.get(tax_yr - 1) or totals_by_yr[tax_yr - 1]
-        eff_prv_reg = round(float(prv_snap.get("상시_평균", prv_snap.get("b1_reg", 0.0)) or 0.0), 2)
-        eff_prv_yth = round(float(prv_snap.get("청년등_평균", prv_snap.get("b1_yth", 0.0)) or 0.0), 2)
+        use_nr = (tax_yr >= H.NEW_TENURE_RULE_FROM) and (prv_snap.get("nr_상시_평균") is not None)
+        eff_prv_reg = round(float(prv_snap["nr_상시_평균"] if use_nr else (prv_snap.get("상시_평균", prv_snap.get("b1_reg", 0.0)) or 0.0)), 2)
+        eff_prv_yth = round(float(prv_snap.get("nr_청년등_평균", 0.0) if use_nr else (prv_snap.get("청년등_평균", prv_snap.get("b1_yth", 0.0)) or 0.0)), 2)
         eff_prv_gen = round(max(0.0, eff_prv_reg - eff_prv_yth), 2)
         inc = H.calc_increase_with_cap(
             cur_t["상시_평균"], cur_t["청년등_평균"], cur_t["청년외_평균"], eff_prv_reg, eff_prv_yth, eff_prv_gen
@@ -1264,7 +1265,7 @@ def _page_employees(room_key: str, log_tokens_fn=None):
                         s,
                         y - 1,
                         y,
-                        use_new_rule_prev=(y >= H.NEW_TENURE_RULE_FROM and (y - 1) == H.NEW_TENURE_RULE_FROM - 1),
+                        use_new_rule_prev=(y >= H.NEW_TENURE_RULE_FROM and (y - 1) >= H.NEW_TENURE_RULE_FROM - 1),
                     )
                     _render_compact_bridge(_br_tab, between_tables=False)
     else:
@@ -1277,7 +1278,7 @@ def _page_employees(room_key: str, log_tokens_fn=None):
                         s,
                         y,
                         y_upper,
-                        use_new_rule_prev=(y_upper >= H.NEW_TENURE_RULE_FROM and y == H.NEW_TENURE_RULE_FROM - 1),
+                        use_new_rule_prev=(y_upper >= H.NEW_TENURE_RULE_FROM and y >= H.NEW_TENURE_RULE_FROM - 1),
                     )
                     _render_compact_bridge(_br_between, between_tables=True)
             computed_all[y], totals_all[y] = _render_year(s, y, room_key)
@@ -1290,8 +1291,9 @@ def _page_employees(room_key: str, log_tokens_fn=None):
         cur_t = snap_all.get(tax_yr) or totals_all[tax_yr]
         _, suc_reg, ded_reg = _adjusted_prev_totals(s, totals_all[tax_yr - 1])
         prv_snap = snap_all.get(tax_yr - 1) or totals_all[tax_yr - 1]
-        eff_prv_reg = round(float(prv_snap.get("상시_평균", prv_snap.get("b1_reg", 0.0)) or 0.0), 2)
-        eff_prv_yth = round(float(prv_snap.get("청년등_평균", prv_snap.get("b1_yth", 0.0)) or 0.0), 2)
+        use_nr = (tax_yr >= H.NEW_TENURE_RULE_FROM) and (prv_snap.get("nr_상시_평균") is not None)
+        eff_prv_reg = round(float(prv_snap["nr_상시_평균"] if use_nr else (prv_snap.get("상시_평균", prv_snap.get("b1_reg", 0.0)) or 0.0)), 2)
+        eff_prv_yth = round(float(prv_snap.get("nr_청년등_평균", 0.0) if use_nr else (prv_snap.get("청년등_평균", prv_snap.get("b1_yth", 0.0)) or 0.0)), 2)
         eff_prv_gen = round(max(0.0, eff_prv_reg - eff_prv_yth), 2)
         inc = H.calc_increase_with_cap(
             cur_t["상시_평균"],

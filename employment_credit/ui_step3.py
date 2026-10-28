@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """통합고용세액공제 계산기 화면 — 3단계 공제액 계산: 기신고 입력·사후관리·연도별 매트릭스·산식 설명
 
-(ui.py에서 나눈 파일. 현행 조세특례제한법 제29조의8 및 시행령 제26조의8 조문 체계·부칙 경과조치·직전연도 비교인원 보수적 산정 근거 반영)
+(ui.py에서 나눈 파일. 현행 조세특례제한법 제29조의8 및 시행령 제26조의8 조문 체계·부칙 경과조치·직전·전전 비교인원 일관된 해석 기준 및 다년도 자동 재산정 반영)
 """
 from __future__ import annotations
 import io
@@ -241,10 +241,12 @@ def _build_compact_bridge_info(
         comp_cur, tot_cur, comp_prev_raw, tot_prev = {}, {}, {}, {}
 
     comp_prev = dict(comp_prev_raw)
-    if use_new_rule_prev and cur_yr >= H.NEW_TENURE_RULE_FROM and prev_yr == H.NEW_TENURE_RULE_FROM - 1:
+    nr_excl_items: list[tuple[str, float]] = []
+    raw_prev_m = round(sum(float((comp_prev_raw.get(pid) or {}).get("row_sum") or 0.0) for pid in people), 2)
+    if use_new_rule_prev and cur_yr >= H.NEW_TENURE_RULE_FROM and prev_yr >= H.NEW_TENURE_RULE_FROM - 1:
         try:
             from .ui_common import _ctx
-            ctx_new = dict(_ctx(s, prev_yr), old_tenure_rule=False)
+            ctx_new = dict(_ctx(s, prev_yr), old_tenure_rule=False, as_of_year=cur_yr)
             recs_prev = recs.get(prev_yr) or {}
             for pid, c_old in list(comp_prev.items()):
                 yrec = recs_prev.get(pid) or {}
@@ -252,9 +254,17 @@ def _build_compact_bridge_info(
                 if (
                     c_old.get("상시") == "O"
                     and "제외사유" not in (yrec.get("_user_set") or [])
-                    and H.tenure_under_1y(p_obj, prev_yr)
+                    and H.tenure_under_1y(p_obj, prev_yr, as_of_year=cur_yr)
                 ):
-                    comp_prev[pid] = H.compute_row(p_obj, yrec, prev_yr, ctx_new)
+                    c_re = H.compute_row(p_obj, yrec, prev_yr, ctx_new)
+                    comp_prev[pid] = c_re
+                    old_m = round(float(c_old.get("row_sum") or 0.0), 2)
+                    new_m_v = round(float(c_re.get("row_sum") or 0.0), 2)
+                    if old_m > new_m_v + 1e-6:
+                        nm_p = str(p_obj.get("성명") or "").strip()
+                        if nm_p:
+                            nr_excl_items.append((nm_p, -(old_m - new_m_v)))
+            nr_excl_items.sort(key=lambda x: (x[1], x[0]))
         except Exception:
             pass
 
@@ -332,6 +342,19 @@ def _build_compact_bridge_info(
         f"</div>"
     )
 
+    nr_suffix_html = ""
+    if nr_excl_items:
+        nr_top3 = nr_excl_items[:3]
+        nr_rest = max(0, len(nr_excl_items) - 3)
+        nr_parts = [f"{nm} <b style='color:#dc2626;'>−{abs(val):g}</b>" for nm, val in nr_top3]
+        nr_tail = f" 외 {nr_rest}명" if nr_rest > 0 else ""
+        nr_suffix_html = (
+            f" &nbsp;<span style='color:#cbd5e1;'>|</span>&nbsp; "
+            f"<span class='ec-br-tag'>1년미만 비교제외({prev_yr}년 {raw_prev_m:g}→{start_m:g})</span> "
+            + ", ".join(nr_parts)
+            + nr_tail
+        )
+
     if excl_items:
         top3 = excl_items[:3]
         rest_cnt = max(0, len(excl_items) - 3)
@@ -345,6 +368,7 @@ def _build_compact_bridge_info(
             f"<span class='ec-br-tag'>퇴사·제외</span> "
             + ", ".join(parts_html)
             + tail_str
+            + nr_suffix_html
             + "</div>"
         )
     elif new_items:
@@ -1549,11 +1573,13 @@ def _page_calculation():
     )
     _render_compact_bridge(_bridge_s3, between_tables=False)
     if prev_s.get("old_rule_regular") is not None and abs(prev_s["old_rule_regular"] - prv_reg_disp) > 1e-9:
+        nr_excl_nms = ", ".join(prev_s.get("nr_names") or [])
+        nr_excl_str = f"({nr_excl_nms} 제외) " if nr_excl_nms else ""
         st.caption(
-            f"ℹ️ 직전 과세연도({tax_yr - 1}년) 비교 인원({prv_reg_disp:.2f}명)은 개정 규정(조특령 제26조의8 제2항 제1호: 실제 근로기간 1년 미만 제외)으로 재산정하되, "
-            f"{tax_yr - 1}년 과세연도 종료일({tax_yr - 1}.12.31.) 현재 계속 근로 중이었던 인원({tax_yr}년 중도퇴사자 포함)은 과세연도 종료일 현황 기준으로 보수적으로 산입하고 "
-            f"{tax_yr - 1}년 중 퇴사하여 1년 미만이 확정된 인원만 제외한 값입니다. "
-            f"(2단계 {tax_yr - 1}년 표의 {prev_s['old_rule_regular']:.2f}명은 {tax_yr - 1}년 귀속분과 그 사후관리에 쓰는 종전 규정[법률 제21223호 부칙 제34조 · 대통령령 제35999호 부칙 제2조] 인원입니다. "
+            f"ℹ️ 직전 과세연도({tax_yr - 1}년) 비교 인원({prv_reg_disp:.2f}명)은 일관된 해석 기준에 따라 당해({tax_yr}년) 공제 인원과 동일한 잣대"
+            f"(조특령 제26조의8 제2항 제1호 개정 규정: 실제 근로기간 1년 미만 퇴사 확정자 제외 — {tax_yr - 1}년 입사 후 {tax_yr}년 중 1년 미만 퇴사 확정자 포함)로 재산정한 값입니다{nr_excl_str}"
+            f"[2027년 B·2028년 C 다년도 비교 시에도 매년 확정된 퇴사 사실을 반영해 비교연도 인원을 자동 재산정]. "
+            f"(2단계 {tax_yr - 1}년 표의 {prev_s['old_rule_regular']:.2f}명은 {tax_yr - 1}년 귀속분 자체 공제와 그 사후관리에 쓰는 종전 규정[법률 제21223호 부칙 제34조 · 대통령령 제35999호 부칙 제2조] 인원입니다. "
             f"또한 조특령 제26조의8 제6항 및 제11조의2 제8항 제1호는 가목[전체 상시]과 나목[청년등 상시]만 개별 절사 산식을 두고 있으므로, 시행규칙 별지 제10호의9서식(1) 작성방법 제4호에 따라 "
             f"『① 전체 상시(절사) − ② 청년등 상시(절사) = ③ 청년등 외 상시』 순서로 정본 산정하여[직전 {prv_reg_disp:.2f} − {prv_yth_disp:.2f} = {prv_gen_disp:.2f}명, 당해 {cur_s['regular']:.2f} − {cur_s['youth']:.2f} = {cur_s['non_youth']:.2f}명, 증가 +{inc_disp['non_youth_inc']:.2f}명] "
             f"전체 증가인원 = 청년등 증가 + 청년등 외 증가 항등식을 0.01명 오차 없이 일치시켰습니다.)"

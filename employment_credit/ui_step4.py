@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """통합고용세액공제 계산기 화면 — 4단계 보고서: 보고서·PDF·CSV 내려받기
 
-(ui.py에서 나눈 파일. 현행 조특법 제29조의8·시행령 제26조의8 조문 정합성, 방식 2 보수적 비교인원 산정 근거,
+(ui.py에서 나눈 파일. 현행 조특법 제29조의8·시행령 제26조의8 조문 정합성, 일관된 해석 기준 비교인원 산정 근거 및 다년도 자동 재산정,
 사원별 차이원인 정밀 분해[중도퇴사·고용형태 전환 오판 원천 차단], 최저한세 검토, 법제처 API 직링크 자동 결합 반영,
 PDF 출력 시각 스타일을 자율 에이전트AI `create_pdf_report`와 100% 동일하게 일치)
 """
@@ -215,9 +215,9 @@ def _analyze_headcount_diff_reasons(
     [사원별 인원 차이 원인 정밀 분해기 — 보고서 판단 오류 원천 차단]
     1) `구법포함_신법1년미만제외_사원`: 당해(tax_yr) 중도퇴사로 총 근로기간이 1년 미만이어서 당해 신법 공제(b1)에서는 제외되었으나,
        2024·2025년 귀속분 사후관리(b2·b3, 대통령령 제35999호 부칙 제2조 종전규정)에는 산입되어 사후관리 인원과 당해 공제 인원 간 차이를 발생시킨 사원.
-    2) `직전연도말_재직_당해중도퇴사_보수적산입_사원`: 직전연도(tax_yr - 1) 중 입사해 직전연도 말 현재 재직 중이었다가
-       당해(tax_yr) 중 퇴사하여 총 근로기간이 1년 미만이 된 사원 — 방식 2(과세연도 종료일 기준 보수적 산정)에 따라
-       직전연도 비교 인원에는 포함하고 당해 인원에서만 제외한 대상.
+    2) `직전연도말_재직_당해중도퇴사_일관제외_사원`: 직전연도(tax_yr - 1) 중 입사해 직전연도 말 현재 재직 중이었다가
+       당해(tax_yr) 중 퇴사하여 총 근로기간이 1년 미만이 된 사원 — 일관된 해석 기준(당해 인원과 직전 비교 인원에 동일한 잣대 적용)에 따라
+       당해 신법 인원과 직전연도 비교 인원(nr_) 모두에서 제외하고, 종전 규정이 적용되는 구법 자체·사후관리 인원에만 산입한 대상.
     3) `실제_연령도과_청년간주_사원`: 당해 상시근로자('O')이면서 순수하게 연령 도과(만 34세 및 유예기간 도과)로 인해
        당해에는 일반('청년외')이지만 코호트 사후관리(b2·b3)에서만 청년등으로 간주된 사원.
     4) `단시간_정규직_고용형태전환_사원`: 과거 과세연도에는 단시간근로자(0.5명, 청년 제외)였다가 이후 통상근로자(정규직 1.0명)로 전환되어
@@ -264,19 +264,19 @@ def _analyze_headcount_diff_reasons(
         elif c_cur.get("상시") == "O" and not is_under_1y_cur and (b2_y > b1_y + 1e-9 or b3_y > b1_y + 1e-9):
             age_deemed_youth.append(f"{nm}(당해 청년 {b1_y:.2f} → 1차사후 {b2_y:.2f} / 2차사후 {b3_y:.2f})")
 
-        # (B) 직전연도(tax_yr - 1) 입사 + 직전연도 말 현재 재직 + 당해(tax_yr) 중 퇴사로 총 근로기간 1년 미만인 사원
+        # (B) 직전연도(tax_yr - 1) 입사 + 직전연도 말 현재 재직 + 당해(tax_yr) 중 퇴사로 총 근로기간 1년 미만인 사원 (일관된 해석 기준: 비교인원에서도 제외)
         if (
             hire_dt
             and ret_dt
             and hire_dt.year == (tax_yr - 1)
             and ret_dt.year == tax_yr
-            and H.tenure_under_1y(p, tax_yr)
-            and not H.tenure_under_1y(p, tax_yr - 1)
+            and H.tenure_under_1y(p, tax_yr, as_of_year=tax_yr)
+            and not H.tenure_under_1y(p, tax_yr - 1, as_of_year=None)
         ):
             prev_r = float(c_prev.get("b1_reg") or 0.0)
             if prev_r > 0 or H.worked_in_year(p, tax_yr - 1):
                 conservative_prev_kept.append(
-                    f"{nm}(입사 {hire_dt.isoformat()} ~ 퇴사 {ret_dt.isoformat()}, {tax_yr-1}년 비교인원 {prev_r:.2f}명 산입 · {tax_yr}년 당해 제외)"
+                    f"{nm}(입사 {hire_dt.isoformat()} ~ 퇴사 {ret_dt.isoformat()}, {tax_yr-1}년 구법 {prev_r:.2f}명 산입 · 신법 비교인원 및 {tax_yr}년 당해 모두 제외)"
                 )
                 # 만약 compute_row에서 b2_y와 b1_y 차이가 totals 레벨에서 반영된 경우도 포착
                 if not any(nm in x for x in under1y_pm_diff):
@@ -398,15 +398,15 @@ def _build_prior_filing_discrepancy_bullets(
         cons_note = ""
         if cons_list:
             cons_note = (
-                f" 이때 **{', '.join(cons_list)}**은 {tax_yr}년 중 퇴사로 총 근로기간이 1년 미만이 되어 {tax_yr}년 당해 인원에서는 제외하였으나, "
-                f"**{tax_yr-1}년 과세연도 종료일({tax_yr-1}.12.31.) 현재에는 정상 재직 중(근로계약기간 1년 이상)**이었으므로 "
-                f"과세연도 종료일 현황 판정 원칙에 따라 **{tax_yr-1}년 비교 인원({new_r:.2f}명)에는 보수적으로 산입**하여 과다공제 및 가산세 리스크를 방지하였습니다."
+                f" 특히 **{', '.join(cons_list)}**과 같이 {tax_yr-1}년 중 입사해 {tax_yr}년 중 퇴사하여 실제 총 근로기간이 1년 미만이 된 인원도 "
+                f"당해({tax_yr}년) 공제 인원과 직전({tax_yr-1}년) 비교 인원에 동일한 잣대를 적용하는 **일관된 해석 기준**에 따라 "
+                f"**{tax_yr-1}년 비교 인원({new_r:.2f}명)에서도 함께 제외**하였으며, 향후 2027년(B)·2028년(C) 다년도 공제 계산 시에도 매년 확정된 퇴사 사실을 반영해 비교연도 인원이 자동 재산정됩니다."
             )
         bullets.append(
-            f"**{tax_yr}년 신규공제 산정용 직전연도({tax_yr-1}년) 비교 인원 재산정({old_r:.2f}명 → {new_r:.2f}명, {r_diff:+.2f}명) 및 보수적 산정 근거**: "
+            f"**{tax_yr}년 신규공제 산정용 직전연도({tax_yr-1}년) 비교 인원 일관된 해석 기준 재산정({old_r:.2f}명 → {new_r:.2f}명, {r_diff:+.2f}명) 및 다년도 자동 재산정 근거**: "
             f"{tax_yr-1}년 귀속 자체의 공제 및 사후관리에는 [부칙:조세특례제한법 부칙 제34조](법률 제21223호) 및 [부칙:조세특례제한법 시행령 부칙 제2조](대통령령 제35999호) 경과조치에 따라 종전 규정(**근로계약기간 1년 미만자만 제외**)이 적용되어 "
-            f"**{old_r:.2f}명**으로 산정되나, **{tax_yr}년 귀속 1차년도 신규 고용증가 인원 산정 시 비교하는 직전 과세연도({tax_yr-1}년) 인원**은 "
-            f"[조문:조세특례제한법 시행령 제26조의8 제2항] 제1호의 개정 규정(**실제 근로기간 1년 미만자 제외**)을 적용하여 {tax_yr-1}년 내 실제 근로기간 1년 미만 퇴사자를 제외한 **{new_r:.2f}명**을 적용하였습니다.{cons_note}"
+            f"**{old_r:.2f}명**으로 산정되나, **{tax_yr}년 귀속 1차년도 신규 고용증가 인원(당해 인원 − 직전 인원) 산정 시 비교하는 직전 과세연도({tax_yr-1}년) 인원**은 "
+            f"당해 인원과 동일한 [조문:조세특례제한법 시행령 제26조의8 제2항] 제1호의 개정 규정(**실제 근로기간 1년 미만자 제외**)을 일관되게 적용하여 실제 근로기간 1년 미만 퇴사 확정자를 모두 제외한 **{new_r:.2f}명**을 적용하였습니다.{cons_note}"
         )
 
     return bullets
@@ -432,7 +432,7 @@ def _ensure_auto_pro_audit_comment(s: dict, log_tokens_fn=None, room_key: str = 
     discrepancy_bullets = _build_prior_filing_discrepancy_bullets(s, totals_all=totals_snapshot, pkg=s.get("calc_pkg"), diff_diag=diff_diag)
 
     # 버전 시그니처에 v4_canonical_law_verified를 포함하여 정본 산식 및 부칙 태그가 즉시 반영되게 함
-    cur_sig = f"v5_clean_modal_separated|{s.get('built_sig')}|{tax_yr}|{s.get('pm_basis')}"
+    cur_sig = f"v6_consistent_tenure_350|{s.get('built_sig')}|{tax_yr}|{s.get('pm_basis')}"
 
     def _attach_sec4_and_links(clean_body: str) -> str:
         out_b = _normalize_verified_legal_citations(clean_body)
@@ -501,7 +501,7 @@ def _ensure_auto_pro_audit_comment(s: dict, log_tokens_fn=None, room_key: str = 
 
 def _build_report_markdown(s: dict, log_tokens_fn=None, room_key: str = "") -> str:
     """
-    [4단계 보고서 마크다운 생성 — 현행 법령 정합성 100% · 사원별 차이원인 자동 분해 · 방식 2 보수적 비교인원 근거 · 법제처 직링크 결합]
+    [4단계 보고서 마크다운 생성 — 현행 법령 정합성 100% · 사원별 차이원인 자동 분해 · 일관된 해석 기준 비교인원 근거 · 법제처 직링크 결합]
     """
     _ensure_built_for_tax_year(s)
     b = s.get("biz") or {}
@@ -668,15 +668,16 @@ def _build_report_markdown(s: dict, log_tokens_fn=None, room_key: str = "") -> s
     if prev_s.get("old_rule_regular") is not None or cons_prev_names:
         old_rv = float(prev_s.get("old_rule_regular") if prev_s.get("old_rule_regular") is not None else prev_s["regular"])
         cons_detail = (
-            f" 이때 **{', '.join(cons_prev_names)}**과 같이 {tax_yr-1}년 중 입사하여 **{tax_yr-1}년 과세연도 종료일({tax_yr-1}.12.31.) 현재 퇴사하지 않고 계속 근로 중이었던 인원**은 "
-            f"{tax_yr-1}년 종료일 시점 기준으로는 1년 미만 퇴사 사유가 확정되지 않았으므로 보수적으로 {tax_yr-1}년 비교 인원(**{prev_s['regular']:.2f}명**)에 그대로 포함하고, "
-            f"실제 중도퇴사 사유가 발생한 {tax_yr}년 당해 인원에서만 제외하였습니다."
+            f" 이때 **{', '.join(cons_prev_names)}**과 같이 {tax_yr-1}년 중 입사하여 {tax_yr}년 중 퇴사함으로써 실제 총 근로기간이 1년 미만이 된 인원도 "
+            f"당해({tax_yr}년) 공제 인원과 직전({tax_yr-1}년) 비교 인원을 동일한 기준으로 산정하는 **일관된 해석 기준**에 따라 "
+            f"{tax_yr-1}년 비교 인원(**{prev_s['regular']:.2f}명**)과 {tax_yr}년 당해 인원(**{cur_s['regular']:.2f}명**)에서 모두 제외하였으며(2027년 B·2028년 C 다년도 비교 시에도 확정된 퇴사 사실 자동 반영), "
+            f"종전 규정이 적용되는 {tax_yr-1}년분 2차 사후관리 인원(**{cur_s['b2_reg']:.2f}명**)에만 산입하였습니다."
             if cons_prev_names else ""
         )
         prev_basis_bullets.append(
-            f"- **{tax_yr}년 공제용 직전연도({tax_yr-1}년) 비교 인원 보수적 산정 기준 ({prev_s['regular']:.2f}명)**: "
+            f"- **{tax_yr}년 공제용 직전연도({tax_yr-1}년) 비교 인원 일관된 해석 기준 ({prev_s['regular']:.2f}명)**: "
             f"{tax_yr-1}년 귀속 자체 및 사후관리용 인원(**{old_rv:.2f}명**)은 [부칙:조세특례제한법 부칙 제34조](법률 제21223호) 및 [부칙:조세특례제한법 시행령 부칙 제2조](대통령령 제35999호) 경과조치에 따라 종전 규정(근로계약기간 1년 미만 제외)을 적용하고, "
-            f"{tax_yr}년 신규 공제 산정을 위한 직전연도({tax_yr-1}년) 비교 인원(**{prev_s['regular']:.2f}명**)은 개정 규정([조문:조세특례제한법 시행령 제26조의8 제2항] 제1호: 실제 근로기간 1년 미만 제외)으로 재산정하였습니다.{cons_detail}"
+            f"{tax_yr}년 신규 공제 산정을 위한 직전연도({tax_yr-1}년) 비교 인원(**{prev_s['regular']:.2f}명**)은 당해 인원과 동일한 개정 규정([조문:조세특례제한법 시행령 제26조의8 제2항] 제1호: 실제 근로기간 1년 미만 퇴사 확정자 제외)으로 일관되게 재산정하였습니다.{cons_detail}"
         )
     if abs(cur_s["b2_yth"] - cur_s["youth"]) >= 0.01 or under1y_pm_names:
         prev_basis_bullets.append(

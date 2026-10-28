@@ -529,12 +529,177 @@ LAFOCARE_GOLDEN_FIXTURE = {
 }
 
 
+import contextvars as _contextvars
+
+_ACTIVE_AS_OF_YEAR: _contextvars.ContextVar[int | None] = _contextvars.ContextVar("_ACTIVE_AS_OF_YEAR", default=None)
+
+
+def install_consistent_comparative_headcount_engine() -> None:
+    """
+    [일관된 해석 기준 다년도 비교인원 자동 재산정 엔진 런타임 설치기]
+    - 당해 공제 인원과 직전·전전 비교 인원에 동일한 잣대(실제 근로기간 1년 미만 퇴사 확정자 소급 제외)를 적용하여:
+      1) 2026년 신법 공제 계산 시 2026년 중 1년 미만 퇴사 확정자(박소연·차백준 등)를 2025년 비교인원(nr_)에서도 제외(3.50명)
+      2) 2027년(A·B)·2028년(A·B·C) 계산 시에도 해당 과세연도 말(as_of_year)까지 확정된 1년 미만 퇴사 사실을 반영해
+         직전·전전 비교연도(2025·2026·2027년)의 비교인원(nr_)을 매년 자동 재산정합니다.
+    """
+    import sys as _sys
+    from datetime import date as _date
+
+    def _patched_tenure_under_1y(person: dict, year: int | None = None, as_of_year: int | None = None) -> bool:
+        try:
+            from . import hc_eligibility as _he
+        except Exception:
+            _he = _sys.modules.get("employment_credit.hc_eligibility") or _sys.modules.get("hc_eligibility")
+        if _he is None:
+            return False
+        parse_date = _he.parse_date
+        add_years = _he.add_years
+        hire = parse_date(person.get("입사일"))
+        eff_as_of = as_of_year if as_of_year is not None else _ACTIVE_AS_OF_YEAR.get(None)
+        ret_map = person.get("연도별_퇴사일") or {}
+        if eff_as_of is None:
+            yr_ret_str = ret_map.get(str(year)) if year is not None else None
+            retire = parse_date(yr_ret_str if yr_ret_str is not None else person.get("퇴사일"))
+            cutoff_year = int(year) if year is not None else None
+        else:
+            cutoff_year = int(eff_as_of)
+            min_yr = int(year) if year is not None else None
+            candidates = []
+            if isinstance(ret_map, dict):
+                for k, v in ret_map.items():
+                    try:
+                        ky = int(k)
+                    except (TypeError, ValueError):
+                        continue
+                    if min_yr is not None and ky < min_yr:
+                        continue
+                    if ky > cutoff_year:
+                        continue
+                    dt = parse_date(v)
+                    if dt is not None and dt <= _date(cutoff_year, 12, 31):
+                        candidates.append(dt)
+            base_ret = parse_date(person.get("퇴사일"))
+            if base_ret is not None:
+                if (min_yr is None or base_ret.year >= min_yr) and base_ret <= _date(cutoff_year, 12, 31):
+                    candidates.append(base_ret)
+            retire = min(candidates) if candidates else None
+        if not hire or not retire or retire < hire:
+            return False
+        if cutoff_year is not None and retire > _date(cutoff_year, 12, 31):
+            return False
+        one_yr_later = add_years(hire, 1)
+        return (retire.toordinal() - hire.toordinal() + 1) < (one_yr_later.toordinal() - hire.toordinal())
+
+    def _patched_suggest_exclusion(
+        person: dict,
+        yrec: dict,
+        year: int | None = None,
+        old_rule: bool = False,
+        as_of_year: int | None = None,
+    ) -> str:
+        emp_type = yrec.get("고용유형") or EMP_REGULAR
+        if emp_type in EMP_AUTO_EXCLUDE:
+            return EMP_AUTO_EXCLUDE[emp_type]
+        sh_rel = str(person.get("주주관계") or "").strip()
+        if sh_rel in EXCL_REASONS:
+            return sh_rel
+        if not old_rule and _patched_tenure_under_1y(person, year, as_of_year=as_of_year):
+            return EXCL_UNDER_1Y
+        return EXCL_NONE
+
+    for mod_name in ("employment_credit.hc_eligibility", "hc_eligibility", "employment_credit.headcount", "headcount", "employment_credit.hc_review", "hc_review"):
+        mod = _sys.modules.get(mod_name)
+        if mod is not None:
+            setattr(mod, "tenure_under_1y", _patched_tenure_under_1y)
+            if hasattr(mod, "suggest_exclusion"):
+                setattr(mod, "suggest_exclusion", _patched_suggest_exclusion)
+
+    for mod_name in ("employment_credit.hc_row_engine", "hc_row_engine", "employment_credit.headcount", "headcount"):
+        mod = _sys.modules.get(mod_name)
+        if mod is not None:
+            if hasattr(mod, "suggest_exclusion"):
+                setattr(mod, "suggest_exclusion", _patched_suggest_exclusion)
+            orig_cr = getattr(mod, "_orig_compute_row_unwrapped", None) or getattr(mod, "compute_row", None)
+            if orig_cr is not None and not getattr(orig_cr, "_is_as_of_wrapped", False):
+                def _make_wrapped_cr(_fn):
+                    def _wrapped_compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
+                        tok = _ACTIVE_AS_OF_YEAR.set(ctx.get("as_of_year") if isinstance(ctx, dict) else None)
+                        try:
+                            return _fn(person, yrec, year, ctx)
+                        finally:
+                            _ACTIVE_AS_OF_YEAR.reset(tok)
+                    _wrapped_compute_row._is_as_of_wrapped = True
+                    return _wrapped_compute_row
+                setattr(mod, "_orig_compute_row_unwrapped", orig_cr)
+                setattr(mod, "compute_row", _make_wrapped_cr(orig_cr))
+
+    for mod_name in ("employment_credit.ui_common", "ui_common"):
+        uic = _sys.modules.get(mod_name)
+        if uic is not None and hasattr(uic, "_apply_tenure_transition"):
+            H_mod = getattr(uic, "H", None)
+            if H_mod is not None:
+                def _patched_apply_tenure_transition(s, year, ctx, people, recs, computed, rows, totals, _H=H_mod) -> None:
+                    NEW = _H.NEW_TENURE_RULE_FROM
+                    y = int(year)
+                    tax_yr = int((s or {}).get("tax_year") or 0)
+                    if y >= NEW and ((y - 1) < NEW or (y - 2) < NEW):
+                        ctx_old = dict(ctx, old_tenure_rule=True, as_of_year=None)
+                        alt_old = {}
+                        for pid, c in computed.items():
+                            yrec = recs.get(pid) or {}
+                            if c["제외사유"] == EXCL_UNDER_1Y and "제외사유" not in (yrec.get("_user_set") or []):
+                                alt_old[pid] = _H.compute_row(people[pid], yrec, y, ctx_old)
+                        if alt_old:
+                            t_old = _H.year_totals([alt_old.get(pid, c) for pid, c in computed.items()], ctx["months_in_year"], year=y)
+                            for blk, cohort in (("b2", y - 1), ("b3", y - 2)):
+                                if cohort >= NEW:
+                                    continue
+                                for k in ("yth", "gen", "reg", "yth_act"):
+                                    totals[f"{blk}_{k}"] = t_old[f"{blk}_{k}"]
+                                for k in ("청년등_합계", "청년외_합계"):
+                                    totals[f"{blk}_{k}"] = t_old[f"{blk}_{k}"]
+                                for r in rows:
+                                    c_old = alt_old.get(r["pid"])
+                                    if c_old:
+                                        r[f"{blk}_yth"], r[f"{blk}_gen"], r[f"{blk}_reg"] = c_old[f"{blk}_yth"], c_old[f"{blk}_gen"], c_old[f"{blk}_reg"]
+                            totals["old_rule_pm_names"] = sorted(people[pid].get("성명", "") for pid in alt_old)
+                    if tax_yr >= NEW and (NEW - 1) <= y < tax_yr:
+                        ctx_new = dict(ctx, old_tenure_rule=False, as_of_year=tax_yr)
+                        alt_new = {}
+                        for pid, c in computed.items():
+                            yrec = recs.get(pid) or {}
+                            if (
+                                c["상시"] == "O"
+                                and "제외사유" not in (yrec.get("_user_set") or [])
+                                and _H.tenure_under_1y(people[pid], y, as_of_year=tax_yr)
+                            ):
+                                alt_new[pid] = _H.compute_row(people[pid], yrec, y, ctx_new)
+                        t_new = _H.year_totals([alt_new.get(pid, c) for pid, c in computed.items()], ctx["months_in_year"], year=y) if alt_new else totals
+                        totals["nr_상시_평균"] = t_new["상시_평균"]
+                        totals["nr_청년등_평균"] = t_new["청년등_평균"]
+                        totals["nr_청년외_평균"] = t_new["청년외_평균"]
+                        totals["nr_상시_합계"] = t_new["상시_합계"]
+                        totals["nr_청년등_합계"] = t_new["청년등_합계"]
+                        totals["nr_청년외_합계"] = t_new["청년외_합계"]
+                        totals["nr_names"] = sorted(people[pid].get("성명", "") for pid in alt_new)
+                setattr(uic, "_apply_tenure_transition", _patched_apply_tenure_transition)
+
+
 def verify_golden_case_invariants() -> tuple[bool, list[str]]:
     """
-    [실제 계산 엔진(headcount.py) 기반 정답지 회귀 테스트]
-    - 일반 거래처 화면 계산 흐름에서는 호출하지 않으며, 독립 테스트 시 실제 `headcount.py` 엔진에
-      라포케어 사원 데이터를 넣어 1차 49,020,000원 / 2차 39,640,000원(재계산 40,160,000원) / 3차 16,740,000원 /
-      합계 105,400,000원이 정확히 산출되는지 검증합니다.
+    [실제 계산 엔진(headcount.py) 기반 정답지 회귀 테스트 — 일관된 해석 기준 & 다년도(2026·2027·2028) 자동 재산정 검증]
+    1) 라포케어 2026년 귀속 검증:
+       - 2025년 구법 자체/사후관리 인원: 상시 4.66명(청년등 3.91명, 청년외 0.75명) [박소연·차백준 포함]
+       - 2025년 신법 비교인원(nr_): 상시 3.50명(청년등 3.50명, 청년외 0.00명, 42개월) [이진우·박소연·차백준 제외]
+       - 2026년 당해 신법 인원: 상시 11.83명(청년등 10.25명, 청년외 1.58명, 142개월) [박소연·차백준 제외]
+       - 2026년 구법 1차 사후관리 인원(b2): 상시 12.58명(청년등 10.75명, 청년외 1.83명) [박소연·차백준 포함]
+       - 2026년 증가인원: 전체 +8.33명, 청년등 +6.75명, 청년외 +1.58명 (6.75 + 1.58 = 8.33)
+       - 1차 53,570,000원 / 2차 39,640,000원(재계산 40,160,000원) / 3차 16,740,000원 / 합계 109,950,000원 /
+         농특세 21,990,000원 / 순절세액 87,960,000원
+    2) 다년도(2027년 B · 2028년 C) 비교연도 자동 재산정 검증:
+       - 2026년 9월 입사자(도은주)가 2027년 5월 중 퇴사(실제 근로기간 1년 미만)한 경우,
+         2026년 당해 신고 시에는 포함(11.83명)되나 2027년·2028년 계산 시 2026년 비교인원(nr_)에서는 자동 제외(11.50명)되고
+         2025년 비교인원(nr_)은 2027년 B·2028년 C에서도 동일하게 3.50명으로 유지되는지 검증합니다.
     """
     errors: list[str] = []
     try:
@@ -552,6 +717,8 @@ def verify_golden_case_invariants() -> tuple[bool, list[str]]:
             H = _importlib.import_module("employment_credit.headcount")
         except Exception as e:
             return False, [f"headcount 모듈 로드 실패: {e}"]
+
+    install_consistent_comparative_headcount_engine()
 
     fx = LAFOCARE_GOLDEN_FIXTURE
     people: dict[str, dict] = {}
@@ -590,7 +757,8 @@ def verify_golden_case_invariants() -> tuple[bool, list[str]]:
                 "_user_set": ["고용유형"] if "고용유형_연도별" in emp else [],
             }
 
-    # 연도별 실제 엔진(H.compute_row + H.year_totals) 실행
+    # ── 1) 2026년 귀속(tax_yr = 2026) 실제 엔진 실행 ──
+    tax_yr = 2026
     summaries: dict[int, dict] = {}
     cohort_maps: dict[int, dict[str, bool]] = {}
     for y in (2023, 2024, 2025, 2026):
@@ -600,8 +768,10 @@ def verify_golden_case_invariants() -> tuple[bool, list[str]]:
             "assume_year_end": True,
             "include_unpaid_hire_month": True,
             "last_paid_month": 9 if y == 2026 else 12,
-            "cohort_youth_y1": cohort_maps.get(y - 1, {}),
-            "cohort_youth_y2": cohort_maps.get(y - 2, {}),
+            "cohort_youth_map": {
+                y - 1: cohort_maps.get(y - 1, {}),
+                y - 2: cohort_maps.get(y - 2, {}),
+            },
             "old_tenure_rule": y < H.NEW_TENURE_RULE_FROM,
         }
         comp_y = {}
@@ -611,36 +781,43 @@ def verify_golden_case_invariants() -> tuple[bool, list[str]]:
                 continue
             c_row = H.compute_row(p, year_recs[y][pid], y, ctx_y)
             comp_y[pid] = c_row
-            c_map[pid] = (c_row["상시"] == "O") and (c_row["청년등"] != YOUTH_NONE)
+            c_map[pid] = (c_row["상시"] == "O") and any(c_row["youth_flags"])
         cohort_maps[y] = c_map
         tot_y = H.year_totals(list(comp_y.values()), 12, year=y)
         tot_y["has_data"] = True
 
-        # 경과조치(2026년 표의 구법 사후관리 b2·b3 재계산 및 2025년 표의 신법 비교인원 nr_ 재계산)
-        if y == 2026:
-            ctx_old = dict(ctx_y, old_tenure_rule=True)
+        # (A) 2026년 표의 구법 사후관리 b2·b3 종전 규정 재계산
+        if y >= H.NEW_TENURE_RULE_FROM and ((y - 1) < H.NEW_TENURE_RULE_FROM or (y - 2) < H.NEW_TENURE_RULE_FROM):
+            ctx_old = dict(ctx_y, old_tenure_rule=True, as_of_year=None)
             alt_old = {
                 pid: H.compute_row(people[pid], year_recs[y][pid], y, ctx_old)
                 for pid, c in comp_y.items()
                 if c["제외사유"] == EXCL_UNDER_1Y
             }
-            t_old = H.year_totals([alt_old.get(pid, c) for pid, c in comp_y.items()], 12, year=y)
-            for blk in ("b2", "b3"):
-                for k in ("yth", "gen", "reg", "yth_act"):
-                    tot_y[f"{blk}_{k}"] = t_old[f"{blk}_{k}"]
-                for k in ("청년등_합계", "청년외_합계"):
-                    tot_y[f"{blk}_{k}"] = t_old[f"{blk}_{k}"]
-        elif y == 2025:
-            ctx_new = dict(ctx_y, old_tenure_rule=False)
+            if alt_old:
+                t_old = H.year_totals([alt_old.get(pid, c) for pid, c in comp_y.items()], 12, year=y)
+                for blk in ("b2", "b3"):
+                    for k in ("yth", "gen", "reg", "yth_act"):
+                        tot_y[f"{blk}_{k}"] = t_old[f"{blk}_{k}"]
+                    for k in ("청년등_합계", "청년외_합계"):
+                        tot_y[f"{blk}_{k}"] = t_old[f"{blk}_{k}"]
+
+        # (B) 일관된 해석 기준 비교연도(2025 <= y < tax_yr) 인원(nr_) 재계산 (as_of_year = tax_yr)
+        if tax_yr >= H.NEW_TENURE_RULE_FROM and (H.NEW_TENURE_RULE_FROM - 1) <= y < tax_yr:
+            ctx_new = dict(ctx_y, old_tenure_rule=False, as_of_year=tax_yr)
             alt_new = {
                 pid: H.compute_row(people[pid], year_recs[y][pid], y, ctx_new)
                 for pid, c in comp_y.items()
-                if c["상시"] == "O" and H.tenure_under_1y(people[pid], y)
+                if c["상시"] == "O" and H.tenure_under_1y(people[pid], y, as_of_year=tax_yr)
             }
             t_new = H.year_totals([alt_new.get(pid, c) for pid, c in comp_y.items()], 12, year=y)
             tot_y["nr_상시_평균"] = t_new["상시_평균"]
             tot_y["nr_청년등_평균"] = t_new["청년등_평균"]
             tot_y["nr_청년외_평균"] = t_new["청년외_평균"]
+            tot_y["nr_상시_합계"] = t_new["상시_합계"]
+            tot_y["nr_청년등_합계"] = t_new["청년등_합계"]
+            tot_y["nr_청년외_합계"] = t_new["청년외_합계"]
+            tot_y["nr_names"] = sorted(people[pid].get("성명", "") for pid in alt_new)
         summaries[y] = tot_y
 
     ps = fx["prev_summary"]
@@ -678,18 +855,24 @@ def verify_golden_case_invariants() -> tuple[bool, list[str]]:
     rural_tax = int(pkg["rural_special_tax_won"])
     net_saving = int(pkg["net_after_rural_tax_won"])
 
+    if round(float(summaries[2025]["nr_상시_평균"]), 2) != 3.50 or round(float(summaries[2025]["nr_청년등_평균"]), 2) != 3.50 or round(float(summaries[2025]["nr_청년외_평균"]), 2) != 0.00:
+        errors.append(f"2025년 일관된 해석 비교인원(nr_) 불일치: {summaries[2025].get('nr_상시_평균')}/{summaries[2025].get('nr_청년등_평균')}/{summaries[2025].get('nr_청년외_평균')}")
+    if summaries[2025].get("nr_names") != ["박소연", "이진우", "차백준"]:
+        errors.append(f"2025년 비교인원 1년 미만 제외 대상자 불일치: {summaries[2025].get('nr_names')}")
     if round(float(summaries[2026]["상시_평균"]), 2) != 11.83 or round(float(summaries[2026]["청년등_평균"]), 2) != 10.25 or round(float(summaries[2026]["청년외_평균"]), 2) != 1.58:
         errors.append(f"2026년 당해 상시근로자 수 불일치: {summaries[2026]['상시_평균']}/{summaries[2026]['청년등_평균']}/{summaries[2026]['청년외_평균']}")
     if round(float(summaries[2026]["b2_reg"]), 2) != 12.58 or round(float(summaries[2026]["b2_yth"]), 2) != 10.75 or round(float(summaries[2026]["b2_gen"]), 2) != 1.83:
         errors.append(f"2026년 구법 사후관리 인원 불일치: {summaries[2026]['b2_reg']}/{summaries[2026]['b2_yth']}/{summaries[2026]['b2_gen']}")
+    if round(float(pkg["cur_inc"]["total_inc"]), 2) != 8.33 or round(float(pkg["cur_inc"]["youth_inc"]), 2) != 6.75 or round(float(pkg["cur_inc"]["non_youth_inc"]), 2) != 1.58:
+        errors.append(f"2026년 신규 증가인원 불일치: 전체 {pkg['cur_inc']['total_inc']}, 청년 {pkg['cur_inc']['youth_inc']}, 일반 {pkg['cur_inc']['non_youth_inc']}")
     if round(float(pkg["pm_y1_filed"]["init_yth_inc"]), 2) != 2.30 or round(float(pkg["pm_y1_filed"]["init_gen_inc"]), 2) != 0.74:
         errors.append(f"2025년 기신고 증가인원 불일치: 청년 {pkg['pm_y1_filed']['init_yth_inc']}, 일반 {pkg['pm_y1_filed']['init_gen_inc']}")
     if round(float(pkg["pm_y1_recalc"]["init_yth_inc"]), 2) != 2.33 or round(float(pkg["pm_y1_recalc"]["init_gen_inc"]), 2) != 0.75:
         errors.append(f"2025년 재계산 증가인원 불일치: 청년 {pkg['pm_y1_recalc']['init_yth_inc']}, 일반 {pkg['pm_y1_recalc']['init_gen_inc']}")
     if round(float(pkg["pm_y2_filed"]["init_yth_inc"]), 2) != 1.08 or round(float(pkg["pm_y2_filed"]["init_gen_inc"]), 2) != 0.00:
         errors.append(f"2024년 3차 연속공제 증가인원 불일치: 청년 {pkg['pm_y2_filed']['init_yth_inc']}, 일반 {pkg['pm_y2_filed']['init_gen_inc']}")
-    if c1_won != 49_020_000:
-        errors.append(f"2026년 1차 공제액 불일치: {c1_won:,} != 49,020,000")
+    if c1_won != 53_570_000:
+        errors.append(f"2026년 1차 공제액 불일치: {c1_won:,} != 53,570,000")
     if c2_filed_won != 39_640_000:
         errors.append(f"2026년 2차 연속공제액(기신고) 불일치: {c2_filed_won:,} != 39,640,000")
     if c2_recalc_won != 40_160_000:
@@ -698,11 +881,59 @@ def verify_golden_case_invariants() -> tuple[bool, list[str]]:
         errors.append(f"2025년 귀속 경정청구 연간 차액 불일치: {c2_recalc_won - c2_filed_won:,} != 520,000")
     if c3_won != 16_740_000:
         errors.append(f"2026년 3차 연속공제액(2024년 비수도권 단가 승계) 불일치: {c3_won:,} != 16,740,000")
-    if tot_gross != 105_400_000:
-        errors.append(f"당해 총 공제세액 합계 불일치: {tot_gross:,} != 105,400,000")
-    if rural_tax != 21_080_000:
-        errors.append(f"농어촌특별세(20%) 불일치: {rural_tax:,} != 21,080,000")
-    if net_saving != 84_320_000:
-        errors.append(f"실질 순절세액 불일치: {net_saving:,} != 84,320,000")
+    if tot_gross != 109_950_000:
+        errors.append(f"당해 총 공제세액 합계 불일치: {tot_gross:,} != 109,950,000")
+    if rural_tax != 21_990_000:
+        errors.append(f"농어촌특별세(20%) 불일치: {rural_tax:,} != 21,990,000")
+    if net_saving != 87_960_000:
+        errors.append(f"실질 순절세액 불일치: {net_saving:,} != 87,960,000")
+
+    # ── 2) 다년도(2027년 B · 2028년 C) 비교연도 자동 재산정 검증 ──
+    # 도은주(p22, 2026-09-01 입사)가 2027-05-15에 퇴사(1년 미만)한 경우:
+    # - 2026년 자체 계산(as_of_year=2026)에서는 상시근로자 포함(11.83명)
+    # - 2027년·2028년 계산 시에는 2026년 비교인원(nr_)에서 도은주(4개월)가 자동 제외되어 138/12 = 11.50명(청년등 119/12 = 9.91명)이 되고,
+    #   2025년 비교인원(nr_)은 2027년 B·2028년 C에서도 3.50명으로 일관되게 유지되는지 검증
+    p22_sim = dict(people["p22"], 퇴사일="2027-05-15", 연도별_퇴사일={"2027": "2027-05-15"})
+    if H.tenure_under_1y(p22_sim, 2026, as_of_year=None):
+        errors.append("다년도 검증 실패: 2026년 말 기준 재직자(도은주)가 2026년 당해 자체 계산에서 1년 미만으로 잘못 제외됨")
+    if not H.tenure_under_1y(p22_sim, 2026, as_of_year=2027):
+        errors.append("다년도 검증 실패: 2027년 중 1년 미만 퇴사자(도은주)가 2027년 기준 2026년 비교인원 재산정에서 제외되지 않음")
+    people_sim = dict(people, p22=p22_sim)
+    ctx_2026_asof_2027 = dict(ctx_y, old_tenure_rule=False, as_of_year=2027)
+    comp_2026_for_2027 = {
+        pid: H.compute_row(p_obj, year_recs[2026][pid], 2026, ctx_2026_asof_2027)
+        for pid, p_obj in people_sim.items()
+        if H.worked_in_year(p_obj, 2026)
+    }
+    t_2026_nr = H.year_totals(list(comp_2026_for_2027.values()), 12, year=2026)
+    if round(float(t_2026_nr["상시_평균"]), 2) != 11.50 or round(float(t_2026_nr["청년등_평균"]), 2) != 10.25 or round(float(t_2026_nr["청년외_평균"]), 2) != 1.25:
+        errors.append(f"다년도 검증 실패: 2027년 계산 시 2026년 비교인원 재산정 수치 불일치 ({t_2026_nr['상시_평균']}/{t_2026_nr['청년등_평균']}/{t_2026_nr['청년외_평균']} != 11.50/10.25/1.25)")
+
+    summaries_2027 = {
+        2025: summaries[2025],
+        2026: dict(summaries[2026], nr_상시_평균=t_2026_nr["상시_평균"], nr_청년등_평균=t_2026_nr["청년등_평균"], nr_청년외_평균=t_2026_nr["청년외_평균"]),
+        2027: {"상시_평균": 14.00, "청년등_평균": 12.00, "청년외_평균": 2.00, "months_in_year": 12, "has_data": True},
+    }
+    pkg_2027 = H.calculate_tax_year_package(
+        tax_year=2027,
+        corp_size=fx["corp_size"],
+        is_capital=fx["is_capital"],
+        summaries=summaries_2027,
+        prior_filings={},
+        additional_inputs={},
+        scheme_2026="new_2026",
+        pm_basis=PM_BASIS_FILED,
+    )
+    tier_a_2027 = pkg_2027["abc_res"]["tiers"]["A"]
+    tier_b_2027 = pkg_2027["abc_res"]["tiers"]["B"]
+    # 2027 A: 2027(14.00/12.00) - 2026 nr(11.50/10.25) -> 전체 +2.50, 청년 +1.75, 일반 +0.75
+    if round(float(tier_a_2027["total_inc"]), 2) != 2.50 or round(float(tier_a_2027["youth_inc"]), 2) != 1.75 or round(float(tier_a_2027["non_youth_inc"]), 2) != 0.75:
+        errors.append(f"2027년 A(직전 2026년 재산정 비교) 증가인원 불일치: {tier_a_2027}")
+    # 2027 B: min(2027 14.00, 2026 nr 11.50) - 2025 nr(3.50) = 11.50 - 3.50 = +8.00 (청년 10.25 - 3.50 = +6.75, 일반 +1.25)
+    if round(float(tier_b_2027["total_inc"]), 2) != 8.00 or round(float(tier_b_2027["youth_inc"]), 2) != 6.75 or round(float(tier_b_2027["non_youth_inc"]), 2) != 1.25:
+        errors.append(f"2027년 B(전전 2025년 3.50명 & 직전 2026년 11.50명 비교) 유지인원 불일치: {tier_b_2027}")
 
     return (len(errors) == 0), errors
+
+
+install_consistent_comparative_headcount_engine()
