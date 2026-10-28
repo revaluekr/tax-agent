@@ -607,18 +607,23 @@ def install_consistent_comparative_headcount_engine() -> None:
             return EXCL_UNDER_1Y
         return EXCL_NONE
 
-    for mod_name in ("employment_credit.hc_eligibility", "hc_eligibility", "employment_credit.headcount", "headcount", "employment_credit.hc_review", "hc_review"):
+    for mod_name in (
+        "employment_credit.hc_eligibility", "hc_eligibility",
+        "employment_credit.hc_row_engine", "hc_row_engine",
+        "employment_credit.hc_review", "hc_review",
+        "employment_credit.headcount", "headcount",
+        "employment_credit.ui_common", "ui_common",
+    ):
         mod = _sys.modules.get(mod_name)
         if mod is not None:
-            setattr(mod, "tenure_under_1y", _patched_tenure_under_1y)
+            if hasattr(mod, "tenure_under_1y"):
+                setattr(mod, "tenure_under_1y", _patched_tenure_under_1y)
             if hasattr(mod, "suggest_exclusion"):
                 setattr(mod, "suggest_exclusion", _patched_suggest_exclusion)
 
-    for mod_name in ("employment_credit.hc_row_engine", "hc_row_engine", "employment_credit.headcount", "headcount"):
+    for mod_name in ("employment_credit.hc_row_engine", "hc_row_engine", "employment_credit.headcount", "headcount", "employment_credit.ui_common", "ui_common"):
         mod = _sys.modules.get(mod_name)
         if mod is not None:
-            if hasattr(mod, "suggest_exclusion"):
-                setattr(mod, "suggest_exclusion", _patched_suggest_exclusion)
             orig_cr = getattr(mod, "_orig_compute_row_unwrapped", None) or getattr(mod, "compute_row", None)
             if orig_cr is not None and not getattr(orig_cr, "_is_as_of_wrapped", False):
                 def _make_wrapped_cr(_fn):
@@ -891,7 +896,7 @@ def verify_golden_case_invariants() -> tuple[bool, list[str]]:
     # ── 2) 다년도(2027년 B · 2028년 C) 비교연도 자동 재산정 검증 ──
     # 도은주(p22, 2026-09-01 입사)가 2027-05-15에 퇴사(1년 미만)한 경우:
     # - 2026년 자체 계산(as_of_year=2026)에서는 상시근로자 포함(11.83명)
-    # - 2027년·2028년 계산 시에는 2026년 비교인원(nr_)에서 도은주(4개월)가 자동 제외되어 138/12 = 11.50명(청년등 119/12 = 9.91명)이 되고,
+    # - 2027년·2028년 계산 시에는 2026년 비교인원(nr_)에서 도은주(4개월)가 자동 제외되어 138/12 = 11.50명(청년등 123/12 = 10.25명, 청년외 15/12 = 1.25명)이 되고,
     #   2025년 비교인원(nr_)은 2027년 B·2028년 C에서도 3.50명으로 일관되게 유지되는지 검증
     p22_sim = dict(people["p22"], 퇴사일="2027-05-15", 연도별_퇴사일={"2027": "2027-05-15"})
     if H.tenure_under_1y(p22_sim, 2026, as_of_year=None):

@@ -1315,7 +1315,7 @@ def _page_report(room_key: str = "", log_tokens_fn=None):
     pkg_now = s.get("calc_pkg")
     if isinstance(pkg_now, dict):
         try:
-            from .ui_step3 import _build_top_kpi_cards_html
+            from .ui_step3 import _build_top_kpi_cards_html, _dlg_filed_vs_recalc_comparison
             st.markdown(_build_top_kpi_cards_html(pkg_now, tax_yr), unsafe_allow_html=True)
         except Exception:
             pass
@@ -1374,6 +1374,7 @@ def _page_report(room_key: str = "", log_tokens_fn=None):
     st.markdown("<div class='ec-nav-divider'></div>", unsafe_allow_html=True)
     c_cmp_bot, _ = st.columns([2.6, 4.8])
     if c_cmp_bot.button("⚖️ 기신고 vs 세법상 재계산 비교 (경정청구 · 수정신고 진단)", use_container_width=True, key=f"btn_step4_filed_vs_recalc_{tax_yr}"):
+        from .ui_step3 import _dlg_filed_vs_recalc_comparison
         _dlg_filed_vs_recalc_comparison(s, pkg_now if isinstance(pkg_now, dict) else None, tax_yr)
     c_prev, c_pdf_bot, c_docx_bot, c_xlsx_bot, c_md_bot, c_reset = st.columns([1.15, 1.35, 1.25, 1.25, 1.25, 1.15])
     if c_prev.button("< 이전(3단계)", use_container_width=True):
