@@ -1259,7 +1259,18 @@ def _page_employees(room_key: str, log_tokens_fn=None):
                 computed_all[y], totals_all[y] = _render_year(s, y, room_key)
                 ctx_all[y] = _ctx(s, y)
     else:
-        for y in shown_years:
+        from .ui_step3 import _build_compact_bridge_info, _render_compact_bridge
+        for idx_y, y in enumerate(shown_years):
+            if idx_y > 0:
+                y_upper = shown_years[idx_y - 1]
+                if y_upper - y == 1:
+                    _br_between = _build_compact_bridge_info(
+                        s,
+                        y,
+                        y_upper,
+                        use_new_rule_prev=(y_upper >= H.NEW_TENURE_RULE_FROM and y == H.NEW_TENURE_RULE_FROM - 1),
+                    )
+                    _render_compact_bridge(_br_between, between_tables=True)
             computed_all[y], totals_all[y] = _render_year(s, y, room_key)
             ctx_all[y] = _ctx(s, y)
 

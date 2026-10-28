@@ -149,6 +149,8 @@ from .ui_step2 import (  # noqa: F401
     _year_role_description,
 )
 from .ui_step3 import (  # noqa: F401
+    _build_compact_bridge_info,
+    _render_compact_bridge,
     _build_headcount_waterfall_and_comparison,
     _build_pm_formula_lines,
     _build_step3_calculation_pdf_bytes,

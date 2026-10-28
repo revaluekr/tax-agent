@@ -248,6 +248,263 @@ def _build_top_kpi_cards_html(pkg: dict, tax_yr: int) -> str:
     )
 
 
+def _build_compact_bridge_info(
+    s: dict,
+    prev_yr: int,
+    cur_yr: int,
+    prev_reg_override: float | None = None,
+    cur_reg_override: float | None = None,
+    use_new_rule_prev: bool = True,
+) -> dict[str, Any]:
+    """
+    [100명·1,000명 규모 대응 2줄 고정 길이 인원 증감 브리지 산출 엔진]
+    - 1줄(항상 고정 길이): `{prev_yr}년 {start_m:g} → 신규 +{new_m:g} · 기존 재직 {cont_m:+g} · 퇴사·제외 −{excl_m:g} → {cur_yr}년 {end_m:g} ({prev_reg:.2f}명 → {cur_reg:.2f}명, {inc_diff:+.2f}명)`
+    - 2줄(이름 최대 3명): `퇴사·제외 김성은 −12, 박소연 −5, 차백준 −5` (4명 이상이면 `"외 N명"`으로 축약하고 전체 명단은 접힌 영역에 제공)
+    """
+    people = s.get("people") or {}
+    recs = s.get("year_recs") or {}
+    try:
+        from .ui_common import _build_year_rows, _ctx
+        _, comp_cur, tot_cur = _build_year_rows(s, cur_yr)
+        _, comp_prev_raw, tot_prev = _build_year_rows(s, prev_yr)
+    except Exception:
+        comp_cur, tot_cur, comp_prev_raw, tot_prev = {}, {}, {}, {}
+
+    comp_prev = dict(comp_prev_raw)
+    if use_new_rule_prev and cur_yr >= H.NEW_TENURE_RULE_FROM and prev_yr == H.NEW_TENURE_RULE_FROM - 1:
+        try:
+            from .ui_common import _ctx
+            ctx_new = dict(_ctx(s, prev_yr), old_tenure_rule=False)
+            recs_prev = recs.get(prev_yr) or {}
+            for pid, c_old in list(comp_prev.items()):
+                yrec = recs_prev.get(pid) or {}
+                p_obj = people.get(pid) or {}
+                if (
+                    c_old.get("상시") == "O"
+                    and "제외사유" not in (yrec.get("_user_set") or [])
+                    and H.tenure_under_1y(p_obj, prev_yr)
+                ):
+                    comp_prev[pid] = H.compute_row(p_obj, yrec, prev_yr, ctx_new)
+        except Exception:
+            pass
+
+    start_m_raw = sum(float((comp_prev.get(pid) or {}).get("row_sum") or 0.0) for pid in people)
+    end_m_raw = sum(float((comp_cur.get(pid) or {}).get("row_sum") or 0.0) for pid in people)
+
+    if prev_reg_override is not None:
+        prev_reg = float(prev_reg_override)
+    elif use_new_rule_prev and tot_prev.get("nr_상시_평균") is not None:
+        prev_reg = float(tot_prev["nr_상시_평균"])
+    else:
+        prev_reg = float(tot_prev.get("상시_평균", tot_prev.get("b1_reg", 0.0)) or 0.0)
+
+    if cur_reg_override is not None:
+        cur_reg = float(cur_reg_override)
+    else:
+        cur_reg = float(tot_cur.get("상시_평균", tot_cur.get("b1_reg", 0.0)) or 0.0)
+
+    start_m = round(start_m_raw, 2)
+    end_m = round(end_m_raw, 2)
+
+    new_m = 0.0
+    cont_m = 0.0
+    excl_m = 0.0
+
+    new_items: list[tuple[str, float]] = []
+    cont_items: list[tuple[str, float]] = []
+    excl_items: list[tuple[str, float]] = []
+
+    for pid, p in people.items():
+        nm = str(p.get("성명") or "").strip()
+        if not nm:
+            continue
+        h_dt = H.parse_date(p.get("입사일"))
+        m_p = round(float((comp_prev.get(pid) or {}).get("row_sum") or 0.0), 2)
+        m_c = round(float((comp_cur.get(pid) or {}).get("row_sum") or 0.0), 2)
+
+        if m_p == 0.0 and m_c == 0.0:
+            continue
+
+        if m_p == 0.0 and m_c > 0.0 and (h_dt is None or h_dt.year == cur_yr):
+            new_m = round(new_m + m_c, 2)
+            new_items.append((nm, m_c))
+        elif m_c < m_p - 1e-6:
+            diff_neg = round(m_p - m_c, 2)
+            excl_m = round(excl_m + diff_neg, 2)
+            excl_items.append((nm, -diff_neg))
+        else:
+            diff_pos = round(m_c - m_p, 2)
+            cont_m = round(cont_m + diff_pos, 2)
+            if abs(diff_pos) > 1e-6:
+                cont_items.append((nm, diff_pos))
+
+    # 수리 항등식 보장: start_m + new_m + cont_m - excl_m == end_m
+    residual = round((end_m - start_m) - (new_m + cont_m - excl_m), 2)
+    if abs(residual) >= 0.01:
+        cont_m = round(cont_m + residual, 2)
+
+    excl_items.sort(key=lambda x: (x[1], x[0]))
+    new_items.sort(key=lambda x: (-x[1], x[0]))
+    cont_items.sort(key=lambda x: (-abs(x[1]), x[0]))
+
+    inc_diff = round(cur_reg - prev_reg, 2)
+    inc_color = "#15803d" if inc_diff > 0 else ("#dc2626" if inc_diff < 0 else "#64748b")
+    cont_color = "#2563eb" if cont_m >= 0 else "#dc2626"
+
+    line1_html = (
+        f"<div class='ec-bridge-line1'>"
+        f"<span class='ec-br-yr'>{prev_yr}년 <b>{start_m:g}</b></span>"
+        f"<span class='ec-br-arr'>→</span>"
+        f"<span>신규 <b style='color:#15803d;'>+{new_m:g}</b></span>"
+        f"<span class='ec-br-dot'>·</span>"
+        f"<span>기존 재직 <b style='color:{cont_color};'>{cont_m:+g}</b></span>"
+        f"<span class='ec-br-dot'>·</span>"
+        f"<span>퇴사·제외 <b style='color:#dc2626;'>−{excl_m:g}</b></span>"
+        f"<span class='ec-br-arr'>→</span>"
+        f"<span class='ec-br-yr'>{cur_yr}년 <b>{end_m:g}</b></span>"
+        f"<span class='ec-br-avg'>({prev_reg:.2f}명 → {cur_reg:.2f}명, "
+        f"<b style='color:{inc_color};'>{inc_diff:+.2f}명</b>)</span>"
+        f"</div>"
+    )
+
+    if excl_items:
+        top3 = excl_items[:3]
+        rest_cnt = max(0, len(excl_items) - 3)
+        parts_html = [
+            f"{nm} <b style='color:#dc2626;'>−{abs(val):g}</b>"
+            for nm, val in top3
+        ]
+        tail_str = f" 외 {rest_cnt}명" if rest_cnt > 0 else ""
+        line2_html = (
+            f"<div class='ec-bridge-line2'>"
+            f"<span class='ec-br-tag'>퇴사·제외</span> "
+            + ", ".join(parts_html)
+            + tail_str
+            + "</div>"
+        )
+    elif new_items:
+        top3 = new_items[:3]
+        rest_cnt = max(0, len(new_items) - 3)
+        parts_html = [
+            f"{nm} <b style='color:#15803d;'>+{val:g}</b>"
+            for nm, val in top3
+        ]
+        tail_str = f" 외 {rest_cnt}명" if rest_cnt > 0 else ""
+        line2_html = (
+            f"<div class='ec-bridge-line2'>"
+            f"<span class='ec-br-tag'>퇴사·제외 없음 · 신규입사</span> "
+            + ", ".join(parts_html)
+            + tail_str
+            + "</div>"
+        )
+    else:
+        line2_html = (
+            "<div class='ec-bridge-line2'>"
+            "<span class='ec-br-tag'>인원 변동</span> 신규 입사 및 퇴사·제외 변동 없음"
+            "</div>"
+        )
+
+    return {
+        "prev_yr": prev_yr,
+        "cur_yr": cur_yr,
+        "start_m": start_m,
+        "end_m": end_m,
+        "new_m": new_m,
+        "cont_m": cont_m,
+        "excl_m": excl_m,
+        "prev_reg": prev_reg,
+        "cur_reg": cur_reg,
+        "inc_diff": inc_diff,
+        "new_items": new_items,
+        "cont_items": cont_items,
+        "excl_items": excl_items,
+        "has_overflow": len(excl_items) >= 4,
+        "html": f"<div class='ec-bridge-box'>{line1_html}{line2_html}</div>",
+    }
+
+
+def _render_compact_bridge(
+    bridge: dict[str, Any],
+    *,
+    between_tables: bool = False,
+    force_expander: bool = False,
+) -> None:
+    """2줄 고정 길이 인원 증감 브리지 및 (4명 이상 시) 전체 명단 접힌 영역(expander)을 렌더링합니다."""
+    margin_css = "16px 0 18px 0" if between_tables else "6px 0 12px 0"
+    st.markdown(
+        f"""
+        <style>
+        .ec-bridge-box {{
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-left: 3.5px solid #94a3b8;
+            border-radius: 8px;
+            padding: 8px 14px;
+            margin: {margin_css};
+            font-size: 0.86rem;
+            line-height: 1.54;
+            color: #64748b;
+        }}
+        .ec-bridge-line1 {{
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 6px;
+            color: #64748b;
+            font-weight: 500;
+        }}
+        .ec-bridge-line1 .ec-br-yr {{
+            color: #475569;
+        }}
+        .ec-bridge-line1 .ec-br-arr {{
+            color: #94a3b8;
+            font-weight: 700;
+        }}
+        .ec-bridge-line1 .ec-br-dot {{
+            color: #cbd5e1;
+            font-weight: 800;
+        }}
+        .ec-bridge-line1 .ec-br-avg {{
+            margin-left: 4px;
+            color: #64748b;
+        }}
+        .ec-bridge-line2 {{
+            margin-top: 2px;
+            font-size: 0.83rem;
+            color: #64748b;
+        }}
+        .ec-bridge-line2 .ec-br-tag {{
+            font-weight: 600;
+            color: #475569;
+            margin-right: 4px;
+        }}
+        </style>
+        """
+        + bridge["html"],
+        unsafe_allow_html=True,
+    )
+    excl_items = bridge.get("excl_items") or []
+    new_items = bridge.get("new_items") or []
+    cont_items = bridge.get("cont_items") or []
+    if len(excl_items) >= 4 or force_expander:
+        with st.expander(
+            f"📋 {bridge['prev_yr']}년 → {bridge['cur_yr']}년 퇴사·제외 및 인원 증감 전체 명단 보기 "
+            f"(퇴사·제외 {len(excl_items)}명 · 신규 {len(new_items)}명 · 기존재직 변동 {len(cont_items)}명)",
+            expanded=False,
+        ):
+            lines_md = []
+            if excl_items:
+                excl_str = ", ".join(f"**{nm}** ({val:g})" for nm, val in excl_items)
+                lines_md.append(f"- **퇴사·제외 ({len(excl_items)}명, 합계 −{bridge['excl_m']:g})**: {excl_str}")
+            if new_items:
+                new_str = ", ".join(f"**{nm}** (+{val:g})" for nm, val in new_items)
+                lines_md.append(f"- **신규 입사 ({len(new_items)}명, 합계 +{bridge['new_m']:g})**: {new_str}")
+            if cont_items:
+                cont_str = ", ".join(f"**{nm}** ({val:+g})" for nm, val in cont_items)
+                lines_md.append(f"- **기존 재직 월수 변동 ({len(cont_items)}명, 합계 {bridge['cont_m']:+g})**: {cont_str}")
+            st.markdown("\n".join(lines_md))
+
+
 def _build_headcount_waterfall_and_comparison(s: dict, pkg: dict, tax_yr: int) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     [인원 증감 브리지 표(Waterfall Bridge) 및 직전연도 비교인원 보수적 vs 공격적 산정 세액 비교표]
@@ -1185,6 +1442,15 @@ def _page_calculation():
         f"{cap_notice_html}",
         unsafe_allow_html=True,
     )
+    _bridge_s3 = _build_compact_bridge_info(
+        s,
+        tax_yr - 1,
+        tax_yr,
+        prev_reg_override=prv_reg_disp,
+        cur_reg_override=cur_s["regular"],
+        use_new_rule_prev=(pkg["active_scheme"] == "new_2026"),
+    )
+    _render_compact_bridge(_bridge_s3, between_tables=False)
     if prev_s.get("old_rule_regular") is not None and abs(prev_s["old_rule_regular"] - prv_reg_disp) > 1e-9:
         st.caption(
             f"ℹ️ 직전 과세연도({tax_yr - 1}년) 비교 인원({prv_reg_disp:.2f}명)은 개정 규정(조특령 제26조의8 제2항 제1호: 실제 근로기간 1년 미만 제외)으로 재산정하되, "
@@ -1699,7 +1965,8 @@ def _page_calculation():
 
     with st.expander("📊 [상세 대조] 인원 증감 브리지 표 · 비교인원(보수적 vs 공격적) · 기신고 vs 세법원칙 비교표", expanded=False):
         wf_df, ca_df = _build_headcount_waterfall_and_comparison(s, pkg, tax_yr)
-        st.markdown(f"**① {tax_yr-1}년 비교인원 → {tax_yr}년 당해 상시근로자 인원 증감 브리지 표 (Waterfall Bridge)**")
+        st.markdown(f"**① {tax_yr-1}년 비교인원 → {tax_yr}년 당해 상시근로자 인원 증감 브리지 (2줄 요약 및 상세)**")
+        _render_compact_bridge(_bridge_s3, between_tables=False, force_expander=True)
         st.dataframe(wf_df, use_container_width=True, hide_index=True)
         st.markdown(f"**② 직전연도({tax_yr-1}년) 비교인원 산정 기준 비교 (보수적 정본 vs 공격적 소급제외)**")
         st.dataframe(ca_df, use_container_width=True, hide_index=True)
