@@ -122,6 +122,7 @@ from .ui_common import (  # noqa: F401
     _workplace_close_month_map,
     _write_ec_to_disk,
     _years,
+    reset_credit_all_state,
 )
 from .ui_sidebar import (  # noqa: F401
     _dlg_industry,

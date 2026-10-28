@@ -277,6 +277,40 @@ def _S() -> dict:
     return s
 
 
+def reset_credit_all_state() -> None:
+    """
+    [Feature B — 통합고용세액공제 전체 자료·내용 초기화]
+    업로드된 서류, 사업자정보, 사원표, 기신고 기초값, 계산 스냅샷, 4단계 보고서 캐시 및 디스크 자동백업을
+    모두 초기화하고 1단계(서류 업로드) 초기 상태로 되돌립니다.
+    """
+    ws_id = st.session_state.get("loaded_workspace_id") or "default_ec"
+    old_s = st.session_state.get("ec") if isinstance(st.session_state.get("ec"), dict) else {}
+    next_up_ver = int(old_s.get("uploader_ver") or 0) + 1
+    next_yr_sz_ver = int(old_s.get("yr_sz_ver") or 0) + 1
+    try:
+        p_disk = _ec_disk_path(ws_id)
+        if p_disk and os.path.exists(p_disk):
+            os.remove(p_disk)
+    except Exception:
+        pass
+    store = st.session_state.setdefault("ec_by_ws", {})
+    store.pop(ws_id, None)
+    saved_hashes = st.session_state.get(_SAVED_HASH_KEY)
+    if isinstance(saved_hashes, dict):
+        saved_hashes.pop(ws_id, None)
+    for k in list(st.session_state.keys()):
+        if str(k).startswith(("ec_biz_", "ec_sub_", "pf_", "calc_", "prev_sum_", "ec_grid_", "pm_basis")):
+            del st.session_state[k]
+    st.session_state.pop(_CALC_CACHE_KEY, None)
+    st.session_state.pop("ec", None)
+    new_s = _S()
+    new_s["uploader_ver"] = next_up_ver
+    new_s["yr_sz_ver"] = next_yr_sz_ver
+    new_s["step"] = 1
+    new_s["max_step_reached"] = 1
+    _save_ec_to_disk(new_s)
+
+
 def _cohort_corp_size(s: dict | None, year: int | str | None = None, default: str | None = None) -> str:
     """해당 연도의 기업규모를 돌려준다. 개별 설정 → 기본값 → 기존 biz['기업구분'] → '중소기업' 순서."""
     return R._cohort_corp_size(s, year, default=default)
@@ -744,6 +778,7 @@ def _ensure_built_for_tax_year(s: dict):
                     "청년등_총인원": vals.get("청년등_총인원") if vals.get("청년등_총인원") is not None else old.get("청년등_총인원"),
                     "상시": vals.get("상시") if vals.get("상시") is not None else old.get("상시"),
                     "청년등": vals.get("청년등") if vals.get("청년등") is not None else old.get("청년등"),
+                    "청년등외": vals.get("청년등외") if vals.get("청년등외") is not None else old.get("청년등외"),
                     "청년등_증가": vals.get("청년등_증가") if vals.get("청년등_증가") is not None else old.get("청년등_증가"),
                     "청년등외_증가": vals.get("청년등외_증가") if vals.get("청년등외_증가") is not None else old.get("청년등외_증가"),
                     "공제세액": int(vals.get("공제세액")) if vals.get("공제세액") is not None else old.get("공제세액"),
@@ -755,6 +790,11 @@ def _ensure_built_for_tax_year(s: dict):
                     "_증가_추정": bool(vals.get("_증가_추정") or old.get("_증가_추정")),
                     "_2차_AI판독": bool(vals.get("_2차_AI판독")),
                     "_소재지_추정": bool(vals.get("_소재지_추정") or old.get("_소재지_추정")),
+                    "_auto_filled": bool(vals.get("_auto_filled") if vals.get("상시") is None else False) or bool(old.get("_auto_filled") if vals.get("상시") is None else False),
+                    "_needs_filing_check": bool(vals.get("_needs_filing_check") and old.get("공제세액") is None),
+                    "_conflicts": vals.get("_conflicts") or old.get("_conflicts") or [],
+                    "_conflict_selected_idx": old.get("_conflict_selected_idx", vals.get("_conflict_selected_idx", 0)),
+                    "_conflict_selected_source": old.get("_conflict_selected_source") or vals.get("_conflict_selected_source"),
                 }
 
         s["grid_ver"], s["last_sent"] = {}, {}
@@ -1311,6 +1351,26 @@ div[class*="st-key-ec_step_nav_wait_"] button p {
 .ec-agent-report-wrap b {
     font-weight: 800 !important;
     color: #0f172a !important;
+}
+.ec-agent-report-wrap a {
+    display: inline-block;
+    color: #1d4ed8 !important;
+    background: #eff6ff !important;
+    border: 1px solid #bfdbfe !important;
+    border-radius: 6px !important;
+    padding: 0px 7px !important;
+    margin: 0 1px !important;
+    font-size: 0.98rem !important;
+    font-weight: 700 !important;
+    line-height: 1.5 !important;
+    text-decoration: none !important;
+    transition: all 0.15s ease !important;
+}
+.ec-agent-report-wrap a:hover {
+    background: #dbeafe !important;
+    border-color: #60a5fa !important;
+    color: #1e3a8a !important;
+    text-decoration: underline !important;
 }
 /* 보고서 내 표 (th 내부 strong이 검은색으로 덮이지 않도록 #ffffff 강제 고정) */
 .ec-agent-report-wrap table {
@@ -2050,7 +2110,8 @@ def _top_status_bar(s: dict):
         biz_disp = f"🏢 <b>{meta_str}</b>"
     tax_yr = int(s.get("tax_year") or R.DEFAULT_TAX_YEAR)
     pm_lbl = R.PM_BASIS_LABELS.get(s.get("pm_basis", R.PM_BASIS_FILED), "기신고 기준")
-    law_ver = f"{tax_yr}귀속 (합산 후 절사 · 사후관리: {pm_lbl})"
+    m_badge = R.calc_method_badge_label(tax_yr)
+    law_ver = f"{tax_yr}귀속 ({m_badge} · 사후관리: {pm_lbl})"
     step_nm = STEPS[max(0, min(len(STEPS) - 1, int(s.get("step", 1)) - 1))]
 
     st.markdown(
@@ -2221,6 +2282,7 @@ JS_STYLE = JsCode("""
 function(p){
   const baseFont = {fontFamily: 'Pretendard, Malgun Gothic, sans-serif', fontSize: '12.6px', paddingLeft: '3px', paddingRight: '3px', overflow: 'visible', textOverflow: 'clip'};
   if (p.node.rowPinned) return Object.assign(baseFont, {backgroundColor:'#dcfce7', color:'#14532d', fontWeight:'800'});
+  if (p.data._class_diff === '1') return Object.assign(baseFont, {backgroundColor:'#ffedd5', color:'#9a3412', fontWeight:'800', borderBottom:'1.5px solid #f97316'});
   const L = (p.data._lock || '').split(',');
   if (L.includes(p.colDef.field)) return Object.assign(baseFont, {backgroundColor:'#e2e8f0', color:'#0f172a', fontWeight:'600'});
   return Object.assign(baseFont, {backgroundColor:'#ffffff', color:'#1d4ed8', fontWeight:'600'});
@@ -2330,17 +2392,19 @@ def _block_titles_for_year(year: int, two_line: bool = False) -> tuple[str, str,
     y0 = int(year)
     y1 = y0 - 1
     y2 = y0 - 2
-    trunc_mode = "합산 후 절사"
+    m0 = "B방식·사원별절사" if R.calc_method_for(y0) == "B" else "A방식·합계절사"
+    m1 = "B방식" if R.calc_method_for(y1) == "B" else "A방식·신뢰보호"
+    m2 = "B방식" if R.calc_method_for(y2) == "B" else "A방식·신뢰보호"
     if two_line:
         return (
-            f"3. {y0}년\n세액공제({trunc_mode})",
-            f"4. {y1}년\n1차 사후관리",
-            f"5. {y2}년\n2차 사후관리",
+            f"3. {y0}년\n세액공제({m0})",
+            f"4. {y1}년\n1차 사후관리({m1})",
+            f"5. {y2}년\n2차 사후관리({m2})",
         )
     return (
-        f"3. {y0 % 100:02d}년 세액공제({trunc_mode})",
-        f"4. {y1 % 100:02d}년 1차 사후관리",
-        f"5. {y2 % 100:02d}년 2차 사후관리",
+        f"3. {y0 % 100:02d}년 세액공제({m0})",
+        f"4. {y1 % 100:02d}년 1차 사후관리({m1})",
+        f"5. {y2 % 100:02d}년 2차 사후관리({m2})",
     )
 
 
@@ -2495,6 +2559,14 @@ def _build_year_rows_uncached(s: dict, year: int) -> tuple[list[dict], dict, dic
             "_movr": "".join("1" if (i + 1) in ovr else "0" for i in range(12)),
             "_sovr": "1" if yrec.get("상시_override") else "0",
             "_sauto": c["상시_auto"],
+            "_class_diff": "1" if (yrec.get("_class_diff") or p.get("_class_diff")) else "0",
+            "_class_diff_msg": str(yrec.get("_class_diff_msg") or p.get("_class_diff_msg") or ""),
+            "A_b1_yth": c.get("A_b1_yth", c["b1_yth"]),
+            "A_b1_gen": c.get("A_b1_gen", c["b1_gen"]),
+            "A_b1_reg": c.get("A_b1_reg", c["b1_reg"]),
+            "B_b1_yth": c.get("B_b1_yth", c["b1_yth"]),
+            "B_b1_gen": c.get("B_b1_gen", c["b1_gen"]),
+            "B_b1_reg": c.get("B_b1_reg", c["b1_reg"]),
         }
         rows.append(row)
     totals = H.year_totals(list(computed.values()), ctx["months_in_year"], year=year)
@@ -2532,6 +2604,10 @@ def _apply_tenure_transition(s, year, ctx, people, recs, computed, rows, totals)
                     continue
                 for k in ("yth", "gen", "reg", "yth_act"):
                     totals[f"{blk}_{k}"] = t_old[f"{blk}_{k}"]
+                    if f"A_{blk}_{k}" in t_old:
+                        totals[f"A_{blk}_{k}"] = t_old[f"A_{blk}_{k}"]
+                    if f"B_{blk}_{k}" in t_old:
+                        totals[f"B_{blk}_{k}"] = t_old[f"B_{blk}_{k}"]
                 for k in ("청년등_합계", "청년외_합계"):
                     totals[f"{blk}_{k}"] = t_old[f"{blk}_{k}"]
                 for r in rows:
@@ -2540,7 +2616,7 @@ def _apply_tenure_transition(s, year, ctx, people, recs, computed, rows, totals)
                         r[f"{blk}_yth"], r[f"{blk}_gen"], r[f"{blk}_reg"] = c_old[f"{blk}_yth"], c_old[f"{blk}_gen"], c_old[f"{blk}_reg"]
             totals["old_rule_pm_names"] = sorted(people[pid].get("성명", "") for pid in alt_old)
 
-    # (2) 2026년 이후 신법(A·B·C) 비교 대상 연도(2025 <= y < tax_yr)의 일관된 해석 기준 재산정(nr_)
+    # (2) 2026년 이후 신법(A·B·C) 비교 대상 연도(2025 <= y < tax_yr)의 일관된 해석 기준 재산정(nr_ — A·B 모두 보관)
     if tax_yr >= NEW and (NEW - 1) <= y < tax_yr:
         ctx_new = dict(ctx, old_tenure_rule=False, as_of_year=tax_yr)
         alt_new = {}
@@ -2553,9 +2629,17 @@ def _apply_tenure_transition(s, year, ctx, people, recs, computed, rows, totals)
             ):
                 alt_new[pid] = H.compute_row(people[pid], yrec, y, ctx_new)
         t_new = H.year_totals([alt_new.get(pid, c) for pid, c in computed.items()], ctx["months_in_year"], year=y) if alt_new else totals
-        totals["nr_상시_평균"] = t_new["상시_평균"]
-        totals["nr_청년등_평균"] = t_new["청년등_평균"]
-        totals["nr_청년외_평균"] = t_new["청년외_평균"]
+        # 신법 A·B·C 비교연도 인원은 calc_method_for(tax_yr) == 'B'가 정본이며, A·B 두 값을 모두 보관
+        totals["nr_A_상시_평균"] = t_new.get("A_상시_평균", t_new["상시_평균"])
+        totals["nr_A_청년등_평균"] = t_new.get("A_청년등_평균", t_new["청년등_평균"])
+        totals["nr_A_청년외_평균"] = t_new.get("A_청년외_평균", t_new["청년외_평균"])
+        totals["nr_B_상시_평균"] = t_new.get("B_상시_평균", t_new["상시_평균"])
+        totals["nr_B_청년등_평균"] = t_new.get("B_청년등_평균", t_new["청년등_평균"])
+        totals["nr_B_청년외_평균"] = t_new.get("B_청년외_평균", t_new["청년외_평균"])
+        m_nr = R.calc_method_for(tax_yr)
+        totals["nr_상시_평균"] = totals[f"nr_{m_nr}_상시_평균"]
+        totals["nr_청년등_평균"] = totals[f"nr_{m_nr}_청년등_평균"]
+        totals["nr_청년외_평균"] = totals[f"nr_{m_nr}_청년외_평균"]
         totals["nr_상시_합계"] = t_new["상시_합계"]
         totals["nr_청년등_합계"] = t_new["청년등_합계"]
         totals["nr_청년외_합계"] = t_new["청년외_합계"]
@@ -2714,21 +2798,33 @@ def _compute_historical_matrix_columns(
                 "credit_1st_won": int(cr_recalc or 0),
             }
 
-        if f_y_inc is not None or f_g_inc is not None or f_clm is not None:
-            yi = float(f_y_inc or 0.0)
-            gi = float(f_g_inc or 0.0)
-            calc_1st = int(round((yi * yth_r + gi * gen_r) * 10_000))
-            if f_clm is not None and int(f_clm or 0) > 0:
-                c1_won = int(f_clm)
-            else:
-                c1_won = calc_1st
+        # [6-1, 6-4] 기신고 기준(PM_BASIS_FILED)에서는 재계산값이 섞이지 않도록 기신고 값만 사용하고,
+        # 과거 연도 1차 공제액이 기신고서·세액공제조정명세서(부표3)에 없으면 추정복원하지 않고 빈칸(신고서 확인 필요)으로 표시
+        if not use_recalc:
+            if f_reg is not None or f_yth is not None or f_y_inc is not None or f_g_inc is not None or f_clm is not None:
+                yi = float(f_y_inc or 0.0)
+                gi = float(f_g_inc or 0.0)
+                c1_won = int(f_clm) if f_clm is not None else 0
+                needs_chk = (f_clm is None) or bool(f_d.get("_needs_filing_check"))
+                return {
+                    "has": True,
+                    "reg": float(f_reg or 0.0),
+                    "yth": float(f_yth or 0.0),
+                    "yth_inc": yi,
+                    "gen_inc": gi,
+                    "credit_1st_won": c1_won,
+                    "r1_needs_check": needs_chk,
+                    "auto_filled": bool(f_d.get("_auto_filled")),
+                }
             return {
-                "has": True,
-                "reg": float(f_reg if f_reg is not None else sy["reg"]),
-                "yth": float(f_yth if f_yth is not None else sy["yth"]),
-                "yth_inc": yi,
-                "gen_inc": gi,
-                "credit_1st_won": c1_won,
+                "has": False,
+                "reg": 0.0,
+                "yth": 0.0,
+                "yth_inc": 0.0,
+                "gen_inc": 0.0,
+                "credit_1st_won": 0,
+                "r1_needs_check": True,
+                "auto_filled": False,
             }
 
         if recalc_ok and inc_recalc is not None:
@@ -2739,6 +2835,23 @@ def _compute_historical_matrix_columns(
                 "yth_inc": inc_recalc["youth_inc"],
                 "gen_inc": inc_recalc["non_youth_inc"],
                 "credit_1st_won": int(cr_recalc or 0),
+                "r1_needs_check": False,
+                "auto_filled": False,
+            }
+
+        if f_y_inc is not None or f_g_inc is not None or f_clm is not None:
+            yi = float(f_y_inc or 0.0)
+            gi = float(f_g_inc or 0.0)
+            c1_won = int(f_clm) if f_clm is not None else int(round((yi * yth_r + gi * gen_r) * 10_000))
+            return {
+                "has": True,
+                "reg": float(f_reg if f_reg is not None else sy["reg"]),
+                "yth": float(f_yth if f_yth is not None else sy["yth"]),
+                "yth_inc": yi,
+                "gen_inc": gi,
+                "credit_1st_won": c1_won,
+                "r1_needs_check": (f_clm is None),
+                "auto_filled": bool(f_d.get("_auto_filled")),
             }
 
         return {
@@ -2748,6 +2861,8 @@ def _compute_historical_matrix_columns(
             "yth_inc": 0.0,
             "gen_inc": 0.0,
             "credit_1st_won": 0,
+            "r1_needs_check": True,
+            "auto_filled": False,
         }
 
     cols: dict[int, dict[str, Any]] = {}
@@ -2764,6 +2879,9 @@ def _compute_historical_matrix_columns(
         "r2_credit": 0, "r2_claw": 0,
         "r3_credit": 0, "r3_claw": 0,
         "net_total": c_m3_1,
+        "r1_needs_check": bool(info_m3.get("r1_needs_check")),
+        "auto_filled": bool(info_m3.get("auto_filled")),
+        "calc_method": R.calc_method_for(y_m3),
     }
 
     # ── (B) tax_yr - 2 열 (예: 2024년) ──
@@ -2792,6 +2910,9 @@ def _compute_historical_matrix_columns(
         "r2_credit": c_m2_2_cr, "r2_claw": c_m2_2_cl,
         "r3_credit": 0, "r3_claw": 0,
         "net_total": c_m2_1 + c_m2_2_cr - c_m2_2_cl,
+        "r1_needs_check": bool(info_m2.get("r1_needs_check")),
+        "auto_filled": bool(info_m2.get("auto_filled")),
+        "calc_method": R.calc_method_for(y_m2),
     }
 
     # ── (C) tax_yr - 1 열 (예: 2025년) ──
@@ -2853,6 +2974,9 @@ def _compute_historical_matrix_columns(
         "r2_credit": c_m1_2_cr, "r2_claw": c_m1_2_cl,
         "r3_credit": c_m1_3_cr, "r3_claw": c_m1_3_cl,
         "net_total": (c_m1_1 + c_m1_2_cr + c_m1_3_cr) - (c_m1_2_cl + c_m1_3_cl),
+        "r1_needs_check": bool(info_m1.get("r1_needs_check")),
+        "auto_filled": bool(info_m1.get("auto_filled")),
+        "calc_method": R.calc_method_for(y_m1),
     }
 
     # ── (D) 당해 과세연도(tax_yr) 열 (예: 2026년) ──
@@ -2877,11 +3001,14 @@ def _compute_historical_matrix_columns(
         "r2_credit": c_0_2_cr, "r2_claw": c_0_2_cl,
         "r3_credit": c_0_3_cr, "r3_claw": c_0_3_cl,
         "net_total": (c_0_1 + c_0_2_cr + c_0_3_cr) - (c_0_2_cl + c_0_3_cl),
+        "r1_needs_check": False,
+        "auto_filled": False,
+        "calc_method": R.calc_method_for(y_0),
     }
     # 기신고 기준: 과거 연도 열은 세액공제조정명세서(코드 18S)에 실제 신고된 1차·2차·3차 금액을 그대로 표시
     #   (추정치 대신 신고 사실값 사용. 추가납부액은 18S에 없으므로 계산값 유지)
     if active_pm_basis == R.PM_BASIS_FILED:
-        cs = {int(k): v for k, v in (((s.get("ext") or {}).get("credit_stmt")) or {}).items()}
+        cs = {int(k): v for k, v in (((s.get("ext") or {}).get("credit_stmt")) or {}).items() if str(k).isdigit()}
         for y, col in cols.items():
             filed = cs.get(int(y))
             if not filed or int(y) >= int(y_0):

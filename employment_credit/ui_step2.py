@@ -151,7 +151,7 @@ def _build_schedule_pdf_bytes(s: dict, target_years: list[int], include_summary:
         rows, _, totals = _build_year_rows(s, y)
         totals_by_yr[y] = totals
         role_desc = _year_role_description(s, tax_yr, y)
-        trunc_mode = "합산 후 절사"
+        trunc_mode = R.calc_method_badge_label(y)
         b3_t, b4_t, b5_t = _block_titles_for_year(y, two_line=False)
 
         yr_has_y1 = _has_year_data(s, y - 1) or bool(s.get("show_empty_pm_blocks", False))
@@ -163,7 +163,7 @@ def _build_schedule_pdf_bytes(s: dict, target_years: list[int], include_summary:
         yr_sz_lbl = R.format_corp_size_label(R.get_corp_size_for_year(s, y))
         yr_flowables.append(
             Paragraph(
-                f"■ {y}년 귀속 상시근로자 명세 ({len(rows)}명 · 기업구분: {yr_sz_lbl}) — {role_desc}",
+                f"■ {y}년 귀속 상시근로자 명세 ({len(rows)}명 · 기업구분: {yr_sz_lbl} · {trunc_mode}) — {role_desc}",
                 st_yr_hdr,
             )
         )
@@ -683,13 +683,13 @@ def _grid_options(
     go["columnDefs"] = col_defs
 
     n = totals["months_in_year"]
-    trunc_mode = "합산 후 절사"
+    trunc_mode = R.calc_method_badge_label(year)
     pinned = [
         {
             "사업장명": "합산합계",
             "성명": "상시근로자",
             "생년월일": "",
-            "고용유형": f"÷ {n}개월 절사",
+            "고용유형": f"÷{n}월({'사원별절사' if R.calc_method_for(year)=='B' else '합계절사'})",
             **{MONTH_COLS[i]: totals["월별_상시"][i] for i in range(12)},
             "합계": totals["상시_합계"],
             "b1_yth": totals["b1_yth"],
@@ -908,10 +908,21 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
         if cur_yr_sz != def_sz_s2
         else ""
     )
+    m_code_yr = R.calc_method_for(year)
+    m_lbl_yr = R.calc_method_badge_label(year)
+    m_pill_style = (
+        "background:#dcfce7;color:#15803d;border:1px solid #86efac;"
+        if m_code_yr == "B"
+        else "background:#fef3c7;color:#b45309;border:1px solid #fcd34d;"
+    )
+    method_badge_html = (
+        f"<span style='{m_pill_style}padding:2px 8px;border-radius:999px;font-size:0.76rem;font-weight:800;margin-left:6px;'>"
+        f"📐 {m_lbl_yr}</span>"
+    )
     yr_sz_badge_html = (
         f"<span style='{sz_pill_color}padding:2px 8px;border-radius:999px;font-size:0.78rem;font-weight:800;margin-left:6px;'>"
         f"🏢 {year%100:02d}년 기업규모: {cur_yr_sz_lbl}"
-        f"</span>{diff_pill_html}"
+        f"</span>{diff_pill_html}{method_badge_html}"
     )
     c_hdr, c_sz, c_pdf = st.columns([4.90, 1.25, 0.85], vertical_alignment="center")
     with c_hdr:
@@ -1124,12 +1135,74 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
             f"<span class='kpi-sub'>(청년등 <b>{totals['b3_yth']:.2f}</b> · 청년외 <b>{totals['b3_gen']:.2f}</b>)</span>"
             f"</div>"
         )
-    trunc_mode = "합산 후 절사"
+    trunc_mode = R.calc_method_badge_label(year)
+    # [Section 4] 같은 연도의 A·B값이 다르면 표 아래 회색 한 줄로 다른 방식의 값을 참고 표시 (계산에는 쓰지 않음)
+    ref_parts = []
+    a_b1_r = float(totals.get("A_b1_reg", totals["b1_reg"]))
+    b_b1_r = float(totals.get("B_b1_reg", totals["b1_reg"]))
+    a_b1_y = float(totals.get("A_b1_yth", totals["b1_yth"]))
+    b_b1_y = float(totals.get("B_b1_yth", totals["b1_yth"]))
+    a_b1_g = float(totals.get("A_b1_gen", totals["b1_gen"]))
+    b_b1_g = float(totals.get("B_b1_gen", totals["b1_gen"]))
+    if round(a_b1_r, 2) != round(b_b1_r, 2) or round(a_b1_y, 2) != round(b_b1_y, 2):
+        if R.calc_method_for(year) == "B":
+            ref_parts.append(
+                f"3. {year%100:02d}년 세액공제 — A방식(합계 절사) 참고값: 상시 {a_b1_r:.2f}명 (청년등 {a_b1_y:.2f} · 청년외 {a_b1_g:.2f})"
+            )
+        else:
+            ref_parts.append(
+                f"3. {year%100:02d}년 세액공제 — B방식(사원별 절사) 참고값: 상시 {b_b1_r:.2f}명 (청년등 {b_b1_y:.2f} · 청년외 {b_b1_g:.2f})"
+            )
+    if show_b2:
+        a_b2_r, b_b2_r = float(totals.get("A_b2_reg", totals["b2_reg"])), float(totals.get("B_b2_reg", totals["b2_reg"]))
+        a_b2_y, b_b2_y = float(totals.get("A_b2_yth", totals["b2_yth"])), float(totals.get("B_b2_yth", totals["b2_yth"]))
+        a_b2_g, b_b2_g = float(totals.get("A_b2_gen", totals["b2_gen"])), float(totals.get("B_b2_gen", totals["b2_gen"]))
+        if round(a_b2_r, 2) != round(b_b2_r, 2) or round(a_b2_y, 2) != round(b_b2_y, 2):
+            m_b2 = R.calc_method_for(year - 1)
+            if m_b2 == "B":
+                ref_parts.append(f"4. {(year-1)%100:02d}년 1차 사후관리 — A방식 참고값: 상시 {a_b2_r:.2f}명 (청년등 {a_b2_y:.2f} · 청년외 {a_b2_g:.2f})")
+            else:
+                ref_parts.append(f"4. {(year-1)%100:02d}년 1차 사후관리 — B방식 참고값: 상시 {b_b2_r:.2f}명 (청년등 {b_b2_y:.2f} · 청년외 {b_b2_g:.2f})")
+    if show_b3:
+        a_b3_r, b_b3_r = float(totals.get("A_b3_reg", totals["b3_reg"])), float(totals.get("B_b3_reg", totals["b3_reg"]))
+        a_b3_y, b_b3_y = float(totals.get("A_b3_yth", totals["b3_yth"])), float(totals.get("B_b3_yth", totals["b3_yth"]))
+        a_b3_g, b_b3_g = float(totals.get("A_b3_gen", totals["b3_gen"])), float(totals.get("B_b3_gen", totals["b3_gen"]))
+        if round(a_b3_r, 2) != round(b_b3_r, 2) or round(a_b3_y, 2) != round(b_b3_y, 2):
+            m_b3 = R.calc_method_for(year - 2)
+            if m_b3 == "B":
+                ref_parts.append(f"5. {(year-2)%100:02d}년 2차 사후관리 — A방식 참고값: 상시 {a_b3_r:.2f}명 (청년등 {a_b3_y:.2f} · 청년외 {a_b3_g:.2f})")
+            else:
+                ref_parts.append(f"5. {(year-2)%100:02d}년 2차 사후관리 — B방식 참고값: 상시 {b_b3_r:.2f}명 (청년등 {b_b3_y:.2f} · 청년외 {b_b3_g:.2f})")
+
+    ref_line_html = (
+        f"<div style='margin:-20px 0 22px 4px;font-size:0.81rem;color:#64748b;font-weight:600;'>"
+        f"ℹ️ 다른 계산방식 참고(계산 미사용): {' &nbsp;|&nbsp; '.join(ref_parts)}"
+        f"</div>"
+        if ref_parts
+        else ""
+    )
+
+    # [Section 6-5] 상시근로자 명세서(별지 제10호의10) 분류와 원천징수부 분류가 다른 사원 주황 안내
+    cls_diff_items = [
+        f"<b>{r.get('성명')}</b> ({r.get('_class_diff_msg')})"
+        for r in rows
+        if r.get("_class_diff") == "1" and r.get("_class_diff_msg")
+    ]
+    cls_diff_html = (
+        f"<div style='margin:-16px 0 20px 0;padding:8px 12px;background:#fff7ed;border:1.5px solid #fdba74;"
+        f"border-left:5px solid #f97316;border-radius:8px;font-size:0.84rem;color:#9a3412;line-height:1.5;'>"
+        f"🟧 <b>상시근로자 명세서(별지 제10호의10) vs 원천징수부 분류 차이 감지 ({len(cls_diff_items)}명 · 표 주황색 행 표시):</b><br>"
+        + "<br>".join(f"• {it}" for it in cls_diff_items)
+        + "</div>"
+        if cls_diff_items
+        else ""
+    )
+
     st.markdown(
         f"<div class='ec-kpi-bar'>"
         f"<div class='ec-kpi-items'>{''.join(kpi_chips)}</div>"
         f"<span class='ec-kpi-total-pill'>총인원(연인원) <b>{totals['상시_합계']:g}명</b> ÷ {totals['months_in_year']}개월 ({trunc_mode})</span>"
-        f"</div>",
+        f"</div>{ref_line_html}{cls_diff_html}",
         unsafe_allow_html=True,
     )
     return computed, totals

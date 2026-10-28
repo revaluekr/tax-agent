@@ -442,49 +442,142 @@ def _fetch_live_employment_law_context() -> tuple[str, dict | None]:
                     or "통합고용세액공제에관한경과조치" in res_compact
                 ):
                     verified_buchik.add(("조세특례제한법", 34, 0))
-                if clean_lnm == "조세특례제한법시행령" and "부칙" in res_s:
-                    if "제2조(통합고용세액공제에관한경과조치)" in res_compact:
-                        verified_buchik.add(("조세특례제한법시행령", 2, 0))
-                    if "제11조(통합고용세액공제에관한적용례등)" in res_compact:
-                        verified_buchik.add(("조세특례제한법시행령", 11, 0))
+                if clean_lnm == "조세특례제한법시행령":
+                    if "제26조의8" in res_compact and "제11조의2제8항" in res_compact:
+                        trace["verified_26_8_6_mutatis_11_2_8"] = True
+                    if "부칙" in res_s:
+                        if "제2조(통합고용세액공제에관한경과조치)" in res_compact:
+                            verified_buchik.add(("조세특례제한법시행령", 2, 0))
+                        if "제11조(통합고용세액공제에관한적용례등)" in res_compact:
+                            verified_buchik.add(("조세특례제한법시행령", 11, 0))
 
         # 실제로 조회에 성공한 법령과 원문에서 확인된 부칙만 인용 허용 목록에 등록 (본칙 mentioned_articles 오염 원천 차단)
         trace.setdefault("fetched_laws", set()).update(ok_laws)
         trace.setdefault("fetched_addenda", set()).update(verified_buchik)
+        trace.setdefault("verified_26_8_6_mutatis_11_2_8", False)
     finally:
         agent._TOOL_TRACE.reset(tok)
 
     return "\n\n".join(fetched_snippets)[:15000], trace
 
 
+def is_26_8_6_mutatis_verified(trace: dict | None = None) -> bool:
+    """
+    조세특례제한법 시행령 제26조의8 제6항이 제11조의2 제8항을 준용한다는 문언이
+    law_api 원문 조회를 통해 trace에 기록되었는지 여부를 반환합니다.
+    """
+    if isinstance(trace, dict) and bool(trace.get("verified_26_8_6_mutatis_11_2_8")):
+        return True
+    if isinstance(trace, dict):
+        for d_txt in (trace.get("detail") or []):
+            compact = str(d_txt or "").replace(" ", "")
+            if "제26조의8" in compact and "제11조의2제8항" in compact:
+                trace["verified_26_8_6_mutatis_11_2_8"] = True
+                return True
+    return False
+
+
+def _sanitize_law_citation_tags(md_text: str) -> str:
+    """
+    [Feature A — 법령 링크 가독성 및 중복 래핑 방지 전처리/후처리]
+    1) 백틱(`)으로 감싸진 `[조문:...]`, `[부칙:...]`, `[행정해석:...]`, `[별표:...]`, `[예규:...]` 태그의 백틱을 제거합니다.
+    2) 이미 이중으로 감싸진 `[[[조문:...]]](url1)(url2)` 형태의 깨진 마크다운 링크를 단일 `[조문:...](url)`로 정규화합니다.
+    3) `[행정해석:...]` 태그는 긴 외부 URL 노출 없이 깔끔한 굵은 배지 텍스트로 변환합니다.
+    """
+    if not md_text:
+        return ""
+    s = str(md_text)
+    # 1) Remove backticks around already-linked tags and raw citation tags
+    s = re.sub(
+        r"`+(\[\[?(?:조문|부칙|별표|서식|예규|판례|심판|헌재|행정해석)[^\]`]+\]\]?\(https?://[^)\s`]+\))`+",
+        r"\1",
+        s,
+    )
+    s = re.sub(
+        r"`+(\[(?:조문|부칙|별표|서식|예규|판례|심판|헌재|행정해석)[^\]`]+\])`+",
+        r"\1",
+        s,
+    )
+    # 2) Convert [행정해석:...] to clean bold badge text
+    s = re.sub(
+        r"\[행정해석\s*:\s*([^\]]+)\]",
+        lambda m: f"**[행정해석: {m.group(1).strip()}]**",
+        s,
+    )
+    return s
+
+
+def _dedup_law_markdown_links(md_text: str) -> str:
+    if not md_text:
+        return ""
+    s = str(md_text)
+    # Fix nested [[[조문:...]](url1)](url2) -> [[조문:...]](url1)
+    s = re.sub(
+        r"\[(\[\[(?:조문|부칙|별표|서식|예규|판례|심판|헌재)[^\]]+\]\])\((https?://[^)\s]+)\)\]\(https?://[^)\s]+\)",
+        r"\1(\2)",
+        s,
+    )
+    # Fix [[조문:...]](url1)(url2) -> [[조문:...]](url1)
+    s = re.sub(
+        r"(\[\[(?:조문|부칙|별표|서식|예규|판례|심판|헌재)[^\]]+\]\]\(https?://[^)\s]+\))\(https?://[^)\s]+\)",
+        r"\1",
+        s,
+    )
+    # Also if raw URL is printed right next to a law name in parentheses or plain text, convert or clean
+    return s
+
+
+def _fallback_inject_law_links(md_text: str) -> str:
+    """agent 모듈을 불러올 수 없는 독립 실행 환경에서도 [조문:...], [부칙:...] 태그에 국가법령정보센터 직링크를 결합합니다."""
+    def _repl(m: re.Match) -> str:
+        kind = m.group(1).strip()
+        val = m.group(2).strip()
+        canonical = f"[{kind}: {val}]"
+        m_law = re.match(r"^([가-힣A-Za-z0-9\s]+?(?:법률?(?:\s*시행령|\s*시행규칙)?|시행령|시행규칙))(?:\s+(제\d+조(?:의\d+)?)|\s+부칙.*)?", val)
+        if not m_law:
+            return canonical
+        law_nm = re.sub(r"\s+", "", m_law.group(1).strip())
+        jo_part = (m_law.group(2) or "").strip()
+        if kind == "부칙" or "부칙" in val or not jo_part:
+            url = f"https://www.law.go.kr/법령/{law_nm}"
+        else:
+            url = f"https://www.law.go.kr/법령/{law_nm}/{jo_part}"
+        return f"[{canonical}]({url})"
+
+    return re.sub(
+        r"(?<!\[)\[(조문|부칙|별표)(?:\s*[:：]\s*|\s+)(?=[가-힣A-Za-z0-9「])([^\]]+)\](?!\]|\()",
+        _repl,
+        md_text,
+    )
+
+
 def inject_verified_law_links(md_text: str, trace: dict | None = None) -> str:
     """
     통합고용세액공제 보고서 및 심층 세무진단 의견 내 `[조문:...]`, `[부칙:...]`, `[별표:...]`, `[예규:...]` 태그에
     자율 에이전트AI(`agent._inject_direct_law_links`)와 동일한 국가법령정보센터(`https://www.law.go.kr/...`) 원문 직링크를 자동 결합합니다.
+    - 백틱(`) 제거 및 이중 링크 래핑 방지 처리 포함
     """
     if not md_text:
         return ""
+    cleaned = _sanitize_law_citation_tags(md_text)
     try:
         import agent
         if hasattr(agent, "_inject_direct_law_links"):
-            return agent._inject_direct_law_links(md_text, trace)
+            linked = agent._inject_direct_law_links(cleaned, trace)
+            return _dedup_law_markdown_links(linked)
     except Exception:
         pass
-    return md_text
+    return _dedup_law_markdown_links(_fallback_inject_law_links(cleaned))
 
 
 def call_pro_argon_audit_commentary(summary_context: str | dict, log_tokens_fn=None, room_key: str = "") -> str:
     """
     [Pro/Argon 심층 세무진단 의견 생성 — 3번 실속형 하이브리드 아키텍처]
-    1) **기본 법령 4종 파이썬 고속 사전조회(0토큰)**: `조세특례제한법`, `조세특례제한법 시행령`, `농어촌특별세법`, `국세기본법` 핵심 조문과 부칙을
-       파이썬이 먼저 1회 일괄 조회하여 프롬프트와 `_TOOL_TRACE`에 주입합니다.
-    2) **선택적 도구 호출 개방(최대 2회)**: `PAID_PRO_MODEL_IDS`(`gemini-4-argon` -> `gemini-3.1-pro-preview-customtools` -> `gemini-3.1-pro-preview` -> `gemini-2.5-pro`)
-       체인으로 `chats.create`를 가동하며, 기본 4개 법령 외에 특수 쟁점(예규·심판례·판례·구법) 확인이 추가로 필요할 때만
-       최대 2회(`maximum_remote_calls=2`) 법제처 API 도구를 자율 호출하도록 허용합니다.
-    3) **자율 에이전트AI 동일 사후검증 파이프라인**:
-       - `agent._scan_violations` & `agent._redact_lines` (미조회 사건번호·조문 즉시 차단)
-       - `agent._extract_claims` & `agent._semantic_verify` & `agent._apply_semantic_results` (Flash 감수 모델로 수치·법리 정합성 2중 검증)
-       - `agent._inject_direct_law_links` (국가법령정보센터 원문 직링크 자동 결합)
+    1) **기본 법령 4종 파이썬 고속 사전조회(0토큰)** + **국세청 '26.3월 행정해석·공문 마스터 데이터 주입**:
+       `조세특례제한법`, `조세특례제한법 시행령`, `농어촌특별세법`, `국세기본법` 핵심 조문과 부칙 및
+       국세청 법인세과 「'26년 3월 법인세 통합고용세액공제 상시근로자 수 계산 안내(A/B 이원화)」를 프롬프트와 `_TOOL_TRACE`에 주입합니다.
+    2) **선택적 도구 호출 개방(최대 2회)**: `PAID_PRO_MODEL_IDS` 체인으로 `chats.create`를 가동합니다.
+    3) **자율 에이전트AI 동일 사후검증 파이프라인** 및 **법령 링크 백틱·중복 래핑 클리너** 적용.
     """
     ctx_dict = summary_context if isinstance(summary_context, dict) else {}
     if not isinstance(summary_context, str):
@@ -493,35 +586,37 @@ def call_pro_argon_audit_commentary(summary_context: str | dict, log_tokens_fn=N
         summary_context_str = summary_context
 
     live_law_text, trace = _fetch_live_employment_law_context()
+    mutatis_verified = is_26_8_6_mutatis_verified(trace)
+    admin_ruling_text = R.format_admin_rulings_for_prompt() if hasattr(R, "format_admin_rulings_for_prompt") else ""
+    calc_law_cite_str = (
+        "[조문:조세특례제한법 시행령 제26조의8 제6항]([조문:조세특례제한법 시행령 제11조의2 제8항] 준용) 및 국세청 '26.3월 안내(A/B 적용 구분)"
+        if mutatis_verified
+        else "[조문:조세특례제한법 시행령 제26조의8 제6항] 및 국세청 '26.3월 안내(A/B 적용 구분)"
+    )
 
     keys = _get_gemini_api_keys()
     models = _get_gemini_models(prefer_pro=True)
     prompt = (
         "당신은 대한민국 조세특례제한법 제29조의8(통합고용세액공제) 및 사후관리 전문 세무사·감사관입니다.\n"
         "아래는 파이썬 정밀 계산 엔진이 산출한 해당 사업장의 연도별 상시근로자 명세·사원별 변동 원인 분석 데이터와, "
-        "법제처 국가법령정보센터 Open API에서 실시간으로 사전 조회한 현행 법령·시행령·부칙 원문입니다.\n"
-        "(※ 기본 법령 4종은 이미 아래에 제공되어 있으므로 중복 조회하지 마시고, 특수 쟁점에 대해 추가 법령해석례·조세심판례·판례나 타 법령 조문 확인이 꼭 필요한 경우에만 제공된 법제처 검색 도구를 최대 2회 이내로 호출하세요.)\n\n"
+        "법제처 국가법령정보센터 Open API에서 실시간으로 사전 조회한 현행 법령·시행령·부칙 원문 및 국세청 '26.3월 행정해석 안내문입니다.\n"
+        "(※ 기본 법령 4종 및 행정해석은 이미 아래에 제공되어 있으므로 중복 조회하지 마시고, 특수 쟁점에 대해 추가 법령해석례·조세심판례·판례나 타 법령 조문 확인이 꼭 필요한 경우에만 제공된 법제처 검색 도구를 최대 2회 이내로 호출하세요.)\n\n"
         "[절대 준수 법령 정합성 및 할루시네이션 금지 규칙]\n"
-        "1. **현행 조문 및 구법 경과조치 항 번호 · 정본(Canonical) 산식 엄격 준수**:\n"
-        "   - `[조문:조세특례제한법 제29조의8 제1항]`: 기본공제 (2026년 이후 신법은 직전 3개 과세연도[2024.12.31. 이전 개시 과세연도 제외] 중 1개 이상 대비 증가 시 A[1년차]+B[2년차]+C[3년차] 구조이며, 2026년 귀속은 비교 대상이 2025년[A]뿐이므로 A만 적용됨. 또한 **청년등 상시근로자 증가인원이 전체 상시근로자 증가인원을 한도(Cap)로 한다는 규정은 반드시 법률 본문인 `[조문:조세특례제한법 제29조의8 제1항]` 제1호 괄호 규정**으로 인용할 것! 시행령 제26조의8 제4항을 한도 근거로 쓰지 말 것).\n"
-        "   - **청년등 외 상시근로자 수 정본(Canonical) 산식 근거**: `[조문:조세특례제한법 시행령 제26조의8 제6항]`이 준용하는 `[조문:조세특례제한법 시행령 제11조의2 제8항]` 제1호는 **가목(전체 상시근로자 수)**과 **나목(청년등 상시근로자 수)**에 대해서만 개별 합산 후 소수점 셋째 자리 버림(100분의 1 미만 절사) 산식을 규정하며, 청년등 외 상시근로자 수의 별도 개별 절사 산식을 두지 않음. 이에 따라 `[조문:조세특례제한법 제29조의8 제1항]` 제2호('청년등상시근로자 외의 상시근로자') 및 조세특례제한법 시행규칙 별지 제10호의10서식(상시근로자 명세서) 작성방법('⑨ 청년등 외 상시근로자 수 = ⑦ 상시근로자 수 − ⑧ 청년등 상시근로자 수') 및 홈택스 전자신고 검증 표준에 의거하여 각 과세연도의 청년등 외 상시근로자 수는 **『① 전체 상시근로자 수(절사 후) − ② 청년등 상시근로자 수(절사 후) = ③ 청년등 외 상시근로자 수』**로 산정하고, `[조문:조세특례제한법 제29조의8 제1항]` 제2호의 청년등 외 증가인원을 **『당해 청년등 외 − 직전 청년등 외 = 청년등 외 증가인원』**으로 산출함으로써 『전체 증가인원 = 청년등 증가인원 + 청년등 외 증가인원』 항등식을 0.01명 단수 불일치 없이 완벽히 일치시킴.\n"
-        "   - `[조문:조세특례제한법 제29조의8 제2항]`: 경력단절 근로자의 요건 정의(별도 추가공제가 아니라 제1항 제1호의 청년등 상시근로자에 포함되는 우대 대상 정의 조항임).\n"
-        "   - **2024·2025년 귀속분의 연속공제와 사후관리 추가납부 근거 및 부칙 태그 구분**: 2025.12.23. 법률 제21223호 개정으로 구 제3항(추징)이 삭제되었으나 **`[부칙:조세특례제한법 부칙 제34조]`(법률 제21223호 통합고용세액공제에 관한 경과조치)** 및 **`[부칙:조세특례제한법 시행령 부칙 제2조]`(대통령령 제35999호) · `[부칙:조세특례제한법 시행령 부칙 제11조]`(대통령령 제36127호)**에 따라 2024·2025년 증가분은 종전 규정을 적용함. 이때 **2·3차년도 연속공제의 근거는 `구 조세특례제한법(법률 제21223호 개정 전) 제29조의8 제1항 및 [부칙:조세특례제한법 부칙 제34조]`**로, **고용 감소 시 추가납부(추징)의 근거는 `구 조세특례제한법 제29조의8 제2항·제3항(구 시행령 제26조의8 제4항) 및 [부칙:조세특례제한법 부칙 제34조]`**로 명확히 구분하여 서술할 것(2026년 신법 공제분은 추징 규정이 없으므로 추징 리스크는 2024·2025년 귀속분에 한정).\n"
-        "   - `[조문:조세특례제한법 제29조의8 제4항]`(정규직 전환 추가공제 — 2024.12.31. 이전 전환분까지만 적용되므로 2026년에는 해당 없음) 및 `[조문:조세특례제한법 제29조의8 제5항]`(육아휴직 복귀자 추가공제).\n"
-        "   - `[조문:조세특례제한법 시행령 제26조의8 제2항]`: 상시근로자 정의('내국인 근로자'란 `[조문:조세특례제한법 제2조]` 제1항 제1호 및 `[조문:소득세법 제1조의2]` 제1항 제1호, 시행규칙 별지 제10호의10서식 작성방법, 국세청 사전-2020-법령해석소득-0239에 따라 국적과 무관하게 소득세법상 거주자인 외국인 근로자를 포함하며 비거주자만 제외함) 및 각 호 제외대상(제1호 근로기간 1년 미만인 근로자[2024·2025년분은 `[부칙:조세특례제한법 시행령 부칙 제2조]`에 따라 종전 규정 적용], 제2호 월평균 60시간 미만 단시간근로자, 제3호 법인세법 시행령 제40조 제1항 임원, 제4호·제5호 최대주주·배우자·직계존비속·친족, 제6호 원천징수·4대보험 미확인자 — 임원·최대주주 제외는 현행 제26조의8 제2항 제3호~제5호에 직접 규정되어 있음).\n"
-        "   - `[조문:조세특례제한법 시행령 제26조의8 제3항]`(최소고용증가인원수), `[조문:조세특례제한법 시행령 제26조의8 제4항]`(청년등 상시근로자의 범위: 제1호 만 15~34세 및 병역 최대 6년 차감, 계약체결일부터 4년[대기업 3년] 청년 간주), `[조문:조세특례제한법 시행령 제26조의8 제6항]` 및 `[조문:조세특례제한법 시행령 제11조의2 제8항]` 준용(매월 말 현재 상시근로자 수의 합을 개월 수로 나눈 뒤 100분의 1 미만 버림 — 합산 후 절사), `[조문:조세특례제한법 시행령 제26조의8 제7항]`(출산전후휴가 대체인력 특례), `[조문:조세특례제한법 시행령 제26조의8 제8항]` 및 `[조문:조세특례제한법 시행령 제23조 제13항]` 준용(창업·합병·분할·사업 포괄양수 등 고용승계 특례).\n"
+        "1. **현행 조문 및 구법 경과조치 항 번호 · 상시근로자 수 A/B 이원화 산식 엄격 준수**:\n"
+        "   - [조문:조세특례제한법 제29조의8 제1항]: 기본공제 (2026년 이후 신법은 직전 3개 과세연도[2024.12.31. 이전 개시 과세연도 제외] 중 1개 이상 대비 증가 시 A[1년차]+B[2년차]+C[3년차] 구조이며, 2026년 귀속은 비교 대상이 2025년[A]뿐이므로 A만 적용됨. 또한 청년등 상시근로자 증가인원이 전체 상시근로자 증가인원을 한도(Cap)로 한다는 규정은 반드시 법률 본문인 [조문:조세특례제한법 제29조의8 제1항] 제1호 괄호 규정으로 인용할 것).\n"
+        f"   - **상시근로자 수 계산방식(A/B) 이원화 및 신뢰보호 구분**: {calc_law_cite_str}, [부칙:조세특례제한법 시행령 부칙 제11조](2026.2.27.)에 따라 2025년 이후 최초 공제 코호트(당해 1차 공제, 신법 A·B·C, 상시근로자 현황 직전전·직전·해당, 추가공제 요건 포함)는 **B방식(사원별 근무개월수 ÷ 과세연도 개월수 → 사원별 100분의 1 미만 절사 후 합계)**을 적용하고, 2024년 이하 최초 공제 코호트의 2·3차년도 연속공제·사후관리 요건은 신뢰보호 원칙에 따라 **A방식(매월 말 상시근로자 수 합계 ÷ 과세연도 개월수 → 100분의 1 미만 절사)**을 적용함(2026년 이후 평가연도에서 2024년 이하 코호트에 A방식을 적용하는 경우 '# 확인 필요: \'26.3월 국세청 안내 신뢰보호 원칙 연장 적용'을 명시할 것).\n"
+        "   - **청년등 외 상시근로자 수 정본(Canonical) 산식**: 조세특례제한법 시행규칙 별지 제10호의10서식(⑩ = ② − ⑨)에 따라 각 과세연도의 청년등 외 상시근로자 수는 **『전체 상시근로자 수(②) − 청년등 상시근로자 수(⑨) = 청년등 외 상시근로자 수(⑩)』**로 산정함(원문 미확인 인용인 '별지 제10호의9서식(1) 작성방법 제4호'나 '별지 제10호의10서식 작성방법 제25호'는 절대 인용하지 말 것).\n"
+        "   - **청년 유예기간 근거**: 2026.1.1. 이후 근로계약 체결자는 [조문:조세특례제한법 시행령 제26조의8 제4항] 제1호 후단(중소·중견 4년, 일반 3년), 2025.1.1.~2025.12.31. 근로계약 체결자는 [부칙:조세특례제한법 시행령 부칙 제11조](2026.2.27.) 제2항(중소·중견 3년, 일반 2년)을 근거로 인용하고, 2024년 이전 최초 공제 코호트에 계약일 기준 청년 간주 규정을 적용하지 않는 것은 [부칙:조세특례제한법 시행령 부칙 제11조](2026.2.27.) 제1항을 근거로 인용할 것.\n"
+        "   - **2024·2025년 귀속분의 연속공제와 사후관리 추가납부 근거**: [부칙:조세특례제한법 부칙 제34조](법률 제21223호) 및 [부칙:조세특례제한법 시행령 부칙 제2조](대통령령 제35999호) · [부칙:조세특례제한법 시행령 부칙 제11조](대통령령 제36127호)에 따라 2024·2025년 증가분은 종전 규정을 적용함.\n"
         "2. **사후관리 청년 인원과 당해 공제 청년 인원 차이 원인 및 병역 차감 대상 구분**:\n"
-        "   - 당해 과세연도 중도퇴사(총 근속 1년 미만)로 인해 구법 사후관리(계약기간 1년 이상 포함, 시행령 부칙 경과조치)에는 산입되고 신법 당해공제(실제 근로기간 1년 미만 제외, 시행령 제26조의8 제2항 제1호)에서 제외되어 발생한 인원 차이를 절대 '청년 연령경과 간주 규정' 때문이라고 잘못 설명하지 말 것! 또한 단시간근로자(0.5명, 청년 제외)에서 정규직(1.0명, 청년 편입)으로 고용형태가 변경된 사원도 고용형태 전환 사례로만 설명할 것.\n"
-        "   - **병역이행기간 차감 후보자 구분**: 당해 입사하여 재직 중인 만 35~40세 근로자는 병역 확인 시 **당해 1차 공제액(및 향후 2·3년차 유지분)**이 증가하는 대상인 반면, 직전연도 중 퇴사자나 당해 중 1년 미만 퇴사자는 당해 공제 인원에서 이미 제외(0명)되었으므로 **당해 1차 신규공제에는 영향이 없고, 직전연도 최초공제 시 일반에서 청년등 증가인원으로 재분류됨에 따라 직전연도분 및 그 구성을 그대로 승계하는 당해 2차년도 연속공제 단가가 상승하는 효과**만 있음을 명확히 구분하여 서술할 것!\n"
-        "3. **당해 공제용 직전연도 비교 인원의 일관된 해석 기준 및 다년도 자동 재산정 근거 명시**:\n"
-        "   - 신법의 증가인원은 『당해 인원 − 직전(비교) 인원』이므로 같은 공제 계산 안에서는 두 연도를 동일한 기준(`[조문:조세특례제한법 시행령 제26조의8 제2항]` 제1호 개정 규정: 실제 근로기간 1년 미만 퇴사 확정자 제외)으로 산정하는 것이 일관된 해석임. 따라서 직전연도 중 입사해 당해 과세연도 중 퇴사하여 실제 총 근속기간이 1년 미만이 된 근로자도 당해 인원과 직전연도 비교 인원에서 모두 제외하고(2027년 B·2028년 C 계산 시에도 매년 확정된 퇴사 사실을 반영해 비교연도 인원을 자동 재산정), 종전 규정(`[부칙:조세특례제한법 부칙 제34조]`·`[부칙:조세특례제한법 시행령 부칙 제2조]`)이 적용되는 직전연도분 2차 사후관리 인원에만 포함하였음을 명확히 서술할 것(기신고 대비 세법상 재계산 경정청구·수정신고 비교는 별도 전용 창에서 안내하므로 본문에서는 생략할 것).\n"
-        "4. **최저한세(`[조문:조세특례제한법 제132조]`) 및 미공제 이월공제(`[조문:조세특례제한법 제144조]`) 검토 필수**:\n"
-        "   - 통합고용세액공제는 `[조문:조세특례제한법 제132조]` 최저한세(중소기업 과세표준의 7%, 중견기업 8~9%[초기 유예구간]·10~17%, 일반기업 10~17%) 적용 대상이므로, 산출세액에서 최저한세 한도를 초과하여 당기 공제받지 못하는 세액은 `[조문:조세특례제한법 제144조]`에 따라 10년간 이월공제되며 당기 미공제 이월세액에는 당기 농어촌특별세(20%)가 부과되지 않음을 안내할 것.\n"
-        "5. **미검증 법령번호·예규 인용 절대 금지**: 확인되지 않은 예규나 잘못된 법률 번호(예: 21065호 등)는 절대 쓰지 말고, 법령 인용 시 `[조문:조세특례제한법 제29조의8 제1항]` 형식으로 표기하여 국가법령정보센터 직링크가 자동 연결되게 할 것.\n\n"
+        "   - 당해 과세연도 중도퇴사(총 근속 1년 미만)로 인해 구법 사후관리에는 산입되고 신법 당해공제에서 제외되어 발생한 인원 차이를 청년 연령경과 간주 규정 때문이라고 잘못 설명하지 말 것.\n"
+        "3. **최저한세([조문:조세특례제한법 제132조]) 및 미공제 이월공제([조문:조세특례제한법 제144조]) 검토 필수**.\n"
+        "4. **법령 태그 표기 규칙(가독성 보장)**: 법령 인용 시 절대 백틱(`)으로 감싸지 말고 반드시 평문으로 `[조문:조세특례제한법 제29조의8 제1항]`, `[부칙:조세특례제한법 시행령 부칙 제11조]`처럼 표기하며, 태그 뒤에 괄호로 긴 웹주소(URL)를 직접 나열하지 마세요(시스템이 자동으로 클릭 가능한 배지 링크로 변환합니다).\n\n"
         "절대 이모지나 아이콘을 쓰지 말고, 아래 소제목 형식(`#### (1) ...`)으로 각 3개 불릿씩 핵심만 명확하게 작성하세요:\n"
         "#### (1) 추가 절세 가능성 발굴 및 세액공제 산정 정합성 검토\n"
         "#### (2) 1·2차 사후관리(추징) 리스크 방어 및 최저한세·이월공제 검토\n"
         "#### (3) 세무신고 전 최종 구비서류 및 소명 체크포인트\n\n"
+        f"{admin_ruling_text}\n\n"
         f"[법제처 Open API 실시간 조회 법령 원문 발췌]\n{live_law_text[:10000]}\n\n"
         f"[사업장 및 사원 판정·차이원인 정밀 분석 데이터]\n{summary_context_str[:25000]}"
     )
@@ -681,14 +776,15 @@ def call_pro_argon_audit_commentary(summary_context: str | dict, log_tokens_fn=N
         b1_mil = "**병역이행기간 차감(최대 6년) 및 우대공제 요건 점검**: 근로계약 체결일 현재 만 35~40세 일반근로자 중 병역이행기간(최대 72개월) 차감 시 만 34세 이하로 청년등 상시근로자에 편입 가능한 대상자가 있는지 확인하시고([조문:조세특례제한법 시행령 제26조의8 제4항] 제1호), 60세 이상·장애인·경력단절근로자([조문:조세특례제한법 제29조의8 제2항])·북한이탈주민 특례 누락 여부를 점검하십시오."
 
     cons_clause = (
-        f" 아울러 직전연도({tax_yr-1}년) 중 입사해 {tax_yr}년 중 퇴사하여 실제 총 근로기간이 1년 미만이 된 근로자({', '.join(cons_kept_names)})는 당해 공제 인원과 직전 비교 인원에 동일한 잣대([조문:조세특례제한법 시행령 제26조의8 제2항] 제1호: 실제 근로기간 1년 미만 제외)를 적용하는 일관된 해석 기준에 따라 {tax_yr}년 당해 인원과 {tax_yr-1}년 비교 인원에서 모두 제외하였으며, 향후 2027년(B)·2028년(C) 다년도 공제 계산 시에도 매년 확정된 퇴사 사실을 반영해 비교연도 인원을 자동 재산정합니다."
+        f" 아울러 직전연도({tax_yr-1}년) 중 입사해 과세연도 종료일({tax_yr-1}.12.31.) 현재 재직 중이었다가 {tax_yr}년 중 퇴사하여 총 근로기간이 1년 미만이 된 근로자({', '.join(cons_kept_names)})를 {tax_yr-1}년 비교 인원에 남겨둔 것은 과세연도 종료일 현재 계속 근로 중이었던 사실을 기준으로 보수적·안정적으로 산정(과다공제 리스크 방지)하고 실제 퇴사 사유가 확정된 {tax_yr}년 당해 인원에서 제외한 것입니다."
         if cons_kept_names
         else ""
     )
 
+    _ext_trust_note_p = "# 확인 필요: '26.3월 국세청 안내 신뢰보호 원칙 연장 적용 — " if tax_yr >= 2026 else ""
     b1 = [
         b1_mil,
-        f"**{tax_yr}년 신법 공제 구조(A) · 청년등 외 상시근로자 정본 산식 및 비교 인원 산정 기준**: [조문:조세특례제한법 제29조의8 제1항]에 따라 2026년 이후 개시 과세연도는 직전 3개 과세연도(2024.12.31. 이전 개시 과세연도 제외) 대비 증가분에 대해 A(1년차)+B(2년차)+C(3년차) 산식을 적용하며, 2026년 귀속은 비교 대상이 2025년뿐이므로 A(1년차)만 적용됩니다. 또한 [조문:조세특례제한법 시행령 제26조의8 제6항] 및 [조문:조세특례제한법 시행령 제11조의2 제8항] 제1호는 가목(전체 상시근로자 수)과 나목(청년등 상시근로자 수)에 대해서만 개별 절사 산식을 두고 청년등 외 상시근로자의 별도 절사 산식을 규정하지 않으므로, [조문:조세특례제한법 제29조의8 제1항] 제2호 및 조세특례제한법 시행규칙 별지 제10호의10서식(상시근로자 명세서) 작성방법에 따라 각 연도의 절사 후 전체 상시근로자 수에서 절사 후 청년등 상시근로자 수를 차감하여 청년등 외 인원({tax_yr}년 당해 {cur_reg_v:.2f} − {cur_yth_v:.2f} = {cur_gen_v:.2f}명)을 산출함으로써 『전체 증가인원 = 청년등 증가인원 + 청년등 외 증가인원』 항등식을 0.01명 오차 없이 유지하였습니다.{cons_clause}",
+        f"**{tax_yr}년 공제 구조 · 상시근로자 수 계산방식(A/B) 이원화 및 청년등 외 정본 산식**: [조문:조세특례제한법 제29조의8 제1항] 및 {calc_law_cite_str}, [부칙:조세특례제한법 시행령 부칙 제11조](2026.2.27.)에 따라 2025년 이후 최초 공제 코호트(당해 1차 공제 및 신법 A·B·C, 상시근로자 현황, 추가공제 요건)는 **B방식(사원별 근무개월수 ÷ 과세연도 개월수 → 사원별 100분의 1 미만 절사 후 합계)**으로, 2024년 이하 최초 공제 코호트의 2·3차년도 연속공제·사후관리 요건은 신뢰보호 원칙에 따라 **A방식(매월 말 상시근로자 수 합계 ÷ 과세연도 개월수 → 100분의 1 미만 절사)**으로 산정하였습니다({_ext_trust_note_p}조세특례제한법 시행규칙 별지 제10호의10서식 ⑩ = ② − ⑨에 따라 {tax_yr}년 당해 청년등 외 인원 {cur_reg_v:.2f} − {cur_yth_v:.2f} = {cur_gen_v:.2f}명 산출).{cons_clause}",
     ]
     if emp_converted_names:
         b1.append(
@@ -696,7 +792,7 @@ def call_pro_argon_audit_commentary(summary_context: str | dict, log_tokens_fn=N
         )
 
     b2 = [
-        f"**과거 귀속분({tax_yr-2}·{tax_yr-1}년) 연속공제 및 사후관리 추징 리스크 진단**: {tax_yr}년 신법([조문:조세특례제한법 제29조의8 제1항])에 따른 당해 공제분은 사후관리 추징 규정이 폐지되었으므로, 사후관리 추징 리스크는 [부칙:조세특례제한법 부칙 제34조](법률 제21223호) 및 [부칙:조세특례제한법 시행령 부칙 제2조](대통령령 제35999호) · [부칙:조세특례제한법 시행령 부칙 제11조](대통령령 제36127호) 경과조치에 따라 종전 규정(연속공제는 구 조세특례제한법 제29조의8 제1항, 감소 시 추가납부는 구 제29조의8 제3항)이 적용되는 2024·2025년 귀속분에 한정됩니다.",
+        f"**과거 귀속분({tax_yr-2}·{tax_yr-1}년) 연속공제 및 사후관리 추징 리스크 진단**: {tax_yr}년 신법([조문:조세특례제한법 제29조의8 제1항])에 따른 당해 공제분은 사후관리 추징 규정이 폐지되었으므로, 사후관리 추징 리스크는 [부칙:조세특례제한법 부칙 제34조](법률 제21223호) 및 [부칙:조세특례제한법 시행령 부칙 제2조](대통령령 제35999호) · [부칙:조세특례제한법 시행령 부칙 제11조](대통령령 제36127호) 경과조치에 따라 종전 규정(연속공제는 구 조세특례제한법 제29조의8 제1항, 감소 시 추가납부는 구 제29조의8 제3항)이 적용되는 2024·2025년 귀속분에 한정됩니다(청년 유예기간은 2025년 계약자 중소·중견 3년·일반 2년 [부칙:조세특례제한법 시행령 부칙 제11조] 제2항, 2024년 이전 코호트 미적용 [부칙:조세특례제한법 시행령 부칙 제11조] 제1항 적용).",
     ]
     if under1y_diff_names:
         b2.append(
@@ -711,7 +807,7 @@ def call_pro_argon_audit_commentary(summary_context: str | dict, log_tokens_fn=N
     )
 
     b3 = [
-        "**외국인 근로자의 내국인(소득세법상 거주자) 요건 및 증빙 확인**: [조문:조세특례제한법 시행령 제26조의8 제2항] 본문의 '내국인 근로자'란 [조문:조세특례제한법 제2조] 제1항 제1호 및 시행규칙 별지 제10호의10서식 작성방법, 국세청 사전-2020-법령해석소득-0239에 따라 국적과 무관하게 국내에 주소를 두거나 183일 이상 거소를 둔 '소득세법상 거주자'인 외국인 근로자를 포함하며 비거주자만 제외합니다. 따라서 외국인 근로자의 국내 거소 기간(183일 이상 여부), 외국인등록증 및 근로계약서를 구비하여 거주자 요건 충족 여부를 최종 확인하시기 바랍니다.",
+        "**외국인 근로자의 내국인(소득세법상 거주자) 요건 및 증빙 확인**: [조문:조세특례제한법 시행령 제26조의8 제2항] 본문의 '내국인 근로자'란 [조문:조세특례제한법 제2조] 제1항 제1호 및 시행규칙 별지 제10호의10서식, 국세청 사전-2020-법령해석소득-0239에 따라 국적과 무관하게 국내에 주소를 두거나 183일 이상 거소를 둔 '소득세법상 거주자'인 외국인 근로자를 포함하며 비거주자만 제외합니다. 따라서 외국인 근로자의 국내 거소 기간(183일 이상 여부), 외국인등록증 및 근로계약서를 구비하여 거주자 요건 충족 여부를 최종 확인하시기 바랍니다.",
         "**중도퇴사자 근로계약 형태 확인 및 병역증명서·제외대상자 대사**: 2025년 귀속에 종전 규정(부칙 경과조치)에 따라 기간의 정함이 없는 근로계약자로 보아 산입한 중도퇴사자는 실제 근로계약서상 계약기간이 1년 이상(정규직)이었는지 반드시 확인해야 하며, 병역차감 후보자의 병적증명서(또는 주민등록초본 병역사항)와 등기임원·최대주주·친족([조문:조세특례제한법 시행령 제26조의8 제2항] 제3호~제5호) 제외 여부를 최종 대사하시기 바랍니다.",
     ]
     b4 = [_strip_report_icons(x) for x in (ctx_dict.get("기신고_대비_세법원칙_차이분석") or []) if str(x).strip()]
@@ -1250,30 +1346,140 @@ def _try_fast_parse_shareholder(text: str) -> list[dict]:
     return sh_list
 
 
-def _try_fast_parse_prev_filing(text: str) -> dict:
-    """기신고 상시근로자 명세서·공제감면세액계산서 자체 정규식/표 파서 (1순위)."""
+def _parse_emp_schedule_form_10_10(text: str, filing_year: int | None = None) -> list[dict]:
+    """
+    [6-5] 상시근로자 명세서(별지 제10호의10)의 사원별 상시근로자 여부(Y/N), 제외사유,
+    청년·장애인·고령자(60세 이상)·경력단절·북한이탈주민 표시를 파싱합니다.
+    """
+    if not text or ("상시근로자" not in text and "제10호의10" not in text):
+        return []
+    rows: list[dict] = []
+    for line in (text or "").splitlines():
+        ln = line.strip()
+        if not ln:
+            continue
+        m_emp = re.search(
+            r"([가-힣]{2,5})\s+(\d{6}(?:-?[1-8]\d{0,6})?|\d{4}[-.]\d{2}[-.]\d{2})\s+([^\n]+)",
+            ln,
+        )
+        if not m_emp:
+            continue
+        nm = m_emp.group(1).strip()
+        tail = m_emp.group(3).strip()
+        # 상시근로자 여부 (여/부, Y/N, O/X)
+        is_reg_yn = None
+        if re.search(r"(?:^|\s)(?:여|Y|O|포함|상시)(?:\s|$)", tail, re.IGNORECASE):
+            is_reg_yn = "Y"
+        elif re.search(r"(?:^|\s)(?:부|N|X|제외)(?:\s|$)", tail, re.IGNORECASE):
+            is_reg_yn = "N"
+        excl = R.EXCL_NONE
+        if "최대주주" in tail and ("배우자" in tail):
+            excl = "최대주주의 배우자"
+        elif "최대주주" in tail and any(k in tail for k in ("친족", "직계", "존비속", "자녀", "형제")):
+            excl = "최대주주의 직계존비속 등"
+        elif "최대주주" in tail:
+            excl = "최대주주"
+        elif "대표이사" in tail:
+            excl = "대표이사"
+        elif "임원" in tail:
+            excl = "임원"
+        elif "1년미만" in tail.replace(" ", "") or "1년 미만" in tail:
+            excl = R.EXCL_UNDER_1Y
+        elif "60시간미만" in tail.replace(" ", ""):
+            excl = "월평균 60시간 미만 단시간근로자"
+        youth_tp = R.YOUTH_NONE
+        if "장애" in tail:
+            youth_tp = R.YOUTH_DISABLED
+        elif "고령" in tail or "60세" in tail:
+            youth_tp = R.YOUTH_SENIOR
+        elif "경력단절" in tail:
+            youth_tp = R.YOUTH_CAREER
+        elif "북한이탈" in tail:
+            youth_tp = R.YOUTH_NK
+        elif "청년" in tail:
+            youth_tp = R.YOUTH_YOUNG
+        if is_reg_yn is not None or excl != R.EXCL_NONE or youth_tp != R.YOUTH_NONE:
+            rows.append({
+                "성명": nm,
+                "상시근로자여부": is_reg_yn or ("N" if excl != R.EXCL_NONE else "Y"),
+                "제외사유": excl,
+                "청년등구분": youth_tp,
+                "신고연도": filing_year,
+            })
+    return rows
+
+
+def _try_fast_parse_prev_filing(text: str, source_key: str = "") -> dict:
+    """
+    [6-1, 6-3] 기신고 공제세액계산서(별지 제10호의9) · 상시근로자 명세서(별지 제10호의10) 자체 정규식/표 파서.
+    - 해당 과세연도 상시근로자 수·청년등·청년등외 및 1차년도 세액공제액 계산의 증가인원을 그대로 파싱합니다.
+    - 서로 다른 연도 신고서에서 동일 과세연도의 인원이 다르게 기재된 경우를 감지하기 위해 출처별 기록(`_by_source`)도 함께 보관합니다.
+    """
     if not text:
         return {}
     by_year: dict[str, dict[str, Any]] = {}
+    by_source: list[dict[str, Any]] = []
+
+    # 신고서 귀속연도 추정
+    filing_yr = None
+    m_fy = re.search(r"202([3-8])", source_key or "")
+    if m_fy:
+        filing_yr = int("202" + m_fy.group(1))
+    else:
+        m_hy = re.search(r"(?:과세연도|사업연도|귀속)[^\d]{0,15}(202[3-8])", text[:1500])
+        if m_hy:
+            filing_yr = int(m_hy.group(1))
+
     for yr in (2023, 2024, 2025, 2026):
         y_str = str(yr)
         if y_str not in text and f"{yr % 100}년" not in text:
             continue
         entry: dict[str, Any] = {}
-        for m in re.finditer(rf"(?:{yr}년|{yr}귀속|{yr % 100}년)[^\n]{{0,200}}", text):
+        for m in re.finditer(rf"(?:{yr}년|{yr}귀속|{yr % 100}년)[^\n]{{0,240}}", text):
             seg = m.group(0)
-            m_reg = re.search(r"상시(?:근로자)?[^\d]{0,10}(\d+(?:\.\d+)?)", seg)
+            m_reg = re.search(r"상시(?:근로자)?(?:\s*수)?[^\d]{0,10}(\d+(?:\.\d+)?)", seg)
             if m_reg:
                 entry.setdefault("상시", float(m_reg.group(1)))
-            m_yth = re.search(r"청년등?[^\d]{0,10}(\d+(?:\.\d+)?)", seg)
+            m_yth = re.search(r"청년등?(?:\s*상시근로자)?(?:\s*수)?[^\d]{0,10}(\d+(?:\.\d+)?)", seg)
             if m_yth:
                 entry.setdefault("청년등", float(m_yth.group(1)))
+            m_gen = re.search(r"청년등\s*외[^\d]{0,10}(\d+(?:\.\d+)?)", seg)
+            if m_gen:
+                entry.setdefault("청년등외", float(m_gen.group(1)))
+            m_yi = re.search(r"청년등\s*증가[^\d]{0,10}(\d+(?:\.\d+)?)", seg)
+            if m_yi:
+                entry.setdefault("청년등_증가", float(m_yi.group(1)))
+            m_gi = re.search(r"청년등\s*외\s*증가[^\d]{0,10}(\d+(?:\.\d+)?)", seg)
+            if m_gi:
+                entry.setdefault("청년등외_증가", float(m_gi.group(1)))
             m_clm = re.search(r"공제세액[^\d]{0,10}([\d,]{5,})", seg)
             if m_clm:
                 entry.setdefault("공제세액", int(_num(m_clm.group(1))))
         if entry:
+            if "상시" in entry and "청년등" in entry and "청년등외" not in entry:
+                entry["청년등외"] = round(max(0.0, float(entry["상시"]) - float(entry["청년등"])), 2)
+            entry["_source_key"] = source_key or (f"credit_calc_{filing_yr}" if filing_yr else "prev_filing")
+            entry["_filing_year"] = filing_yr or yr
             by_year[y_str] = entry
-    return {"연도별": by_year} if by_year else {}
+            if "상시" in entry or "청년등" in entry:
+                by_source.append({
+                    "target_year": yr,
+                    "filing_year": filing_yr or yr,
+                    "source_label": f"{filing_yr or yr}년 신고서({source_key or '공제세액계산서'})",
+                    "상시": entry.get("상시"),
+                    "청년등": entry.get("청년등"),
+                    "청년등외": entry.get("청년등외"),
+                })
+
+    emp_sched = _parse_emp_schedule_form_10_10(text, filing_year=filing_yr)
+    res_out: dict[str, Any] = {}
+    if by_year:
+        res_out["연도별"] = by_year
+    if by_source:
+        res_out["_by_source"] = by_source
+    if emp_sched:
+        res_out["emp_schedule"] = emp_sched
+    return res_out
 
 
 def _normalize_wht_rows(raw_employees: list[dict]) -> list[dict]:
@@ -1378,10 +1584,14 @@ def extract_all(doc_texts: dict[str, str], log_tokens_fn=None, room_key: str = "
                 llm_tasks[key] = (PROMPT_SH, text, False)
         elif key in ("prev_filing", "prev_credit_calc") or key.startswith("credit_calc_"):
             out.setdefault("credit_stmt", {}).update(_parse_credit_adjust_stmt(text))
-            fast_pf = _try_fast_parse_prev_filing(text)
+            fast_pf = _try_fast_parse_prev_filing(text, source_key=key)
             if fast_pf.get("연도별"):
                 for y_s, y_v in fast_pf["연도별"].items():
                     out["prev_filing"]["연도별"].setdefault(y_s, {}).update(y_v)
+            if fast_pf.get("_by_source"):
+                out["prev_filing"].setdefault("_by_source", []).extend(fast_pf["_by_source"])
+            if fast_pf.get("emp_schedule"):
+                out.setdefault("emp_schedule", []).extend(fast_pf["emp_schedule"])
             # 복합 표 구조인 공제감면세액계산서·기신고 명세서는 Pro/Argon 모델을 우선 가동하여 정확도 극대화
             llm_tasks[key] = (PROMPT_PREV, text, True)
 
@@ -1431,42 +1641,135 @@ def extract_all(doc_texts: dict[str, str], log_tokens_fn=None, room_key: str = "
     return out
 
 
+def detect_cross_return_headcount_conflicts(ext_or_prev: dict | None) -> dict[str, list[dict]]:
+    """
+    [6-3] 같은 과세연도의 인원이 서로 다른 연도의 신고서에서 다르게 기재된 경우
+    (예: 당해 신고서의 해당 과세연도 값 != 다음 연도 신고서의 직전 과세연도 값)를 감지해 반환합니다.
+    반환: { "2024": [ {"filing_year": 2024, "source_label": "2024년 신고서", "상시": ..., "청년등": ..., "청년등외": ...}, ... ] }
+    """
+    if not isinstance(ext_or_prev, dict):
+        return {}
+    pf_root = (ext_or_prev.get("prev_filing") if "prev_filing" in ext_or_prev else ext_or_prev) or {}
+    by_source = list(pf_root.get("_by_source") or [])
+    grouped: dict[str, list[dict]] = {}
+    for item in by_source:
+        if not isinstance(item, dict):
+            continue
+        ty = str(item.get("target_year") or "").strip()
+        if not ty.isdigit():
+            continue
+        reg = _opt_num(item.get("상시"))
+        yth = _opt_num(item.get("청년등"))
+        if reg is None and yth is None:
+            continue
+        gen = _opt_num(item.get("청년등외"))
+        if gen is None and reg is not None and yth is not None:
+            gen = round(max(0.0, float(reg) - float(yth)), 2)
+        grouped.setdefault(ty, []).append({
+            "target_year": int(ty),
+            "filing_year": int(item.get("filing_year") or ty),
+            "source_label": str(item.get("source_label") or f"{item.get('filing_year') or ty}년 신고서"),
+            "상시": reg,
+            "청년등": yth,
+            "청년등외": gen,
+        })
+    conflicts: dict[str, list[dict]] = {}
+    for ty, items in grouped.items():
+        if len(items) < 2:
+            continue
+        # filing_year 오름차순 정렬 (최신 신고서가 마지막)
+        items_sorted = sorted(items, key=lambda x: (int(x.get("filing_year") or 0), str(x.get("source_label") or "")))
+        distinct_vals = {
+            (
+                round(float(x["상시"]), 2) if x.get("상시") is not None else None,
+                round(float(x["청년등"]), 2) if x.get("청년등") is not None else None,
+            )
+            for x in items_sorted
+        }
+        if len(distinct_vals) > 1:
+            conflicts[ty] = items_sorted
+    return conflicts
+
+
 def build_prev_summary(ext: dict, tax_year: int, corp_size: str = "중소기업", corp_size_by_year: dict[int | str, str] | None = None) -> dict[str, dict]:
     """
-    기신고 서식(상시근로자 명세서·공제감면세액계산서)에서 읽은 값을 코호트(최초공제연도)별로 정리합니다.
+    [6-1, 6-3, 6-4] 기신고 서식(별지 제10호의9 공제세액계산서 · 별지 제8호서식 부표3 세액공제조정명세서)에서
+    읽은 값을 코호트(최초공제연도)별로 정리합니다.
+    - 6-1: '기신고 기준'으로 표시되는 값에 사원표 재계산값이 섞이지 않도록 파싱된 신고서 값만 채웁니다.
+    - 6-3: 같은 과세연도 인원이 서로 다른 연도 신고서에서 다르게 기재된 경우 `_conflicts`에 기록하고 기본값은 최신 신고서를 사용합니다.
+    - 6-4: 과거 연도 1차 공제액의 '추정복원(연속공제 금액으로 거꾸로 채우는 로직)'을 폐지하고,
+           세액공제조정명세서(부표3)의 사업연도별 당기분·이월분 내역이 있으면 사용하고 없으면 None 및 `_needs_filing_check = True`로 둡니다.
     """
     ty = int(tax_year or R.DEFAULT_TAX_YEAR)
     keys = (
-        "상시_총인원", "청년등_총인원", "상시", "청년등",
+        "상시_총인원", "청년등_총인원", "상시", "청년등", "청년등외",
         "청년등_증가", "청년등외_증가", "공제세액", "2차_공제세액", "기추징세액", "이월세액", "수도권"
     )
-    out = {str(y): {k: None for k in keys} for y in (ty - 1, ty - 2)}
+    out = {str(y): {k: None for k in keys} for y in (ty - 1, ty - 2, ty - 3)}
 
     prev_map = ((ext or {}).get("prev_filing") or {}).get("연도별") or {}
     for y_str, vals in prev_map.items():
         if str(y_str) in out and isinstance(vals, dict):
             o = out[str(y_str)]
             for k in keys:
+                if k == "수도권" and isinstance(vals.get(k), bool):
+                    o[k] = vals.get(k)
+                    continue
                 v = _opt_num(vals.get(k))
                 if v is not None:
                     o[k] = v
+            if o.get("상시") is not None and o.get("청년등") is not None and o.get("청년등외") is None:
+                o["청년등외"] = round(max(0.0, float(o["상시"]) - float(o["청년등"])), 2)
             if o.get("기추징세액") is None and _opt_num(vals.get("1년차_추징액")) is not None:
                 o["기추징세액"] = _opt_num(vals.get("1년차_추징액"))
+            if vals.get("_auto_filled"):
+                o["_auto_filled"] = True
 
-    # ① 세액공제조정명세서 계산명세(18S): F년 신고의 1차 = F년분 공제세액, 2차 = F-1년분의 2차 공제세액
-    cs = {int(k): v for k, v in ((ext or {}).get("credit_stmt") or {}).items()}
+    # [6-3] 신고서 간 인원 불일치 감지 (기본값: 최신 신고서)
+    conflicts_map = detect_cross_return_headcount_conflicts(ext)
+    for y_str, conf_list in conflicts_map.items():
+        if y_str in out and conf_list:
+            out[y_str]["_conflicts"] = conf_list
+            chosen_idx = int(out[y_str].get("_conflict_selected_idx", len(conf_list) - 1))
+            chosen_idx = max(0, min(len(conf_list) - 1, chosen_idx))
+            chosen = conf_list[chosen_idx]
+            out[y_str]["_conflict_selected_idx"] = chosen_idx
+            out[y_str]["_conflict_selected_source"] = chosen.get("source_label")
+            if chosen.get("상시") is not None:
+                out[y_str]["상시"] = float(chosen["상시"])
+            if chosen.get("청년등") is not None:
+                out[y_str]["청년등"] = float(chosen["청년등"])
+            if out[y_str].get("상시") is not None and out[y_str].get("청년등") is not None:
+                out[y_str]["청년등외"] = round(max(0.0, float(out[y_str]["상시"]) - float(out[y_str]["청년등"])), 2)
+
+    # ① 세액공제조정명세서(별지 제8호서식 부표3) 계산명세(18S) 및 사업연도별 당기분·이월분 내역 반영
+    cs_raw = (ext or {}).get("credit_stmt") or {}
+    cs = {int(k): v for k, v in cs_raw.items() if str(k).isdigit()}
+    by_attr_yr = cs_raw.get("by_attributed_year") if isinstance(cs_raw, dict) else None
     for y_str, o in out.items():
         y = int(y_str)
         if cs:
-            if y in cs:
+            if y in cs and cs[y].get("1차") is not None:
                 o["공제세액"] = float(cs[y]["1차"])
-            # AI가 읽은 '2차 공제세액'은 귀속연도 대응이 자주 틀려, 다음 해 계산명세로 확인될 때만 사용
-            o["2차_공제세액"] = float(cs[y + 1]["2차"]) if (y + 1) in cs else None
-        elif o.get("2차_공제세액") is not None:
+                if cs[y].get("이월세액") is not None and o.get("이월세액") is None:
+                    o["이월세액"] = float(cs[y]["이월세액"])
+            o["2차_공제세액"] = float(cs[y + 1]["2차"]) if (y + 1) in cs and cs[y + 1].get("2차") is not None else o.get("2차_공제세액")
+        if isinstance(by_attr_yr, dict) and (y in by_attr_yr or str(y) in by_attr_yr):
+            attr_info = by_attr_yr.get(y) or by_attr_yr.get(str(y)) or {}
+            if o.get("공제세액") is None and _opt_num(attr_info.get("당기분")) is not None:
+                o["공제세액"] = float(attr_info["당기분"])
+            if o.get("이월세액") is None and _opt_num(attr_info.get("이월분")) is not None:
+                o["이월세액"] = float(attr_info["이월분"])
+        elif not cs and o.get("2차_공제세액") is not None:
             o["_2차_AI판독"] = True                # 18S 서식이 없어 AI 판독값 사용 → 화면에서 확인 경고
+
+        # [6-4] 과거 연도 1차 공제액이 끝내 확인되지 않으면 추정복원하지 않고 빈칸(None) + '신고서 확인 필요' 플래그 표시
+        if o.get("공제세액") is None:
+            o["_needs_filing_check"] = True
+
         # ② 이월세액이 공제세액 이상이면 소계·공제세액을 잘못 읽은 것 → 비움 (직접 입력)
         cf, cr = o.get("이월세액"), o.get("공제세액")
-        if cf is not None and (cr is None or cf >= cr):
+        if cf is not None and (cr is None or cf > cr):
             o["이월세액"] = None
         # 공제세액이 0원으로 확인된 해는 공제받은 증가인원도 0명
         if cr is not None and float(cr) == 0.0:
@@ -1480,7 +1783,7 @@ def build_prev_summary(ext: dict, tax_year: int, corp_size: str = "중소기업"
         if isinstance(vals, dict) and _opt_num(vals.get("상시")) is not None and _opt_num(vals.get("청년등")) is not None:
             prior_counts[str(y_str)] = {"상시": _opt_num(vals.get("상시")), "청년등": _opt_num(vals.get("청년등"))}
     fill_missing_increments(out, corp_size, prior_counts, corp_size_by_year=corp_size_by_year)
-    return out
+    return {str(y): out[str(y)] for y in (ty - 1, ty - 2)}
 
 
 def fill_missing_increments(
@@ -1933,6 +2236,79 @@ def build_people(
                 emp_t = exec_role_by_name.get(nm, R.EMP_REGULAR)
                 year_recs[y_int][pid] = new_year_rec(emp_t, confirmed_emp=(nm in exec_role_by_name))
 
+    # [6-5] 상시근로자 명세서(별지 제10호의10)의 사원별 상시근로자 여부(Y/N), 제외사유,
+    #       장애인·고령자·경력단절·북한이탈주민 표시를 2단계 사원표 초기값으로 사용하고,
+    #       원천징수부(등기부·주주명부 포함) 추출 분류와 다르면 주황 표시 및 비교 문구를 기록합니다.
+    raw_sched = (ext or {}).get("emp_schedule") or []
+    sched_by_name: dict[str, dict] = {}
+    if isinstance(raw_sched, list):
+        for sc in raw_sched:
+            if isinstance(sc, dict) and sc.get("성명"):
+                sched_by_name[str(sc["성명"]).strip()] = sc
+    elif isinstance(raw_sched, dict):
+        for k_nm, sc in raw_sched.items():
+            if isinstance(sc, dict):
+                sched_by_name[str(sc.get("성명") or k_nm).strip()] = sc
+
+    if sched_by_name:
+        for pid, p in people.items():
+            nm = str(p.get("성명") or "").strip()
+            sc = sched_by_name.get(nm)
+            if not sc:
+                continue
+            for y_int, recs_y in year_recs.items():
+                rec = recs_y.get(pid)
+                if not rec:
+                    continue
+                # 1) 원천징수부·등기부·주주명부 기반 자동 분류 요약
+                wht_emp = str(rec.get("고용유형") or R.EMP_REGULAR)
+                wht_excl = R.EMP_AUTO_EXCLUDE.get(wht_emp) or str(p.get("주주관계") or "") or str(rec.get("제외사유") or R.EXCL_NONE)
+                if p.get("외국인") and wht_excl == R.EXCL_NONE:
+                    wht_excl = R.EXCL_FOREIGN
+                wht_yth = str(rec.get("청년등구분") or R.YOUTH_NONE)
+                wht_is_reg = "N" if wht_excl != R.EXCL_NONE else "Y"
+
+                # 2) 신고서(별지 제10호의10) 분류 읽기
+                fil_is_reg = str(sc.get("상시근로자여부") or ("N" if (sc.get("제외사유") and sc.get("제외사유") != R.EXCL_NONE) else "Y")).upper()
+                fil_excl = str(sc.get("제외사유") or R.EXCL_NONE).strip() or R.EXCL_NONE
+                fil_yth = str(sc.get("청년등구분") or R.YOUTH_NONE).strip() or R.YOUTH_NONE
+                fil_emp = str(sc.get("고용유형") or "").strip()
+                if not fil_emp:
+                    if fil_excl == "대표이사":
+                        fil_emp = R.EMP_CEO
+                    elif fil_excl == "임원":
+                        fil_emp = R.EMP_EXEC
+                    elif "60시간 미만" in fil_excl:
+                        fil_emp = R.EMP_PT_UNDER
+                    else:
+                        fil_emp = wht_emp
+
+                # 2단계 사원표 초기값으로 신고서(별지 제10호의10) 값 적용
+                rec["고용유형"] = fil_emp
+                rec["제외사유"] = fil_excl if fil_is_reg == "N" and fil_excl != R.EXCL_NONE else (fil_excl if fil_excl != R.EXCL_NONE else R.EXCL_NONE)
+                if fil_yth != R.YOUTH_NONE:
+                    rec["청년등구분"] = fil_yth
+                rec["_from_form_10_10"] = True
+
+                def _fmt_cls(is_r: str, ex_r: str, yt_r: str, emp_r: str) -> str:
+                    parts = [f"상시({is_r})"]
+                    if ex_r and ex_r != R.EXCL_NONE:
+                        parts.append(f"제외:{ex_r}")
+                    elif emp_r and emp_r != R.EMP_REGULAR:
+                        parts.append(emp_r)
+                    if yt_r and yt_r != R.YOUTH_NONE:
+                        parts.append(yt_r)
+                    return "·".join(parts)
+
+                fil_lbl = _fmt_cls(fil_is_reg, fil_excl, fil_yth, fil_emp)
+                wht_lbl = _fmt_cls(wht_is_reg, wht_excl, wht_yth, wht_emp)
+                if (fil_is_reg != wht_is_reg) or (fil_excl != wht_excl) or (fil_yth != R.YOUTH_NONE and wht_yth != R.YOUTH_NONE and fil_yth != wht_yth) or (fil_yth in R.SPECIAL_YOUTH_TYPES and fil_yth != wht_yth):
+                    diff_msg = f"신고서 분류: {fil_lbl} / 원천징수부 분류: {wht_lbl}"
+                    rec["_class_diff"] = True
+                    rec["_class_diff_msg"] = diff_msg
+                    p["_class_diff"] = True
+                    p["_class_diff_msg"] = diff_msg
+
     return people, year_recs
 
 
@@ -2203,14 +2579,14 @@ def _nts_wht_people_count(text: str) -> int:
     return len(re.findall(r"⑤성명", _squash(text)))
 
 
-def _parse_credit_adjust_stmt(text: str) -> dict[int, dict]:
+def _parse_credit_adjust_stmt(text: str) -> dict[Any, dict]:
     """
-    세액공제조정명세서(3)의 통합고용세액공제(코드 18S) 계산명세 'A + B + C  합계' 판독.
-    신고 사업연도 F 기준: A = F년 귀속분(1차), B = F-1년 귀속분 2차, C = F-2년 귀속분 3차.
-    세 금액의 합이 합계와 맞을 때만 채택.
+    [6-4] 세액공제조정명세서(3)(법인세법 시행규칙 별지 제8호서식 부표3)의
+    1) 통합고용세액공제(코드 18S) 계산명세 'A + B + C  합계' 판독 (A=1차, B=2차, C=3차)
+    2) 사업연도별 당기분·이월분(미공제세액 이월액) 내역 판독 (`by_attributed_year`)
     """
     s = _squash(text)
-    out: dict[int, dict] = {}
+    out: dict[Any, dict] = {}
     for m in re.finditer(r"18S(" + _NUM + r")\+(" + _NUM + r")\+(" + _NUM + r")(" + _NUM + ")", s):
         vals = [int(m.group(i).replace(",", "")) for i in range(1, 5)]
         if vals[0] + vals[1] + vals[2] != vals[3]:
@@ -2220,4 +2596,22 @@ def _parse_credit_adjust_stmt(text: str) -> dict[int, dict]:
             continue
         f = int(yrs[-1])
         out[f] = {"1차": vals[0], "2차": vals[1], "3차": vals[2], "합계": vals[3]}
+
+    # 사업연도별 당기분·이월분 내역 (별지 제8호서식 부표3 하단 표)
+    by_attr: dict[int, dict[str, int]] = {}
+    for line in (text or "").splitlines():
+        ln = line.strip()
+        m_row = re.search(
+            r"(202[1-8])(?:\.\d{2}\.\d{2}|년|귀속)?[^\d\n]{0,25}([\d,]{5,})(?:\s+([\d,]+))?(?:\s+([\d,]+))?",
+            ln,
+        )
+        if m_row and any(k in ln for k in ("18S", "통합고용", "고용증대", "당기", "이월")):
+            yr_i = int(m_row.group(1))
+            v1 = int(m_row.group(2).replace(",", ""))
+            v_carry = int(m_row.group(4).replace(",", "")) if m_row.group(4) else (int(m_row.group(3).replace(",", "")) if m_row.group(3) and "이월" in ln else 0)
+            by_attr.setdefault(yr_i, {})["당기분"] = v1
+            if v_carry > 0:
+                by_attr[yr_i]["이월분"] = v_carry
+    if by_attr:
+        out["by_attributed_year"] = by_attr
     return out

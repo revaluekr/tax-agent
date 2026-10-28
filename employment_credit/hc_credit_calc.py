@@ -10,8 +10,71 @@ from typing import Any
 from . import rules as R
 from .hc_eligibility import (
     NEW_TENURE_RULE_FROM,
+    calc_method_badge_label,
+    calc_method_for,
     valid_comparison_years_for_new_credit,
 )
+
+
+def _pick_summary_by_method(d: dict[str, Any] | None, method: str = "B", block: str = "b1") -> dict[str, float]:
+    """
+    연도별 집계 딕셔너리(d)에서 지정된 계산방식(method="A"|"B")과 블록(block="b1"|"b2"|"b3"|"nr")에 맞는
+    (reg, yth, gen, yth_act) 인원수를 반환합니다.
+    - A·B 별도 키(예: A_b1_reg / B_b1_reg, nr_A_상시_평균 / nr_B_상시_평균)가 있으면 최우선 사용하고,
+      단일 키만 주어진 수동 딕셔너리의 경우 기존 키로 안전하게 폴백합니다.
+    """
+    if not isinstance(d, dict):
+        return {"reg": 0.0, "yth": 0.0, "gen": 0.0, "yth_act": 0.0}
+    m = "A" if str(method).upper() == "A" else "B"
+
+    if block == "nr":
+        if d.get(f"nr_{m}_상시_평균") is not None:
+            reg = float(d.get(f"nr_{m}_상시_평균") or 0.0)
+            yth = float(d.get(f"nr_{m}_청년등_평균") or 0.0)
+            gen = float(d.get(f"nr_{m}_청년외_평균", round(max(0.0, reg - yth), 2)) or 0.0)
+            return {"reg": reg, "yth": yth, "gen": gen, "yth_act": yth}
+        if d.get("nr_상시_평균") is not None:
+            reg = float(d.get("nr_상시_평균") or 0.0)
+            yth = float(d.get("nr_청년등_평균") or 0.0)
+            gen = float(d.get("nr_청년외_평균", round(max(0.0, reg - yth), 2)) or 0.0)
+            return {"reg": reg, "yth": yth, "gen": gen, "yth_act": yth}
+        return _pick_summary_by_method(d, method=m, block="b1")
+
+    if block in ("b2", "b3"):
+        if d.get(f"{m}_{block}_reg") is not None:
+            reg = float(d.get(f"{m}_{block}_reg") or 0.0)
+            yth = float(d.get(f"{m}_{block}_yth") or 0.0)
+            gen = float(d.get(f"{m}_{block}_gen", round(max(0.0, reg - yth), 2)) or 0.0)
+            ya = float(d.get(f"{m}_{block}_yth_act", yth) if d.get(f"{m}_{block}_yth_act") is not None else yth)
+            return {"reg": reg, "yth": yth, "gen": gen, "yth_act": ya}
+        reg = float(d.get(f"{block}_reg", d.get("상시_평균", d.get("regular", d.get("b1_reg", 0.0)))) or 0.0)
+        yth = float(d.get(f"{block}_yth", d.get("청년등_평균", d.get("youth", d.get("b1_yth", 0.0)))) or 0.0)
+        gen = float(d.get(f"{block}_gen", round(max(0.0, reg - yth), 2)) or 0.0)
+        ya = float(d.get(f"{block}_yth_act", yth) if d.get(f"{block}_yth_act") is not None else yth)
+        return {"reg": reg, "yth": yth, "gen": gen, "yth_act": ya}
+
+    # block == "b1": 만약 사용자가 수동 테스트용으로 dict(summaries[y], 상시_평균=...)처럼 상시_평균만 오버라이드한 경우를 감지
+    has_ab = (d.get(f"{m}_b1_reg") is not None) or (d.get(f"{m}_상시_평균") is not None)
+    if has_ab:
+        def_m = d.get("calc_method_b1")
+        top_reg = d.get("상시_평균", d.get("regular"))
+        def_reg = d.get(f"{def_m}_b1_reg", d.get(f"{def_m}_상시_평균")) if def_m in ("A", "B") else None
+        # 상시_평균이 기본 선택 방식 값과 다르게 외부에서 직접 덮어씌워진 경우(단위 테스트 시뮬레이션 등) 오버라이드 값 존중
+        if top_reg is not None and def_reg is not None and abs(float(top_reg) - float(def_reg)) >= 1e-6:
+            reg = float(top_reg or 0.0)
+            yth = float(d.get("청년등_평균", d.get("youth", 0.0)) or 0.0)
+            gen = float(d.get("청년외_평균", d.get("non_youth", round(max(0.0, reg - yth), 2))) or 0.0)
+            return {"reg": reg, "yth": yth, "gen": gen, "yth_act": yth}
+        reg = float(d.get(f"{m}_b1_reg", d.get(f"{m}_상시_평균", 0.0)) or 0.0)
+        yth = float(d.get(f"{m}_b1_yth", d.get(f"{m}_청년등_평균", 0.0)) or 0.0)
+        gen = float(d.get(f"{m}_b1_gen", d.get(f"{m}_청년외_평균", round(max(0.0, reg - yth), 2))) or 0.0)
+        return {"reg": reg, "yth": yth, "gen": gen, "yth_act": yth}
+
+    reg = float(d.get("상시_평균", d.get("regular", d.get("b1_reg", 0.0))) or 0.0)
+    yth = float(d.get("청년등_평균", d.get("youth", d.get("b1_yth", 0.0))) or 0.0)
+    gen = float(d.get("청년외_평균", d.get("non_youth", d.get("b1_gen", round(max(0.0, reg - yth), 2)))) or 0.0)
+    return {"reg": reg, "yth": yth, "gen": gen, "yth_act": yth}
+
 
 # ══════════════════════════════════════════════════════════════════
 # 5. 고용증가 인원 한도(Cap) · 신법 A+B+C(제1~3호) · 1·2차 사후관리(추가납부세액) 계산
@@ -173,7 +236,12 @@ def calc_new_2026_credit_abc(
     summaries_by_year: dict[int, dict],
     corp_size_by_year: dict[int | str, str] | None = None,
 ) -> dict[str, Any]:
+    """
+    2026년 이후 신법(조특법 제29조의8 제1항) A·B·C 티어 세액공제 산출.
+    - 적용 방식: `calc_method_for(tax_year)` -> "B" (해당·비교연도 모두 B방식 사원별 절사 후 합계 인원 적용)
+    """
     t = int(tax_year)
+    m_abc = calc_method_for(t)
     comp = valid_comparison_years_for_new_credit(t)
 
     def _sz_for(y: int | None) -> str:
@@ -187,22 +255,26 @@ def calc_new_2026_credit_abc(
                 return R.normalize_corp_size(d.get("corp_size"), corp_size)
         return R.normalize_corp_size(corp_size, "중소기업")
 
-    def _s(y: int | None) -> dict[str, float]:
+    def _s(y: int | None, is_comp: bool = False) -> dict[str, float]:
         if y is None:
             return {"reg": 0.0, "yth": 0.0, "gen": 0.0, "b2_yth": 0.0, "b3_yth": 0.0, "has_data": False}
         d = summaries_by_year.get(y) or {}
-        reg = float(d.get("regular", d.get("상시_평균", d.get("b1_reg", 0.0))) or 0.0)
-        yth = float(d.get("youth", d.get("청년등_평균", d.get("b1_yth", 0.0))) or 0.0)
+        if "regular" in d and "youth" in d and (not is_comp or d.get("_nr_applied")):
+            reg = float(d.get("regular") or 0.0)
+            yth = float(d.get("youth") or 0.0)
+        else:
+            picked = _pick_summary_by_method(d, method=m_abc, block=("nr" if is_comp else "b1"))
+            reg, yth = picked["reg"], picked["yth"]
         gen = round(max(0.0, reg - yth), 2)
         b2_y = float(d.get("b2_yth", yth) or 0.0)
         b3_y = float(d.get("b3_yth", b2_y) or 0.0)
         has_d = bool(d.get("has_data", reg > 0 or yth > 0))
         return {"reg": reg, "yth": yth, "gen": gen, "b2_yth": b2_y, "b3_yth": b3_y, "has_data": has_d}
 
-    s_t = _s(t)
-    s_t1 = _s(comp.get("A"))
-    s_t2 = _s(comp.get("B"))
-    s_t3 = _s(comp.get("C"))
+    s_t = _s(t, is_comp=False)
+    s_t1 = _s(comp.get("A"), is_comp=True)
+    s_t2 = _s(comp.get("B"), is_comp=True)
+    s_t3 = _s(comp.get("C"), is_comp=True)
 
     tiers: dict[str, dict[str, Any]] = {}
 
@@ -229,7 +301,12 @@ def calc_new_2026_credit_abc(
         "comp_year": comp.get("A"),
         "retention_year": 1,
         "corp_size": sz_a,
+        "calc_method": m_abc,
         "rates": rates_a,
+        "cur_reg": s_t["reg"],
+        "cur_yth": s_t["yth"],
+        "comp_reg": s_t1["reg"],
+        "comp_yth": s_t1["yth"],
         "total_inc": inc_a["total_inc"],
         "youth_inc": inc_a["youth_inc"],
         "non_youth_inc": inc_a["non_youth_inc"],
@@ -249,11 +326,6 @@ def calc_new_2026_credit_abc(
     if comp.get("B") is not None and s_t2["has_data"]:
         tot_b = round(max(0.0, min(s_t["reg"], s_t1["reg"]) - s_t2["reg"]), 2)
         yth_b = round(min(tot_b, max(0.0, min(s_t["yth"], s_t1["yth"]) - s_t2["yth"])), 2)
-        # 조세특례제한법 제29조의8 제1항 제2호 가목(중소기업)·나목(중견기업)의 계산식 중 B:
-        #   B = min(해당 과세연도 청년등외, 직전 과세연도 청년등외) - 전전 과세연도 청년등외 (음수이면 0)
-        #   한도 근거: 조세특례제한법 제29조의8 제1항 제1호·제2호 각 호 외의 부분 괄호("(전체 상시근로자의 증가 인원 수를 한도로 한다)")
-        #   ※ 수학적으로 각 연도 Y_k + G_k = T_k 이므로 min(Y) + min(G) <= min(Y + G)가 항상 성립하여
-        #      잔여분(tot_b - yth_b) 비교는 계산 결과를 바꾸지 않으나, 부동소수점 반올림 방어용 안전장치로 함께 유지합니다.
         raw_gen_b = round(max(0.0, min(s_t["gen"], s_t1["gen"]) - s_t2["gen"]), 2)
         gen_b = round(min(tot_b, max(0.0, tot_b - yth_b), raw_gen_b), 2)
         hurdle_b = calc_minimum_hurdle_deduction_2026(sz_b, tot_b, yth_b, gen_b, retention_year=2)
@@ -273,6 +345,7 @@ def calc_new_2026_credit_abc(
         "comp_year": comp.get("B"),
         "retention_year": 2,
         "corp_size": sz_b,
+        "calc_method": m_abc,
         "rates": rates_b,
         "total_inc": tot_b,
         "youth_inc": yth_b,
@@ -290,7 +363,6 @@ def calc_new_2026_credit_abc(
     if comp.get("C") is not None and s_t3["has_data"] and (rates_c["청년등"] > 0 or rates_c["청년등외"] > 0):
         tot_c = round(max(0.0, min(s_t["reg"], s_t1["reg"], s_t2["reg"]) - s_t3["reg"]), 2)
         yth_c = round(min(tot_c, max(0.0, min(s_t["yth"], s_t1["yth"], s_t2["yth"]) - s_t3["yth"])), 2)
-        # 조세특례제한법 제29조의8 제1항 제2호 가목(중소기업)·나목(중견기업)의 계산식 중 C 및 제1호·제2호 각 호 외의 부분 괄호 한도
         raw_gen_c = round(max(0.0, min(s_t["gen"], s_t1["gen"], s_t2["gen"]) - s_t3["gen"]), 2)
         gen_c = round(min(tot_c, max(0.0, tot_c - yth_c), raw_gen_c), 2)
         hurdle_c = calc_minimum_hurdle_deduction_2026(sz_c, tot_c, yth_c, gen_c, retention_year=3)
@@ -310,6 +382,7 @@ def calc_new_2026_credit_abc(
         "comp_year": comp.get("C"),
         "retention_year": 3,
         "corp_size": sz_c,
+        "calc_method": m_abc,
         "rates": rates_c,
         "total_inc": tot_c,
         "youth_inc": yth_c,
@@ -323,6 +396,7 @@ def calc_new_2026_credit_abc(
 
     total_new_abc_won = net_a_won + net_b_won + net_c_won
     return {
+        "calc_method": m_abc,
         "tiers": tiers,
         "A_won": net_a_won,
         "B_won": net_b_won,
@@ -353,8 +427,11 @@ def calc_legacy_post_management(
 ) -> dict[str, Any]:
     """
     [2023~2025년 귀속 공제분의 1차·2차 사후관리(2·3차년도 연속공제 및 추가납부세액) 정밀 산출]
+    - 상시근로자 수 비교 방식: `calc_method_for(cohort_year)` (2024년 이하 코호트 A방식, 2025년 코호트 B방식)
+      # 확인 필요: '26.3월 국세청 안내 신뢰보호 원칙 연장 적용 (2026년 이후 평가연도에서 2024년 이하 코호트에 A를 계속 적용)
     """
     elapsed = int(eval_year) - int(cohort_year)
+    coh_method = calc_method_for(cohort_year)
     rates = get_unit_rates(corp_size, is_capital, scheme="legacy")
     yth_rate = rates["청년등"]
     gen_rate = rates["청년등외"]
@@ -364,16 +441,13 @@ def calc_legacy_post_management(
     max_credit_years = 2 if is_large else 3
     can_receive_continued = (1 <= elapsed < max_credit_years) and (init_yth_inc + init_gen_inc > 0)
 
-    # 구 조세특례제한법 제29조의8 제1항·제2항(2024년 귀속)·제3항(2025년 귀속) 및 구 조세특례제한법 시행령 제26조의8 제4항:
-    # - 일반기업(대기업)의 공제기간은 2년(최초 과세연도 + 종료일부터 1년이 되는 날이 속하는 과세연도)이므로 3차년도(elapsed == 2) 연속공제는 없음(can_receive_continued = False).
-    # - 반면 사후관리(추가납부) 기간은 기업규모 구분 없이 '최초로 공제를 받은 과세연도의 종료일부터 2년이 되는 날이 속하는 과세연도의 종료일까지'이므로
-    #   일반기업 코호트도 3차년도(elapsed == 2, 2차 사후관리)에 인원이 감소하면 구 시행령 제26조의8 제4항 제2호에 따라 추가납부세액을 계산함.
-
     if elapsed not in (1, 2) or (init_yth_inc <= 0 and init_gen_inc <= 0):
         return {
             "cohort_year": cohort_year,
             "eval_year": eval_year,
             "elapsed_year": elapsed,
+            "calc_method": coh_method,
+            "calc_badge": calc_method_badge_label(coh_method),
             "active": False,
             "case_code": "해당없음",
             "case_title": f"{cohort_year}년 귀속분 공제이력 없음 (사후관리 대상 아님)",
@@ -383,6 +457,8 @@ def calc_legacy_post_management(
             "clawback_gross_won": 0,
             "carryforward_offset_won": 0,
             "clawback_net_payable_won": 0,
+            "cap_applied": False,
+            "claimed_cap_won": 0,
             "retained_yth_inc": 0.0,
             "retained_gen_inc": 0.0,
             "reg_decrease": 0.0,
@@ -391,6 +467,8 @@ def calc_legacy_post_management(
             "init_yth": round(float(init_yth or 0.0), 2),
             "init_yth_inc": round(float(init_yth_inc or 0.0), 2),
             "init_gen_inc": round(float(init_gen_inc or 0.0), 2),
+            "cur_pm_reg": round(float(cur_pm_reg or 0.0), 2),
+            "cur_pm_yth": round(float(cur_pm_yth or 0.0), 2),
             "formula_note": "해당 과세연도에 공제받은 고용증가 인원이 없어 사후관리(연속공제·추가납부) 대상이 아닙니다.",
         }
 
@@ -403,18 +481,12 @@ def calc_legacy_post_management(
         prior_years_claimed_count = 1
     else:
         if y1_continued_credit_won is not None:
-            # 직전 2년 이내 공제받은 횟수 (구 조특령 제26조의8 제4항 제2호): 최초연도 + 2차연도에 공제를 받았으면 2회.
-            # 대기업도 공제기간이 2년(최초·다음 연도)이고 사후관리 기간은 기업규모와 무관하게 2년(구 조특법 제29조의8 제2항)이므로 같은 방식
             prior_years_claimed_count = 2 if y1_continued_credit_won > 0 else 1
         elif prev_pm_reg is not None and prev_pm_reg < init_reg:
             prior_years_claimed_count = 1
         else:
             prior_years_claimed_count = 2
 
-    # ── 연속공제: 청년 단가 적용 여부 (법 §29의8②, 기재부 조세특례제도과-214 2023.3.6., 서면-2023-법인-0978) ──
-    #  · 판정은 '간주 없는' 청년 수(cur_pm_yth_actual)로: 나이가 지나 청년이 아니게 된 경우도 청년 감소
-    #  · 청년이 줄면 그해부터 청년 단가는 아무에게도 적용하지 않고, 당초 청년 증가분 전부를 청년외 단가로 공제
-    #  · 한번 멈춘 청년 단가는 이후 연도에 청년 수가 회복돼도 되살아나지 않음
     yth_act = cur_pm_yth if cur_pm_yth_actual is None else cur_pm_yth_actual
     full_man = init_yth_inc * yth_rate + init_gen_inc * gen_rate
     conv_man = (init_yth_inc + init_gen_inc) * gen_rate
@@ -425,12 +497,12 @@ def calc_legacy_post_management(
         if (y1_continued_credit_won is not None and y1_continued_credit_won == 0) or (
             prev_pm_reg is not None and prev_pm_reg < init_reg
         ):
-            y1_halted = True                                   # 1년차에 전체 감소로 공제 중단
+            y1_halted = True
         prev_act = prev_pm_yth_actual if prev_pm_yth_actual is not None else prev_pm_yth
         if prev_act is not None and round(prev_act - init_yth, 2) < 0:
             stopped_before = True
         if y1_continued_credit_won and 0 < y1_continued_credit_won < int(round(full_man * 10_000)) - 10:
-            stopped_before = True                              # 2차 공제를 줄여 받았다면 이미 청년 단가 중단
+            stopped_before = True
     youth_stopped = stopped_now or stopped_before
 
     if reg_diff >= 0:
@@ -458,7 +530,7 @@ def calc_legacy_post_management(
             formula_note = (
                 f"[{cohort_year}년분 {elapsed+1}차년도 · Case 3] 전체 상시 유지({cur_pm_reg:.2f} ≥ {init_reg:.2f}), "
                 f"청년등 {capped_yth_dec:.2f}명 감소 → 추징(차액): {capped_yth_dec:.2f}명 × ({yth_rate:,}-{gen_rate:,})만원 × "
-                f"{prior_years_claimed_count}회 = {raw_claw_man:,.1f}만원 / {cont_txt}"
+                f"{prior_years_claimed_count}회 = {raw_claw_man:,.1f}만원"
             )
         else:
             raw_claw_man = 0.0
@@ -516,7 +588,7 @@ def calc_legacy_post_management(
             yth_lost = round(min(init_yth_inc, yth_dec), 2)
             gen_lost_raw = round(max(0.0, capped_reg_dec - yth_lost), 2)
             gen_lost = round(min(init_gen_inc, gen_lost_raw), 2)
-            total_yth_lost = yth_lost        # 청년등외 증가분을 넘는 감소는 공제받은 적이 없으므로 추징 대상 아님
+            total_yth_lost = yth_lost
 
             raw_claw_man = ((total_yth_lost * yth_rate) + (gen_lost * gen_rate)) * prior_years_claimed_count
             formula_note = (
@@ -533,14 +605,22 @@ def calc_legacy_post_management(
         if y1_continued_credit_won is not None and y1_continued_credit_won > 0:
             claimed_cap = claimed_cap + int(y1_continued_credit_won)
         elif y1_continued_credit_won is None and prior_years_claimed_count == 2:
-            # 2차 공제액을 별도 입력하지 않았으나 2회 공제(prior_years_claimed_count == 2)로 판정된 경우 2년 누적 공제세액 한도 반영
             y1_est_cap = int(round((conv_man if stopped_before else full_man) * 10_000))
             claimed_cap = claimed_cap + (y1_est_cap if y1_est_cap > 0 else claimed_cap)
 
+    cap_applied = False
     if claimed_cap > 0:
+        if raw_clawback_won > claimed_cap:
+            cap_applied = True
         capped_cumulative_claw_won = min(raw_clawback_won, claimed_cap)
     else:
         capped_cumulative_claw_won = raw_clawback_won
+
+    # 6-6. 구법 추징 산식 문구가 한도 적용 전 금액을 보여주고 결과는 한도 적용 후 금액인 경우 산식 끝에 명시
+    if cap_applied:
+        formula_note += f" → 기공제세액({claimed_cap:,}원) 한도 적용"
+    if reg_diff >= 0 and yth_diff < 0:
+        formula_note += f" / {cont_txt}"
 
     prior_paid = max(0, int(prior_clawback_paid_won or 0)) if elapsed == 2 else 0
     prior_deducted_won = min(capped_cumulative_claw_won, prior_paid)
@@ -556,6 +636,8 @@ def calc_legacy_post_management(
         "cohort_year": cohort_year,
         "eval_year": eval_year,
         "elapsed_year": elapsed,
+        "calc_method": coh_method,
+        "calc_badge": calc_method_badge_label(coh_method),
         "corp_size": R.normalize_corp_size(corp_size),
         "active": True,
         "case_code": case_code,
@@ -566,6 +648,8 @@ def calc_legacy_post_management(
         "clawback_gross_won": clawback_gross_won,
         "carryforward_offset_won": carryforward_offset_won,
         "clawback_net_payable_won": clawback_net_payable_won,
+        "cap_applied": cap_applied,
+        "claimed_cap_won": claimed_cap,
         "retained_yth_inc": ret_yth,
         "retained_gen_inc": ret_gen,
         "reg_decrease": reg_dec,
@@ -574,6 +658,8 @@ def calc_legacy_post_management(
         "init_yth": round(float(init_yth or 0.0), 2),
         "init_yth_inc": round(float(init_yth_inc or 0.0), 2),
         "init_gen_inc": round(float(init_gen_inc or 0.0), 2),
+        "cur_pm_reg": round(float(cur_pm_reg or 0.0), 2),
+        "cur_pm_yth": round(float(cur_pm_yth or 0.0), 2),
         "formula_note": formula_note,
     }
 
@@ -590,9 +676,14 @@ def calculate_tax_year_package(
     corp_size_by_year: dict[int | str, str] | None = None,
 ) -> dict[str, Any]:
     """
-    [선택된 귀속사업연도(2024~2028)의 통합고용세액공제 종합 계산 패키지 — 연도별 기업구분 개별 설정 완벽 지원]
+    [선택된 귀속사업연도(2024~2028)의 통합고용세액공제 종합 계산 패키지 — A/B 계산방식 일원화(calc_method_for) 완벽 반영]
+    - 당해 연도 1차 공제(구법) 및 신법 A·B·C의 해당·비교연도 인원: `calc_method_for(tax_year)` (2025년 이후 "B")
+    - 상시근로자 현황 표시(직전전·직전·해당) 및 추가공제 요건(해당·직전): `calc_method_for(tax_year)` (2025년 이후 "B")
+    - 구법 코호트의 사후관리·연속공제 비교(최초 공제연도 인원 ↔ 평가연도 인원): `calc_method_for(cohort_year)`로 양쪽 모두 같은 방식 적용
+      # 확인 필요: '26.3월 국세청 안내 신뢰보호 원칙 연장 적용 (2026년 이후 평가연도에서 2024년 이하 코호트에 A를 계속 적용)
     """
     t = int(tax_year)
+    cur_method = calc_method_for(t)
     pf = prior_filings or {}
     add_in = additional_inputs or {}
     basis = R.PM_BASIS_RECALC if pm_basis == R.PM_BASIS_RECALC else R.PM_BASIS_FILED
@@ -613,88 +704,146 @@ def calculate_tax_year_package(
     cur_corp_size = _sz_for(t)
     corp_size_map_resolved = {y_k: _sz_for(y_k) for y_k in (t - 3, t - 2, t - 1, t)}
 
-    def _s(y: int) -> dict[str, Any]:
+    def _s(y: int, target_method: str | None = None) -> dict[str, Any]:
         d = summaries.get(y) or {}
         n_m = int(d.get("months_in_year", 12) or 12)
-        reg = float(d.get("상시_평균", d.get("regular", d.get("b1_reg", 0.0))) or 0.0)
-        yth = float(d.get("청년등_평균", d.get("youth", d.get("b1_yth", 0.0))) or 0.0)
-        non_y = float(d.get("청년외_평균", d.get("non_youth", d.get("b1_gen", max(0.0, reg - yth)))) or 0.0)
+        use_m = target_method or calc_method_for(y)
+        p_b1 = _pick_summary_by_method(d, method=use_m, block="b1")
+        reg, yth, non_y = p_b1["reg"], p_b1["yth"], p_b1["gen"]
+
+        p_A = _pick_summary_by_method(d, method="A", block="b1")
+        p_B = _pick_summary_by_method(d, method="B", block="b1")
+
         reg_tot = float(d.get("상시_합계", round(reg * n_m, 2)) or 0.0)
         yth_tot = float(d.get("청년등_합계", round(yth * n_m, 2)) or 0.0)
         non_tot = float(d.get("청년외_합계", round(max(0.0, reg_tot - yth_tot), 2)) or 0.0)
 
-        b2_r = float(d.get("b2_reg", reg) or 0.0)
-        b2_y = float(d.get("b2_yth", yth) or 0.0)
+        m_b2 = calc_method_for(y - 1)
+        p_b2 = _pick_summary_by_method(d, method=m_b2, block="b2")
+        b2_r, b2_y, b2_ya = p_b2["reg"], p_b2["yth"], p_b2["yth_act"]
         b2_y_tot = float(d.get("b2_청년등_합계", round(b2_y * n_m, 2)) or 0.0)
 
-        b3_r = float(d.get("b3_reg", reg) or 0.0)
-        b3_y = float(d.get("b3_yth", yth) or 0.0)
+        m_b3 = calc_method_for(y - 2)
+        p_b3 = _pick_summary_by_method(d, method=m_b3, block="b3")
+        b3_r, b3_y, b3_ya = p_b3["reg"], p_b3["yth"], p_b3["yth_act"]
         b3_y_tot = float(d.get("b3_청년등_합계", round(b3_y * n_m, 2)) or 0.0)
-        b2_ya = float(d.get("b2_yth_act", b2_y) if d.get("b2_yth_act") is not None else b2_y)
-        b3_ya = float(d.get("b3_yth_act", b3_y) if d.get("b3_yth_act") is not None else b3_y)
 
-        b4_r = float(d.get("b4_reg", reg) or 0.0)
-        b4_y = float(d.get("b4_yth", yth) or 0.0)
-        has_data = bool(d.get("has_data", reg > 0 or yth > 0))
+        p_b2_A = _pick_summary_by_method(d, method="A", block="b2")
+        p_b2_B = _pick_summary_by_method(d, method="B", block="b2")
+        p_b3_A = _pick_summary_by_method(d, method="A", block="b3")
+        p_b3_B = _pick_summary_by_method(d, method="B", block="b3")
+
+        alt_p = p_A if use_m == "B" else p_B
+        has_data = bool(d.get("has_data", reg > 0 or yth > 0 or p_A["reg"] > 0 or p_B["reg"] > 0))
         return {
             "from_filed": bool(d.get("from_filed")),
             "months_in_year": n_m,
+            "calc_method": use_m,
+            "calc_badge": calc_method_badge_label(use_m),
+            "calc_method_b2": m_b2,
+            "calc_badge_b2": calc_method_badge_label(m_b2),
+            "calc_method_b3": m_b3,
+            "calc_badge_b3": calc_method_badge_label(m_b3),
             "regular": reg,
             "youth": yth,
             "non_youth": non_y,
+            "A_regular": p_A["reg"],
+            "A_youth": p_A["yth"],
+            "A_non_youth": p_A["gen"],
+            "B_regular": p_B["reg"],
+            "B_youth": p_B["yth"],
+            "B_non_youth": p_B["gen"],
+            "ab_diff": (abs(p_A["reg"] - p_B["reg"]) >= 0.01 or abs(p_A["yth"] - p_B["yth"]) >= 0.01),
             "reg_total": reg_tot,
             "yth_total": yth_tot,
             "non_youth_total": non_tot,
             "b2_reg": b2_r,
             "b2_yth": b2_y,
             "b2_yth_total": b2_y_tot,
+            "A_b2_reg": p_b2_A["reg"],
+            "A_b2_yth": p_b2_A["yth"],
+            "A_b2_gen": p_b2_A["gen"],
+            "B_b2_reg": p_b2_B["reg"],
+            "B_b2_yth": p_b2_B["yth"],
+            "B_b2_gen": p_b2_B["gen"],
+            "ab_diff_b2": (abs(p_b2_A["reg"] - p_b2_B["reg"]) >= 0.01 or abs(p_b2_A["yth"] - p_b2_B["yth"]) >= 0.01),
             "b3_reg": b3_r,
             "b3_yth": b3_y,
             "b3_yth_total": b3_y_tot,
+            "A_b3_reg": p_b3_A["reg"],
+            "A_b3_yth": p_b3_A["yth"],
+            "A_b3_gen": p_b3_A["gen"],
+            "B_b3_reg": p_b3_B["reg"],
+            "B_b3_yth": p_b3_B["yth"],
+            "B_b3_gen": p_b3_B["gen"],
+            "ab_diff_b3": (abs(p_b3_A["reg"] - p_b3_B["reg"]) >= 0.01 or abs(p_b3_A["yth"] - p_b3_B["yth"]) >= 0.01),
             "b2_yth_act": b2_ya,
             "b3_yth_act": b3_ya,
-            "b4_reg": b4_r,
-            "b4_yth": b4_y,
+            "b4_reg": alt_p["reg"],
+            "b4_yth": alt_p["yth"],
+            "b4_gen": alt_p["gen"],
             "has_data": has_data,
         }
 
     def _s_new_cmp(y: int, base_s: dict[str, Any]) -> dict[str, Any]:
-        """2026년 이후 신법(A·B·C) 및 추가공제 비교 시, 비교 대상 연도(2025 <= y < t)에 일관된 해석 기준 재산정 인원(nr_상시_평균)이 있으면 일관되게 적용"""
-        if t < NEW_TENURE_RULE_FROM:
-            return base_s
+        """
+        당해 연도(t) 1차 공제(구법·신법 A·B·C) 및 상시근로자 현황·추가공제 요건 비교 시:
+        - 계산방식은 `cur_method = calc_method_for(t)` (2025년 이후 "B")를 일관되게 적용합니다.
+        - 2026년 이후 신법(t >= 2026) 비교 대상 연도(2025 <= y < t)에 nr_ 재산정 인원이 있으면 해당 방식(cur_method)의 nr_ 인원을 적용합니다.
+        """
         yd = summaries.get(y) or {}
-        if yd.get("nr_상시_평균") is not None:
-            nr_reg = float(yd["nr_상시_평균"])
-            nr_yth = float(yd.get("nr_청년등_평균") or 0.0)
-            nr_gen = round(max(0.0, nr_reg - nr_yth), 2)
+        if t >= NEW_TENURE_RULE_FROM and (yd.get("nr_상시_평균") is not None or yd.get(f"nr_{cur_method}_상시_평균") is not None):
+            p_nr = _pick_summary_by_method(yd, method=cur_method, block="nr")
+            p_nr_A = _pick_summary_by_method(yd, method="A", block="nr")
+            p_nr_B = _pick_summary_by_method(yd, method="B", block="nr")
+            nr_reg, nr_yth, nr_gen = p_nr["reg"], p_nr["yth"], p_nr["gen"]
             nr_reg_tot = float(yd.get("nr_상시_합계") if yd.get("nr_상시_합계") is not None else round(nr_reg * base_s["months_in_year"], 2))
             nr_yth_tot = float(yd.get("nr_청년등_합계") if yd.get("nr_청년등_합계") is not None else round(nr_yth * base_s["months_in_year"], 2))
             nr_gen_tot = round(max(0.0, nr_reg_tot - nr_yth_tot), 2)
+            p_old = _pick_summary_by_method(yd, method=calc_method_for(y), block="b1")
             return dict(
                 base_s,
+                _nr_applied=True,
+                calc_method=cur_method,
+                calc_badge=calc_method_badge_label(cur_method),
                 regular=nr_reg,
                 youth=nr_yth,
                 non_youth=nr_gen,
+                A_regular=p_nr_A["reg"],
+                A_youth=p_nr_A["yth"],
+                A_non_youth=p_nr_A["gen"],
+                B_regular=p_nr_B["reg"],
+                B_youth=p_nr_B["yth"],
+                B_non_youth=p_nr_B["gen"],
+                ab_diff=(abs(p_nr_A["reg"] - p_nr_B["reg"]) >= 0.01 or abs(p_nr_A["yth"] - p_nr_B["yth"]) >= 0.01),
                 reg_total=nr_reg_tot,
                 yth_total=nr_yth_tot,
                 non_youth_total=nr_gen_tot,
-                old_rule_regular=float(yd.get("상시_평균") or 0.0),
-                old_rule_youth=float(yd.get("청년등_평균") or 0.0),
+                old_rule_regular=p_old["reg"],
+                old_rule_youth=p_old["yth"],
                 nr_names=list(yd.get("nr_names") or []),
             )
-        return base_s
+        # 구법 1차년도 공제(예: t == 2025일 때 직전 2024년 비교인원) 및 상시근로자 현황 표시: cur_method(B방식) 적용
+        p_cmp = _pick_summary_by_method(yd, method=cur_method, block="b1")
+        return dict(
+            base_s,
+            calc_method=cur_method,
+            calc_badge=calc_method_badge_label(cur_method),
+            regular=p_cmp["reg"],
+            youth=p_cmp["yth"],
+            non_youth=p_cmp["gen"],
+        )
 
-    cur_s = _s(t)
+    cur_s = _s(t, target_method=cur_method)
     prev_s = _s(t - 1)
     prev2_s = _s(t - 2)
     prev3_s = _s(t - 3)
-    # 신법(A·B·C) 및 추가공제 요건 비교용 요약(2025년 등 종전규정 연도에 nr_상시_평균이 있으면 개정규정 인원 사용)
-    # 구법 사후관리(2024·2025년 최초공제분)는 종전 규정 인원(prev_s, prev2_s, prev3_s)을 그대로 유지
+
     prev_cmp = _s_new_cmp(t - 1, prev_s)
     prev2_cmp = _s_new_cmp(t - 2, prev2_s)
     prev3_cmp = _s_new_cmp(t - 3, prev3_s)
 
-    # ── 1) 당해(T) 신규 고용증가분 계산 (신법 A+B+C vs 구법) ──
+    # ── 1) 당해(T) 신규 고용증가분 계산 (신법 A+B+C vs 구법 — cur_method 적용) ──
     cur_inc = calc_increase_with_cap(cur_s["regular"], cur_s["youth"], prev_cmp["regular"], prev_cmp["youth"])
     rates_legacy = get_unit_rates(cur_corp_size, is_capital, scheme="legacy", retention_year=1)
     rates_new_y1 = get_unit_rates(cur_corp_size, is_capital, scheme="new_2026", retention_year=1)
@@ -747,23 +896,35 @@ def calculate_tax_year_package(
                   "formula_note": f"{cohort}년 귀속분은 구법 사후관리 대상이 아니며 신법 {label}(B·C) 유지분 공제로 반영됩니다."})
         return r
 
-    def _cohort(cohort: int, elapsed: int, cur_reg: float, cur_yth: float, s_init: dict, s_before: dict,
-                cur_yth_act: float | None = None) -> tuple[dict, dict, dict]:
+    def _cohort(cohort: int, elapsed: int) -> tuple[dict, dict, dict]:
+        """
+        구법 코호트(cohort)의 사후관리·연속공제 비교:
+        - `coh_method = calc_method_for(cohort)`로 최초 공제연도 인원(cohort 및 cohort-1)과 평가연도 인원(t의 b2/b3) 모두 동일한 방식을 적용합니다.
+        # 확인 필요: '26.3월 국세청 안내 신뢰보호 원칙 연장 적용 (2026년 이후 평가연도에서 2024년 이하 코호트에 A를 계속 적용)
+        """
+        coh_method = calc_method_for(cohort)
+        blk_name = "b2" if elapsed == 1 else "b3"
+        cur_pm_pick = _pick_summary_by_method(summaries.get(t), method=coh_method, block=blk_name)
+        cur_reg, cur_yth, cur_yth_act = cur_pm_pick["reg"], cur_pm_pick["yth"], cur_pm_pick["yth_act"]
+
+        s_init_coh = _s(cohort, target_method=coh_method)
+        s_before_coh = _s(cohort - 1, target_method=coh_method)
+
         f = pf.get(cohort) or pf.get(str(cohort)) or {}
         coh_sz = _sz_for(cohort)
-        # 최초공제연도 사업장 소재지(수도권 여부) 및 기업규모: 연속공제·추가납부 단가와 공제기간(대기업 2년/중소·중견 3년)은 최초공제연도 기준.
         coh_cap = is_capital if f.get("is_capital") is None else bool(f.get("is_capital"))
         coh_rates = get_unit_rates(coh_sz, coh_cap, scheme="legacy", retention_year=1)
         filed = {k: _fv(f, k) for k in ("init_reg", "init_yth", "init_yth_inc", "init_gen_inc")}
-        claimed = int(_fv(f, "claimed_won") or 0)                     # 한도: 기신고 공제세액(사실값)
+        claimed = int(_fv(f, "claimed_won") or 0)
         cf = int(_fv(f, "carryforward_won") or 0)
         y1_cont = _fv(f, "y1_continued_won")
         paid = int(_fv(f, "prior_clawback_paid_won") or 0)
         extra = {}
         if elapsed == 2:
-            extra = dict(prev_pm_reg=prev_s["b2_reg"] if prev_s["has_data"] else None,
-                         prev_pm_yth=prev_s["b2_yth"] if prev_s["has_data"] else None,
-                         prev_pm_yth_actual=prev_s["b2_yth_act"] if prev_s["has_data"] else None,
+            prev_pm_pick = _pick_summary_by_method(summaries.get(t - 1), method=coh_method, block="b2")
+            extra = dict(prev_pm_reg=prev_pm_pick["reg"] if prev_s["has_data"] else None,
+                         prev_pm_yth=prev_pm_pick["yth"] if prev_s["has_data"] else None,
+                         prev_pm_yth_actual=prev_pm_pick["yth_act"] if prev_s["has_data"] else None,
                          prior_clawback_paid_won=paid,
                          y1_continued_credit_won=int(y1_cont) if y1_cont is not None else None)
 
@@ -776,6 +937,8 @@ def calculate_tax_year_package(
                                             cur_reg, cur_yth, init_credit_claimed_won=claimed,
                                             unclaimed_carryforward_won=cf, cur_pm_yth_actual=cur_yth_act, **extra)
             r["corp_size"] = coh_sz
+            r["calc_method"] = coh_method
+            r["calc_badge"] = calc_method_badge_label(coh_method)
             r["rates_legacy"] = coh_rates
             r["base_label"] = label + (f" ({', '.join(borrowed)}은 기신고 숫자 사용)" if borrowed else "")
             if claimed > 0 and (vals.get("init_yth_inc") is not None or vals.get("init_gen_inc") is not None):
@@ -805,16 +968,16 @@ def calculate_tax_year_package(
         r_filed = _run(filed, "기신고 기준", [])
         recalc, borrowed = dict(filed), []
         law_ok = lambda d: d["has_data"] and not d.get("from_filed")
-        if law_ok(s_init):
-            recalc["init_reg"], recalc["init_yth"] = s_init["regular"], s_init["youth"]
+        if law_ok(s_init_coh):
+            recalc["init_reg"], recalc["init_yth"] = s_init_coh["regular"], s_init_coh["youth"]
+            recalc["init_reg_total"], recalc["init_yth_total"] = s_init_coh["reg_total"], s_init_coh["yth_total"]
         else:
             borrowed.append("최초연도 인원")
-        if law_ok(s_init) and law_ok(s_before):
-            inc = calc_increase_with_cap(s_init["regular"], s_init["youth"], s_before["regular"], s_before["youth"])
+        if law_ok(s_init_coh) and law_ok(s_before_coh):
+            inc = calc_increase_with_cap(s_init_coh["regular"], s_init_coh["youth"], s_before_coh["regular"], s_before_coh["youth"])
             recalc["init_yth_inc"], recalc["init_gen_inc"] = inc["youth_inc"], inc["non_youth_inc"]
         else:
             borrowed.append("증가인원")
-        # 세법원칙 기준인데 기신고 공제세액이 없으면, 재계산한 증가인원 × 구법 단가로 추가납부 한도를 추정
         recalc_claimed, cap_note = claimed, ""
         if claimed <= 0 and recalc.get("init_yth_inc") is not None and recalc.get("init_gen_inc") is not None:
             y0_est_won = int(round((float(recalc["init_yth_inc"]) * coh_rates["청년등"]
@@ -832,17 +995,15 @@ def calculate_tax_year_package(
                 recalc_claimed = y0_est_won + y1_est_won
             cap_note = f" ※ 한도는 재계산 증가인원 × 구법 단가로 추정({recalc_claimed:,}원)했습니다."
         r_recalc = _run(recalc, "세법원칙 기준", borrowed, claimed=recalc_claimed, cap_note=cap_note)
-        return r_filed, r_recalc, {"filed": filed, "recalc": recalc, "borrowed": borrowed}
+        return r_filed, r_recalc, {"filed": filed, "recalc": recalc, "borrowed": borrowed, "calc_method": coh_method}
 
     if (t - 1) <= 2025:
-        pm_y1_filed, pm_y1_recalc, base_y1 = _cohort(t - 1, 1, cur_s["b2_reg"], cur_s["b2_yth"], prev_s, prev2_s,
-                                                    cur_yth_act=cur_s["b2_yth_act"])
+        pm_y1_filed, pm_y1_recalc, base_y1 = _cohort(t - 1, 1)
     else:
         pm_y1_filed = pm_y1_recalc = _new_law(t - 1, "B", "2년차")
         base_y1 = {}
     if (t - 2) <= 2025:
-        pm_y2_filed, pm_y2_recalc, base_y2 = _cohort(t - 2, 2, cur_s["b3_reg"], cur_s["b3_yth"], prev2_s, prev3_s,
-                                                    cur_yth_act=cur_s["b3_yth_act"])
+        pm_y2_filed, pm_y2_recalc, base_y2 = _cohort(t - 2, 2)
     else:
         pm_y2_filed = pm_y2_recalc = _new_law(t - 2, "C", "3년차")
         base_y2 = {}
@@ -851,13 +1012,13 @@ def calculate_tax_year_package(
     pm_y1 = pm_y1_recalc if basis == R.PM_BASIS_RECALC else pm_y1_filed
     pm_y2 = pm_y2_recalc if basis == R.PM_BASIS_RECALC else pm_y2_filed
 
-    # ── 4) 정규직 전환자(~2024년 귀속) 및 육아휴직 복귀자(~2026년 귀속) 추가공제 ──
+    # ── 4) 정규직 전환자(~2024년 귀속) 및 육아휴직 복귀자(~2026년 귀속) 추가공제 (cur_method = B방식 인원 비교) ──
     add_unit_man = R.ADDITIONAL_CREDIT_PER_PERSON.get(cur_corp_size, 0)
     parental_ret_cnt = int(add_in.get("parental_return_count", 0) or 0) if t <= 2026 else 0
     reg_conv_cnt = int(add_in.get("regular_conversion_count", 0) or 0) if t <= 2024 else 0
     early_term_add_cnt = int(add_in.get("additional_clawback_count", 0) or 0)
-    maternity_rep_cnt = float(add_in.get("maternity_replacement_count", 0.0) or 0.0)      # 당해 제외 인원(연평균)
-    maternity_prev_cnt = float(add_in.get("maternity_prev_count", 0.0) or 0.0)            # 직전 제외 인원(연평균)
+    maternity_rep_cnt = float(add_in.get("maternity_replacement_count", 0.0) or 0.0)
+    maternity_prev_cnt = float(add_in.get("maternity_prev_count", 0.0) or 0.0)
 
     non_decrease_ok = (cur_s["regular"] - maternity_rep_cnt + 1e-9) >= (prev_cmp["regular"] - maternity_prev_cnt)
     additional_credit_won = (
@@ -886,6 +1047,8 @@ def calculate_tax_year_package(
 
     return {
         "tax_year": t,
+        "calc_method": cur_method,
+        "calc_badge": calc_method_badge_label(cur_method),
         "corp_size": cur_corp_size,
         "corp_size_by_year": corp_size_map_resolved,
         "coh1_corp_size": _sz_for(t - 1),

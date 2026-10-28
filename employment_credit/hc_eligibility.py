@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """
 [모듈 1/4] 통합고용세액공제 — 연도별 자격요건 · 청년 유예기간 · 1년 미만 경과조치 · 기초 유틸리티 (hc_eligibility.py)
-- 매년 세법 시행령 개정으로 바뀔 수 있는 '청년 연령·유예기간', '1년 미만 제외 경과조치', '비교 대상 과세연도' 규정을 전담합니다.
+- 매년 세법 시행령 개정으로 바뀔 수 있는 '청년 연령·유예기간', '1년 미만 제외 경과조치', '비교 대상 과세연도',
+  '상시근로자 수 계산방식(A/B) 선택 규칙(calc_method_for)'을 전담합니다.
 - 향후 세법 개정 시 이 파일만 독립적으로 수정·덮어쓰기할 수 있습니다.
 """
 from __future__ import annotations
@@ -77,7 +78,7 @@ def full_age(birth: date | None, ref: date | None, military_months: int = 0) -> 
 def _full_age_cached(birth: date | None, ref: date | None, military_months: int = 0) -> int | None:
     """
     기준일(ref) 현재 만 나이 (병역이행기간 최대 72개월 차감 반영).
-    - 조특령 제26조의8 제3항 제1호 가목: 병역을 이행한 후 취업한 경우 병역기간(6년 한도)을 빼고 연령 계산.
+    - 조특령 제26조의8 제4항 제1호: 병역을 이행한 후 취업한 경우 병역기간(6년 한도)을 빼고 연령 계산.
     """
     if not birth or not ref or ref < birth:
         return None
@@ -115,6 +116,27 @@ def trunc2(x: Fraction | float) -> float:
         return -(q / 100.0)
     d = Decimal(str(round(float(x), 8)))
     return float(d.quantize(Decimal("0.01"), rounding=ROUND_DOWN))
+
+
+def calc_method_for(cohort_year: int) -> str:
+    """
+    코호트(최초 공제연도) 기준 상시근로자 수 계산방식(A/B) 일원화 선택 함수.
+    - 근거: 국세청 법인세과 「'26년 3월 법인세 통합고용세액공제 상시근로자 수 계산 안내」 (재정경제부 세제실 회신 반영)
+      및 조세특례제한법 시행령(2026.2.27. 대통령령 제36127호) 부칙 제11조
+    - cohort_year <= 2024: "A" (기존 방식: [매월 말 상시근로자 수의 합계 ÷ 과세연도 개월수]의 값에서 100분의 1 미만 절사 — 최초 공제가 기존 방식이므로 그 코호트의 2·3차년도 요건·연속공제·사후관리는 끝까지 A)
+      # 확인 필요: '26.3월 국세청 안내 신뢰보호 원칙 연장 적용 (2026년 이후 평가연도에서 2024년 이하 코호트에 A를 계속 적용)
+    - cohort_year >= 2025: "B" (현행 방식: [(각 상시근로자 근무개월수 ÷ 과세연도 개월수)의 값에서 100분의 1 미만 절사한 값]의 합계)
+    """
+    return "A" if int(cohort_year) <= 2024 else "B"
+
+
+def calc_method_badge_label(cohort_year_or_method: int | str) -> str:
+    """화면·보고서 배지 표시용 문자열 반환: 'B방식(사원별 절사)' / 'A방식(합계 절사·신뢰보호)'"""
+    if isinstance(cohort_year_or_method, str) and cohort_year_or_method.upper() in ("A", "B"):
+        m = cohort_year_or_method.upper()
+    else:
+        m = calc_method_for(int(cohort_year_or_method))
+    return "B방식(사원별 절사)" if m == "B" else "A방식(합계 절사·신뢰보호)"
 
 
 def _get_month_pay(pay_obj: Any, month: int) -> float | None:
@@ -291,18 +313,18 @@ def youth_hold_years(corp_size: str, contract_dt: date | None = None) -> int:
     근로계약 체결일 기준 청년 인정기간(년). 0이면 인정기간 없음(매달 나이로만 판정).
     - 현행 조세특례제한법 시행령(2026.2.27. 대통령령 제36127호 개정) 제26조의8 제4항 제1호 후단:
       "이 경우 근로계약 체결 당시 34세 이하인 사람은 근로기간 중 34세를 초과하더라도 근로계약 체결일부터 4년간(중소기업 또는 중견기업이 아닌 경우에는 3년간)은 청년등상시근로자로 본다."
-    - 2026년 이후 계약: 중소·중견 4년, 일반기업(대기업) 3년
+    - 2026년 이후 계약: 중소·중견 4년, 일반기업(대기업) 3년 (조특령 제26조의8 제4항 제1호 후단)
     - 2025년 계약: 중소·중견 3년, 일반기업(대기업) 2년
-      (# 확인 필요: 2025.2.28. 대통령령 제35395호 구 시행령 제26조의8 제3항 제1호 후단 원문 및
-       2026.2.27. 대통령령 제36127호 부칙 제11조 제1항에 따라 2025년 체결 계약자가 2026년 이후 과세연도 공제 시 3년/2년 유지인지 4년/3년 확대 적용인지 여부)
-    - 2024년 이전 계약: 0 (인정기간 없음 · 매월 말일 현재 만 34세 이하 여부로 판정)
+      (근거: 조특령 부칙(2026.2.27.) 제11조 제2항 — 2025.1.1.~2025.12.31. 근로계약 체결 당시 34세 이하[병역기간 최대 6년 차감]인 사람은 계약 체결일부터 3년간[중소·중견기업이 아닌 경우 2년간] 청년등상시근로자로 봄)
+    - 2024년 이전 계약: 0 (인정기간 없음 · 매월 말일 현재 만 34세 이하 여부로 판정 — 조특령 부칙(2026.2.27.) 제11조 제1항)
     """
     large = R.normalize_corp_size(corp_size) in ("일반기업", "대기업")
     if contract_dt is None or contract_dt.year >= 2026:
         return R.YOUTH_HOLD_YEARS_LARGE if large else R.YOUTH_HOLD_YEARS_SME
     if contract_dt.year == 2025:
-        # 확인 필요: 2025년 중 근로계약 체결자의 기업규모별 청년 유예기간(중소·중견 3년 / 일반기업 2년) 구 시행령 및 부칙 적용례 원문
+        # 근거: 조특령 부칙(2026.2.27.) 제11조 제2항 (중소·중견 3년 / 일반기업 2년)
         return getattr(R, "YOUTH_HOLD_YEARS_2025_LARGE", 2) if large else getattr(R, "YOUTH_HOLD_YEARS_2025_SME", 3)
+    # 근거: 조특령 부칙(2026.2.27.) 제11조 제1항 (2024년 이전 최초 공제 코호트 및 계약자에는 계약일 기준 청년 간주 규정을 적용하지 않음)
     return 0
 
 
@@ -325,8 +347,8 @@ def is_youth_month(
 ) -> bool:
     """
     청년 정규직 해당 여부(월말 기준).
-    use_hold=True : 2026.2.27. 개정 정의(계약일 기준 유예 포함) — 2025년 이후 최초공제분·당해 판정
-    use_hold=False: 종전 정의(매달 나이로만 판정) — 2024년 이전 최초공제분의 사후관리
+    use_hold=True : 2026.2.27. 개정 정의(계약일 기준 유예 포함) — 2025년 이후 최초공제분·당해 판정 (조특령 부칙(2026.2.27.) 제11조 제1항·제2항)
+    use_hold=False: 종전 정의(매달 나이로만 판정) — 2024년 이전 최초공제분의 사후관리 (조특령 부칙(2026.2.27.) 제11조 제1항)
     ※ 청년 연령 유지기간(중소·중견 4년[25년 3년] / 일반 3년[25년 2년])은 근로계약 체결 연도의 기업규모를 기준으로 판정합니다.
     """
     birth = parse_date(person.get("생년월일"))
@@ -346,24 +368,16 @@ def is_youth_month(
     if age_at_me is not None and R.YOUTH_AGE_MIN <= age_at_me <= R.YOUTH_AGE_MAX:
         return True
 
-    # 34세를 넘은 달: 근로계약 체결일 기준 인정기간 안이면 청년 (2024년 이전 계약은 인정기간 없음)
-    # [월 경계 계산 방식(me < hold_end) 근거]:
-    # - 조세특례제한법 시행규칙 별지 제10호의10서식(상시근로자 명세서) 작성방법 제25호 예시:
-    #   "근로계약 체결일이 2025년 4월 1일 ... 2028년 4월 1일부터 청년등상시근로자에서 제외되므로 '20280401'을 적습니다."
-    #   즉, `hold_end = add_years(c_dt, hold)`(계약일 + 유예연수 응당일)는 '청년 제외시점(이 날부터 청년 아님, 초일 산입)'입니다.
-    # - 상시근로자 및 청년등 여부는 '매월 말일 현재(me = month_end(year, month))' 기준으로 판정하므로(시행령 제26조의8 제6항 · 제11조의2 제8항),
-    #   예를 들어 2025-05-01 계약(일반기업 2년 유예)의 경우 청년 제외시점 `hold_end = 2027-05-01`이 되어
-    #   2027-04-30(4월 말)은 `me < 2027-05-01`(True, 청년 인정), 2027-05-31(5월 말)은 `me < 2027-05-01`(False, 청년 제외)로
-    #   2027년 중 1~4월(4개월)은 청년등, 5~12월(8개월)은 청년등외(일반)로 산정됩니다.
-    #   (참고: 월말 기준 판정이므로 말일이 아닌 날에 계약한 경우에는 초일 산입[2027-05-01 제외]이든 초일 불산입[2027-05-02 제외]이든
-    #    5월 말일[2027-05-31] 시점에는 모두 유예기간이 도과하여 동일하게 1~4월 4개월이 청년으로 계산됩니다.)
+    # 34세를 넘은 달: 근로계약 체결일 기준 인정기간 안이면 청년 (2024년 이전 계약 및 2024년 이전 코호트는 인정기간 없음: 조특령 부칙(2026.2.27.) 제11조 제1항)
+    # - `hold_end = add_years(c_dt, hold)`(계약일 + 유예연수 응당일)는 청년 제외시점(초일 산입)이며,
+    #   매월 말일 현재(me = month_end(year, month)) `me < hold_end`이면 해당 월을 청년등 근무개월에 산입합니다.
     if not use_hold:
         return False
     hold_corp_size = _resolve_contract_year_corp_size(corp_size, c_dt, corp_size_by_year)
     hold = youth_hold_years(hold_corp_size, c_dt)
     if hold <= 0:
         return False
-    hold_end = add_years(c_dt, hold)          # 청년 제외시점 (이 날부터 청년 아님: 별지 제10호의10서식 작성방법 제25호)
+    hold_end = add_years(c_dt, hold)          # 청년 제외시점 (계약체결일 + 유예연수 응당일)
     return me < hold_end
 
 
@@ -384,11 +398,13 @@ def was_youth_in_year_by_age(
     )
 
 
-NEW_YOUTH_DEF_FROM_COHORT = 2025   # 2025.1.1. 이후 개시 과세연도를 최초공제연도로 하는 분부터 새 정의(시행령 부칙 제36127호 제11조)
+# 조특령 부칙(2026.2.27.) 제11조 제1항: 제26조의8 제4항 제1호 개정규정은 2025.1.1. 이후 개시하는 과세연도를 최초 공제연도로 하여 신청하는 경우부터 적용
+# (2024년 이전 최초 공제 코호트에는 계약일 기준 청년 간주 규정을 적용하지 않음)
+NEW_YOUTH_DEF_FROM_COHORT = 2025
 
 
 def youth_flag_old_def(person: dict, year: int, month: int, corp_size: str, youth_label: str) -> bool:
-    """종전 정의의 '실제' 청년등 여부(간주 없음): 2024년 이전 최초공제분의 연속공제 판정용 (서면-2023-법인-0978)"""
+    """종전 정의의 '실제' 청년등 여부(간주 없음): 2024년 이전 최초공제분의 연속공제 판정용 (조특령 부칙(2026.2.27.) 제11조 제1항 · 서면-2023-법인-0978)"""
     if youth_label in (R.YOUTH_SENIOR, R.YOUTH_DISABLED, R.YOUTH_CAREER):
         return True
     if youth_label == R.YOUTH_YOUNG and parse_date(person.get("생년월일")) and contract_date(person) is not None:
@@ -407,7 +423,7 @@ def is_youth_month_for_cohort(
     corp_size_by_year: dict | None = None,
 ) -> bool:
     """
-    2024년 이전 최초공제분의 추가납부용 청년등 판정 (구 조특령 제26조의8 제5항 간주)
+    2024년 이전 최초공제분의 추가납부용 청년등 판정 (구 조특령 제26조의8 제5항 간주 · 조특령 부칙(2026.2.27.) 제11조 제1항)
     = 종전 정의상 현재 청년등  OR  최초공제연도(cohort_year)에 청년등이었던 사람
     ※ 2025년 이후 최초공제분은 제5항이 삭제되어 간주 없이 새 정의(당해 판정)를 그대로 씀 → compute_row에서 처리
     """
@@ -421,6 +437,7 @@ def is_youth_month_for_cohort(
                 eval_year,
                 month,
                 corp_size,
+                # 조특령 부칙(2026.2.27.) 제11조 제1항: 2024년 이전 최초 공제 코호트에는 계약일 기준 청년 간주 규정을 적용하지 않음
                 use_hold=cohort_year >= NEW_YOUTH_DEF_FROM_COHORT,
                 corp_size_by_year=corp_size_by_year,
             ):

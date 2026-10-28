@@ -38,6 +38,7 @@ from .ui_common import (  # noqa: F401
     _ensure_built_for_tax_year,
     _save_ec_to_disk,
     _years,
+    reset_credit_all_state,
 )
 
 
@@ -206,11 +207,62 @@ def render_credit_sidebar():
         tax_yr = R.DEFAULT_TAX_YEAR
         s["tax_year"] = tax_yr
 
+    # [Feature B] 통합고용세액공제 전용 자료·내용 초기화 카드 (내 작업공간 코드 위치 대체)
+    has_any_ec_data = bool(
+        s.get("files") or s.get("people") or (s.get("biz") or {}).get("상호")
+        or any((v or {}).get("상시") is not None or (v or {}).get("공제세액") is not None for v in (s.get("prev_summary") or {}).values() if isinstance(v, dict))
+    )
     with st.container(border=True):
+        status_pill = (
+            f"<span class='sb-badge-green'>사원 {len(s.get('people') or {})}명 · 서류 {len(s.get('files') or {})}건</span>"
+            if has_any_ec_data
+            else "<span class='sb-badge-amber'>초기 상태</span>"
+        )
+        st.markdown(
+            f"<div class='sb-card-title'><span>🧹 작업 자료 관리</span>{status_pill}</div>",
+            unsafe_allow_html=True,
+        )
+        if not st.session_state.get("ec_confirm_reset"):
+            if st.button(
+                "🔄 자료 초기화 (내용 비우기)",
+                use_container_width=True,
+                disabled=(not has_any_ec_data and int(s.get("step") or 1) == 1),
+                key="btn_ec_sidebar_reset_ask",
+                help="현재 입력·업로드된 서류, 사업자정보, 사원표, 기신고 기초값, 보고서를 모두 지우고 1단계 초기 상태로 되돌립니다.",
+            ):
+                st.session_state["ec_confirm_reset"] = True
+                st.rerun()
+        else:
+            st.caption("⚠️ 업로드 서류·사원표·기신고 입력값을 모두 비우고 1단계로 초기화할까요?")
+            cr1, cr2 = st.columns(2)
+            if cr1.button("✅ 초기화 실행", type="primary", use_container_width=True, key="btn_ec_sidebar_reset_yes"):
+                st.session_state.pop("ec_confirm_reset", None)
+                reset_credit_all_state()
+                st.rerun()
+            if cr2.button("취소", use_container_width=True, key="btn_ec_sidebar_reset_no"):
+                st.session_state.pop("ec_confirm_reset", None)
+                st.rerun()
+
+    # [6-2] 재계산 값을 기신고 기초값에 임시 반영한 연도가 있을 때 주황 배지 표시
+    auto_filled_yrs = sorted(
+        str(k_y) for k_y, v_y in (s.get("prev_summary") or {}).items()
+        if isinstance(v_y, dict) and v_y.get("_auto_filled")
+    )
+    if auto_filled_yrs:
+        st.markdown(
+            f"<div style='margin:0 0 8px 0;padding:7px 10px;background:#fff7ed;border:1.5px solid #fdba74;"
+            f"border-left:4px solid #f97316;border-radius:8px;font-size:0.80rem;font-weight:800;color:#c2410c;line-height:1.45;'>"
+            f"🟧 사원표 재계산값 임시 입력 · 신고서 확인 필요 ({', '.join(y + '년' for y in auto_filled_yrs)})"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+    with st.container(border=True):
+        m_badge_sb = R.calc_method_badge_label(tax_yr)
         yr_badge = (
-            f"<span class='sb-badge-green'>{tax_yr}년 (합산 후 절사)</span>"
-            if tax_yr >= 2025
-            else f"<span class='sb-badge-amber'>{tax_yr}년 (합산 후 절사)</span>"
+            f"<span class='sb-badge-green'>{tax_yr}년 ({m_badge_sb})</span>"
+            if R.calc_method_for(tax_yr) == "B"
+            else f"<span class='sb-badge-amber'>{tax_yr}년 ({m_badge_sb})</span>"
         )
         st.markdown(
             f"<div class='sb-card-title'><span>📅 귀속사업연도</span>{yr_badge}</div>",
@@ -220,7 +272,7 @@ def render_credit_sidebar():
             "통합고용세액공제 계산 기준 사업연도",
             options=R.SUPPORTED_TAX_YEARS,
             index=R.SUPPORTED_TAX_YEARS.index(tax_yr),
-            format_func=lambda y: f"{y}년 귀속 ({'합산 후 절사'} · {(y-1)%100:02d}·{(y-2)%100:02d} 사후관리)",
+            format_func=lambda y: f"{y}년 귀속 ({R.calc_method_badge_label(y)} · {(y-1)%100:02d}·{(y-2)%100:02d} 사후관리)",
             label_visibility="collapsed",
             key="ec_sb_tax_year_select",
         )
