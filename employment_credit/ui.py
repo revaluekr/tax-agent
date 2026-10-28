@@ -153,7 +153,6 @@ from .ui_step3 import (  # noqa: F401
     _build_pm_formula_lines,
     _build_step3_calculation_pdf_bytes,
     _build_top_kpi_cards_html,
-    _calc_minimum_tax_simulation,
     _cohort_capital,
     _enrich_matrix_cols_with_cohort_consistency,
     _fmt_matrix_won,

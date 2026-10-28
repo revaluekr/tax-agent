@@ -927,7 +927,7 @@ def _build_report_markdown(s: dict, log_tokens_fn=None, room_key: str = "") -> s
     return full_md
 
 
-def _build_report_pdf_bytes(s: dict, log_tokens_fn=None, room_key: str = "") -> bytes:
+def _build_report_pdf_bytes(s: dict, log_tokens_fn=None, room_key: str = "", md_text: str | None = None) -> bytes:
     """
     4단계 『보고서 PDF 다운』 전용 빌더 — 자율 에이전트AI(`app.py`의 `create_pdf_report`)와
     여백(좌우 40pt, 상 42pt, 하 48pt), 제목(DocH2 13pt #1f4e78), 소제목(DocH3 11pt #2e5cb8),
@@ -1007,7 +1007,7 @@ def _build_report_pdf_bytes(s: dict, log_tokens_fn=None, room_key: str = "") -> 
         alignment=0,
     )
 
-    md_full = _build_report_markdown(s, log_tokens_fn=log_tokens_fn, room_key=room_key)
+    md_full = md_text if md_text is not None else _build_report_markdown(s, log_tokens_fn=log_tokens_fn, room_key=room_key)
     # 마크다운 링크 `[텍스트](https://...)`에서 URL 괄호를 벗기고 `[조문: ...]` 등 본문 텍스트만 깔끔하게 보존
     md_full = re.sub(
         r"\[(\[(?:조문|부칙|별표|판례|심판례|헌재|헌재결정례|해석례|예규)\s*:\s*[^\]]+\])\]\(https?://[^\s)]+\)",
@@ -1446,7 +1446,7 @@ def _page_report(room_key: str = "", log_tokens_fn=None):
         xlsx_report_bytes = rep_cache.get("xlsx") or _build_report_xlsx_bytes(md_text)
     else:
         md_text = _build_report_markdown(s, log_tokens_fn=log_tokens_fn, room_key=room_key)
-        pdf_report_bytes = _build_report_pdf_bytes(s, log_tokens_fn=log_tokens_fn, room_key=room_key)
+        pdf_report_bytes = _build_report_pdf_bytes(s, log_tokens_fn=log_tokens_fn, room_key=room_key, md_text=md_text)
         docx_report_bytes = _build_report_docx_bytes(md_text)
         xlsx_report_bytes = _build_report_xlsx_bytes(md_text)
         s["_report_artifact_cache"] = {

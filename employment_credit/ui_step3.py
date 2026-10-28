@@ -248,76 +248,11 @@ def _build_top_kpi_cards_html(pkg: dict, tax_yr: int) -> str:
     )
 
 
-def _calc_minimum_tax_simulation(
-    corp_size: str,
-    tax_base_won: int,
-    calc_tax_won: int,
-    other_min_tax_credit_won: int,
-    prior_carryforward_won: int,
-    cur_credit_gross_won: int,
-) -> dict[str, Any]:
-    """
-    [⑥ 최저한세(조세특례제한법 제132조) 및 이월공제(제144조) 4칸 정밀 파이썬 계산 엔진]
-    - 최저한세는 통합고용세액공제뿐 아니라 타 최저한세 적용 대상 공제·감면(중소기업특별세액감면 등)과 합산하여 한도를 판정하며,
-      전기 이월세액공제액이 당기 발생분보다 우선 공제되는 순서를 반영합니다.
-    """
-    tb = max(0, int(tax_base_won or 0))
-    ct = max(0, int(calc_tax_won or 0))
-    oth = max(0, int(other_min_tax_credit_won or 0))
-    pcf = max(0, int(prior_carryforward_won or 0))
-    cur_g = max(0, int(cur_credit_gross_won or 0))
-
-    if corp_size == "중소기업":
-        min_tax_won = int(round(tb * 0.07))
-        rate_desc = "7% (중소기업 최저한세율)"
-    elif corp_size == "중견기업":
-        if tb <= 10_000_000_000:
-            min_tax_won = int(round(tb * 0.10))
-            rate_desc = "10% (중견 100억 이하 기본, 초기 유예 시 8~9%)"
-        elif tb <= 100_000_000_000:
-            min_tax_won = int(round(1_000_000_000 + (tb - 10_000_000_000) * 0.12))
-            rate_desc = "10%~12% 누진 (중견 100억~1,000억)"
-        else:
-            min_tax_won = int(round(11_800_000_000 + (tb - 100_000_000_000) * 0.17))
-            rate_desc = "10%~17% 누진 (중견 1,000억 초과)"
-    else:
-        if tb <= 10_000_000_000:
-            min_tax_won = int(round(tb * 0.10))
-            rate_desc = "10% (일반 100억 이하)"
-        elif tb <= 100_000_000_000:
-            min_tax_won = int(round(1_000_000_000 + (tb - 10_000_000_000) * 0.12))
-            rate_desc = "10%~12% 누진 (일반 100억~1,000억)"
-        else:
-            min_tax_won = int(round(11_800_000_000 + (tb - 100_000_000_000) * 0.17))
-            rate_desc = "10%~17% 누진 (일반 1,000억 초과)"
-
-    total_credit_limit = max(0, ct - min_tax_won)
-    after_other_limit = max(0, total_credit_limit - oth)
-    prior_cf_deducted = min(pcf, after_other_limit)
-    avail_for_current = max(0, after_other_limit - prior_cf_deducted)
-    cur_deducted = min(cur_g, avail_for_current)
-    cur_unclaimed_cf = max(0, cur_g - cur_deducted)
-    rural_tax_on_cur = int(round(cur_deducted * R.RURAL_SPECIAL_TAX_RATE))
-
-    return {
-        "rate_desc": rate_desc,
-        "min_tax_won": min_tax_won,
-        "total_credit_limit": total_credit_limit,
-        "after_other_limit": after_other_limit,
-        "prior_cf_deducted": prior_cf_deducted,
-        "avail_for_current": avail_for_current,
-        "cur_deducted": cur_deducted,
-        "cur_unclaimed_cf": cur_unclaimed_cf,
-        "rural_tax_on_cur": rural_tax_on_cur,
-    }
-
-
 def _build_headcount_waterfall_and_comparison(s: dict, pkg: dict, tax_yr: int) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     [인원 증감 브리지 표(Waterfall Bridge) 및 직전연도 비교인원 보수적 vs 공격적 산정 세액 비교표]
     """
     people = s.get("people") or {}
-    _, comp_cur, _ = H.compute_year_from_state(s, tax_yr) if hasattr(H, "compute_year_from_state") else (None, {}, None)
     try:
         from .ui_common import _build_year_rows
         _, comp_cur, _ = _build_year_rows(s, tax_yr)
@@ -1761,76 +1696,6 @@ def _page_calculation():
             help="통합고용세액공제는 조특법 제132조 최저한세(중소 과세표준의 7%) 적용 대상이며, 한도 초과 미공제분은 조특법 제144조에 따라 10년간 이월공제됩니다. 농어촌특별세(20%)는 실제 감면받는 세액(당해 공제액 - 당해 미공제 이월액)에 대해서만 부과됩니다.",
         )
 
-        st.markdown("---")
-        st.markdown("##### 🧮 최저한세(`조세특례제한법 제132조`) 한도 및 당기 미공제 이월세액(`제144조`) 4칸 정밀 시뮬레이터")
-        st.caption(
-            "최저한세는 통합고용세액공제뿐 아니라 **타 최저한세 적용 대상 공제·감면(중소기업특별세액감면 등)**과 합산하여 한도를 따지며, "
-            "**전기 이월세액공제액이 당기 발생분보다 먼저 공제**됩니다. 아래 4칸을 입력하면 파이썬 엔진이 당기 실제 공제 가능액과 이월공제액을 1원 단위로 계산합니다."
-        )
-        cm1, cm2, cm3, cm4 = st.columns(4)
-        add_in["sim_tax_base_won"] = cm1.number_input(
-            f"① {tax_yr}년 과세표준 (원)",
-            min_value=0,
-            max_value=500_000_000_000,
-            value=int(add_in.get("sim_tax_base_won") or 0),
-            step=10_000_000,
-            key=f"ec_sim_tb_{tax_yr}",
-        )
-        add_in["sim_calc_tax_won"] = cm2.number_input(
-            f"② {tax_yr}년 산출세액 (원)",
-            min_value=0,
-            max_value=200_000_000_000,
-            value=int(add_in.get("sim_calc_tax_won") or 0),
-            step=1_000_000,
-            key=f"ec_sim_ct_{tax_yr}",
-        )
-        add_in["sim_other_min_tax_credit_won"] = cm3.number_input(
-            "③ 타 최저한세 대상 감면·공제액 (원)",
-            min_value=0,
-            max_value=100_000_000_000,
-            value=int(add_in.get("sim_other_min_tax_credit_won") or 0),
-            step=1_000_000,
-            help="중소기업특별세액감면 등 최저한세 적용을 받는 다른 공제·감면세액 합계",
-            key=f"ec_sim_oth_{tax_yr}",
-        )
-        add_in["sim_prior_carryforward_won"] = cm4.number_input(
-            "④ 전기 이월세액공제 잔액 (원)",
-            min_value=0,
-            max_value=100_000_000_000,
-            value=int(add_in.get("sim_prior_carryforward_won") or 0),
-            step=1_000_000,
-            help="전기에서 이월된 미공제 세액공제액(당기 발생분보다 우선 공제)",
-            key=f"ec_sim_pcf_{tax_yr}",
-        )
-        if int(add_in.get("sim_tax_base_won") or 0) > 0 or int(add_in.get("sim_calc_tax_won") or 0) > 0:
-            sim_res = _calc_minimum_tax_simulation(
-                corp_size=corp_size,
-                tax_base_won=int(add_in.get("sim_tax_base_won") or 0),
-                calc_tax_won=int(add_in.get("sim_calc_tax_won") or 0),
-                other_min_tax_credit_won=int(add_in.get("sim_other_min_tax_credit_won") or 0),
-                prior_carryforward_won=int(add_in.get("sim_prior_carryforward_won") or 0),
-                cur_credit_gross_won=int(pkg["total_credit_gross_won"] or 0),
-            )
-            cs_info, cs_btn = st.columns([4.2, 1.8])
-            with cs_info:
-                st.info(
-                    f"📌 **최저한세 시뮬레이션 결과 ({sim_res['rate_desc']})**: "
-                    f"최저한세액 **{sim_res['min_tax_won']:,}원** | 전체 공제가능 한도 **{sim_res['total_credit_limit']:,}원** "
-                    f"(타 감면·전기이월 차감 후 당기분 공제한도 **{sim_res['avail_for_current']:,}원**) → "
-                    f"당기 실제 공제액 **{sim_res['cur_deducted']:,}원** / "
-                    f"**당기 미공제 이월액(10년 이월) {sim_res['cur_unclaimed_cf']:,}원** / "
-                    f"당기 농어촌특별세(20%) **{sim_res['rural_tax_on_cur']:,}원**"
-                )
-            with cs_btn:
-                if st.button(
-                    f"📌 미공제 이월액({sim_res['cur_unclaimed_cf']:,}원) 계산서 반영",
-                    type="primary",
-                    use_container_width=True,
-                    key=f"btn_apply_min_tax_cf_{tax_yr}",
-                ):
-                    add_in["current_unclaimed_carryforward_won"] = int(sim_res["cur_unclaimed_cf"])
-                    _save_ec_to_disk(s)
-                    st.rerun()
 
     with st.expander("📊 [상세 대조] 인원 증감 브리지 표 · 비교인원(보수적 vs 공격적) · 기신고 vs 세법원칙 비교표", expanded=False):
         wf_df, ca_df = _build_headcount_waterfall_and_comparison(s, pkg, tax_yr)
