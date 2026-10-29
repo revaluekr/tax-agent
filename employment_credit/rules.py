@@ -814,14 +814,90 @@ NEW_ADDENDA_WATCH_KEYWORDS: tuple[str, ...] = ("제29조의8", "제26조의8", "
 
 def compute_law_text_hash(text: str) -> str:
     """
-    공백·줄바꿈을 모두 제거한 뒤 SHA-256 해시를 반환합니다 (빈 문자열이면 빈 문자열 반환).
-    - [원문 이미지 태그 포함 원칙]: 법제처 원문 내 <img src="...flSeq=..."> 태그는 계산식·표 이미지이므로
-      제거하지 않고 해시 계산에 그대로 포함합니다(캡처와 일일 조회 동일 적용).
+    [피드백 3 반영]
+    - compute_law_text_hash에서만 <img ...> 태그를 "[이미지]"로 치환한 뒤 공백·줄바꿈을 제거하고 SHA-256 해시를 반환합니다.
+      (법제처 flSeq 등 파일 번호가 버전마다 바뀌어 가짜 주황불이 나는 것을 방지하면서 이미지 유무는 감지)
+    - 캡처·일일 조회·정답지 테스트 모두 동일하게 처리합니다.
     """
-    compact = _re.sub(r"\s+", "", str(text or ""))
+    img_norm = _re.sub(r"<img\b[^>]*>", "[이미지]", str(text or ""), flags=_re.IGNORECASE)
+    compact = _re.sub(r"\s+", "", img_norm)
     if not compact:
         return ""
     return _hashlib.sha256(compact.encode("utf-8")).hexdigest()
+
+
+def convert_box_lines_to_md_table(box_lines: list[str]) -> list[str]:
+    """
+    [피드백 2 반영]
+    법제처 조문 원문 내 박스형 계산식(┌───┐ │ ... │ └───┘ 또는 | ... |)을 마크다운 표로 변환합니다.
+    - 단어 사전으로 띄어쓰기를 바꾸는 인위적 치환(_heal_korean_box_wraps)을 일절 사용하지 않습니다.
+    - 법제처 박스형 계산식은 고정 폭 줄바꿈이므로, 박스 안의 연속된 줄은 공백 없이 그대로 이어 붙입니다(prev + ln).
+    - 표 변환은 유지하되 셀 안의 글자는 원문 그대로(줄 이어 붙이기 외 변경 없음) 보존합니다.
+    """
+    cleaned_lines: list[str] = []
+    for raw in box_lines:
+        s = str(raw).strip()
+        s = _re.sub(r"^[┌┏┬┐┓├┣┼┤┫└┗┴┘┛─━│|┃｜\s]+", "", s)
+        s = _re.sub(r"[┌┏┬┐┓├┣┼┤┫└┗┴┘┛─━│|┃｜\s]+$", "", s)
+        s = s.strip()
+        if s:
+            cleaned_lines.append(s)
+    if not cleaned_lines:
+        return []
+
+    merged: list[str] = []
+    new_item_re = _re.compile(
+        r"^(?:A\s*\+\s*B(?:\s*\+\s*C)?|[A-Z]\s*[:：]|[*※]|직전\s*과세연도|전전\s*과세연도|전전전\s*과세연도|최소고용증가인원수)"
+    )
+    for ln in cleaned_lines:
+        if not merged:
+            merged.append(ln)
+            continue
+        prev = merged[-1]
+        prev_ends_complete = bool(
+            _re.search(r"(?:금액|만원\)|만원|본다\.|한다\.|합계|C)$", prev)
+        )
+        if _re.match(r"^(?:A\s*\+\s*B|[A-Z]\s*[:：]|[*※])", ln):
+            merged.append(ln)
+        elif prev_ends_complete and new_item_re.match(ln):
+            merged.append(ln)
+        elif prev_ends_complete and ("×" in ln or "÷" in ln or "+" in ln):
+            merged.append(ln)
+        else:
+            merged[-1] = prev + ln
+
+    if len(merged) == 1:
+        return [
+            "| 구분 | 계산식 및 산출 내역 |",
+            "| :---: | :--- |",
+            f"| **계산식** | {merged[0]} |",
+        ]
+
+    rows: list[tuple[str, str]] = []
+    cur_key = "계산 산식"
+    for item in merged:
+        if _re.match(r"^A\s*\+\s*B", item):
+            rows.append(("기본 산식", item))
+        elif _re.match(r"^([A-Z])\s*[:：]", item):
+            m_k = _re.match(r"^([A-Z])\s*[:：]", item)
+            cur_key = f"{m_k.group(1)} 정의"
+            rows.append((cur_key, item))
+            cur_key = f"{m_k.group(1)} 산식"
+        elif item.startswith(("*", "※")):
+            rows.append(("비고", item))
+        else:
+            lbl = cur_key if "산식" in cur_key else "계산 산식"
+            rows.append((lbl, item))
+            if "산식" in cur_key:
+                cur_key = "계산 산식"
+
+    md_tbl = [
+        "| 구분 | 계산식 및 산출 내역 |",
+        "| :---: | :--- |",
+    ]
+    for k, v in rows:
+        md_tbl.append(f"| **{k}** | {v} |")
+    return md_tbl
 
 
 def _parse_iso_or_dot_date(d_val: Any) -> _date | None:
@@ -1784,7 +1860,7 @@ def build_law_summary_table_rows(
 
 # ── [3-④] AI 해석 사후 필터 및 공유 캐시 ──
 _FORBIDDEN_AI_CONCLUSIONS_RE = _re.compile(
-    r"(환급\s*가능|추징\s*대상|공제\s*가능|환급받을\s*수\s*있|추징됩니다|추가납부\s*대상)"
+    r"(환급\s*가능|추징\s*대상|공제\s*가능|환급받을\s*수\s*있|추징됩니다|추가납부\s*대상|미반영\s*개정\s*없음|모두\s*반영되어\s*있|모두\s*반영됨)"
 )
 _FORBIDDEN_AI_MONEY_RE = _re.compile(
     r"(?<![제\d])\d[\d,]*(?:\.\d+)?\s*(?:십|백|천|만|억)?\s*원"
@@ -3245,5 +3321,51 @@ def verify_golden_case_invariants() -> tuple[bool, list[str]]:
     ok_cap_b34, errs_cap_b34 = validate_captured_law_entry("조세특례제한법", parsed_no_b34)
     if ok_cap_b34 is not False or not any("21223_제34조" in e for e in errs_cap_b34):
         errors.append(f"9-13c 실패: 특정 부칙 블록(21223_제34조) 미발견 시 캡처 실패 미처리 (ok={ok_cap_b34}, errs={errs_cap_b34})")
+
+    # (9-13d) [피드백 3] compute_law_text_hash에서 <img ...> 태그를 "[이미지]"로 치환 후 해시:
+    #         flSeq 번호가 바뀌어도 해시는 같고, 이미지 태그가 삭제되면 해시가 달라지는지 검증
+    h_img_1 = compute_law_text_hash('⑧ 다음 계산식에 따라 계산한 수의 합 <img src="/LSW/flDownload.do?flSeq=112829483" alt="식">')
+    h_img_2 = compute_law_text_hash('⑧ 다음 계산식에 따라 계산한 수의 합 <IMG SRC="/LSW/flDownload.do?flSeq=999999999">')
+    h_img_none = compute_law_text_hash('⑧ 다음 계산식에 따라 계산한 수의 합')
+    h_img_literal = compute_law_text_hash('⑧ 다음 계산식에 따라 계산한 수의 합 [이미지]')
+    if h_img_1 != h_img_2 or h_img_1 != h_img_literal or h_img_1 == h_img_none:
+        errors.append(f"9-13d 실패: <img ...> 태그 [이미지] 정규화 해시 불일치 ({h_img_1}, {h_img_2}, {h_img_none})")
+
+    # (9-14) [피드백 2] 박스형 계산식 표 변환 시 원문 무변형 검증:
+    #        원문 박스 문장의 공백 제거 문자열과 변환 후 표 셀(2열) 문자열의 공백 제거 문자열이 100% 동일한지 검증
+    sample_box_lines = [
+        "┌──────────────────────────────────────────┐",
+        "│ A + B + C                                │",
+        "│ A: 직전 과세연도 대비 청년등상시근로자의 증가 인원 수(해당 과 │",
+        "│ 세연도의 청년등상시근로자의 수에서 직전 과세연도의 청년등상 │",
+        "│ 시근로자의 수를 뺀 값을 말한다. 이 하는 기본 다음 같다)에 대한 금 │",
+        "│ 액                                       │",
+        "│ 직전 과세연도 대비 청년등상시근로자의 증가 인원 수 × 700만원 │",
+        "│ (수도권 밖의 지역에서 증가한 경우 1,000만원)       │",
+        "│ * A, B 또는 C의 계산식에 따라 계산한 금액이 음수인 경우 해당 │",
+        "│ 금액은 0으로 본다.                       │",
+        "└──────────────────────────────────────────┘",
+    ]
+    raw_box_inner = "".join(
+        _re.sub(r"[┌┏┬┐┓├┣┼┤┫└┗┴┘┛─━│|┃｜\s]+", "", ln)
+        for ln in sample_box_lines
+    )
+    md_tbl_out = convert_box_lines_to_md_table(sample_box_lines)
+    col2_cells = []
+    for t_ln in md_tbl_out[2:]:
+        parts = [c.strip() for c in t_ln.strip("|").split("|")]
+        if len(parts) >= 2:
+            col2_cells.append(parts[1])
+    joined_col2 = "".join(col2_cells)
+    col2_nospace = _re.sub(r"\s+", "", joined_col2)
+    if (
+        raw_box_inner != col2_nospace
+        or "이 하는" not in joined_col2
+        or "기본 다음" not in joined_col2
+    ):
+        errors.append(
+            f"9-14 실패: 박스형 계산식 표 변환 전후 공백제거 문자열 불일치 또는 원문 변형 발생 "
+            f"(raw={raw_box_inner} vs col2={col2_nospace})"
+        )
 
     return (len(errors) == 0), errors

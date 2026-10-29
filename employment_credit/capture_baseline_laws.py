@@ -78,7 +78,7 @@ def capture_live_baseline_dict() -> tuple[dict[str, dict], list[str], list[str]]
             found_mst_id = str(top_r.get("법령일련번호") or top_r.get("MST") or "").strip()
 
         # 2) 감시 조문 및 부칙 개별 조회 후 파싱
-        combined_raw = P._fetch_single_law_by_individual_articles(l_nm, w_arts, add_qs)
+        combined_raw = P._fetch_single_law_by_individual_articles(l_nm, w_arts, add_qs, law_id_hint=found_law_id, mst_id_hint=found_mst_id)
         parsed = P._parse_law_header_and_sections(combined_raw, l_nm)
         if found_law_id:
             parsed["법령ID"] = found_law_id

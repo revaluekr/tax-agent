@@ -203,7 +203,8 @@ def _int(v, default: int) -> int:
 
 _LAW_MODAL_REPORT_CSS = """
 <style>
-div[data-testid="stDialog"] {
+div[data-testid="stDialog"],
+div[data-testid="stModal"] {
     display: flex !important;
     align-items: flex-start !important;
     justify-content: center !important;
@@ -212,8 +213,10 @@ div[data-testid="stDialog"] {
     overflow-y: auto !important;
 }
 div[data-testid="stDialog"] > div[role="dialog"],
-div[role="dialog"] {
-    width: min(1100px, 90vw);
+div[data-testid="stModal"] > div[role="dialog"],
+div[role="dialog"],
+div[aria-modal="true"] {
+    width: min(1120px, 92vw);
     min-width: 520px !important;
     max-width: 96vw !important;
     max-height: 86vh !important;
@@ -221,9 +224,12 @@ div[role="dialog"] {
     resize: both !important;
     margin: 0 auto !important;
     border-radius: 14px !important;
-    box-shadow: 0 12px 36px rgba(15, 23, 42, 0.24) !important;
+    border: 1.5px solid #334155 !important;
+    box-shadow: 0 14px 40px rgba(15, 23, 42, 0.28) !important;
 }
-/* 법령 탭: 하단 회색 줄을 검정색으로 변경 + 각 선택칸은 검정 테두리 네모칸 + 왼쪽 상단만 타원형 + 미선택 흰색 / 선택 시 그린(#16a34a) */
+/* 법령 탭: 하단 검정색 실선(2px solid #000000) + 검정 테두리 네모칸 + 좌측 상단만 타원형 + 미선택 흰색 / 선택 시 그린(#16a34a) */
+.st-key-ec_law_modal_tabs_root div[data-baseweb="tab-list"],
+div[data-testid="stDialog"] div[data-baseweb="tab-list"],
 div[role="dialog"] div[data-baseweb="tab-list"] {
     border-bottom: 2px solid #000000 !important;
     gap: 6px !important;
@@ -231,12 +237,18 @@ div[role="dialog"] div[data-baseweb="tab-list"] {
     margin-bottom: 16px !important;
     background: transparent !important;
 }
+.st-key-ec_law_modal_tabs_root div[data-baseweb="tab-highlight"],
+.st-key-ec_law_modal_tabs_root div[data-baseweb="tab-border"],
+div[data-testid="stDialog"] div[data-baseweb="tab-highlight"],
+div[data-testid="stDialog"] div[data-baseweb="tab-border"],
 div[role="dialog"] div[data-baseweb="tab-highlight"],
 div[role="dialog"] div[data-baseweb="tab-border"] {
     display: none !important;
     height: 0px !important;
     background: transparent !important;
 }
+.st-key-ec_law_modal_tabs_root button[data-baseweb="tab"],
+div[data-testid="stDialog"] button[data-baseweb="tab"],
 div[role="dialog"] button[data-baseweb="tab"] {
     background-color: #ffffff !important;
     color: #0f172a !important;
@@ -252,6 +264,12 @@ div[role="dialog"] button[data-baseweb="tab"] {
     box-shadow: none !important;
     transition: all 0.12s ease-in-out !important;
 }
+.st-key-ec_law_modal_tabs_root button[data-baseweb="tab"] p,
+.st-key-ec_law_modal_tabs_root button[data-baseweb="tab"] span,
+.st-key-ec_law_modal_tabs_root button[data-baseweb="tab"] div,
+div[data-testid="stDialog"] button[data-baseweb="tab"] p,
+div[data-testid="stDialog"] button[data-baseweb="tab"] span,
+div[data-testid="stDialog"] button[data-baseweb="tab"] div,
 div[role="dialog"] button[data-baseweb="tab"] p,
 div[role="dialog"] button[data-baseweb="tab"] span,
 div[role="dialog"] button[data-baseweb="tab"] div {
@@ -260,10 +278,14 @@ div[role="dialog"] button[data-baseweb="tab"] div {
     font-size: 0.96rem !important;
     margin: 0 !important;
 }
+.st-key-ec_law_modal_tabs_root button[data-baseweb="tab"]:hover:not([aria-selected="true"]),
+div[data-testid="stDialog"] button[data-baseweb="tab"]:hover:not([aria-selected="true"]),
 div[role="dialog"] button[data-baseweb="tab"]:hover:not([aria-selected="true"]) {
     background-color: #f0fdf4 !important;
     color: #15803d !important;
 }
+.st-key-ec_law_modal_tabs_root button[data-baseweb="tab"][aria-selected="true"],
+div[data-testid="stDialog"] button[data-baseweb="tab"][aria-selected="true"],
 div[role="dialog"] button[data-baseweb="tab"][aria-selected="true"] {
     background-color: #16a34a !important;
     color: #ffffff !important;
@@ -272,93 +294,117 @@ div[role="dialog"] button[data-baseweb="tab"][aria-selected="true"] {
     border-radius: 18px 0px 0px 0px !important;
     font-weight: 800 !important;
 }
+.st-key-ec_law_modal_tabs_root button[data-baseweb="tab"][aria-selected="true"] p,
+.st-key-ec_law_modal_tabs_root button[data-baseweb="tab"][aria-selected="true"] span,
+.st-key-ec_law_modal_tabs_root button[data-baseweb="tab"][aria-selected="true"] div,
+div[data-testid="stDialog"] button[data-baseweb="tab"][aria-selected="true"] p,
+div[data-testid="stDialog"] button[data-baseweb="tab"][aria-selected="true"] span,
+div[data-testid="stDialog"] button[data-baseweb="tab"][aria-selected="true"] div,
 div[role="dialog"] button[data-baseweb="tab"][aria-selected="true"] p,
 div[role="dialog"] button[data-baseweb="tab"][aria-selected="true"] span,
 div[role="dialog"] button[data-baseweb="tab"][aria-selected="true"] div {
     color: #ffffff !important;
     font-weight: 800 !important;
 }
-/* 모달 내부 자율 에이전트 AI 보고서 양식·폰트크기(1.12rem)·색상 동기화 (네이티브 컨테이너 + 마크다운 파싱 보장) */
-div[role="dialog"] .ec-agent-report-wrap,
-div[role="dialog"] div[class*="st-key-ec_agent_report_box_"] {
+/* 모달 내부 자율 에이전트 AI 보고서 양식·폰트크기(1.12rem)·색상 동기화 및 선명한 테두리선 적용 */
+.ec-agent-report-wrap,
+div[class*="st-key-ec_agent_report_box_"] {
     background: #ffffff !important;
-    border: 1.5px solid #cbd5e1 !important;
+    border: 1.5px solid #475569 !important;
     border-top: 5px solid #1e3a8a !important;
     border-radius: 12px !important;
     padding: 22px 26px !important;
     margin: 6px 0 14px 0 !important;
-    box-shadow: 0 3px 12px rgba(15, 23, 42, 0.05) !important;
+    box-shadow: 0 4px 14px rgba(15, 23, 42, 0.08) !important;
     font-family: 'Pretendard', 'Malgun Gothic', sans-serif !important;
     font-size: 1.12rem !important;
     line-height: 1.72 !important;
-    color: #1e293b !important;
+    color: #0f172a !important;
 }
-div[role="dialog"] .ec-agent-report-wrap h3,
-div[role="dialog"] div[class*="st-key-ec_agent_report_box_"] h3 {
+.ec-agent-report-wrap h3,
+div[class*="st-key-ec_agent_report_box_"] h3 {
     color: #1e3a8a !important;
-    background: linear-gradient(90deg, #f1f5f9 0%, #ffffff 100%) !important;
+    background: linear-gradient(90deg, #eff6ff 0%, #f8fafc 100%) !important;
     border-left: 5px solid #1e3a8a !important;
-    padding: 8px 14px !important;
+    border-bottom: 1.5px solid #94a3b8 !important;
+    padding: 9px 14px !important;
     border-radius: 0 6px 6px 0 !important;
     margin-top: 18px !important;
-    margin-bottom: 10px !important;
+    margin-bottom: 12px !important;
     font-size: 1.24rem !important;
     font-weight: 800 !important;
 }
-div[role="dialog"] .ec-agent-report-wrap h3:first-child,
-div[role="dialog"] div[class*="st-key-ec_agent_report_box_"] h3:first-child {
+.ec-agent-report-wrap h3:first-child,
+div[class*="st-key-ec_agent_report_box_"] h3:first-child {
     margin-top: 2px !important;
 }
-div[role="dialog"] .ec-agent-report-wrap h4,
-div[role="dialog"] div[class*="st-key-ec_agent_report_box_"] h4 {
+.ec-agent-report-wrap h4,
+div[class*="st-key-ec_agent_report_box_"] h4 {
     color: #1e40af !important;
-    margin-top: 14px !important;
-    margin-bottom: 6px !important;
+    margin-top: 16px !important;
+    margin-bottom: 8px !important;
+    padding-bottom: 5px !important;
+    border-bottom: 1.5px solid #94a3b8 !important;
     font-size: 1.14rem !important;
-    font-weight: 700 !important;
+    font-weight: 800 !important;
     background: transparent !important;
     border-left: none !important;
-    padding: 0 !important;
 }
-div[role="dialog"] .ec-agent-report-wrap p,
-div[role="dialog"] .ec-agent-report-wrap li,
-div[role="dialog"] div[class*="st-key-ec_agent_report_box_"] p,
-div[role="dialog"] div[class*="st-key-ec_agent_report_box_"] li {
+.ec-agent-report-wrap p,
+.ec-agent-report-wrap li,
+div[class*="st-key-ec_agent_report_box_"] p,
+div[class*="st-key-ec_agent_report_box_"] li {
     font-size: 1.12rem !important;
     line-height: 1.68 !important;
-    color: #1e293b !important;
+    color: #0f172a !important;
     margin-bottom: 6px !important;
 }
-div[role="dialog"] .ec-agent-report-wrap table,
-div[role="dialog"] div[class*="st-key-ec_agent_report_box_"] table {
+.ec-agent-report-wrap table,
+div[class*="st-key-ec_agent_report_box_"] table {
     width: 100% !important;
     border-collapse: collapse !important;
-    margin: 10px 0 14px 0 !important;
+    margin: 12px 0 16px 0 !important;
     font-size: 0.98rem !important;
-    border-top: 2px solid #1e293b !important;
-    border-bottom: 2px solid #1e293b !important;
+    border: 1.5px solid #334155 !important;
+    border-top: 2.5px solid #0f172a !important;
+    border-bottom: 2.5px solid #0f172a !important;
 }
-div[role="dialog"] .ec-agent-report-wrap th,
-div[role="dialog"] div[class*="st-key-ec_agent_report_box_"] th {
+.ec-agent-report-wrap th,
+div[class*="st-key-ec_agent_report_box_"] th {
     background: #1e293b !important;
     color: #ffffff !important;
     font-weight: 800 !important;
     font-size: 0.98rem !important;
-    padding: 10px 12px !important;
-    border: 1px solid #334155 !important;
+    padding: 10px 14px !important;
+    border: 1px solid #475569 !important;
     text-align: center !important;
 }
-div[role="dialog"] .ec-agent-report-wrap td,
-div[role="dialog"] div[class*="st-key-ec_agent_report_box_"] td {
-    padding: 9px 12px !important;
-    border: 1px solid #cbd5e1 !important;
+.ec-agent-report-wrap td,
+div[class*="st-key-ec_agent_report_box_"] td {
+    padding: 9px 14px !important;
+    border: 1px solid #64748b !important;
     font-size: 0.98rem !important;
-    color: #1e293b !important;
+    color: #0f172a !important;
     font-weight: 500 !important;
     vertical-align: middle !important;
+    line-height: 1.58 !important;
 }
-div[role="dialog"] .ec-agent-report-wrap tr:nth-child(even) td,
-div[role="dialog"] div[class*="st-key-ec_agent_report_box_"] tr:nth-child(even) td {
+.ec-agent-report-wrap th:first-child,
+.ec-agent-report-wrap td:first-child,
+div[class*="st-key-ec_agent_report_box_"] th:first-child,
+div[class*="st-key-ec_agent_report_box_"] td:first-child {
+    white-space: nowrap !important;
+    min-width: 92px !important;
+    text-align: center !important;
+    font-weight: 800 !important;
+}
+.ec-agent-report-wrap td:first-child,
+div[class*="st-key-ec_agent_report_box_"] td:first-child {
+    background: #f1f5f9 !important;
+    color: #0f172a !important;
+}
+.ec-agent-report-wrap tr:nth-child(even) td:not(:first-child),
+div[class*="st-key-ec_agent_report_box_"] tr:nth-child(even) td:not(:first-child) {
     background: #f8fafc !important;
 }
 /* 법령별 하단 왼쪽 [PDF 출력] 버튼 스타일 */
@@ -386,172 +432,13 @@ div[class*="st-key-ec_law_pdf_wrap_"] [data-testid="stDownloadButton"] button:ho
 """
 
 
-def _heal_korean_box_wraps(s: str) -> str:
-    """법제처 고정폭 박스(┌───┐) 줄바꿈으로 인해 단어 중간이나 조사 앞에 삽입된 공백을 복원합니다."""
-    replacements = [
-        (r"과\s+세연도", "과세연도"),
-        (r"사\s+업연도", "사업연도"),
-        (r"청\s+년등", "청년등"),
-        (r"청년\s+등", "청년등"),
-        (r"청년등\s+상시", "청년등상시"),
-        (r"청년등상\s+시근로자", "청년등상시근로자"),
-        (r"청년등상시\s+근로자", "청년등상시근로자"),
-        (r"청년등상시근\s+로자", "청년등상시근로자"),
-        (r"청년등상시근로\s+자", "청년등상시근로자"),
-        (r"청년등\s+외", "청년등외"),
-        (r"청년등외\s+상시", "청년등외상시"),
-        (r"청년등외상\s+시근로자", "청년등외상시근로자"),
-        (r"청년등외상시\s+근로자", "청년등외상시근로자"),
-        (r"상\s+시근로자", "상시근로자"),
-        (r"상시\s+근로자", "상시근로자"),
-        (r"상시근\s+로자", "상시근로자"),
-        (r"상시근로\s+자", "상시근로자"),
-        (r"근\s+로자", "근로자"),
-        (r"금\s+액", "금액"),
-        (r"(\d)\s*만\s+원", r"\1만원"),
-        (r"제\s+외한다", "제외한다"),
-        (r"제외\s+한다", "제외한다"),
-        (r"포\s+함한다", "포함한다"),
-        (r"포함\s+한다", "포함한다"),
-        (r"말\s+한다", "말한다"),
-        (r"본\s+다", "본다"),
-        (r"같\s+다", "같다"),
-        (r"음\s+수", "음수"),
-        (r"경\s+우", "경우"),
-        (r"수\s+도권", "수도권"),
-        (r"수도\s+권", "수도권"),
-        (r"지\s+역", "지역"),
-        (r"개\s+시한", "개시한"),
-        (r"개시\s+한", "개시한"),
-        (r"계\s+산한", "계산한"),
-        (r"계산\s+한", "계산한"),
-        (r"계\s+산식", "계산식"),
-        (r"계산\s+식", "계산식"),
-        (r"증\s+가", "증가"),
-        (r"감\s+소", "감소"),
-        (r"인\s+원\s+수", "인원 수"),
-        (r"인\s+원수", "인원수"),
-        (r"인\s+원", "인원"),
-        (r"최소\s+고용", "최소고용"),
-        (r"고용\s+증가", "고용증가"),
-        (r"중\s+소기업", "중소기업"),
-        (r"중소\s+기업", "중소기업"),
-        (r"중\s+견기업", "중견기업"),
-        (r"중견\s+기업", "중견기업"),
-        (r"전\s+전전", "전전전"),
-        (r"전전\s+전", "전전전"),
-        (r"직\s+전", "직전"),
-        (r"해\s+당", "해당"),
-        (r"대\s+한", "대한"),
-        (r"이\s+하", "이하"),
-        (r"이\s+전", "이전"),
-        (r"소\s+득세", "소득세"),
-        (r"법\s+인세", "법인세"),
-        (r"수\s+를\s+뺀", "수를 뺀"),
-        (r"값\s+을\s+말한다", "값을 말한다"),
-        (r"수\s+에서", "수에서"),
-        (r"지역\s+에서", "지역에서"),
-        (r"계산식\s+에", "계산식에"),
-        (r"금액\s+이", "금액이"),
-        (r"금액\s+은", "금액은"),
-        (r"과세연도\s+는", "과세연도는"),
-        (r"과세연도\s+의", "과세연도의"),
-    ]
-    out = s
-    for pat, rep in replacements:
-        out = re.sub(pat, rep, out)
-    return re.sub(r"\s{2,}", " ", out).strip()
-
-
-def _convert_box_lines_to_md_table(box_lines: list[str]) -> list[str]:
-    """
-    법제처 조문 원문 내 박스형 계산식(┌───┐ │ ... │ └───┘ 또는 | ... |)의 줄바꿈 끊김을 복원하고
-    깔끔한 마크다운 표(| 구분 | 계산식 및 산출 내역 |)로 변환합니다.
-    """
-    cleaned_lines: list[str] = []
-    for raw in box_lines:
-        s = raw.strip()
-        s = re.sub(r"^[┌┏┬┐┓├┣┼┤┫└┗┴┘┛─━│|┃｜+\-\s]+", "", s)
-        s = re.sub(r"[┌┏┬┐┓├┣┼┤┫└┗┴┘┛─━│|┃｜+\-\s]+$", "", s)
-        s = s.strip()
-        if s:
-            cleaned_lines.append(s)
-    if not cleaned_lines:
-        return []
-
-    merged: list[str] = []
-    new_item_re = re.compile(
-        r"^(?:A\s*\+\s*B(?:\s*\+\s*C)?|[A-Z]\s*[:：]|[*※]|직전\s*과세연도|전전\s*과세연도|전전전\s*과세연도|최소고용증가인원수)"
-    )
-    for ln in cleaned_lines:
-        if not merged:
-            merged.append(ln)
-            continue
-        prev = _heal_korean_box_wraps(merged[-1])
-        merged[-1] = prev
-        prev_ends_complete = bool(
-            re.search(r"(?:금액|만원\)|만원|본다\.|한다\.|합계|C)$", prev)
-        )
-        if re.match(r"^(?:A\s*\+\s*B|[A-Z]\s*[:：]|[*※])", ln):
-            merged.append(ln)
-        elif prev_ends_complete and new_item_re.match(ln):
-            merged.append(ln)
-        elif prev_ends_complete and ("×" in ln or "÷" in ln or "+" in ln):
-            merged.append(ln)
-        else:
-            if re.search(r"[×+\-÷=]$", prev):
-                merged[-1] = _heal_korean_box_wraps(prev + " " + ln)
-            elif ln.startswith(("(", ")", ",", ".")):
-                merged[-1] = _heal_korean_box_wraps(prev + ln)
-            elif re.search(
-                r"(?:해당\s*과|청년등상|청년등|대한\s*금|1,\d00만|\d00만|대비\s*청|과세연도는\s*제외|과세연도는\s*제|증가\s*인원|산출한\s*금)$",
-                prev,
-            ):
-                merged[-1] = _heal_korean_box_wraps(prev + ln)
-            else:
-                merged[-1] = _heal_korean_box_wraps(prev + " " + ln)
-
-    merged = [_heal_korean_box_wraps(m) for m in merged if m.strip()]
-
-    if len(merged) == 1:
-        return [
-            "| 구분 | 계산 산식 |",
-            "| :---: | :--- |",
-            f"| **계산식** | **{merged[0]}** |",
-        ]
-
-    rows: list[tuple[str, str]] = []
-    cur_key = "계산식"
-    for item in merged:
-        if re.match(r"^A\s*\+\s*B", item):
-            rows.append(("기본 산식", f"**{item}**"))
-        elif re.match(r"^([A-Z])\s*[:：]\s*(.*)$", item):
-            m_k = re.match(r"^([A-Z])\s*[:：]\s*(.*)$", item)
-            cur_key = f"{m_k.group(1)} 정의"
-            rows.append((cur_key, m_k.group(2).strip()))
-            cur_key = f"{m_k.group(1)} 산식"
-        elif item.startswith(("*", "※")):
-            rows.append(("비고", item))
-        else:
-            lbl = cur_key if "산식" in cur_key else "계산 산식"
-            rows.append((lbl, f"**{item}**" if ("×" in item or "+" in item or "÷" in item) else item))
-            if "산식" in cur_key:
-                cur_key = "계산 산식"
-
-    md_tbl = [
-        "| 구분 | 계산식 및 산출 내역 |",
-        "| :---: | :--- |",
-    ]
-    for k, v in rows:
-        md_tbl.append(f"| **{k}** | {v} |")
-    return md_tbl
-
-
 def _clean_and_format_law_text_for_report(raw_text: str, law_name: str = "조세특례제한법") -> str:
     """
-    1) 법제처 원문의 <img> 태그는 삭제하지 않고 '[원문 이미지(계산식·표): 법제처 원문에서 확인]' 및 법제처 원문 링크 표로 표시합니다 (피드백 5).
-    2) 박스형 계산식(┌───┐ │ ... │ └───┘ 및 | ... | 박스)은 줄바꿈 끊김을 복원하여 깔끔한 마크다운 표 안에 넣어 표시합니다.
-    3) 4칸 공백 들여쓰기로 인해 마크다운이 코드 블록(<pre><code>)으로 오인하여 '**나.**' 기호가 그대로 노출되던 문제를 해결합니다.
+    [피드백 2, 3, 5 반영]
+    1) 법제처 원문의 <img> 태그는 '[원문 이미지(계산식·표): 법제처 원문에서 확인]' 및 법제처 원문 링크 표로 표시합니다.
+    2) 박스형 계산식(┌───┐ │ ... │ └───┘ 및 | ... | 박스)은 R.convert_box_lines_to_md_table을 통해
+       단어 사전 치환 없이 연속된 줄을 공백 없이 그대로 이어 붙여 원문 글자 그대로 마크다운 표로 변환합니다.
+    3) 4칸 공백 들여쓰기로 인해 마크다운이 코드 블록(<pre><code>)으로 오인하여 '**나.**' 기호가 노출되던 문제를 해결합니다.
     """
     if not raw_text:
         return ""
@@ -578,7 +465,7 @@ def _clean_and_format_law_text_for_report(raw_text: str, law_name: str = "조세
             i += 1
             continue
 
-        # 1) 박스형 산식(┌───┐ ... └───┘ 또는 │ ... │) 감지 및 마크다운 표 변환
+        # 1) 박스형 산식(┌───┐ ... └───┘ 또는 │ ... │) 감지 및 마크다운 표 변환 (원문 글자 무변형)
         starts_top_box = bool(re.match(r"^[┌┏┬─━]", ln))
         starts_vert_box = bool(re.match(r"^[│┃｜]", ln))
         if starts_top_box or starts_vert_box:
@@ -607,7 +494,7 @@ def _clean_and_format_law_text_for_report(raw_text: str, law_name: str = "조세
                         break
                 else:
                     break
-            tbl_lines = _convert_box_lines_to_md_table(box_buf)
+            tbl_lines = R.convert_box_lines_to_md_table(box_buf)
             if tbl_lines:
                 out_blocks.append("\n".join(tbl_lines))
             continue
@@ -632,13 +519,12 @@ def _clean_and_format_law_text_for_report(raw_text: str, law_name: str = "조세
             if has_md_sep:
                 out_blocks.append("\n".join(pipe_buf))
             else:
-                tbl_lines = _convert_box_lines_to_md_table(pipe_buf)
+                tbl_lines = R.convert_box_lines_to_md_table(pipe_buf)
                 if tbl_lines:
                     out_blocks.append("\n".join(tbl_lines))
             continue
 
         # 3) 조문·항·호·목 포맷팅 (앞쪽 4칸 공백 들여쓰기 금지 — 코드블록 오인 및 **나.** 노출 원천 차단)
-        # 혹시 원문에 이미 "- **나.**" 또는 "**나.**" 형태로 들어온 경우에도 선행 공백을 제거하여 정상 리스트로 정규화
         ln_clean = re.sub(r"^[-*•]\s+", "", ln).strip()
         if re.match(r"^제\s*\d+\s*조(?:\s*의\s*\d+)?\s*\(", ln_clean):
             out_blocks.append(f"#### {ln_clean}")
@@ -889,8 +775,8 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
         c_warn, c_btn = st.columns([4.2, 1.3], vertical_alignment="center")
         with c_warn:
             st.warning(
-                "**[기준 버전 미설정 · 확인 필요]** 법제처에서 최신 법령·시행령·시행규칙 원문을 정상적으로 불러왔으며, "
-                "현재 프로그램에는 통합고용세액공제 현행 세법이 모두 반영되어 있습니다. (최초 기준 버전 확정 전까지는 확인 필요 상태로 표시됩니다.)"
+                "**[기준 버전 미설정 · 확인 필요]** 법제처 현행 원문은 정상 수신되었습니다. "
+                "계산 기준 버전이 확정되지 않아 개정 반영 여부를 판정하지 않았습니다."
             )
         with c_btn:
             if st.button("지금 다시 조회", use_container_width=True, key="btn_ec_law_refresh_unset"):
@@ -900,8 +786,7 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
         c_ok, c_btn = st.columns([4.4, 1.2], vertical_alignment="center")
         with c_ok:
             st.success(
-                f"현재 법제처 최신 법령·시행령·시행규칙이 프로그램에 모두 반영되어 있습니다 "
-                f"(기준일: `{law_status.get('last_checked_at', '-')}`)"
+                f"감시 조문이 계산 기준 버전과 일치합니다 (기준일: `{law_status.get('last_checked_at', '-')}`)"
             )
         with c_btn:
             if st.button("지금 다시 조회", use_container_width=True, key="btn_ec_law_refresh_ok"):
@@ -928,7 +813,8 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
         "농어촌특별세법",
         "예규·안내문 원문",
     ]
-    t_law, t_dec, t_rule, t_rural, t_rulings = st.tabs(tab_names)
+    tabs_root = st.container(key="ec_law_modal_tabs_root")
+    t_law, t_dec, t_rule, t_rural, t_rulings = tabs_root.tabs(tab_names)
 
     def _render_single_law_tab(law_key: str):
         l_info = laws_map.get(law_key) or {}
@@ -961,7 +847,7 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
         )
         if base_no and base_has_h:
             base_no_disp = f"제{base_no}호" + (f" (법령ID: {base_id})" if base_id else "")
-            base_status_disp = f"반영 완료 (반영일: {b_info.get('반영일', '-')})"
+            base_status_disp = f"기준 버전 설정됨 (설정일: {b_info.get('반영일', '-')})"
         elif base_no:
             base_no_disp = f"제{base_no}호"
             base_status_disp = "기준 버전 미설정 · 확인 필요"

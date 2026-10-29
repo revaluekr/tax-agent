@@ -655,18 +655,90 @@ def _fetch_single_law_by_individual_articles(
     law_name: str,
     watched_articles: list[str] | tuple[str, ...],
     addenda_queries: list[str] | tuple[str, ...],
+    law_id_hint: str = "",
+    mst_id_hint: str = "",
 ) -> str:
     """
-    [피드백 1 — 감시 조문 및 부칙 개별 조회]
-    쉼표로 묶어 한 번에 조회하면 law_api._parse_article_filter가 첫 조문만 인식하거나
-    agent.compress_legal_text 쿼터로 인해 뒷조문·부칙이 잘리므로,
-    각 감시 조문과 부칙을 개별 호출하여 합칩니다. (동일 법령 XML 메모리 캐시를 재사용하므로 추가 네트워크 비용 0)
+    [피드백 1 & 피드백 4 반영 — 무압축 XML 직접 추출 우선 + 감시 조문·부칙 개별 추출]
+    1) agent.get_law_details_for_gemini를 거치면 compress_legal_text로 인해 <개정> 태그가 <최근개정>으로 변형되거나
+       부칙이 축약되므로, 법령ID(또는 일련번호)로 전체 XML 원문을 압축 없이 직접 받는 경로(agent._fetch_full_law_xml_direct)를
+       최우선 사용하여 감시 조문과 부칙 블록을 원문 그대로 추출합니다.
+    2) 화면 원문 뷰어([상세 보기])도 동일하게 압축·변형 없는 원문을 사용합니다.
     """
     import agent
 
     header_line = ""
     article_chunks: list[str] = []
     addenda_chunks: list[str] = []
+
+    # 1단계: 무압축 전체 XML(agent._fetch_full_law_xml_direct)에서 감시 조문·부칙 직접 추출
+    cand_ids = [x for x in (law_id_hint, mst_id_hint) if str(x or "").strip().isdigit()]
+    if not cand_ids and hasattr(agent, "_resolve_law_id_if_name"):
+        try:
+            resolved = str(agent._resolve_law_id_if_name(law_name) or "").strip()
+            if resolved.isdigit():
+                cand_ids.append(resolved)
+        except Exception:
+            pass
+
+    full_uncompressed = ""
+    if hasattr(agent, "_fetch_full_law_xml_direct"):
+        for cid in cand_ids:
+            try:
+                full_uncompressed = str(agent._fetch_full_law_xml_direct(cid) or "").strip()
+                if full_uncompressed and not full_uncompressed.startswith("❌"):
+                    break
+            except Exception:
+                full_uncompressed = ""
+
+    if full_uncompressed and not full_uncompressed.startswith("❌"):
+        u_lines = full_uncompressed.splitlines()
+        if u_lines and u_lines[0].strip().startswith("📘"):
+            header_line = u_lines[0].strip()
+            id_tags = []
+            if law_id_hint:
+                id_tags.append(f"법령ID: {law_id_hint}")
+            if mst_id_hint:
+                id_tags.append(f"일련번호: {mst_id_hint}")
+            if id_tags and "법령ID:" not in header_line and "일련번호:" not in header_line:
+                header_line = f"{header_line} ({' | '.join(id_tags)})"
+            rest_body = "\n".join(u_lines[1:]).strip()
+        else:
+            rest_body = full_uncompressed
+
+        add_m = re.search(r"(?m)^(?:\s*📌\s*\[[^\n]*부칙|\s*\[?부칙\s*<)", rest_body)
+        main_raw = rest_body[:add_m.start()].strip() if add_m else rest_body
+        add_raw = rest_body[add_m.start():].strip() if add_m else ""
+
+        raw_art_map: dict[str, str] = {}
+        a_starts = list(re.finditer(r"(?m)^\s*제\s*(\d+)\s*조(?:\s*의\s*(\d+))?(?:\s*\(|\s+)", main_raw))
+        for idx, am in enumerate(a_starts):
+            jo_n = int(am.group(1))
+            gaji_n = int(am.group(2) or 0)
+            end_p = a_starts[idx + 1].start() if idx + 1 < len(a_starts) else len(main_raw)
+            a_key = f"제{jo_n}조" + (f"의{gaji_n}" if gaji_n else "")
+            a_chunk = main_raw[am.start():end_p].strip()
+            if a_key not in raw_art_map or len(a_chunk) > len(raw_art_map[a_key]):
+                raw_art_map[a_key] = a_chunk
+
+        for w_art in watched_articles:
+            w_s = str(w_art).strip()
+            if "별지" in w_s:
+                continue
+            m_base = re.search(r"(제\s*\d+\s*조(?:\s*의\s*\d+)?)", w_s)
+            q_art = re.sub(r"\s+", "", m_base.group(1)) if m_base else w_s
+            found_chunk = raw_art_map.get(q_art, "").strip()
+            if found_chunk and found_chunk not in article_chunks:
+                article_chunks.append(found_chunk)
+
+        if add_raw:
+            addenda_chunks.append(add_raw)
+
+        if header_line and article_chunks:
+            combined_direct = header_line + "\n\n" + "\n\n".join(article_chunks)
+            if addenda_chunks:
+                combined_direct += "\n\n📌 [법령 부칙 (시행일 · 적용례 · 경과조치)]\n\n" + "\n\n".join(addenda_chunks)
+            return combined_direct
 
     for w_art in watched_articles:
         w_s = str(w_art).strip()
@@ -792,8 +864,15 @@ def fetch_daily_ec_law_monitoring_status(
 
     def _fetch_one(spec: tuple[str, tuple[str, ...], tuple[str, ...]]) -> tuple[str, str]:
         lnm, w_arts, add_qs = spec
+        meta_m = law_meta_map.get(lnm) or {}
         try:
-            combined_txt = _fetch_single_law_by_individual_articles(lnm, w_arts, add_qs)
+            combined_txt = _fetch_single_law_by_individual_articles(
+                lnm,
+                w_arts,
+                add_qs,
+                law_id_hint=str(meta_m.get("법령ID") or ""),
+                mst_id_hint=str(meta_m.get("법령일련번호") or ""),
+            )
             return lnm, combined_txt
         except Exception:
             return lnm, ""
@@ -941,7 +1020,8 @@ def request_on_demand_law_ai_interpretation(
             "   ④ 실무 확인 사항\n"
             "2. 금액(원, 만원 등)이나 인원(명, 인 등) 같은 구체적 숫자 예시를 절대 쓰지 말 것.\n"
             "3. '환급 가능', '추징 대상', '공제 가능' 같은 단정적 결론 어휘를 절대 쓰지 말 것.\n"
-            "4. 법령이나 부칙을 따옴표로 인용할 때는 아래 제공된 원문 글자 그대로만 인용할 것.\n\n"
+            "4. '미반영 개정 없음', '모두 반영' 등 판정 근거 없는 단정 문구를 절대 쓰지 말 것.\n"
+            "5. 법령이나 부칙을 따옴표로 인용할 때는 아래 제공된 원문 글자 그대로만 인용할 것.\n\n"
             f"[① 구 조문 원문 (제{old_prom}호)]\n{old_text[:5000] or '(현행과 동일)'}\n\n"
             f"[② 신(현행) 조문 원문 (제{new_prom}호)]\n{new_text[:5000] or '(원문 미수신)'}\n\n"
             f"[③ 부칙 원문]\n{addenda_text[:4000] or '(부칙 원문 없음)'}\n\n"
