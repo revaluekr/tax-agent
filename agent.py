@@ -1212,11 +1212,24 @@ def _fetch_full_law_xml_direct(doc_id: str, query_filter: str = "") -> str:
             prom_dt_str = f" | 공포일자: {law_prom_dt[:4]}.{law_prom_dt[4:6]}.{law_prom_dt[6:]}" if len(law_prom_dt) == 8 else ""
             eff_dt_str = f" | 시행일자: {law_eff_dt[:4]}.{law_eff_dt[4:6]}.{law_eff_dt[6:]}" if len(law_eff_dt) == 8 else ""
             header_meta_suffix = f"{prom_no_str}{prom_dt_str}{eff_dt_str}" 
+            qf_no_buchik = re.sub(r"부칙\s*제\s*\d+\s*조(?:\s*의\s*\d+)?", "", query_filter or "")
+            req_main_tuples = [
+                (int(m[0]), int(m[1]) if m[1] else 0)
+                for m in re.findall(r"제?\s*(\d+)\s*조(?:\s*의\s*(\d+))?", qf_no_buchik)
+            ]
+            req_main_prefixes = list(dict.fromkeys(
+                f"제{jo}조" + (f"의{gaji}" if gaji else "") for jo, gaji in req_main_tuples
+            ))
+            matched_art_rev_dates: set[str] = set()
+            related_main_prefixes: list[str] = list(req_main_prefixes)
+
             article_blocks = []
             for unit in root.findall(".//조문단위"):
                 jo_content = (unit.findtext("조문내용") or "").strip()
                 if not jo_content:
                     continue
+                u_jo = int(re.sub(r"\D", "", unit.findtext("조문번호") or "") or 0)
+                u_gaji = int(re.sub(r"\D", "", unit.findtext("조문가지번호") or "") or 0)
                 lines = [jo_content]
                 for hang in unit.findall(".//항"):
                     h_txt = (hang.findtext("항내용") or "").strip()
@@ -1230,8 +1243,31 @@ def _fetch_full_law_xml_direct(doc_id: str, query_filter: str = "") -> str:
                             mok_txt = (mok.findtext("목내용") or "").strip()
                             if mok_txt:
                                 lines.append("    " + mok_txt)
-                article_blocks.append("\n".join(lines))
-            addenda_units = []
+                full_unit_txt = "\n".join(lines)
+                article_blocks.append(full_unit_txt)
+
+                is_req_unit = (u_jo, u_gaji) in req_main_tuples or any(
+                    full_unit_txt.replace(" ", "").startswith(tp + "(")
+                    or re.match(rf"^{re.escape(tp)}(?![0-9의])", full_unit_txt.replace(" ", ""))
+                    for tp in req_main_prefixes
+                )
+                if is_req_unit:
+                    # 날짜 태그 삭제 전 모든 <개정/신설/전문개정/본조신설 YYYY. M. D.> 날짜 수집 (2024년 이전 포함)
+                    for m_dt in re.findall(r"((?:19|20)\d{2})\.\s*(\d{1,2})\.\s*(\d{1,2})", full_unit_txt):
+                        matched_art_rev_dates.add(f"{int(m_dt[0]):04d}{int(m_dt[1]):02d}{int(m_dt[2]):02d}")
+                    u_no_other = re.sub(
+                        r"[「『][^」』]+[」』](?:\s*시행령|\s*시행규칙)?(?:\s*제\s*\d+\s*조(?:\s*의\s*\d+)?(?:\s*제\s*\d+\s*항)?(?:\s*제\s*\d+\s*호)?)+",
+                        "",
+                        full_unit_txt,
+                    )
+                    for m_rel in re.findall(r"제\s*(\d+)\s*조(?:\s*의\s*(\d+))?", u_no_other):
+                        rp = f"제{m_rel[0]}조" + (f"의{m_rel[1]}" if m_rel[1] else "")
+                        if rp not in related_main_prefixes:
+                            related_main_prefixes.append(rp)
+
+            related_addenda_units = []
+            other_addenda_units = []
+            all_addenda_units = []
             for a_unit in root.findall(".//부칙단위"):
                 anc_dt = re.sub(r"\D", "", a_unit.findtext("부칙공포일자") or "")
                 anc_no = (a_unit.findtext("부칙공포번호") or "").strip()
@@ -1242,15 +1278,45 @@ def _fetch_full_law_xml_direct(doc_id: str, query_filter: str = "") -> str:
                     continue
                 dt_fmt = f"{anc_dt[:4]}.{anc_dt[4:6]}.{anc_dt[6:]}." if len(anc_dt) == 8 else anc_dt
                 no_fmt = f"제{anc_no}호, " if anc_no else ""
-                addenda_units.append((int(anc_dt) if anc_dt.isdigit() else 0, f"부칙 <{no_fmt}{dt_fmt}>\n{a_body}"))
-            addenda_units.sort(key=lambda x: x[0], reverse=True)
-            for _, a_blk in addenda_units[:25]:
-                article_blocks.append(a_blk)
+                dt_int = int(anc_dt) if anc_dt.isdigit() else 0
+
+                if req_main_prefixes:
+                    non_tabeop_body = _strip_tabeop_articles_from_addendum_body(a_body)
+                    body_no_own_hdr = re.sub(r"(?m)^\s*제\s*\d+\s*조(?:\s*의\s*\d+)?\s*\([^)]*\)", "", non_tabeop_body)
+                    body_clean = body_no_own_hdr.replace(" ", "")
+                    has_art_ref = bool(
+                        body_clean and any(
+                            re.search(rf"{re.escape(tp)}(?![0-9의])", body_clean)
+                            for tp in related_main_prefixes
+                        )
+                    )
+                    has_date_ref = bool(anc_dt and anc_dt in matched_art_rev_dates and non_tabeop_body.strip())
+                    if has_art_ref or has_date_ref:
+                        related_addenda_units.append((dt_int, f"부칙 <{no_fmt}{dt_fmt}> [본칙관련]\n{a_body}"))
+                    else:
+                        other_addenda_units.append((dt_int, f"부칙 <{no_fmt}{dt_fmt}>\n{a_body}"))
+                else:
+                    all_addenda_units.append((dt_int, f"부칙 <{no_fmt}{dt_fmt}>\n{a_body}"))
+
+            if req_main_prefixes:
+                related_addenda_units.sort(key=lambda x: x[0], reverse=True)
+                other_addenda_units.sort(key=lambda x: x[0], reverse=True)
+                # [문제 1 해결] 본칙 관련 부칙은 개수 제한 없이 전부 포함 + 그 밖의 최근 부칙 10건
+                for _, a_blk in related_addenda_units:
+                    article_blocks.append(a_blk)
+                for _, a_blk in other_addenda_units[:10]:
+                    article_blocks.append(a_blk)
+            else:
+                all_addenda_units.sort(key=lambda x: x[0], reverse=True)
+                for _, a_blk in all_addenda_units[:25]:
+                    article_blocks.append(a_blk)
+
             if article_blocks:
                 full_text = f"📘 [{lname}{header_meta_suffix}]\n\n" + "\n\n".join(article_blocks)
-                _cache_set(full_cache_key, full_text)
-                if law_eff_dt or law_prom_no:
-                    _cache_set(("full_law_xml_ver", lname.replace(" ", ""), law_eff_dt, law_prom_no), full_text)
+                if not req_main_prefixes:
+                    _cache_set(full_cache_key, full_text)
+                    if law_eff_dt or law_prom_no:
+                        _cache_set(("full_law_xml_ver", lname.replace(" ", ""), law_eff_dt, law_prom_no), full_text)
                 return full_text
         except Exception:
             continue
@@ -1305,18 +1371,138 @@ def _resolve_law_id_if_name(doc_id: str) -> str:
         pass
     return s_id
 
+
+def _is_tabeop_addendum_article(art_chunk: str) -> bool:
+    """
+    [문제 3 해결] 부칙 내부의 개별 조문('제n조(제목) ...')이 '다른 법령의 개정(타법개정)' 조문인지 판별합니다.
+    - 제목이 '다른 법령의 개정'/'다른 법령의 폐지'이거나,
+    - 본문이 '○○법(시행령·시행규칙) 일부를 다음과 같이 개정한다' 형태인 경우 True를 반환하여
+      조문번호·날짜·폴백 매칭 대상에서 모두 제외합니다.
+    """
+    if not art_chunk:
+        return False
+    c_ns = re.sub(r"\s+", "", art_chunk)
+    m_title = re.match(r"^제\d+조(?:의\d+)?\(([^)]*)\)", c_ns)
+    if m_title and ("다른법령의개정" in m_title.group(1) or "다른법령의폐지" in m_title.group(1)):
+        return True
+    if "다른법령의개정)" in c_ns[:40]:
+        return True
+    if "일부를다음과같이개정한다" in c_ns:
+        return True
+    return False
+
+
+def _strip_tabeop_articles_from_addendum_body(add_body: str) -> str:
+    """부칙 본문을 자체 조문(제n조) 단위로 나누어 타법개정 조문을 제거한 순수 부칙 본문을 반환합니다."""
+    if not add_body:
+        return ""
+    starts = list(re.finditer(r"(?m)^\s*제\s*\d+\s*조(?:\s*의\s*\d+)?(?:\s*\(|\s+)", add_body))
+    if not starts:
+        return "" if _is_tabeop_addendum_article(add_body) else add_body
+    kept = []
+    prefix_before = add_body[:starts[0].start()].strip()
+    if prefix_before and not _is_tabeop_addendum_article(prefix_before):
+        kept.append(prefix_before)
+    for idx, m in enumerate(starts):
+        end_p = starts[idx + 1].start() if idx + 1 < len(starts) else len(add_body)
+        chunk = add_body[m.start():end_p].strip()
+        if not _is_tabeop_addendum_article(chunk):
+            kept.append(chunk)
+    return "\n".join(kept)
+
+
+def _split_main_and_addenda_blocks(text: str) -> tuple[str, list[str], list[tuple[str, str]]]:
+    """
+    [문제 4 해결] 단순 '\n\n' 분할 시 부칙 내부의 빈 줄 때문에 부칙 조문(예: 제2조)이 쪼개져
+    본칙 후보로 잘못 분류되는 현상을 원천 방지합니다.
+    - 첫 '부칙 <' (또는 '📌 [...부칙...]') 이전 영역만 본칙 영역으로 삼아 '\n\n' 단위로 나누고,
+    - 첫 '부칙 <' 이후 영역은 다음 '부칙 <' 줄이 나올 때까지 내부 빈 줄과 무관하게 하나의 부칙 블록으로 묶습니다.
+    """
+    if not text:
+        return "", [], []
+    lines = text.splitlines()
+    header = lines[0].strip() if lines else ""
+    body_text = "\n".join(lines[1:]).strip() if len(lines) > 1 else ""
+
+    first_add_m = re.search(r"(?m)^\s*(?:📌\s*\[[^\n]*부칙|\[?부칙(?:\([^)]*\))?\s*<)", body_text)
+    if first_add_m:
+        main_part = body_text[:first_add_m.start()].strip()
+        add_part = body_text[first_add_m.start():].strip()
+    else:
+        main_part = body_text
+        add_part = ""
+
+    main_blocks = [b.strip() for b in re.split(r"\n\s*\n", main_part) if b.strip()]
+
+    raw_addenda_blocks: list[tuple[str, str]] = []
+    if add_part:
+        # '📌 [...]' 안내 줄은 제거하고 '부칙 <...' 시작 줄 기준으로 블록을 묶음
+        add_lines = [ln for ln in add_part.splitlines() if not ln.strip().startswith("📌")]
+        add_joined = "\n".join(add_lines).strip()
+        add_starts = list(re.finditer(r"(?m)^\s*\[?부칙(?:\([^)]*\))?\s*<", add_joined))
+        if add_starts:
+            for idx, am in enumerate(add_starts):
+                end_p = add_starts[idx + 1].start() if idx + 1 < len(add_starts) else len(add_joined)
+                blk_s = add_joined[am.start():end_p].strip()
+                if blk_s:
+                    raw_addenda_blocks.append((blk_s, re.sub(r"\s+", "", blk_s)))
+        elif add_joined:
+            raw_addenda_blocks.append((add_joined, re.sub(r"\s+", "", add_joined)))
+
+    return header, main_blocks, raw_addenda_blocks
+
+
+def _waterfill_allocate_quotas(lengths: list[int], total_budget: int) -> list[int]:
+    """
+    [문제 2 해결] 균등 분할(avail // N) 대신 짧은 조문이 남긴 여유 분량을 긴 조문에 재배분(water-filling)하고,
+    질문에서 가장 먼저 지정된 핵심 조문(index 0)이 마지막까지 최대한 원문 그대로 보존되도록 가중치를 부여합니다.
+    """
+    n = len(lengths)
+    if n == 0:
+        return []
+    if sum(lengths) <= total_budget:
+        return list(lengths)
+
+    quotas = [0] * n
+    remaining_budget = max(0, int(total_budget))
+    active = set(range(n))
+    # 첫 번째 핵심 본칙 조문(index 0)에 가중치 2.5를 부여하여 5개 조문 동시 조회 시에도 핵심 조문이 중략되지 않도록 보호
+    weights = [2.5 if i == 0 else 1.0 for i in range(n)]
+
+    while active and remaining_budget > 0:
+        total_w = sum(weights[i] for i in active)
+        shares = {
+            i: int(remaining_budget * (weights[i] / total_w))
+            for i in active
+        }
+        shorter = [i for i in active if lengths[i] <= shares[i]]
+        if not shorter:
+            for i in active:
+                quotas[i] = max(1200, shares[i])
+            # 반올림 오차 보정
+            diff = remaining_budget - sum(quotas[i] for i in active)
+            first_act = min(active)
+            quotas[first_act] = max(1200, quotas[first_act] + diff)
+            break
+        for i in shorter:
+            quotas[i] = lengths[i]
+            remaining_budget -= lengths[i]
+            active.remove(i)
+
+    return quotas
+
+
 def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
     if not raw_text:
         return ""
 
+    # [문제 1 해결] 날짜 태그를 지우기 전 원문(raw_text)에서 본칙 조문별 모든 <개정/신설/전문개정 YYYY.M.D.> 날짜(2024년 이전 포함)를 먼저 추출 가능하도록 보존
     def _keep_recent_rev_tag(match: re.Match) -> str:
         full_tag = match.group(0)
-        if re.search(r"202[5-9]", full_tag):
-            years = re.findall(r"202[5-9]\.\s*\d{1,2}\.\s*\d{1,2}\.?", full_tag)
+        years = re.findall(r"(?:19|20)\d{2}\.\s*\d{1,2}\.\s*\d{1,2}\.?", full_tag)
+        if years:
             kind = match.group(1)
-            if years:
-                return f" <최근{kind}: {', '.join(years[-2:])}>"
-            return full_tag
+            return f" <최근{kind}: {', '.join(years[-4:])}>"
         return ""
 
     cleaned = re.sub(r"<(개정|신설|타법개정|일부개정|전문개정)[^>]*>", _keep_recent_rev_tag, raw_text)
@@ -1331,6 +1517,9 @@ def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
     base_limit = 20000 if (all_art_matches or wants_add) else 5000
     limit = base_limit * mult
 
+    header, main_blocks, raw_addenda_blocks = _split_main_and_addenda_blocks(cleaned)
+    _, raw_main_blocks_uncleaned, _ = _split_main_and_addenda_blocks(raw_text)
+
     if all_art_matches or wants_add:
         target_prefixes = list(dict.fromkeys(
             f"제{m[0]}조" + (f"의{m[1]}" if m[1] else "")
@@ -1340,8 +1529,7 @@ def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
         if not main_art_matches and wants_add:
             tr_cur = _TOOL_TRACE.get()
             if isinstance(tr_cur, dict):
-                hdr_line = cleaned.split("\n", 1)[0] if cleaned else ""
-                m_hdr = re.search(r"📘\s*\[([^\]|\(]+)", hdr_line)
+                m_hdr = re.search(r"📘\s*\[([^\]|\(]+)", header)
                 cur_law_norm = re.sub(r"\s+", "", m_hdr.group(1)) if m_hdr else ""
                 for (t_law, t_jo, t_gaji) in (tr_cur.get("articles") or set()):
                     if not cur_law_norm or re.sub(r"\s+", "", str(t_law)) == cur_law_norm:
@@ -1349,20 +1537,14 @@ def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
                         if p_str not in target_prefixes:
                             target_prefixes.append(p_str)
 
-        blocks = cleaned.split("\n\n")
-        header = blocks[0] if blocks else ""
         exact_articles = []
+        raw_exact_articles = []
         other_mentions = []
-        raw_addenda_blocks = []
 
         exact_by_tp: dict[str, list[str]] = {tp: [] for tp in target_prefixes}
-        for blk in blocks[1:]:
-            blk_s = blk.strip()
+        raw_exact_by_tp: dict[str, list[str]] = {tp: [] for tp in target_prefixes}
+        for idx_b, blk_s in enumerate(main_blocks):
             blk_clean = blk_s.replace(" ", "")
-            is_add_blk = blk_s.startswith("부칙") or blk_s.startswith("[부칙") or blk_s.startswith("📌")
-            if is_add_blk:
-                raw_addenda_blocks.append((blk_s, blk_clean))
-                continue
             matched_tp = None
             for tp in target_prefixes:
                 if (
@@ -1373,17 +1555,22 @@ def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
                     break
             if matched_tp is not None:
                 exact_by_tp[matched_tp].append(blk_s)
-            elif target_prefixes and any(tp in blk_clean for tp in target_prefixes):
+                if idx_b < len(raw_main_blocks_uncleaned):
+                    raw_exact_by_tp[matched_tp].append(raw_main_blocks_uncleaned[idx_b])
+            elif target_prefixes and any(re.search(rf"{re.escape(tp)}(?![0-9의])", blk_clean) for tp in target_prefixes):
                 other_mentions.append(blk_s)
+
         for tp in target_prefixes:
             exact_articles.extend(exact_by_tp.get(tp) or [])
+            raw_exact_articles.extend(raw_exact_by_tp.get(tp) or [])
 
         # [본칙 기반 부칙 범위 확정]
-        # 1) 타법 인용(「근로기준법」 제2조 등)을 먼저 제거한 뒤, 본칙이 직접 준용·인용하는 같은 법/모법 조문번호만 추출
+        # 1) 날짜 삭제 전 원문(raw_exact_articles)과 정제 본문(exact_articles)에서 모든 개정·신설일(2024년 이전 포함) 수집
+        # 2) 타법 인용(「근로기준법」 제2조 등)을 제거한 뒤 같은 법/모법 준용 조문번호만 추출
         related_prefixes = list(target_prefixes)
         main_rev_dates: set[str] = set()
-        for ea_txt in exact_articles:
-            for m_dt in re.findall(r"(202\d)\.\s*(\d{1,2})\.\s*(\d{1,2})", ea_txt):
+        for ea_txt in (raw_exact_articles + exact_articles):
+            for m_dt in re.findall(r"((?:19|20)\d{2})\.\s*(\d{1,2})\.\s*(\d{1,2})", ea_txt):
                 main_rev_dates.add(f"{int(m_dt[0]):04d}{int(m_dt[1]):02d}{int(m_dt[2]):02d}")
             ea_no_other_law = re.sub(
                 r"[「『][^」』]+[」』](?:\s*시행령|\s*시행규칙)?(?:\s*제\s*\d+\s*조(?:\s*의\s*\d+)?(?:\s*제\s*\d+\s*항)?(?:\s*제\s*\d+\s*호)?)+",
@@ -1400,28 +1587,42 @@ def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
         addenda_matched_strict = []
         addenda_fallback = []
         addenda_all = []
-        for blk_s, blk_clean in raw_addenda_blocks:
-            slim_blk = law_api._slim_large_addendum_block(blk_s, eff_qf_for_slim) if hasattr(law_api, "_slim_large_addendum_block") else blk_s
+        for blk_s, _ in raw_addenda_blocks:
+            blk_lines = blk_s.splitlines()
+            blk_hdr = blk_lines[0].strip() if blk_lines else "부칙"
+            blk_body_raw = "\n".join(blk_lines[1:]).strip() if len(blk_lines) > 1 else ""
+            is_pre_tagged_related = "[본칙관련]" in blk_hdr
+
+            # [문제 3 해결] 부칙 본문에서 타법개정 조문('제n조(다른 법령의 개정)' 또는 '일부를 다음과 같이 개정한다')을 먼저 제거
+            non_tabeop_body = _strip_tabeop_articles_from_addendum_body(blk_body_raw)
+            if not non_tabeop_body.strip():
+                continue
+
+            clean_blk_for_slim = blk_hdr + "\n" + non_tabeop_body
+            slim_blk = law_api._slim_large_addendum_block(clean_blk_for_slim, eff_qf_for_slim) if hasattr(law_api, "_slim_large_addendum_block") else clean_blk_for_slim
             addenda_all.append(slim_blk)
-            # 부칙 자체의 조문 제목('제1조(시행일)', '제2조(경과조치)' 등)을 제거한 본문 내용에서만 본칙 조문번호 매칭 검사
-            blk_body_without_own_jo = re.sub(r"(?m)^\s*제\s*\d+\s*조(?:\s*의\s*\d+)?\s*\([^)]*\)", "", blk_s)
+
+            # 부칙 자체의 조문 제목('제1조(시행일)', '제2조(경과조치)' 등)을 제거한 순수 본문에서만 본칙 조문번호 경계 매칭
+            blk_body_without_own_jo = re.sub(r"(?m)^\s*제\s*\d+\s*조(?:\s*의\s*\d+)?\s*\([^)]*\)", "", non_tabeop_body)
             blk_body_clean = blk_body_without_own_jo.replace(" ", "")
+            non_tabeop_clean = non_tabeop_body.replace(" ", "")
+
             has_exact_prefix = bool(
                 related_prefixes and any(
                     re.search(rf"{re.escape(tp)}(?![0-9의])", blk_body_clean)
                     for tp in related_prefixes
                 )
             )
-            # 부칙 공포일자가 본칙의 <개정 YYYY.M.D.> 날짜와 일치하고 일반적 적용례가 있는 경우(타법개정 제외)
-            m_anc = re.search(r"부칙[^\n]*?(202\d)\.\s*(\d{1,2})\.\s*(\d{1,2})", blk_s.splitlines()[0] if blk_s else "")
+            m_anc = re.search(r"부칙[^\n]*?((?:19|20)\d{2})\.\s*(\d{1,2})\.\s*(\d{1,2})", blk_hdr)
             anc_ymd = f"{int(m_anc.group(1)):04d}{int(m_anc.group(2)):02d}{int(m_anc.group(3)):02d}" if m_anc else ""
-            has_rev_date_match = bool(anc_ymd and anc_ymd in main_rev_dates and "다른법령의개정" not in blk_clean)
+            has_rev_date_match = bool(anc_ymd and anc_ymd in main_rev_dates)
 
-            if has_exact_prefix:
+            if is_pre_tagged_related or has_exact_prefix or has_rev_date_match:
+                if "[본칙관련]" not in slim_blk.splitlines()[0]:
+                    s_lines = slim_blk.splitlines()
+                    slim_blk = s_lines[0] + " [본칙관련]\n" + "\n".join(s_lines[1:])
                 addenda_matched_strict.append(slim_blk)
-            elif has_rev_date_match and ("일반적적용례" in blk_clean or "통합고용" in blk_clean):
-                addenda_matched_strict.append(slim_blk)
-            elif not related_prefixes and any(kw in blk_clean for kw in ("적용례", "경과조치")) and "다른법령의개정" not in blk_clean:
+            elif not related_prefixes and any(kw in non_tabeop_clean for kw in ("적용례", "경과조치")):
                 addenda_fallback.append(slim_blk)
 
         addenda_matches = addenda_matched_strict if addenda_matched_strict else addenda_fallback
@@ -1432,42 +1633,43 @@ def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
         elif exact_articles:
             add_section = ""
             if addenda_matches:
-                # 본칙(80% 이상 보장)이 절대 소외되지 않도록 부칙 비중은 전체 한도의 최대 18% 이내(Flash 3,500자)로 제한
-                add_Cap = 3500 * mult if wants_add else 3000 * mult
-                max_add_cnt = max(6, len(addenda_matched_strict))
+                # 본칙(80~85% 이상 보장)이 절대 소외되지 않도록 부칙 섹션은 최대 2,800 * mult 이내로 제한
+                add_Cap = 2800 * mult if wants_add else 2400 * mult
+                max_add_cnt = max(8, len(addenda_matched_strict))
                 add_txt = "\n\n".join(addenda_matches[:max_add_cnt])[:add_Cap]
                 add_section = "\n\n📌 [관련 최근 개정 부칙(본칙 한정 시행일·적용례·경과조치) 발췌]\n" + add_txt
             elif wants_add and addenda_all:
-                add_txt = "\n\n".join(addenda_all[:3 * mult])[:3000 * mult]
+                add_txt = "\n\n".join(addenda_all[:3 * mult])[:2400 * mult]
                 add_section = "\n\n📌 [최근 개정 부칙(시행일·적용례·경과조치)]\n" + add_txt
 
-            # 본칙에 최소 80% 이상(Flash 기준 약 16,200자 이상)을 우선 배정하고, 장문 조문은 앞부분(제1항~)과 뒷부분(후반 항·준용규정)을 함께 보존
-            avail_for_articles = max(14000 * mult, limit - len(header) - len(add_section) - 200)
-            total_exact_len = sum(len(x) for x in exact_articles)
-            if total_exact_len > avail_for_articles:
-                per_art_quota = max(3500, avail_for_articles // len(exact_articles))
+            # [문제 2 해결] 줄바꿈 구분자("\n\n")와 부칙(add_section) 길이를 정확히 차감한 뒤
+            # Water-filling(남는 분량 재배분 + 1순위 핵심 조문 가중치 보호)으로 본칙 예산을 배분하여
+            # 짧은 조문이 남긴 여백을 버리지 않고 limit의 95~99%를 활용하면서 하단 부칙 절삭을 0건으로 방지
+            cleaned_arts = [re.sub(r"[ \t]+", " ", ea).strip() for ea in exact_articles]
+            sep_len = 2 * len(cleaned_arts)
+            avail_for_articles = max(4000, limit - len(header) - len(add_section) - sep_len - 16)
+            art_lengths = [len(ea) for ea in cleaned_arts]
+            if sum(art_lengths) > avail_for_articles:
+                quotas = _waterfill_allocate_quotas(art_lengths, avail_for_articles)
                 balanced_articles = []
-                for ea in exact_articles:
-                    if len(ea) > per_art_quota:
-                        head_q = int(per_art_quota * 0.68)
-                        tail_q = per_art_quota - head_q
-                        balanced_articles.append(
-                            ea[:head_q]
-                            + f"\n...[※ 중략 (원문 {len(ea):,}자 중 앞·뒤 핵심 항 표시)]...\n"
-                            + ea[-tail_q:]
-                        )
+                for ea, q_lim in zip(cleaned_arts, quotas):
+                    if len(ea) > q_lim:
+                        notice_str = f"\n...[※ 중략 (원문 {len(ea):,}자 중 앞·뒤 핵심 항 표시)]...\n"
+                        body_budget = max(400, q_lim - len(notice_str))
+                        head_q = int(body_budget * 0.68)
+                        tail_q = body_budget - head_q
+                        balanced_articles.append(ea[:head_q] + notice_str + ea[-tail_q:])
                     else:
                         balanced_articles.append(ea)
                 cleaned = header + "\n\n" + "\n\n".join(balanced_articles) + add_section
             else:
-                cleaned = header + "\n\n" + "\n\n".join(exact_articles) + add_section
+                cleaned = header + "\n\n" + "\n\n".join(cleaned_arts) + add_section
         elif other_mentions:
             cleaned = header + "\n\n" + "\n\n".join(other_mentions[:3 * mult])
     elif query_filter and query_filter.strip():
         kw_clean = query_filter.strip().replace(" ", "")
-        blocks = cleaned.split("\n\n")
-        header = blocks[0] if blocks else ""
-        matched_blks = [b.strip() for b in blocks[1:] if kw_clean in b.replace(" ", "")]
+        all_blks = list(main_blocks) + [b_s for b_s, _ in raw_addenda_blocks]
+        matched_blks = [b.strip() for b in all_blks if kw_clean in b.replace(" ", "")]
         if matched_blks:
             cleaned = header + "\n\n" + "\n\n".join(matched_blks[:5 * mult])
 
