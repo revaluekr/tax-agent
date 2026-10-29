@@ -154,7 +154,7 @@ def _build_schedule_pdf_bytes(s: dict, target_years: list[int], include_summary:
         rows, _, totals = _build_year_rows(s, y)
         totals_by_yr[y] = totals
         role_desc = _year_role_description(s, tax_yr, y)
-        trunc_mode = R.calc_method_badge_label(y)
+        trunc_mode = R.calc_method_short_label(y, eval_year=y)
         b3_t, b4_t, b5_t = _block_titles_for_year(y, two_line=False)
 
         yr_has_y1 = _has_year_data(s, y - 1) or bool(s.get("show_empty_pm_blocks", False))
@@ -859,13 +859,13 @@ def _grid_options(
     go["columnDefs"] = col_defs
 
     n = totals["months_in_year"]
-    trunc_mode = R.calc_method_badge_label(year)
+    trunc_mode = R.calc_method_short_label(year, eval_year=year)
     pinned = [
         {
             "사업장명": "합산합계",
             "성명": "상시근로자",
             "생년월일": "",
-            "고용유형": f"÷{n}월({'사원별절사' if R.calc_method_for(year)=='B' else '합계절사'})",
+            "고용유형": f"÷{n}월({'사원별절사' if R.calc_method_for(year, eval_year=year)=='B' else '합계절사'})",
             **{MONTH_COLS[i]: totals["월별_상시"][i] for i in range(12)},
             "합계": totals["상시_합계"],
             "b1_yth": totals["b1_yth"],
@@ -1083,11 +1083,11 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
         if cur_yr_sz != def_sz_s2
         else ""
     )
-    m_code_yr = R.calc_method_for(year)
-    m_lbl_yr = R.calc_method_badge_label(year)
+    m_code_yr = R.calc_method_for(year, eval_year=year)
+    m_lbl_yr = R.calc_method_short_label(year, eval_year=year)
     m_pill_style = (
         "background:#dcfce7;color:#15803d;border:1px solid #86efac;"
-        if m_code_yr == "B"
+        if (int(year) >= 2026 or m_code_yr == "B")
         else "background:#fef3c7;color:#b45309;border:1px solid #fcd34d;"
     )
     method_badge_html = (
@@ -1307,7 +1307,7 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
             f"<span class='kpi-sub'>(청년등 <b>{totals['b3_yth']:.2f}</b> · 청년외 <b>{totals['b3_gen']:.2f}</b>)</span>"
             f"</div>"
         )
-    trunc_mode = R.calc_method_badge_label(year)
+    trunc_mode = R.calc_method_short_label(year, eval_year=year)
     # [Section 4] 같은 연도의 A·B값이 다르면 표 아래 회색 한 줄로 다른 방식의 값을 참고 표시 (계산에는 쓰지 않음)
     ref_parts = []
     a_b1_r = float(totals.get("A_b1_reg", totals["b1_reg"]))
@@ -1317,34 +1317,34 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
     a_b1_g = float(totals.get("A_b1_gen", totals["b1_gen"]))
     b_b1_g = float(totals.get("B_b1_gen", totals["b1_gen"]))
     if round(a_b1_r, 2) != round(b_b1_r, 2) or round(a_b1_y, 2) != round(b_b1_y, 2):
-        if R.calc_method_for(year) == "B":
+        if R.calc_method_for(year, eval_year=year) == "B":
             ref_parts.append(
-                f"3. {year%100:02d}년 세액공제 — A방식(합계 절사) 참고값: 상시 {a_b1_r:.2f}명 (청년등 {a_b1_y:.2f} · 청년외 {a_b1_g:.2f})"
+                f"3. {year%100:02d}년 세액공제 — 합계 후 절사 참고값: 상시 {a_b1_r:.2f}명 (청년등 {a_b1_y:.2f} · 청년외 {a_b1_g:.2f})"
             )
         else:
             ref_parts.append(
-                f"3. {year%100:02d}년 세액공제 — B방식(사원별 절사) 참고값: 상시 {b_b1_r:.2f}명 (청년등 {b_b1_y:.2f} · 청년외 {b_b1_g:.2f})"
+                f"3. {year%100:02d}년 세액공제 — 사원별 절사 참고값: 상시 {b_b1_r:.2f}명 (청년등 {b_b1_y:.2f} · 청년외 {b_b1_g:.2f})"
             )
     if show_b2:
         a_b2_r, b_b2_r = float(totals.get("A_b2_reg", totals["b2_reg"])), float(totals.get("B_b2_reg", totals["b2_reg"]))
         a_b2_y, b_b2_y = float(totals.get("A_b2_yth", totals["b2_yth"])), float(totals.get("B_b2_yth", totals["b2_yth"]))
         a_b2_g, b_b2_g = float(totals.get("A_b2_gen", totals["b2_gen"])), float(totals.get("B_b2_gen", totals["b2_gen"]))
         if round(a_b2_r, 2) != round(b_b2_r, 2) or round(a_b2_y, 2) != round(b_b2_y, 2):
-            m_b2 = R.calc_method_for(year - 1)
+            m_b2 = R.calc_method_for(year - 1, eval_year=year)
             if m_b2 == "B":
-                ref_parts.append(f"4. {(year-1)%100:02d}년 1차 사후관리 — A방식 참고값: 상시 {a_b2_r:.2f}명 (청년등 {a_b2_y:.2f} · 청년외 {a_b2_g:.2f})")
+                ref_parts.append(f"4. {(year-1)%100:02d}년 1차 사후관리 — 합계 후 절사 참고값: 상시 {a_b2_r:.2f}명 (청년등 {a_b2_y:.2f} · 청년외 {a_b2_g:.2f})")
             else:
-                ref_parts.append(f"4. {(year-1)%100:02d}년 1차 사후관리 — B방식 참고값: 상시 {b_b2_r:.2f}명 (청년등 {b_b2_y:.2f} · 청년외 {b_b2_g:.2f})")
+                ref_parts.append(f"4. {(year-1)%100:02d}년 1차 사후관리 — 사원별 절사 참고값: 상시 {b_b2_r:.2f}명 (청년등 {b_b2_y:.2f} · 청년외 {b_b2_g:.2f})")
     if show_b3:
         a_b3_r, b_b3_r = float(totals.get("A_b3_reg", totals["b3_reg"])), float(totals.get("B_b3_reg", totals["b3_reg"]))
         a_b3_y, b_b3_y = float(totals.get("A_b3_yth", totals["b3_yth"])), float(totals.get("B_b3_yth", totals["b3_yth"]))
         a_b3_g, b_b3_g = float(totals.get("A_b3_gen", totals["b3_gen"])), float(totals.get("B_b3_gen", totals["b3_gen"]))
         if round(a_b3_r, 2) != round(b_b3_r, 2) or round(a_b3_y, 2) != round(b_b3_y, 2):
-            m_b3 = R.calc_method_for(year - 2)
+            m_b3 = R.calc_method_for(year - 2, eval_year=year)
             if m_b3 == "B":
-                ref_parts.append(f"5. {(year-2)%100:02d}년 2차 사후관리 — A방식 참고값: 상시 {a_b3_r:.2f}명 (청년등 {a_b3_y:.2f} · 청년외 {a_b3_g:.2f})")
+                ref_parts.append(f"5. {(year-2)%100:02d}년 2차 사후관리 — 합계 후 절사 참고값: 상시 {a_b3_r:.2f}명 (청년등 {a_b3_y:.2f} · 청년외 {a_b3_g:.2f})")
             else:
-                ref_parts.append(f"5. {(year-2)%100:02d}년 2차 사후관리 — B방식 참고값: 상시 {b_b3_r:.2f}명 (청년등 {b_b3_y:.2f} · 청년외 {b_b3_g:.2f})")
+                ref_parts.append(f"5. {(year-2)%100:02d}년 2차 사후관리 — 사원별 절사 참고값: 상시 {b_b3_r:.2f}명 (청년등 {b_b3_y:.2f} · 청년외 {b_b3_g:.2f})")
 
     ref_line_html = (
         f"<div style='margin:-20px 0 22px 4px;font-size:0.81rem;color:#64748b;font-weight:600;'>"

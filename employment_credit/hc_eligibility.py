@@ -118,25 +118,55 @@ def trunc2(x: Fraction | float) -> float:
     return float(d.quantize(Decimal("0.01"), rounding=ROUND_DOWN))
 
 
-def calc_method_for(cohort_year: int) -> str:
+def calc_method_for(cohort_year: int, eval_year: int | None = None) -> str:
     """
-    코호트(최초 공제연도) 기준 상시근로자 수 계산방식(A/B) 일원화 선택 함수.
-    - 근거: 국세청 법인세과 「'26년 3월 법인세 통합고용세액공제 상시근로자 수 계산 안내」 (재정경제부 세제실 회신 반영)
-      및 조세특례제한법 시행령(2026.2.27. 대통령령 제36127호) 부칙 제11조
-    - cohort_year <= 2024: "A" (기존 방식: [매월 말 상시근로자 수의 합계 ÷ 과세연도 개월수]의 값에서 100분의 1 미만 절사 — 최초 공제가 기존 방식이므로 그 코호트의 2·3차년도 요건·연속공제·사후관리는 끝까지 A)
-      # 확인 필요: '26.3월 국세청 안내 신뢰보호 원칙 연장 적용 (2026년 이후 평가연도에서 2024년 이하 코호트에 A를 계속 적용)
-    - cohort_year >= 2025: "B" (현행 방식: [(각 상시근로자 근무개월수 ÷ 과세연도 개월수)의 값에서 100분의 1 미만 절사한 값]의 합계)
+    신고하는 과세연도(평가연도, eval_year)와 코호트(최초 공제연도, cohort_year)를 함께 보아
+    상시근로자 수 절사 방식("A": 합계 후 1회 절사 / "B": 사원별 절사 후 합계)을 반환합니다.
+    - 근거: 조세특례제한법 시행령(2026.5.22. 대통령령 제36342호) 제11조의2 제8항 제1호 가·나·다목,
+      같은 영 부칙 제2조 제2항, 대통령령 제36127호 부칙 제11조 제1항·제3항,
+      국세청 '26.3월 안내(2025 사업연도 신고 기준)
+    - 평가연도(eval_year) >= 2026: 모든 인원 계산을 합계 후 1회 절사(숫자상 "A"값)로 합니다.
+      (2025년 이후 코호트: 제26조의8 제6항 → 제11조의2 제8항 2026.5.22. 개정규정 / 2024년 이하 코호트: 종전 규정)
+    - 평가연도(eval_year) == 2025 (2025 사업연도 신고):
+      2025년 이후 코호트는 "B"(사원별 절사, 2026.2.27. 문언), 2024년 이하 코호트는 "A" — 현행 유지
+    - 평가연도(eval_year) <= 2024: "A"
     """
-    return "A" if int(cohort_year) <= 2024 else "B"
+    coh = int(cohort_year)
+    ev = int(eval_year) if eval_year is not None else coh
+    if ev >= 2026:
+        return "A"
+    if ev <= 2024:
+        return "A"
+    return "A" if coh <= 2024 else "B"
 
 
-def calc_method_badge_label(cohort_year_or_method: int | str) -> str:
-    """화면·보고서 배지 표시용 문자열 반환: 'B방식(사원별 절사)' / 'A방식(합계 절사·신뢰보호)'"""
+def calc_method_badge_label(cohort_year_or_method: int | str, eval_year: int | None = None) -> str:
+    """
+    화면·보고서 배지 표시용 문자열 반환:
+    - 평가연도(eval_year) 2026 이상: '합계 후 절사(조특령 §11의2⑧, 2026.5.22. 개정)'
+    - 평가연도 2025 이하(또는 단일 A/B 코드 지정 시): 기존 'B방식(사원별 절사)' / 'A방식(합계 절사·신뢰보호)' 유지
+    """
+    if eval_year is not None and int(eval_year) >= 2026:
+        return "합계 후 절사(조특령 §11의2⑧, 2026.5.22. 개정)"
     if isinstance(cohort_year_or_method, str) and cohort_year_or_method.upper() in ("A", "B"):
         m = cohort_year_or_method.upper()
     else:
-        m = calc_method_for(int(cohort_year_or_method))
+        yr_val = int(cohort_year_or_method)
+        if eval_year is None and yr_val >= 2026:
+            return "합계 후 절사(조특령 §11의2⑧, 2026.5.22. 개정)"
+        m = calc_method_for(yr_val, eval_year=eval_year)
     return "B방식(사원별 절사)" if m == "B" else "A방식(합계 절사·신뢰보호)"
+
+
+def calc_method_short_label(cohort_year_or_method: int | str, eval_year: int | None = None) -> str:
+    """화면 배지·드롭다운용 간결 표기 ('합계 후 절사' 또는 '사원별 절사')."""
+    if isinstance(cohort_year_or_method, str) and cohort_year_or_method.upper() in ("A", "B"):
+        m = cohort_year_or_method.upper()
+    else:
+        yr_val = int(cohort_year_or_method)
+        ev_val = int(eval_year) if eval_year is not None else yr_val
+        m = calc_method_for(yr_val, eval_year=ev_val)
+    return "사원별 절사" if m == "B" else "합계 후 절사"
 
 
 def _get_month_pay(pay_obj: Any, month: int) -> float | None:

@@ -2333,7 +2333,7 @@ def _top_status_bar(s: dict):
         biz_disp = f"🏢 <b>{meta_str}</b>"
     tax_yr = int(s.get("tax_year") or R.DEFAULT_TAX_YEAR)
     pm_lbl = R.PM_BASIS_LABELS.get(s.get("pm_basis", R.PM_BASIS_FILED), "기신고 기준")
-    m_badge = R.calc_method_badge_label(tax_yr)
+    m_badge = R.calc_method_short_label(tax_yr, eval_year=tax_yr)
     law_ver = f"{tax_yr}귀속 ({m_badge} · 사후관리: {pm_lbl})"
     step_nm = STEPS[max(0, min(len(STEPS) - 1, int(s.get("step", 1)) - 1))]
 
@@ -2627,9 +2627,9 @@ def _block_titles_for_year(year: int, two_line: bool = False) -> tuple[str, str,
     y0 = int(year)
     y1 = y0 - 1
     y2 = y0 - 2
-    m0 = "B방식·사원별절사" if R.calc_method_for(y0) == "B" else "A방식·합계절사"
-    m1 = "B방식" if R.calc_method_for(y1) == "B" else "A방식·신뢰보호"
-    m2 = "B방식" if R.calc_method_for(y2) == "B" else "A방식·신뢰보호"
+    m0 = R.calc_method_short_label(y0, eval_year=y0)
+    m1 = R.calc_method_short_label(y1, eval_year=y0)
+    m2 = R.calc_method_short_label(y2, eval_year=y0)
     if two_line:
         return (
             f"3. {y0}년\n세액공제({m0})",
@@ -2872,7 +2872,7 @@ def _apply_tenure_transition(s, year, ctx, people, recs, computed, rows, totals)
         totals["nr_B_상시_평균"] = t_new.get("B_상시_평균", t_new["상시_평균"])
         totals["nr_B_청년등_평균"] = t_new.get("B_청년등_평균", t_new["청년등_평균"])
         totals["nr_B_청년외_평균"] = t_new.get("B_청년외_평균", t_new["청년외_평균"])
-        m_nr = R.calc_method_for(tax_yr)
+        m_nr = R.calc_method_for(tax_yr, eval_year=tax_yr)
         totals["nr_상시_평균"] = totals[f"nr_{m_nr}_상시_평균"]
         totals["nr_청년등_평균"] = totals[f"nr_{m_nr}_청년등_평균"]
         totals["nr_청년외_평균"] = totals[f"nr_{m_nr}_청년외_평균"]
@@ -3117,7 +3117,7 @@ def _compute_historical_matrix_columns(
         "net_total": c_m3_1,
         "r1_needs_check": bool(info_m3.get("r1_needs_check")),
         "auto_filled": bool(info_m3.get("auto_filled")),
-        "calc_method": R.calc_method_for(y_m3),
+        "calc_method": R.calc_method_for(y_m3, eval_year=y_m3),
     }
 
     # ── (B) tax_yr - 2 열 (예: 2024년) ──
@@ -3148,7 +3148,7 @@ def _compute_historical_matrix_columns(
         "net_total": c_m2_1 + c_m2_2_cr - c_m2_2_cl,
         "r1_needs_check": bool(info_m2.get("r1_needs_check")),
         "auto_filled": bool(info_m2.get("auto_filled")),
-        "calc_method": R.calc_method_for(y_m2),
+        "calc_method": R.calc_method_for(y_m2, eval_year=y_m2),
     }
 
     # ── (C) tax_yr - 1 열 (예: 2025년) ──
@@ -3212,7 +3212,7 @@ def _compute_historical_matrix_columns(
         "net_total": (c_m1_1 + c_m1_2_cr + c_m1_3_cr) - (c_m1_2_cl + c_m1_3_cl),
         "r1_needs_check": bool(info_m1.get("r1_needs_check")),
         "auto_filled": bool(info_m1.get("auto_filled")),
-        "calc_method": R.calc_method_for(y_m1),
+        "calc_method": R.calc_method_for(y_m1, eval_year=y_m1),
     }
 
     # ── (D) 당해 과세연도(tax_yr) 열 (예: 2026년) ──
@@ -3239,7 +3239,7 @@ def _compute_historical_matrix_columns(
         "net_total": (c_0_1 + c_0_2_cr + c_0_3_cr) - (c_0_2_cl + c_0_3_cl),
         "r1_needs_check": False,
         "auto_filled": False,
-        "calc_method": R.calc_method_for(y_0),
+        "calc_method": R.calc_method_for(y_0, eval_year=y_0),
     }
     # 기신고 기준: 과거 연도 열은 세액공제조정명세서(코드 18S)에 실제 신고된 1차·2차·3차 금액을 그대로 표시
     #   (추정치 대신 신고 사실값 사용. 추가납부액은 18S에 없으므로 계산값 유지)
@@ -3284,7 +3284,7 @@ def _build_csv_bytes(s: dict) -> bytes:
         rows, _, totals = _build_year_rows(s, y)
         has_y1 = _has_year_data(s, y - 1)
         has_y2 = _has_year_data(s, y - 2)
-        trunc_mode = R.calc_method_badge_label(y)
+        trunc_mode = R.calc_method_short_label(y, eval_year=y)
         for r in rows:
             writer.writerow(
                 [

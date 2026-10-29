@@ -561,7 +561,7 @@ def _build_filed_vs_recalc_data(s: dict, pkg: dict | None, tax_yr: int) -> dict[
     pm1_r = pkg.get("pm_y1_recalc") or {}
 
     # 2번 규칙(calc_method_for)에 따른 y1 재계산값 선택 및 A·B 두 값 추출
-    m_y1 = R.calc_method_for(y1)
+    m_y1 = R.calc_method_for(y1, eval_year=y1)
     a_reg_y1 = float(t_y1.get("A_상시_평균", t_y1.get("A_b1_reg", t_y1.get("상시_평균", 0.0))) or 0.0)
     a_yth_y1 = float(t_y1.get("A_청년등_평균", t_y1.get("A_b1_yth", t_y1.get("청년등_평균", 0.0))) or 0.0)
     b_reg_y1 = float(t_y1.get("B_상시_평균", t_y1.get("B_b1_reg", t_y1.get("b4_reg", a_reg_y1))) or 0.0)
@@ -633,7 +633,7 @@ def _build_filed_vs_recalc_data(s: dict, pkg: dict | None, tax_yr: int) -> dict[
         (y1, "2차년도(1차 사후관리)", tax_yr, "b2"),
         (y2, "3차년도(2차 사후관리)", tax_yr, "b3"),
     ):
-        if R.calc_method_for(coh_y) != "A":
+        if R.calc_method_for(coh_y, eval_year=eval_y) != "A":
             continue
         t_coh = totals_all.get(coh_y) or {}
         if not t_coh.get("has_data") or not t_cur.get("has_data"):
@@ -2015,7 +2015,7 @@ def _page_calculation():
             f"</div>"
         )
 
-    m_cur_badge = R.calc_method_badge_label(tax_yr)
+    m_cur_badge = R.calc_method_badge_label(tax_yr, eval_year=tax_yr)
     st.markdown(
         f"<div class='ec-sub-header'><span class='ec-sub-num'>(1)</span><span>평균 상시근로자 증가 인원</span>"
         f"<span style='background:#dcfce7;color:#15803d;border:1px solid #86efac;padding:2px 9px;border-radius:999px;font-size:0.80rem;font-weight:800;margin-left:8px;'>📐 {m_cur_badge}</span></div>",
@@ -2069,19 +2069,19 @@ def _page_calculation():
     _cur_a_y = float(cur_t.get("A_청년등_평균", cur_s["youth"]))
     _cur_b_y = float(cur_t.get("B_청년등_평균", cur_s["youth"]))
     if round(_cur_a_r, 2) != round(_cur_b_r, 2) or round(_cur_a_y, 2) != round(_cur_b_y, 2):
-        if R.calc_method_for(tax_yr) == "B":
-            _ref_s3_parts.append(f"당해({tax_yr}년) A방식(합계 절사) 참고값: 상시 {_cur_a_r:.2f}명 (청년등 {_cur_a_y:.2f} · 청년외 {max(0.0, _cur_a_r - _cur_a_y):.2f})")
+        if R.calc_method_for(tax_yr, eval_year=tax_yr) == "B":
+            _ref_s3_parts.append(f"당해({tax_yr}년) 합계 후 절사 참고값: 상시 {_cur_a_r:.2f}명 (청년등 {_cur_a_y:.2f} · 청년외 {max(0.0, _cur_a_r - _cur_a_y):.2f})")
         else:
-            _ref_s3_parts.append(f"당해({tax_yr}년) B방식(사원별 절사) 참고값: 상시 {_cur_b_r:.2f}명 (청년등 {_cur_b_y:.2f} · 청년외 {max(0.0, _cur_b_r - _cur_b_y):.2f})")
+            _ref_s3_parts.append(f"당해({tax_yr}년) 사원별 절사 참고값: 상시 {_cur_b_r:.2f}명 (청년등 {_cur_b_y:.2f} · 청년외 {max(0.0, _cur_b_r - _cur_b_y):.2f})")
     _prv_a_r = float(prev_t.get("nr_A_상시_평균" if pkg["active_scheme"] == "new_2026" and prev_t.get("nr_A_상시_평균") is not None else "A_상시_평균", prv_reg_disp))
     _prv_b_r = float(prev_t.get("nr_B_상시_평균" if pkg["active_scheme"] == "new_2026" and prev_t.get("nr_B_상시_평균") is not None else "B_상시_평균", prv_reg_disp))
     _prv_a_y = float(prev_t.get("nr_A_청년등_평균" if pkg["active_scheme"] == "new_2026" and prev_t.get("nr_A_청년등_평균") is not None else "A_청년등_평균", prv_yth_disp))
     _prv_b_y = float(prev_t.get("nr_B_청년등_평균" if pkg["active_scheme"] == "new_2026" and prev_t.get("nr_B_청년등_평균") is not None else "B_청년등_평균", prv_yth_disp))
     if round(_prv_a_r, 2) != round(_prv_b_r, 2) or round(_prv_a_y, 2) != round(_prv_b_y, 2):
-        if R.calc_method_for(tax_yr) == "B":
-            _ref_s3_parts.append(f"직전({tax_yr-1}년 비교) A방식 참고값: 상시 {_prv_a_r:.2f}명 (청년등 {_prv_a_y:.2f} · 청년외 {max(0.0, _prv_a_r - _prv_a_y):.2f})")
+        if R.calc_method_for(tax_yr, eval_year=tax_yr) == "B":
+            _ref_s3_parts.append(f"직전({tax_yr-1}년 비교) 합계 후 절사 참고값: 상시 {_prv_a_r:.2f}명 (청년등 {_prv_a_y:.2f} · 청년외 {max(0.0, _prv_a_r - _prv_a_y):.2f})")
         else:
-            _ref_s3_parts.append(f"직전({tax_yr-1}년 비교) B방식 참고값: 상시 {_prv_b_r:.2f}명 (청년등 {_prv_b_y:.2f} · 청년외 {max(0.0, _prv_b_r - _prv_b_y):.2f})")
+            _ref_s3_parts.append(f"직전({tax_yr-1}년 비교) 사원별 절사 참고값: 상시 {_prv_b_r:.2f}명 (청년등 {_prv_b_y:.2f} · 청년외 {max(0.0, _prv_b_r - _prv_b_y):.2f})")
     if _ref_s3_parts:
         st.markdown(
             f"<div style='margin:-12px 0 12px 4px;font-size:0.82rem;color:#64748b;font-weight:600;'>"
@@ -2112,7 +2112,7 @@ def _page_calculation():
         )
 
     st.markdown(
-        f"<div class='ec-sub-header'><span class='ec-sub-num'>(2)</span><span>1차년도 세액공제액 계산 ({tax_yr}년 귀속 · {R.format_corp_size_label(corp_size)}, {loc_label})</span><span style='background:#dcfce7;color:#15803d;border:1px solid #86efac;padding:2px 9px;border-radius:999px;font-size:0.80rem;font-weight:800;margin-left:8px;'>📐 {R.calc_method_badge_label(tax_yr)}</span></div>",
+        f"<div class='ec-sub-header'><span class='ec-sub-num'>(2)</span><span>1차년도 세액공제액 계산 ({tax_yr}년 귀속 · {R.format_corp_size_label(corp_size)}, {loc_label})</span><span style='background:#dcfce7;color:#15803d;border:1px solid #86efac;padding:2px 9px;border-radius:999px;font-size:0.80rem;font-weight:800;margin-left:8px;'>📐 {R.calc_method_badge_label(tax_yr, eval_year=tax_yr)}</span></div>",
         unsafe_allow_html=True,
     )
     if pkg["active_scheme"] == "new_2026":
@@ -2228,8 +2228,8 @@ def _page_calculation():
             f"</div>"
         )
 
-    _m1_badge = R.calc_method_badge_label(tax_yr - 1)
-    _m1_style = "background:#dcfce7;color:#15803d;border:1px solid #86efac;" if R.calc_method_for(tax_yr - 1) == "B" else "background:#fef3c7;color:#b45309;border:1px solid #fcd34d;"
+    _m1_badge = R.calc_method_badge_label(tax_yr - 1, eval_year=tax_yr)
+    _m1_style = "background:#dcfce7;color:#15803d;border:1px solid #86efac;" if (tax_yr >= 2026 or R.calc_method_for(tax_yr - 1, eval_year=tax_yr) == "B") else "background:#fef3c7;color:#b45309;border:1px solid #fcd34d;"
     _af1_badge = (
         "<span style='background:#ffedd5;color:#c2410c;border:1px solid #fdba74;padding:2px 9px;border-radius:999px;font-size:0.80rem;font-weight:800;margin-left:6px;'>🟧 사원표 재계산값 임시 입력 · 신고서 확인 필요</span>"
         if p1.get("_auto_filled")
@@ -2286,12 +2286,13 @@ def _page_calculation():
     _a_b2_y, _b_b2_y = float(cur_t.get("A_b2_yth", cur_s["b2_yth"])), float(cur_t.get("B_b2_yth", cur_s["b2_yth"]))
     if round(_a_b2_r, 2) != round(_b_b2_r, 2) or round(_a_b2_y, 2) != round(_b_b2_y, 2):
         _other_m1_txt = (
-            f"A방식(합계 절사) 참고값: 당해 사후관리 상시 {_a_b2_r:.2f}명 (청년등 {_a_b2_y:.2f} · 청년외 {max(0.0, _a_b2_r - _a_b2_y):.2f})"
-            if R.calc_method_for(tax_yr - 1) == "B"
-            else f"B방식(사원별 절사) 참고값: 당해 사후관리 상시 {_b_b2_r:.2f}명 (청년등 {_b_b2_y:.2f} · 청년외 {max(0.0, _b_b2_r - _b_b2_y):.2f})"
+            f"합계 후 절사 참고값: 당해 사후관리 상시 {_a_b2_r:.2f}명 (청년등 {_a_b2_y:.2f} · 청년외 {max(0.0, _a_b2_r - _a_b2_y):.2f})"
+            if R.calc_method_for(tax_yr - 1, eval_year=tax_yr) == "B"
+            else f"사원별 절사 참고값: 당해 사후관리 상시 {_b_b2_r:.2f}명 (청년등 {_b_b2_y:.2f} · 청년외 {max(0.0, _b_b2_r - _b_b2_y):.2f})"
         )
+        _chk_m1 = " &nbsp;|&nbsp; # 확인 필요: 최초 공제연도 B방식 신고값과 평가연도 합계 절사값의 비교 — 2027년 국세청 신고 안내 확인" if (tax_yr >= 2026 and (tax_yr - 1) == 2025) else ""
         st.markdown(
-            f"<div style='margin:-12px 0 12px 4px;font-size:0.81rem;color:#64748b;font-weight:600;'>ℹ️ 다른 계산방식 참고(계산 미사용): {_other_m1_txt}</div>",
+            f"<div style='margin:-12px 0 12px 4px;font-size:0.81rem;color:#64748b;font-weight:600;'>ℹ️ 다른 계산방식 참고(계산 미사용): {_other_m1_txt}{_chk_m1}</div>",
             unsafe_allow_html=True,
         )
     _render_pm_quick_fill_banner(
@@ -2308,8 +2309,8 @@ def _page_calculation():
         nth_label="2차년도(1차 사후관리)",
     )
 
-    _m2_badge = R.calc_method_badge_label(tax_yr - 2)
-    _m2_style = "background:#dcfce7;color:#15803d;border:1px solid #86efac;" if R.calc_method_for(tax_yr - 2) == "B" else "background:#fef3c7;color:#b45309;border:1px solid #fcd34d;"
+    _m2_badge = R.calc_method_badge_label(tax_yr - 2, eval_year=tax_yr)
+    _m2_style = "background:#dcfce7;color:#15803d;border:1px solid #86efac;" if (tax_yr >= 2026 or R.calc_method_for(tax_yr - 2, eval_year=tax_yr) == "B") else "background:#fef3c7;color:#b45309;border:1px solid #fcd34d;"
     _af2_badge = (
         "<span style='background:#ffedd5;color:#c2410c;border:1px solid #fdba74;padding:2px 9px;border-radius:999px;font-size:0.80rem;font-weight:800;margin-left:6px;'>🟧 사원표 재계산값 임시 입력 · 신고서 확인 필요</span>"
         if p2.get("_auto_filled")
@@ -2366,9 +2367,9 @@ def _page_calculation():
     _a_b3_y, _b_b3_y = float(cur_t.get("A_b3_yth", cur_s["b3_yth"])), float(cur_t.get("B_b3_yth", cur_s["b3_yth"]))
     if round(_a_b3_r, 2) != round(_b_b3_r, 2) or round(_a_b3_y, 2) != round(_b_b3_y, 2):
         _other_m2_txt = (
-            f"A방식(합계 절사) 참고값: 당해 사후관리 상시 {_a_b3_r:.2f}명 (청년등 {_a_b3_y:.2f} · 청년외 {max(0.0, _a_b3_r - _a_b3_y):.2f})"
-            if R.calc_method_for(tax_yr - 2) == "B"
-            else f"B방식(사원별 절사) 참고값: 당해 사후관리 상시 {_b_b3_r:.2f}명 (청년등 {_b_b3_y:.2f} · 청년외 {max(0.0, _b_b3_r - _b_b3_y):.2f})"
+            f"합계 후 절사 참고값: 당해 사후관리 상시 {_a_b3_r:.2f}명 (청년등 {_a_b3_y:.2f} · 청년외 {max(0.0, _a_b3_r - _a_b3_y):.2f})"
+            if R.calc_method_for(tax_yr - 2, eval_year=tax_yr) == "B"
+            else f"사원별 절사 참고값: 당해 사후관리 상시 {_b_b3_r:.2f}명 (청년등 {_b_b3_y:.2f} · 청년외 {max(0.0, _b_b3_r - _b_b3_y):.2f})"
         )
         _ext_note_m2 = " &nbsp;|&nbsp; # 확인 필요: '26.3월 국세청 안내 신뢰보호 원칙 연장 적용" if (tax_yr >= 2026 and (tax_yr - 2) <= 2024) else ""
         st.markdown(
@@ -2520,7 +2521,7 @@ def _page_calculation():
                     else ""
                 )
                 st.markdown(
-                    f"**📋 {cohort}년 귀속({R.format_corp_size_label(_cohort_corp_size(s, cohort, corp_size))} · {R.calc_method_badge_label(cohort)}) 기신고분 ({step_lbl})**{_af_hdr_pill}",
+                    f"**📋 {cohort}년 귀속({R.format_corp_size_label(_cohort_corp_size(s, cohort, corp_size))} · {R.calc_method_short_label(cohort, eval_year=cohort)}) 기신고분 ({step_lbl})**{_af_hdr_pill}",
                     unsafe_allow_html=True,
                 )
                 # [6-3] 같은 과세연도의 인원이 서로 다른 연도 신고서에서 다르게 기재된 경우 주황 경고 및 선택기 표시
@@ -2705,7 +2706,7 @@ def _page_calculation():
                 "전체 상시 [총인원 / 평균]": f"{pkg['cur_s']['reg_total']:g}명 / {pkg['cur_s']['regular']:.2f}명",
                 "청년등 [총인원 / 평균]": f"{pkg['cur_s']['yth_total']:g}명 / {pkg['cur_s']['youth']:.2f}명",
                 "청년등 외 [총인원 / 평균]": f"{pkg['cur_s']['non_youth_total']:g}명 / {pkg['cur_s']['non_youth']:.2f}명",
-                "적용 기준 및 비교 안내": f"당해({tax_yr}년) 신법 기준(실제 근로기간 1년 미만 제외 · ÷{pkg['cur_s']['months_in_year']}개월 {R.calc_method_badge_label(tax_yr)})",
+                "적용 기준 및 비교 안내": f"당해({tax_yr}년) 신법 기준(실제 근로기간 1년 미만 제외 · ÷{pkg['cur_s']['months_in_year']}개월 {R.calc_method_badge_label(tax_yr, eval_year=tax_yr)})",
             },
             {
                 "연도 · 블록 구분": f"② {tax_yr}년 귀속 [{b4_title}]",

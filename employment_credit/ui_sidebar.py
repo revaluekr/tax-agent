@@ -1110,10 +1110,10 @@ def render_credit_sidebar():
         )
 
     with st.container(border=True):
-        m_badge_sb = R.calc_method_badge_label(tax_yr)
+        m_badge_sb = R.calc_method_short_label(tax_yr, eval_year=tax_yr)
         yr_badge = (
             f"<span class='sb-badge-green'>{tax_yr}년 ({m_badge_sb})</span>"
-            if R.calc_method_for(tax_yr) == "B"
+            if (tax_yr >= 2026 or R.calc_method_for(tax_yr, eval_year=tax_yr) == "B")
             else f"<span class='sb-badge-amber'>{tax_yr}년 ({m_badge_sb})</span>"
         )
         st.markdown(
@@ -1124,7 +1124,7 @@ def render_credit_sidebar():
             "통합고용세액공제 계산 기준 사업연도",
             options=R.SUPPORTED_TAX_YEARS,
             index=R.SUPPORTED_TAX_YEARS.index(tax_yr),
-            format_func=lambda y: f"{y}년 귀속 ({R.calc_method_badge_label(y)} · {(y-1)%100:02d}·{(y-2)%100:02d} 사후관리)",
+            format_func=lambda y: f"{y}년 귀속 ({R.calc_method_short_label(y, eval_year=y)} · {(y-1)%100:02d}·{(y-2)%100:02d} 사후관리)",
             label_visibility="collapsed",
             key="ec_sb_tax_year_select",
         )

@@ -122,7 +122,7 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
         st.markdown(
             "<div class='ec-law-banner'>"
             "💡 <b>[2026년 귀속 통합 계산 안내]</b> 2026년 귀속 신고 시에는 "
-            "<b>① 26년 세액공제(B방식·사원별 절사)</b>, <b>② 25년 1차 사후관리(2차년도 연속공제·추징)</b>, "
+            f"<b>① 26년 세액공제({R.calc_method_short_label(2026, eval_year=2026)})</b>, <b>② 25년 1차 사후관리(2차년도 연속공제·추징)</b>, "
             "<b>③ 24년 2차 사후관리(3차년도 연속공제·추징)</b>를 함께 검토합니다. "
             "24·25·26년 공제 및 사후관리(24년 고용증가 23→24년 산정 포함)를 위해 <b>23년 자료(원천징수부·기신고서)</b>도 함께 올리실 수 있으며, "
             "본점·지점 또는 기중 양도(1번)·포괄양수(2번) 복수 사업장 원천징수부를 함께 올리면 자동 합산됩니다."
@@ -130,7 +130,7 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
             unsafe_allow_html=True,
         )
     elif tax_yr in (2024, 2025):
-        trunc_lbl = R.calc_method_badge_label(tax_yr)
+        trunc_lbl = R.calc_method_short_label(tax_yr, eval_year=tax_yr)
         st.markdown(
             f"<div class='ec-law-banner'>"
             f"💡 <b>[{tax_yr}년 귀속 세액공제({trunc_lbl}) 및 사후관리 안내]</b> 2단계 진입 시 <b>『{tax_yr}년 귀속 상시근로자 명세』</b>가 맨 위에 표시되며, "

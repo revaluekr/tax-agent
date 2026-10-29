@@ -636,25 +636,56 @@ LAFOCARE_GOLDEN_FIXTURE = {
 }
 
 
-def calc_method_for(cohort_year: int) -> str:
+def calc_method_for(cohort_year: int, eval_year: int | None = None) -> str:
     """
-    코호트(최초 공제연도) 기준 상시근로자 수 계산방식(A/B) 일원화 선택 함수.
-    - 근거: 국세청 법인세과 「'26년 3월 법인세 통합고용세액공제 상시근로자 수 계산 안내」 (재정경제부 세제실 회신 반영)
-      및 조세특례제한법 시행령(2026.2.27. 대통령령 제36127호) 부칙 제11조
-    - cohort_year <= 2024: "A" (기존 방식: [매월 말 상시근로자 수의 합계 ÷ 과세연도 개월수]의 값에서 100분의 1 미만 절사 — 최초 공제가 기존 방식이므로 그 코호트의 2·3차년도 요건·연속공제·사후관리는 끝까지 A)
-      # 확인 필요: '26.3월 국세청 안내 신뢰보호 원칙 연장 적용 (2026년 이후 평가연도에서 2024년 이하 코호트에 A를 계속 적용)
-    - cohort_year >= 2025: "B" (현행 방식: [(각 상시근로자 근무개월수 ÷ 과세연도 개월수)의 값에서 100분의 1 미만 절사한 값]의 합계)
+    신고하는 과세연도(평가연도, eval_year)와 코호트(최초 공제연도, cohort_year)를 함께 보아
+    상시근로자 수 절사 방식("A": 합계 후 1회 절사 / "B": 사원별 절사 후 합계)을 반환합니다.
+    - 근거: 조세특례제한법 시행령(2026.5.22. 대통령령 제36342호) 제11조의2 제8항 제1호 가·나·다목,
+      같은 영 부칙 제2조 제2항, 대통령령 제36127호 부칙 제11조 제1항·제3항,
+      국세청 '26.3월 안내(2025 사업연도 신고 기준)
+    - 평가연도(eval_year) >= 2026: 모든 인원 계산을 합계 후 1회 절사(숫자상 "A"값)로 합니다.
+      (2025년 이후 코호트: 제26조의8 제6항 → 제11조의2 제8항 2026.5.22. 개정규정 / 2024년 이하 코호트: 종전 규정)
+    - 평가연도(eval_year) == 2025 (2025 사업연도 신고):
+      2025년 이후 코호트는 "B"(사원별 절사, 2026.2.27. 문언), 2024년 이하 코호트는 "A" — 현행 유지
+    - 평가연도(eval_year) <= 2024: "A"
+    # 확인 필요: 최초 공제연도 B방식 신고값과 평가연도 합계 절사값의 비교 — 2027년 국세청 신고 안내 확인
     """
-    return "A" if int(cohort_year) <= 2024 else "B"
+    coh = int(cohort_year)
+    ev = int(eval_year) if eval_year is not None else coh
+    if ev >= 2026:
+        return "A"
+    if ev <= 2024:
+        return "A"
+    return "A" if coh <= 2024 else "B"
 
 
-def calc_method_badge_label(cohort_year_or_method: int | str) -> str:
-    """화면·보고서 배지 표시용 문자열: 'B방식(사원별 절사)' / 'A방식(합계 절사·신뢰보호)'"""
+def calc_method_badge_label(cohort_year_or_method: int | str, eval_year: int | None = None) -> str:
+    """
+    화면·보고서 배지 표시용 문자열:
+    - 평가연도(eval_year) 2026 이상: '합계 후 절사(조특령 §11의2⑧, 2026.5.22. 개정)'
+    - 평가연도 2025 이하(또는 단일 A/B 코드 지정 시): 기존 'B방식(사원별 절사)' / 'A방식(합계 절사·신뢰보호)' 유지
+    """
+    if eval_year is not None and int(eval_year) >= 2026:
+        return "합계 후 절사(조특령 §11의2⑧, 2026.5.22. 개정)"
     if isinstance(cohort_year_or_method, str) and cohort_year_or_method.upper() in ("A", "B"):
         m = cohort_year_or_method.upper()
     else:
-        m = calc_method_for(int(cohort_year_or_method))
+        yr_val = int(cohort_year_or_method)
+        if eval_year is None and yr_val >= 2026:
+            return "합계 후 절사(조특령 §11의2⑧, 2026.5.22. 개정)"
+        m = calc_method_for(yr_val, eval_year=eval_year)
     return "B방식(사원별 절사)" if m == "B" else "A방식(합계 절사·신뢰보호)"
+
+
+def calc_method_short_label(cohort_year_or_method: int | str, eval_year: int | None = None) -> str:
+    """화면 배지·드롭다운용 간결 표기 ('합계 후 절사' 또는 '사원별 절사')."""
+    if isinstance(cohort_year_or_method, str) and cohort_year_or_method.upper() in ("A", "B"):
+        m = cohort_year_or_method.upper()
+    else:
+        yr_val = int(cohort_year_or_method)
+        ev_val = int(eval_year) if eval_year is not None else yr_val
+        m = calc_method_for(yr_val, eval_year=ev_val)
+    return "사원별 절사" if m == "B" else "합계 후 절사"
 
 
 # ── 앱 고정 표기(배지·상태 문구) 목록: 인용문 사후 대조(verify_and_redact_unmatched_quotes) 검사 제외 대상 ──
@@ -662,7 +693,9 @@ def calc_method_badge_label(cohort_year_or_method: int | str) -> str:
 APP_FIXED_LABELS: tuple[str, ...] = (
     calc_method_badge_label("B"),
     calc_method_badge_label("A"),
+    calc_method_badge_label(2026, eval_year=2026),
     "# 확인 필요: '26.3월 국세청 안내 신뢰보호 원칙 연장 적용",
+    "# 확인 필요: 최초 공제연도 B방식 신고값과 평가연도 합계 절사값의 비교 — 2027년 국세청 신고 안내 확인",
     "계산방식(A/B) 차이 — 국세청 '26.3월 안내 기준 적용",
     "사원표 재계산값 임시 입력 · 신고서 확인 필요",
     "신고서 확인 필요",
@@ -683,10 +716,10 @@ APP_FIXED_LABELS: tuple[str, ...] = (
 ADMIN_RULINGS_AND_NOTICES = {
     "국세청_2026_03_상시근로자수_계산안내": {
         "출처": {
-            "문서명": "'26년 3월 법인세 통합고용세액공제 상시근로자 수 계산 안내",
-            "발행기관": "국세청 법인세과",
+            "문서명": "'26년 3월 법인세 통합고용세액공제 상시근로자 수 계산 안내 (2025 사업연도 신고 기준)",
+            "발행기관": "국세청 법인세과 (2025 사업연도 신고 기준)",
             "발행연월": "2026-03",
-            "해석일자": "'26.3월",
+            "해석일자": "'26.3월 (2025 사업연도 신고 기준)",
             "수록일": "2026-10-29",
         },
         "해석일자": "'26.3월",
@@ -722,10 +755,10 @@ ADMIN_RULINGS_AND_NOTICES = {
     },
     "국세청_2026_03_법인세신고_협조안내문": {
         "출처": {
-            "문서명": "'26년 3월 법인세 신고 협조 안내문",
-            "발행기관": "국세청 법인세과",
+            "문서명": "'26년 3월 법인세 신고 협조 안내문 (2025 사업연도 신고 기준)",
+            "발행기관": "국세청 법인세과 (2025 사업연도 신고 기준)",
             "발행연월": "2026-03",
-            "해석일자": "'26.3월",
+            "해석일자": "'26.3월 (2025 사업연도 신고 기준)",
             "수록일": "2026-10-29",
         },
         "해석일자": "'26.3월",
@@ -778,6 +811,36 @@ ADMIN_RULINGS_AND_NOTICES = {
         ),
         "앱_요약": (
             "앱 요약(원문 아님): 청년등외 상시근로자 수(⑩)는 상시근로자 수(②)에서 청년등 상시근로자 수 합계(⑨)를 차감(②-⑨)하여 산정함."
+        ),
+    },
+    "조특령_대통령령_제36342호_개정문": {
+        "출처": {
+            "문서명": "조세특례제한법 시행령 일부개정령(대통령령 제36342호, 2026. 5. 22. 공포·시행) 개정문 및 부칙",
+            "발행기관": "법제처 국가법령정보센터(대통령령 제36342호)",
+            "발행연월": "2026-05",
+            "해석일자": "2026.05.22",
+            "수록일": "2026-10-29",
+        },
+        "해석일자": "2026.05.22",
+        "수록일": "2026-10-29",
+        "원문": (
+            '제11조의2제7항제2호 중 "제26조의8제3항제1호"를 "제26조의8제4항제1호"로 하고, 같은 조 제8항제1호가목 계산식 외의 부분, '
+            '같은 호 나목 계산식 외의 부분 및 같은 호 다목 계산식 외의 부분 중 "수(100분의 1 미만의 부분은 없는 것으로 한다)의 합"을 '
+            '각각 "수의 합(100분의 1 미만의 부분은 없는 것으로 한다)"으로 한다.\n'
+            '대통령령 제36127호 조세특례제한법 시행령 일부개정령 부칙 제11조제1항 중 "제26조의8제4항제1호"를 '
+            '"제26조의8제4항제1호 및 같은 조 제6항"으로 하고, 같은 조 제3항 중 "제26조의8제6항 및 제7항"을 "제26조의8제7항"으로 한다.\n'
+            '부칙 <대통령령 제36342호, 2026. 5. 22.>\n'
+            '제1조(시행일) 이 영은 공포한 날부터 시행한다.\n'
+            '제2조(연구개발특구에 입주하는 첨단기술기업 등의 상시근로자 수에 관한 적용례) '
+            '① 제11조의2제8항의 개정규정(제60조제17항, 제60조의2제21항, 제61조제6항, 제99조의8제6항, 제116조의14제4항, '
+            '제116조의15제7항, 제116조의21제6항, 제116조의25제5항, 제116조의26제6항, 제116조의27제6항 및 제116조의36제6항에 따라 '
+            '준용되는 경우를 포함한다)은 이 영 시행 이후 과세표준 및 세액을 신고하거나 결정 또는 경정하는 경우부터 적용한다.\n'
+            '② 제11조의2제8항의 개정규정이 제26조의8제6항에 따라 준용되는 경우에는 2026년 1월 1일 이후 개시하는 과세연도의 '
+            '과세표준신고를 하는 경우부터 적용한다.'
+        ),
+        "앱_요약": (
+            "앱 요약(원문 아님): 대통령령 제36342호(2026.5.22.)로 제11조의2 제8항이 '수의 합(100분의 1 미만의 부분은 없는 것으로 한다)'으로 개정되고 "
+            "2026.1.1. 이후 개시 과세연도 과세표준신고부터 적용됨."
         ),
     },
 }
@@ -1118,11 +1181,11 @@ BASELINE_LAW_INFO: dict[str, dict[str, Any]] = {
         "법령명": "조세특례제한법 시행령",
         "법종구분": "대통령령",
         "감시조문": ("제26조의8", "제11조의2 제8항", "제23조 제13항"),
-        "관련부칙": "부칙 <제35999호, 2025.12.31.> 제2조, 부칙 <제36127호, 2026.02.27.> 제11조",
-        "특정부칙_목록": ("35999_제2조", "36127_제11조"),
-        "공포번호": "36127",
-        "공포일": "2026.02.27",
-        "시행일": "2026.02.27",
+        "관련부칙": "부칙 <제35999호, 2025.12.31.> 제2조, 부칙 <제36127호, 2026.02.27.> 제11조, 부칙 <제36342호, 2026.05.22.> 제2조",
+        "특정부칙_목록": ("35999_제2조", "36127_제11조", "36342_제2조"),
+        "공포번호": "36342",
+        "공포일": "2026.05.22",
+        "시행일": "2026.05.22",
         "반영일": "",
         "조문해시": "",
         "세부조문해시": {
@@ -1132,9 +1195,13 @@ BASELINE_LAW_INFO: dict[str, dict[str, Any]] = {
         "특정부칙해시": {
             "35999_제2조": "",
             "36127_제11조": "",
+            "36342_제2조": "",
         },
-        "기준원문_일부": "⑥ 제2항에 따른 상시근로자 수 및 제4항에 따른 청년등상시근로자 수의 계산방법에 관하여는 제11조의2제8항을 준용한다.",
-        "적용시기_부칙원문": "",
+        "기준원문_일부": (
+            "⑥ 제2항에 따른 상시근로자 수 및 제4항에 따른 청년등상시근로자 수의 계산방법에 관하여는 제11조의2제8항을 준용한다.\n"
+            + str(ADMIN_RULINGS_AND_NOTICES["조특령_대통령령_제36342호_개정문"]["원문"])
+        ),
+        "적용시기_부칙원문": str(ADMIN_RULINGS_AND_NOTICES["조특령_대통령령_제36342호_개정문"]["원문"]),
         "영향항목": [
             "소비성서비스업 제외 업종 판정(제26조의8 제1항)",
             "상시근로자 범위 및 제외사유 6종 판정(제26조의8 제2항 제1호~제6호)",
@@ -2319,49 +2386,104 @@ def verify_golden_case_invariants() -> tuple[bool, list[str]]:
     rural_tax = int(pkg["rural_special_tax_won"])
     net_saving = int(pkg["net_after_rural_tax_won"])
 
-    # 변경 전: 3.50/3.50/0.00 → 변경 후: 3.47/3.47/0.00, 사유: A→B (2026년 신법 A 티어의 직전 비교연도 인원에 B방식 적용)
-    if round(float(summaries[2025]["nr_상시_평균"]), 2) != 3.47 or round(float(summaries[2025]["nr_청년등_평균"]), 2) != 3.47 or round(float(summaries[2025]["nr_청년외_평균"]), 2) != 0.00:
-        errors.append(f"2025년 일관된 해석 비교인원(nr_, B방식) 불일치: {summaries[2025].get('nr_상시_평균')}/{summaries[2025].get('nr_청년등_평균')}/{summaries[2025].get('nr_청년외_평균')}")
+    # [2026.5.22. 대통령령 제36342호 반영] 라포케어 2026 귀속(합계 후 절사):
+    # - 2026 당해: 11.83 / 10.25 / 1.58, 2025 비교(nr_): 3.50 / 3.50 / 0.00
+    # - 1차 53,570,000, 2차 39,640,000, 3차 16,740,000, 총 109,950,000, 농특세 21,990,000, 순 87,960,000
+    if round(float(summaries[2025]["nr_상시_평균"]), 2) != 3.50 or round(float(summaries[2025]["nr_청년등_평균"]), 2) != 3.50 or round(float(summaries[2025]["nr_청년외_평균"]), 2) != 0.00:
+        errors.append(f"2025년 일관된 해석 비교인원(nr_, 합계 후 절사) 불일치: {summaries[2025].get('nr_상시_평균')}/{summaries[2025].get('nr_청년등_평균')}/{summaries[2025].get('nr_청년외_평균')}")
     if summaries[2025].get("nr_names") != ["박소연", "이진우", "차백준"]:
         errors.append(f"2025년 비교인원 1년 미만 제외 대상자 불일치: {summaries[2025].get('nr_names')}")
-    # 변경 전: 11.83/10.25/1.58 → 변경 후: 11.81/10.24/1.57, 사유: A→B (2026년 당해 신법 인원에 B방식 적용)
-    if round(float(summaries[2026]["상시_평균"]), 2) != 11.81 or round(float(summaries[2026]["청년등_평균"]), 2) != 10.24 or round(float(summaries[2026]["청년외_평균"]), 2) != 1.57:
-        errors.append(f"2026년 당해 상시근로자 수(B방식) 불일치: {summaries[2026]['상시_평균']}/{summaries[2026]['청년등_평균']}/{summaries[2026]['청년외_평균']}")
-    # 변경 전: 12.58/10.75/1.83 → 변경 후: 12.56/10.74/1.82, 사유: A→B (2025년 코호트의 2026년 1차 사후관리 b2에 B방식 적용)
-    if round(float(summaries[2026]["b2_reg"]), 2) != 12.56 or round(float(summaries[2026]["b2_yth"]), 2) != 10.74 or round(float(summaries[2026]["b2_gen"]), 2) != 1.82:
-        errors.append(f"2026년 구법 1차 사후관리(2025 코호트 B방식) 인원 불일치: {summaries[2026]['b2_reg']}/{summaries[2026]['b2_yth']}/{summaries[2026]['b2_gen']}")
-    # 2024년 코호트의 2026년 2차 사후관리(b3)는 A방식 유지: 12.58/10.75/1.83
+    if round(float(summaries[2026]["상시_평균"]), 2) != 11.83 or round(float(summaries[2026]["청년등_평균"]), 2) != 10.25 or round(float(summaries[2026]["청년외_평균"]), 2) != 1.58:
+        errors.append(f"2026년 당해 상시근로자 수(합계 후 절사) 불일치: {summaries[2026]['상시_평균']}/{summaries[2026]['청년등_평균']}/{summaries[2026]['청년외_평균']}")
+    if round(float(summaries[2026]["b2_reg"]), 2) != 12.58 or round(float(summaries[2026]["b2_yth"]), 2) != 10.75 or round(float(summaries[2026]["b2_gen"]), 2) != 1.83:
+        errors.append(f"2026년 구법 1차 사후관리(b2, 합계 후 절사) 인원 불일치: {summaries[2026]['b2_reg']}/{summaries[2026]['b2_yth']}/{summaries[2026]['b2_gen']}")
     if round(float(summaries[2026]["b3_reg"]), 2) != 12.58 or round(float(summaries[2026]["b3_yth"]), 2) != 10.75 or round(float(summaries[2026]["b3_gen"]), 2) != 1.83:
-        errors.append(f"2026년 구법 2차 사후관리(2024 코호트 A방식) 인원 불일치: {summaries[2026]['b3_reg']}/{summaries[2026]['b3_yth']}/{summaries[2026]['b3_gen']}")
-    # 변경 전: +8.33/+6.75/+1.58 → 변경 후: +8.34/+6.77/+1.57, 사유: A→B (11.81 - 3.47 = 8.34, 10.24 - 3.47 = 6.77, 1.57 - 0.00 = 1.57)
-    if round(float(pkg["cur_inc"]["total_inc"]), 2) != 8.34 or round(float(pkg["cur_inc"]["youth_inc"]), 2) != 6.77 or round(float(pkg["cur_inc"]["non_youth_inc"]), 2) != 1.57:
-        errors.append(f"2026년 신규 증가인원(B방식) 불일치: 전체 {pkg['cur_inc']['total_inc']}, 청년 {pkg['cur_inc']['youth_inc']}, 일반 {pkg['cur_inc']['non_youth_inc']}")
+        errors.append(f"2026년 구법 2차 사후관리(b3, 합계 후 절사) 인원 불일치: {summaries[2026]['b3_reg']}/{summaries[2026]['b3_yth']}/{summaries[2026]['b3_gen']}")
+    if round(float(pkg["cur_inc"]["total_inc"]), 2) != 8.33 or round(float(pkg["cur_inc"]["youth_inc"]), 2) != 6.75 or round(float(pkg["cur_inc"]["non_youth_inc"]), 2) != 1.58:
+        errors.append(f"2026년 신규 증가인원(합계 후 절사) 불일치: 전체 {pkg['cur_inc']['total_inc']}, 청년 {pkg['cur_inc']['youth_inc']}, 일반 {pkg['cur_inc']['non_youth_inc']}")
     if round(float(pkg["pm_y1_filed"]["init_yth_inc"]), 2) != 2.30 or round(float(pkg["pm_y1_filed"]["init_gen_inc"]), 2) != 0.74:
         errors.append(f"2025년 기신고 증가인원 불일치: 청년 {pkg['pm_y1_filed']['init_yth_inc']}, 일반 {pkg['pm_y1_filed']['init_gen_inc']}")
-    # 변경 전: 2.33/0.75 → 변경 후: 2.30/0.74, 사유: A→B (2025년 코호트 재계산도 calc_method_for(2025) = B방식으로 계산되어 기신고와 일치)
     if round(float(pkg["pm_y1_recalc"]["init_yth_inc"]), 2) != 2.30 or round(float(pkg["pm_y1_recalc"]["init_gen_inc"]), 2) != 0.74:
-        errors.append(f"2025년 재계산 증가인원(B방식) 불일치: 청년 {pkg['pm_y1_recalc']['init_yth_inc']}, 일반 {pkg['pm_y1_recalc']['init_gen_inc']}")
+        errors.append(f"2025년 재계산 증가인원(최초공제연도 B방식) 불일치: 청년 {pkg['pm_y1_recalc']['init_yth_inc']}, 일반 {pkg['pm_y1_recalc']['init_gen_inc']}")
     if round(float(pkg["pm_y2_filed"]["init_yth_inc"]), 2) != 1.08 or round(float(pkg["pm_y2_filed"]["init_gen_inc"]), 2) != 0.00:
         errors.append(f"2024년 3차 연속공제 증가인원 불일치: 청년 {pkg['pm_y2_filed']['init_yth_inc']}, 일반 {pkg['pm_y2_filed']['init_gen_inc']}")
-    # 변경 전: 53,570,000 → 변경 후: 53,670,000, 사유: A→B (6.77 × 700만 + 1.57 × 400만 = 53,670,000원)
-    if c1_won != 53_670_000:
-        errors.append(f"2026년 1차 공제액(B방식) 불일치: {c1_won:,} != 53,670,000")
+    if c1_won != 53_570_000:
+        errors.append(f"2026년 1차 공제액(합계 후 절사) 불일치: {c1_won:,} != 53,570,000")
     if c2_filed_won != 39_640_000:
         errors.append(f"2026년 2차 연속공제액(기신고) 불일치: {c2_filed_won:,} != 39,640,000")
-    # 변경 전: 40,160,000 (차액 520,000) → 변경 후: 39,640,000 (차액 0), 사유: A→B (2025년 코호트 재계산에 B방식 적용)
     if c2_recalc_won != 39_640_000:
         errors.append(f"2026년 2차 연속공제액(재계산 B방식) 불일치: {c2_recalc_won:,} != 39,640,000")
     if (c2_recalc_won - c2_filed_won) != 0:
         errors.append(f"2025년 귀속 기신고 vs 재계산(B방식) 차액 불일치: {c2_recalc_won - c2_filed_won:,} != 0")
     if c3_won != 16_740_000:
         errors.append(f"2026년 3차 연속공제액(2024년 비수도권 단가 승계) 불일치: {c3_won:,} != 16,740,000")
-    # 변경 전: 109,950,000 / 21,990,000 / 87,960,000 → 변경 후: 110,050,000 / 22,010,000 / 88,040,000, 사유: A→B
-    if tot_gross != 110_050_000:
-        errors.append(f"당해 총 공제세액 합계 불일치: {tot_gross:,} != 110,050,000")
-    if rural_tax != 22_010_000:
-        errors.append(f"농어촌특별세(20%) 불일치: {rural_tax:,} != 22,010,000")
-    if net_saving != 88_040_000:
-        errors.append(f"실질 순절세액 불일치: {net_saving:,} != 88,040,000")
+    if tot_gross != 109_950_000:
+        errors.append(f"당해 총 공제세액 합계 불일치: {tot_gross:,} != 109,950,000")
+    if rural_tax != 21_990_000:
+        errors.append(f"농어촌특별세(20%) 불일치: {rural_tax:,} != 21,990,000")
+    if net_saving != 87_960_000:
+        errors.append(f"실질 순절세액 불일치: {net_saving:,} != 87,960,000")
+
+    # ── 1-b) 2025 귀속 평가(가상): 2025년 코호트 B(라포케어 2025 상시 4.62 / 청년등 3.88 / 청년외 0.74) 유지 확인 ──
+    if (
+        calc_method_for(2025, eval_year=2025) != "B"
+        or round(float(summaries[2025]["상시_평균"]), 2) != 4.62
+        or round(float(summaries[2025]["청년등_평균"]), 2) != 3.88
+        or round(float(summaries[2025]["청년외_평균"]), 2) != 0.74
+    ):
+        errors.append(
+            f"2025 귀속 평가(2025년 코호트 B) 인원 유지 실패: method={calc_method_for(2025, 2025)}, "
+            f"{summaries[2025]['상시_평균']}/{summaries[2025]['청년등_평균']}/{summaries[2025]['청년외_평균']} != 4.62/3.88/0.74"
+        )
+
+    # ── 1-c) 왕산전기 2026 시나리오: 1차 0, 2025년분 추징 45,000, 2024년분 0 (변동 없음) ──
+    wangsan_summaries = {
+        2023: {"상시_평균": 5.00, "청년등_평균": 1.00, "청년외_평균": 4.00, "months_in_year": 12, "has_data": True},
+        2024: {"상시_평균": 5.00, "청년등_평균": 1.00, "청년외_평균": 4.00, "months_in_year": 12, "has_data": True},
+        2025: {"상시_평균": 6.00, "청년등_평균": 1.00, "청년외_평균": 5.00, "nr_상시_평균": 6.00, "nr_청년등_평균": 1.00, "nr_청년외_평균": 5.00, "months_in_year": 12, "has_data": True},
+        2026: {"상시_평균": 5.00, "청년등_평균": 1.00, "청년외_평균": 4.00, "b2_reg": 5.00, "b2_yth": 1.00, "b2_yth_act": 1.00, "b3_reg": 5.00, "b3_yth": 1.00, "b3_yth_act": 1.00, "months_in_year": 12, "has_data": True},
+    }
+    wangsan_pf = {
+        2025: {
+            "init_reg": 6.00,
+            "init_yth": 1.00,
+            "init_yth_inc": 0.00,
+            "init_gen_inc": 1.00,
+            "claimed_won": 45_000,
+            "carryforward_won": 0,
+            "is_capital": True,
+        },
+        2024: {
+            "init_reg": 5.00,
+            "init_yth": 1.00,
+            "init_yth_inc": 0.00,
+            "init_gen_inc": 0.00,
+            "claimed_won": 0,
+            "carryforward_won": 0,
+            "is_capital": True,
+        },
+    }
+    pkg_wangsan = H.calculate_tax_year_package(
+        tax_year=2026,
+        corp_size="중소기업",
+        is_capital=True,
+        summaries=wangsan_summaries,
+        prior_filings=wangsan_pf,
+        additional_inputs={},
+        scheme_2026="new_2026",
+        pm_basis=PM_BASIS_FILED,
+    )
+    if (
+        int(pkg_wangsan["cur_base_credit_won"]) != 0
+        or int(pkg_wangsan["pm_y1_filed"]["clawback_net_payable_won"]) != 45_000
+        or int(pkg_wangsan["pm_y2_filed"]["continued_credit_won"]) != 0
+        or int(pkg_wangsan["pm_y2_filed"]["clawback_net_payable_won"]) != 0
+    ):
+        errors.append(
+            f"왕산전기 2026 검증 실패: 1차={pkg_wangsan['cur_base_credit_won']}, "
+            f"2025추징={pkg_wangsan['pm_y1_filed']['clawback_net_payable_won']}, "
+            f"2024공제/추징={pkg_wangsan['pm_y2_filed']['continued_credit_won']}/{pkg_wangsan['pm_y2_filed']['clawback_net_payable_won']}"
+        )
 
     # ── 2) 다년도(2027년 B · 2028년 C) 비교연도 자동 재산정 검증 ──
     p22_sim = dict(people["p22"], 퇴사일="2027-05-15", 연도별_퇴사일={"2027": "2027-05-15"})
@@ -2377,9 +2499,8 @@ def verify_golden_case_invariants() -> tuple[bool, list[str]]:
         if H.worked_in_year(p_obj, 2026)
     }
     t_2026_nr = H.year_totals(list(comp_2026_for_2027.values()), 12, year=2026)
-    # 변경 전: 11.50/10.25/1.25 → 변경 후: 11.48/10.24/1.24, 사유: A→B (2026년 비교인원 B방식 사원별 절사 합계)
-    if round(float(t_2026_nr["상시_평균"]), 2) != 11.48 or round(float(t_2026_nr["청년등_평균"]), 2) != 10.24 or round(float(t_2026_nr["청년외_평균"]), 2) != 1.24:
-        errors.append(f"다년도 검증 실패: 2027년 계산 시 2026년 비교인원 재산정 수치(B방식) 불일치 ({t_2026_nr['상시_평균']}/{t_2026_nr['청년등_평균']}/{t_2026_nr['청년외_평균']} != 11.48/10.24/1.24)")
+    if round(float(t_2026_nr["상시_평균"]), 2) != 11.50 or round(float(t_2026_nr["청년등_평균"]), 2) != 10.25 or round(float(t_2026_nr["청년외_평균"]), 2) != 1.25:
+        errors.append(f"다년도 검증 실패: 2027년 계산 시 2026년 비교인원 재산정 수치(합계 후 절사) 불일치 ({t_2026_nr['상시_평균']}/{t_2026_nr['청년등_평균']}/{t_2026_nr['청년외_평균']} != 11.50/10.25/1.25)")
 
     summaries_2027 = {
         2025: summaries[2025],
@@ -2388,6 +2509,9 @@ def verify_golden_case_invariants() -> tuple[bool, list[str]]:
             nr_상시_평균=t_2026_nr["상시_평균"],
             nr_청년등_평균=t_2026_nr["청년등_평균"],
             nr_청년외_평균=t_2026_nr["청년외_평균"],
+            nr_A_상시_평균=t_2026_nr["A_상시_평균"],
+            nr_A_청년등_평균=t_2026_nr["A_청년등_평균"],
+            nr_A_청년외_평균=t_2026_nr["A_청년외_평균"],
             nr_B_상시_평균=t_2026_nr["B_상시_평균"],
             nr_B_청년등_평균=t_2026_nr["B_청년등_평균"],
             nr_B_청년외_평균=t_2026_nr["B_청년외_평균"],
@@ -2406,12 +2530,10 @@ def verify_golden_case_invariants() -> tuple[bool, list[str]]:
     )
     tier_a_2027 = pkg_2027["abc_res"]["tiers"]["A"]
     tier_b_2027 = pkg_2027["abc_res"]["tiers"]["B"]
-    # 변경 전: 2.50/1.75/0.75 → 변경 후: 2.52/1.76/0.76, 사유: A→B (14.00 - 11.48 = 2.52, 12.00 - 10.24 = 1.76)
-    if round(float(tier_a_2027["total_inc"]), 2) != 2.52 or round(float(tier_a_2027["youth_inc"]), 2) != 1.76 or round(float(tier_a_2027["non_youth_inc"]), 2) != 0.76:
-        errors.append(f"2027년 A(직전 2026년 재산정 비교, B방식) 증가인원 불일치: {tier_a_2027}")
-    # 변경 전: 8.00/6.75/1.25 → 변경 후: 8.01/6.77/1.24, 사유: A→B (11.48 - 3.47 = 8.01, 10.24 - 3.47 = 6.77, 1.24 - 0.00 = 1.24)
-    if round(float(tier_b_2027["total_inc"]), 2) != 8.01 or round(float(tier_b_2027["youth_inc"]), 2) != 6.77 or round(float(tier_b_2027["non_youth_inc"]), 2) != 1.24:
-        errors.append(f"2027년 B(전전 2025년 3.47명 & 직전 2026년 11.48명 비교, B방식) 유지인원 불일치: {tier_b_2027}")
+    if round(float(tier_a_2027["total_inc"]), 2) != 2.50 or round(float(tier_a_2027["youth_inc"]), 2) != 1.75 or round(float(tier_a_2027["non_youth_inc"]), 2) != 0.75:
+        errors.append(f"2027년 A(직전 2026년 재산정 비교, 합계 후 절사) 증가인원 불일치: {tier_a_2027}")
+    if round(float(tier_b_2027["total_inc"]), 2) != 8.00 or round(float(tier_b_2027["youth_inc"]), 2) != 6.75 or round(float(tier_b_2027["non_youth_inc"]), 2) != 1.25:
+        errors.append(f"2027년 B(전전 2025년 3.50명 & 직전 2026년 11.50명 비교, 합계 후 절사) 유지인원 불일치: {tier_b_2027}")
 
     res_2026_recalc_after_2027 = H.calculate_tax_year_package(
         tax_year=2026,
@@ -2426,8 +2548,7 @@ def verify_golden_case_invariants() -> tuple[bool, list[str]]:
         scheme_2026="new_2026",
         pm_basis=PM_BASIS_FILED,
     )
-    # 변경 전: 52,250,000 → 변경 후: 52,350,000, 사유: A→B (차액은 도은주 4개월 = 0.33명 × 400만 = 1,320,000원으로 동일)
-    if int(res_2026_recalc_after_2027["cur_base_credit_won"]) != 52_350_000 or (c1_won - int(res_2026_recalc_after_2027["cur_base_credit_won"])) != 1_320_000:
+    if int(res_2026_recalc_after_2027["cur_base_credit_won"]) != 52_250_000 or (c1_won - int(res_2026_recalc_after_2027["cur_base_credit_won"])) != 1_320_000:
         errors.append(f"2026년 신고분 사후 재산정 세액 차이 불일치: {c1_won - int(res_2026_recalc_after_2027['cur_base_credit_won']):,} != 1,320,000")
 
     # ── 3) 연도별 기업규모 변동 시나리오(2023 중소 / 2024 일반기업 / 2025 중견기업 / 2026 중견기업) 검증 ──
@@ -2445,18 +2566,14 @@ def verify_golden_case_invariants() -> tuple[bool, list[str]]:
     )
     tier_a_mixed = pkg_mixed_filed["abc_res"]["tiers"]["A"]
     gross_a_before_hurdle = int(tier_a_mixed["item1_youth_won"]) + int(tier_a_mixed["item2_non_youth_won"])
-    # 변경 전: 38,490,000 → 변경 후: 38,560,000, 사유: A→B (청년등 6.77×500만 + 청년외 1.57×300만 = 38,560,000)
-    if gross_a_before_hurdle != 38_560_000:
-        errors.append(f"연도별 기업규모(2026 중견) 차감 전 1차 산출액 불일치: {gross_a_before_hurdle:,} != 38,560,000")
-    # 변경 전: 21,840,000 → 변경 후: 21,860,000, 사유: A→B (청년외 1.57×300만 + 청년등 3.43×500만 = 21,860,000)
-    if int(tier_a_mixed["item3_deduction_won"]) != 21_860_000:
-        errors.append(f"연도별 기업규모(2026 중견) 5명 최소고용증가인원 차감액 불일치: {tier_a_mixed['item3_deduction_won']:,} != 21,860,000")
-    # 변경 전: 16,650,000 → 변경 후: 16,700,000, 사유: A→B (38,560,000 - 21,860,000 = 16,700,000)
-    if int(pkg_mixed_filed["cur_base_credit_won"]) != 16_700_000:
-        errors.append(f"연도별 기업규모(2026 중견) 차감 후 1차 공제액 불일치: {pkg_mixed_filed['cur_base_credit_won']:,} != 16,700,000")
+    if gross_a_before_hurdle != 38_490_000:
+        errors.append(f"연도별 기업규모(2026 중견) 차감 전 1차 산출액 불일치: {gross_a_before_hurdle:,} != 38,490,000")
+    if int(tier_a_mixed["item3_deduction_won"]) != 21_840_000:
+        errors.append(f"연도별 기업규모(2026 중견) 5명 최소고용증가인원 차감액 불일치: {tier_a_mixed['item3_deduction_won']:,} != 21,840,000")
+    if int(pkg_mixed_filed["cur_base_credit_won"]) != 16_650_000:
+        errors.append(f"연도별 기업규모(2026 중견) 차감 후 1차 공제액 불일치: {pkg_mixed_filed['cur_base_credit_won']:,} != 16,650,000")
     if int(pkg_mixed_filed["pm_y1_filed"]["continued_credit_won"]) != 21_730_000:
         errors.append(f"연도별 기업규모(2025 중견, 기신고 기준) 2차 연속공제액 불일치: {pkg_mixed_filed['pm_y1_filed']['continued_credit_won']:,} != 21,730,000")
-    # 변경 전: 22,015,000 → 변경 후: 21,730,000, 사유: A→B (2025년 코호트 재계산에 B방식 적용하여 2.30×800만 + 0.74×450만 = 21,730,000)
     if int(pkg_mixed_filed["pm_y1_recalc"]["continued_credit_won"]) != 21_730_000:
         errors.append(f"연도별 기업규모(2025 중견, 재계산 B방식) 2차 연속공제액 불일치: {pkg_mixed_filed['pm_y1_recalc']['continued_credit_won']:,} != 21,730,000")
     if (
@@ -2465,8 +2582,7 @@ def verify_golden_case_invariants() -> tuple[bool, list[str]]:
         or pkg_mixed_filed["pm_y2"].get("case_code") != "공제기간 종료(일반기업 2년) · 고용유지(추징 없음)"
     ):
         errors.append(f"연도별 기업규모(2024 일반기업, 고용유지) 3차 공제기간 종료·추징없음 판정 불일치: {pkg_mixed_filed['pm_y2']}")
-    # 변경 전: 38,380,000 / 7,676,000 → 변경 후: 38,430,000 / 7,686,000, 사유: A→B (16,700,000 + 21,730,000 = 38,430,000)
-    if int(pkg_mixed_filed["total_credit_gross_won"]) != 38_430_000 or int(pkg_mixed_filed["rural_special_tax_won"]) != 7_686_000:
+    if int(pkg_mixed_filed["total_credit_gross_won"]) != 38_380_000 or int(pkg_mixed_filed["rural_special_tax_won"]) != 7_676_000:
         errors.append(f"연도별 기업규모(기신고 기준) 총공제액/농특세 불일치: {pkg_mixed_filed['total_credit_gross_won']:,} / {pkg_mixed_filed['rural_special_tax_won']:,}")
 
     # ── 4) 2024년 코호트(비수도권)가 2026년(2차 사후관리)에 상시·청년등 1.00명으로 감소한 경우 추징 검증 ──
@@ -2636,20 +2752,27 @@ def verify_golden_case_invariants() -> tuple[bool, list[str]]:
     if round(float(syn_tot_3["A_청년등_평균"]), 2) != 1.75 or round(float(syn_tot_3["B_청년등_평균"]), 2) != 1.74:
         errors.append(f"7-2 단위테스트 ③(청년 7개월×3명) 불일치: A={syn_tot_3['A_청년등_평균']:.2f} (기대 1.75), B={syn_tot_3['B_청년등_평균']:.2f} (기대 1.74)")
 
-    # ── 7-3) 방식 선택 테스트 ──
-    # · 2024년 코호트의 2026년 사후관리 비교에 A값이, 2025년 코호트의 2026년 사후관리 비교에 B값이 쓰이는지
+    # ── 7-3) 방식 선택 테스트 (2026.5.22. 대통령령 제36342호 반영: 평가연도 2026 합계 절사 vs 평가연도 2025 A/B 이원화) ──
     if pkg["pm_y2_filed"].get("calc_method") != "A" or round(float(pkg["pm_y2_filed"].get("cur_pm_reg", 0.0)), 2) != 12.58:
-        errors.append(f"7-3 방식 선택 실패: 2024년 코호트 2026년 사후관리에 A값(12.58)이 쓰이지 않음 ({pkg['pm_y2_filed'].get('calc_method')}, {pkg['pm_y2_filed'].get('cur_pm_reg')})")
-    if pkg["pm_y1_filed"].get("calc_method") != "B" or round(float(pkg["pm_y1_filed"].get("cur_pm_reg", 0.0)), 2) != 12.56:
-        errors.append(f"7-3 방식 선택 실패: 2025년 코호트 2026년 사후관리에 B값(12.56)이 쓰이지 않음 ({pkg['pm_y1_filed'].get('calc_method')}, {pkg['pm_y1_filed'].get('cur_pm_reg')})")
-    # · 신법 당해 A 티어의 해당·비교 인원에 B값이 쓰이는지
+        errors.append(f"7-3 방식 선택 실패: 2024년 코호트 2026년 사후관리에 합계 절사값(12.58)이 쓰이지 않음 ({pkg['pm_y2_filed'].get('calc_method')}, {pkg['pm_y2_filed'].get('cur_pm_reg')})")
+    if pkg["pm_y1_filed"].get("calc_method") != "A" or round(float(pkg["pm_y1_filed"].get("cur_pm_reg", 0.0)), 2) != 12.58:
+        errors.append(f"7-3 방식 선택 실패: 2025년 코호트 2026년 사후관리에 합계 절사값(12.58)이 쓰이지 않음 ({pkg['pm_y1_filed'].get('calc_method')}, {pkg['pm_y1_filed'].get('cur_pm_reg')})")
     tier_a_cur = pkg["abc_res"]["tiers"]["A"]
     if (
-        tier_a_cur.get("calc_method") != "B"
-        or round(float(tier_a_cur.get("cur_reg", 0.0)), 2) != 11.81
-        or round(float(tier_a_cur.get("comp_reg", 0.0)), 2) != 3.47
+        tier_a_cur.get("calc_method") != "A"
+        or round(float(tier_a_cur.get("cur_reg", 0.0)), 2) != 11.83
+        or round(float(tier_a_cur.get("comp_reg", 0.0)), 2) != 3.50
     ):
-        errors.append(f"7-3 방식 선택 실패: 신법 A 티어의 해당(11.81)·비교(3.47) 인원에 B값이 쓰이지 않음 ({tier_a_cur})")
+        errors.append(f"7-3 방식 선택 실패: 2026년 신법 A 티어의 해당(11.83)·비교(3.50) 인원에 합계 절사값이 쓰이지 않음 ({tier_a_cur})")
+    # 평가연도 2025 시나리오에서 2025년 코호트 B, 2024년 이하 코호트 A 및 배지 문구 확인
+    if (
+        calc_method_for(2025, eval_year=2025) != "B"
+        or calc_method_for(2024, eval_year=2025) != "A"
+        or calc_method_badge_label(2026, eval_year=2026) != "합계 후 절사(조특령 §11의2⑧, 2026.5.22. 개정)"
+        or calc_method_badge_label(2025, eval_year=2025) != "B방식(사원별 절사)"
+        or calc_method_badge_label(2024, eval_year=2025) != "A방식(합계 절사·신뢰보호)"
+    ):
+        errors.append("7-3(배지 및 2025 평가연도 방식 선택) 불일치")
 
     # ── 7-4) 기신고 vs 재계산 비교 창에서 A·B 차이만 있는 경우 경정청구·수정신고 문구가 나오지 않는지 검증 ──
     ab_diag = diagnose_ab_method_difference(
