@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
 import re
+import time
 from datetime import date
 from typing import Any
 
@@ -796,16 +797,36 @@ def _fetch_single_law_by_individual_articles(
     return combined
 
 
+_LAW_MONITOR_MEM_CACHE: dict[str, Any] = {}
+_LAW_MONITOR_FAIL_COOLDOWN_SEC: float = 600.0  # API 연결 실패 시 10분간 자동 재시도 억제 (수동 '지금 다시 조회' 클릭 시 즉시 재시도)
+
+
 def fetch_daily_ec_law_monitoring_status(
     tax_year: int = R.DEFAULT_TAX_YEAR,
     force_refresh: bool = False,
 ) -> dict[str, Any]:
     """
-    [피드백 1, 2, 3, 4 전면 반영]
+    [피드백 1, 2, 3, 4 전면 반영 + 리런 속도 최적화]
     - 감시 조문 및 부칙을 개별 조회하여 제11조의2 제8항 및 특정 부칙(제34조·제11조 등) 누락을 원천 방지합니다.
     - 법령ID와 법령일련번호(MST)를 분리하여 저장합니다.
+    - 당일 성공 캐시(메모리+디스크)는 즉시 반환하며, API 연결 지연 시에도 매 화면 클릭(rerun)마다 네트워크 타임아웃이
+      반복되지 않도록 10분 쿨다운을 적용합니다(사용자가 '지금 다시 조회' 클릭 시에는 force_refresh=True로 즉시 재조회).
     """
     today_str = date.today().isoformat()
+    now_ts = time.time()
+
+    if not force_refresh and _LAW_MONITOR_MEM_CACHE.get("checked_date") == today_str:
+        mem_fetched = _LAW_MONITOR_MEM_CACHE.get("fetched_laws")
+        mem_last_ok = _LAW_MONITOR_MEM_CACHE.get("last_success")
+        if isinstance(mem_fetched, dict):
+            if not mem_fetched.get("_api_failed") or (now_ts - float(_LAW_MONITOR_MEM_CACHE.get("ts") or 0.0)) < _LAW_MONITOR_FAIL_COOLDOWN_SEC:
+                return R.evaluate_law_monitoring_status(
+                    mem_fetched,
+                    today=today_str,
+                    tax_year=tax_year,
+                    last_success_cache=mem_last_ok,
+                )
+
     daily_cache = _load_json_safe(_DAILY_LAW_CACHE_PATH)
     last_success = daily_cache.get("last_success") if isinstance(daily_cache.get("last_success"), dict) else None
 
@@ -815,6 +836,12 @@ def fetch_daily_ec_law_monitoring_status(
         and isinstance(daily_cache.get("fetched_laws"), dict)
         and not daily_cache["fetched_laws"].get("_api_failed")
     ):
+        _LAW_MONITOR_MEM_CACHE.update({
+            "checked_date": today_str,
+            "fetched_laws": daily_cache["fetched_laws"],
+            "last_success": last_success,
+            "ts": now_ts,
+        })
         return R.evaluate_law_monitoring_status(
             daily_cache["fetched_laws"],
             today=today_str,
@@ -825,7 +852,15 @@ def fetch_daily_ec_law_monitoring_status(
     try:
         import agent  # noqa: F401
         import law_api
+        if not law_api._live_law_key():
+            raise RuntimeError("LAW_OPEN_API_KEY not configured")
     except Exception:
+        _LAW_MONITOR_MEM_CACHE.update({
+            "checked_date": today_str,
+            "fetched_laws": {"_api_failed": True},
+            "last_success": last_success,
+            "ts": time.time(),
+        })
         return R.evaluate_law_monitoring_status(
             {"_api_failed": True},
             today=today_str,
@@ -902,6 +937,12 @@ def fetch_daily_ec_law_monitoring_status(
     for l_nm, raw_txt in raw_list:
         parsed = _parse_law_header_and_sections(raw_txt, l_nm)
         if parsed.get("_fetch_error"):
+            _LAW_MONITOR_MEM_CACHE.update({
+                "checked_date": today_str,
+                "fetched_laws": {"_api_failed": True},
+                "last_success": last_success,
+                "ts": time.time(),
+            })
             return R.evaluate_law_monitoring_status(
                 {"_api_failed": True},
                 today=today_str,
@@ -930,6 +971,12 @@ def fetch_daily_ec_law_monitoring_status(
         "unapplied_count": eval_res.get("unapplied_count", 0),
         "laws": eval_res.get("laws", {}),
     }
+    _LAW_MONITOR_MEM_CACHE.update({
+        "checked_date": today_str,
+        "fetched_laws": fetched_laws,
+        "last_success": daily_cache["last_success"],
+        "ts": time.time(),
+    })
     _save_json_safe(_DAILY_LAW_CACHE_PATH, daily_cache)
     return eval_res
 

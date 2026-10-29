@@ -840,20 +840,26 @@ def _ensure_built_for_tax_year(s: dict):
 # ══════════════════════════════════════════════════════════════════
 # 0-B. 상시근로자 명세서 A4 가로(Landscape) 정식 PDF 생성 엔진
 # ══════════════════════════════════════════════════════════════════
+_CACHED_PDF_FONT_PAIR: tuple[str, str] | None = None
+_FONT_DOWNLOAD_ATTEMPTED: bool = False
+
+
 def _ensure_korean_pdf_font() -> tuple[str, str]:
     """
     ReportLab PDF 한글 폰트 등록 및 폰트 패밀리(<b> 태그 매핑) 보장:
-    1) 이미 app.py에 등록된 KoreanFont/KoreanFontBold가 있으면 즉시 재사용하거나,
-    2) Windows 맑은고딕(malgun.ttf), STORAGE_DIR 내 NanumGothic.ttf, Linux 시스템 한글 TrueType 폰트
-       (/usr/share/fonts/truetype/nanum/NanumGothic.ttf, DroidSansFallbackFull.ttf, UnDotum.ttf 등)를 탐색하여
-       실제 글리프가 임베딩되는 TTFont로 등록합니다(HYGothic-Medium CID 폰트 단독 사용 시 한글 투명 누락 방지).
-    3) pdfmetrics.registerFontFamily를 호출하여 Paragraph 내 <b>...</b> 태그가 Helvetica로 풀리지 않도록 합니다.
+    - 모듈 전역 캐시(_CACHED_PDF_FONT_PAIR)를 통해 프로세스당 최초 1회만 탐색·등록하며,
+      이후 _pdf_text() 수백 회 호출 시에도 0.001ms 이내에 즉시 반환합니다.
     """
+    global _CACHED_PDF_FONT_PAIR, _FONT_DOWNLOAD_ATTEMPTED
+    if _CACHED_PDF_FONT_PAIR is not None:
+        return _CACHED_PDF_FONT_PAIR
+
     reg_name = "ECKoreanFont"
     bold_name = "ECKoreanFontBold"
     registered = pdfmetrics.getRegisteredFontNames()
     if reg_name in registered and bold_name in registered:
-        return reg_name, bold_name
+        _CACHED_PDF_FONT_PAIR = (reg_name, bold_name)
+        return _CACHED_PDF_FONT_PAIR
 
     os.makedirs(STORAGE_DIR, exist_ok=True)
     reg_path = os.path.join(STORAGE_DIR, "NanumGothic.ttf")
@@ -874,11 +880,12 @@ def _ensure_korean_pdf_font() -> tuple[str, str]:
             chosen_bold = bp if os.path.exists(bp) else rp
             break
 
-    if chosen_reg is None:
+    if chosen_reg is None and not _FONT_DOWNLOAD_ATTEMPTED:
+        _FONT_DOWNLOAD_ATTEMPTED = True
         try:
             with urllib.request.urlopen(
                 "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Regular.ttf",
-                timeout=3,
+                timeout=1.5,
             ) as _resp:
                 with open(reg_path, "wb") as _out_f:
                     _out_f.write(_resp.read())
@@ -905,7 +912,8 @@ def _ensure_korean_pdf_font() -> tuple[str, str]:
                 italic=reg_name,
                 boldItalic=bold_name,
             )
-            return reg_name, bold_name
+            _CACHED_PDF_FONT_PAIR = (reg_name, bold_name)
+            return _CACHED_PDF_FONT_PAIR
         except Exception:
             pass
 
@@ -915,7 +923,8 @@ def _ensure_korean_pdf_font() -> tuple[str, str]:
             pdfmetrics.registerFontFamily("KoreanFont", normal="KoreanFont", bold=kf_bold, italic="KoreanFont", boldItalic=kf_bold)
         except Exception:
             pass
-        return "KoreanFont", kf_bold
+        _CACHED_PDF_FONT_PAIR = ("KoreanFont", kf_bold)
+        return _CACHED_PDF_FONT_PAIR
 
     try:
         pdfmetrics.registerFont(UnicodeCIDFont("HYGothic-Medium"))
@@ -924,9 +933,11 @@ def _ensure_korean_pdf_font() -> tuple[str, str]:
                                           italic="HYGothic-Medium", boldItalic="HYGothic-Medium")
         except Exception:
             pass
-        return "HYGothic-Medium", "HYGothic-Medium"
+        _CACHED_PDF_FONT_PAIR = ("HYGothic-Medium", "HYGothic-Medium")
+        return _CACHED_PDF_FONT_PAIR
     except Exception:
-        return "Helvetica", "Helvetica-Bold"
+        _CACHED_PDF_FONT_PAIR = ("Helvetica", "Helvetica-Bold")
+        return _CACHED_PDF_FONT_PAIR
 
 
 _APP_PDF_CHAR_CAP = 150_000      # app.py 공용 읽기 함수의 글자 상한 (이 길이면 잘렸을 가능성)
