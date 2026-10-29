@@ -204,7 +204,8 @@ div[data-testid="stFormSubmitButton"] > button[kind="primary"] p {
     border-bottom: 1px dashed #cbd5e1 !important;
 }
 .st-key-btn_clear_current_room button,
-.st-key-btn_ec_sidebar_reset_ask button {
+.st-key-btn_ec_sidebar_reset_ask button,
+.st-key-btn_ec_law_detail_open button {
     background: linear-gradient(180deg, #ffffff 0%, #f1f5f9 100%) !important;
     border: 1px solid #94a3b8 !important;
     border-bottom: 2.5px solid #64748b !important;
@@ -217,7 +218,8 @@ div[data-testid="stFormSubmitButton"] > button[kind="primary"] p {
     transition: all 0.12s ease !important;
 }
 .st-key-btn_clear_current_room button:hover:not(:disabled),
-.st-key-btn_ec_sidebar_reset_ask button:hover:not(:disabled) {
+.st-key-btn_ec_sidebar_reset_ask button:hover:not(:disabled),
+.st-key-btn_ec_law_detail_open button:hover:not(:disabled) {
     background: linear-gradient(180deg, #fff1f2 0%, #ffe4e6 100%) !important;
     border-color: #f43f5e !important;
     border-bottom-color: #e11d48 !important;
@@ -225,7 +227,8 @@ div[data-testid="stFormSubmitButton"] > button[kind="primary"] p {
     transform: translateY(-1px) !important;
 }
 .st-key-btn_clear_current_room button:active:not(:disabled),
-.st-key-btn_ec_sidebar_reset_ask button:active:not(:disabled) {
+.st-key-btn_ec_sidebar_reset_ask button:active:not(:disabled),
+.st-key-btn_ec_law_detail_open button:active:not(:disabled) {
     transform: translateY(1px) !important;
     border-bottom-width: 1px !important;
 }
@@ -2601,27 +2604,29 @@ with st.sidebar:
             st.session_state.app_top_mode = "CREDIT_CALC"
             st.rerun()
 
-    st.markdown(
-        "<div style='font-size:1.00rem; font-weight:800; color:#0f172a; line-height:1.4; margin-top:10px; margin-bottom:6px; padding-left:2px; letter-spacing:-0.3px;'>"
-        "⚙️ 에이전트 제어판</div>",
-        unsafe_allow_html=True
-    )
-    
-    # 📦 [카드 1] 엔진 출력 모드 제어 (1번 아르곤 직결 방식)
-    with st.container(border=True):
-        is_pro_now = st.session_state.get("pro_toggle_state", False)
-        mode_pill = (
-            "<span class='sb-badge-pro'>👑 Argon 직결 (3배 개방)</span>"
-            if is_pro_now else
-            "<span class='sb-badge-green'>⚡ Flash 고속</span>"
+    if st.session_state.app_top_mode != "CREDIT_CALC":
+        st.markdown(
+            "<div style='font-size:1.00rem; font-weight:800; color:#0f172a; line-height:1.4; margin-top:10px; margin-bottom:6px; padding-left:2px; letter-spacing:-0.3px;'>"
+            "⚙️ 에이전트 제어판</div>",
+            unsafe_allow_html=True
         )
-        st.markdown(f"<div class='sb-card-title'><span>🚀 엔진 출력 모드</span>{mode_pill}</div>", unsafe_allow_html=True)
-        pro_toggle_on = st.toggle(
-            "Pro 심층 모드 (Argon 직결 · 3배 개방)",
-            value=is_pro_now,
-            help="켜두면 최상위 Gemini 4 Argon 엔진이 1순위로 직결 가동되며 최대 15만 자 문서 독해 및 데이터·도구 한도 3배 개방 모드로 작동합니다."
-        )
-        st.session_state.pro_toggle_state = pro_toggle_on
+        # 📦 [카드 1] 엔진 출력 모드 제어 (자율 에이전트AI 모드에서만 노출; 통합고용세액공제 모드에서는 법령·예규 모니터링 카드로 대체)
+        with st.container(border=True):
+            is_pro_now = st.session_state.get("pro_toggle_state", False)
+            mode_pill = (
+                "<span class='sb-badge-pro'>👑 Argon 직결 (3배 개방)</span>"
+                if is_pro_now else
+                "<span class='sb-badge-green'>⚡ Flash 고속</span>"
+            )
+            st.markdown(f"<div class='sb-card-title'><span>🚀 엔진 출력 모드</span>{mode_pill}</div>", unsafe_allow_html=True)
+            pro_toggle_on = st.toggle(
+                "Pro 심층 모드 (Argon 직결 · 3배 개방)",
+                value=is_pro_now,
+                help="켜두면 최상위 Gemini 4 Argon 엔진이 1순위로 직결 가동되며 최대 15만 자 문서 독해 및 데이터·도구 한도 3배 개방 모드로 작동합니다."
+            )
+            st.session_state.pro_toggle_state = pro_toggle_on
+    else:
+        pro_toggle_on = bool(st.session_state.get("pro_toggle_state", False))
 
     # 📦 [카드 2] 내 작업공간 (자율 에이전트AI 모드에서만 노출; 통합고용세액공제 모드에서는 [🔄 자료 초기화] 카드로 대체)
     if st.session_state.app_top_mode != "CREDIT_CALC":
