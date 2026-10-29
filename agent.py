@@ -1179,148 +1179,182 @@ def _apply_semantic_results(answer: str, claims: list, verdicts: dict, sources: 
 # ---------------------------------------------------------
 def _fetch_full_law_xml_direct(doc_id: str, query_filter: str = "") -> str:
     """
-    [속도 개선 ② & ③] 법령 전체 XML을 Gzip 압축으로 빠르게 받아 doc_id 단위로 통합 캐싱(`full_law_xml`)하고,
-    동일 법령의 다른 조문(예: 제29조의8, 제127조, 제132조)을 연속 조회할 때
-    두 번째 조문부터는 네트워크 다운로드 없이 메모리에서 0.001초 만에 즉시 반환합니다.
+    [속도 개선 ② & ③ + 부칙 무손실 파싱 캐시(`full_law_parsed`)]
+    1) 법령 전체 XML을 하루 1회만 다운로드하여 조문 전체와 부칙 전체(개수 제한 없음)를
+       구조화된 형태(`full_law_parsed`)로 메모리에 저장합니다.
+    2) 조회 순서(조문 필터 없음 → 조문 필터 있음, 또는 서로 다른 조문 연속 조회)와 무관하게
+       네트워크 재다운로드 없이 메모리에서 0.001초 만에 본칙 관련 부칙 전체(`[본칙관련]`)를 선별·조립합니다.
     """
     clean_id = str(doc_id).strip()
     if not clean_id.isdigit():
         return ""
     today_ymd = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d")
     full_cache_key = ("full_law_xml", today_ymd, clean_id)
-    cached_full = _cache_get(full_cache_key)
-    if cached_full is not None:
-        return cached_full
+    parsed_cache_key = ("full_law_parsed", today_ymd, clean_id)
 
-    oc = get_law_oc_auto()
-    if not oc:
-        return ""
-    # '0'으로 시작하는 6자리 법령ID(예: 001592)는 ID 파라미터 우선, 그 외 법령일련번호(MST)는 MST 우선 호출하여 첫 시도에 즉시 적중
-    id_param_order = ("ID", "MST") if clean_id.startswith("0") else ("MST", "ID")
-    for id_param in id_param_order:
-        url = f"http://www.law.go.kr/DRF/lawService.do?OC={oc}&target=law&{id_param}={clean_id}&type=XML"
-        try:
-            xml_bytes = _http_get_bytes_fast(url, timeout=15)
-            root = ET.fromstring(xml_bytes)
-            lname = (root.findtext(".//법령명_한글") or root.findtext(".//법령명한글") or "").strip()
-            if not lname:
+    qf_no_buchik = re.sub(r"부칙\s*제\s*\d+\s*조(?:\s*의\s*\d+)?", "", query_filter or "")
+    req_main_tuples = [
+        (int(m[0]), int(m[1]) if m[1] else 0)
+        for m in re.findall(r"제?\s*(\d+)\s*조(?:\s*의\s*(\d+))?", qf_no_buchik)
+    ]
+    req_main_prefixes = list(dict.fromkeys(
+        f"제{jo}조" + (f"의{gaji}" if gaji else "") for jo, gaji in req_main_tuples
+    ))
+
+    parsed_data = _cache_get(parsed_cache_key)
+    if parsed_data is None:
+        # 하위호환: 외부에서 full_law_xml 문자열만 직접 넣어둔 경우이고 조문 필터가 없으면 그대로 반환
+        if not req_main_prefixes:
+            cached_full = _cache_get(full_cache_key)
+            if cached_full is not None:
+                return cached_full
+
+        oc = get_law_oc_auto()
+        if not oc:
+            return ""
+        id_param_order = ("ID", "MST") if clean_id.startswith("0") else ("MST", "ID")
+        for id_param in id_param_order:
+            url = f"http://www.law.go.kr/DRF/lawService.do?OC={oc}&target=law&{id_param}={clean_id}&type=XML"
+            try:
+                xml_bytes = _http_get_bytes_fast(url, timeout=15)
+                root = ET.fromstring(xml_bytes)
+                lname = (root.findtext(".//법령명_한글") or root.findtext(".//법령명한글") or "").strip()
+                if not lname:
+                    continue
+                law_prom_no = (root.findtext(".//공포번호") or "").strip()
+                law_prom_dt = re.sub(r"\D", "", root.findtext(".//공포일자") or "")
+                law_eff_dt = re.sub(r"\D", "", root.findtext(".//시행일자") or "")
+                prom_no_str = f" | 공포번호: 제{law_prom_no}호" if law_prom_no else ""
+                prom_dt_str = f" | 공포일자: {law_prom_dt[:4]}.{law_prom_dt[4:6]}.{law_prom_dt[6:]}" if len(law_prom_dt) == 8 else ""
+                eff_dt_str = f" | 시행일자: {law_eff_dt[:4]}.{law_eff_dt[4:6]}.{law_eff_dt[6:]}" if len(law_eff_dt) == 8 else ""
+                header_meta_suffix = f"{prom_no_str}{prom_dt_str}{eff_dt_str}"
+
+                parsed_articles = []
+                for unit in root.findall(".//조문단위"):
+                    jo_content = (unit.findtext("조문내용") or "").strip()
+                    if not jo_content:
+                        continue
+                    u_jo = int(re.sub(r"\D", "", unit.findtext("조문번호") or "") or 0)
+                    u_gaji = int(re.sub(r"\D", "", unit.findtext("조문가지번호") or "") or 0)
+                    lines = [jo_content]
+                    for hang in unit.findall(".//항"):
+                        h_txt = (hang.findtext("항내용") or "").strip()
+                        if h_txt:
+                            lines.append(h_txt)
+                        for ho in hang.findall(".//호"):
+                            ho_txt = (ho.findtext("호내용") or "").strip()
+                            if ho_txt:
+                                lines.append("  " + ho_txt)
+                            for mok in ho.findall(".//목"):
+                                mok_txt = (mok.findtext("목내용") or "").strip()
+                                if mok_txt:
+                                    lines.append("    " + mok_txt)
+                    full_unit_txt = "\n".join(lines)
+                    parsed_articles.append((u_jo, u_gaji, full_unit_txt))
+
+                if not parsed_articles:
+                    continue
+
+                parsed_addenda = []
+                for a_unit in root.findall(".//부칙단위"):
+                    anc_dt = re.sub(r"\D", "", a_unit.findtext("부칙공포일자") or "")
+                    anc_no = (a_unit.findtext("부칙공포번호") or "").strip()
+                    a_body = (a_unit.findtext("부칙내용") or "").strip()
+                    if not a_body:
+                        a_body = "\n".join(t.strip() for t in a_unit.itertext() if t and t.strip())
+                    if not a_body:
+                        continue
+                    dt_fmt = f"{anc_dt[:4]}.{anc_dt[4:6]}.{anc_dt[6:]}." if len(anc_dt) == 8 else anc_dt
+                    no_fmt = f"제{anc_no}호, " if anc_no else ""
+                    dt_int = int(anc_dt) if anc_dt.isdigit() else 0
+                    parsed_addenda.append((dt_int, anc_dt, no_fmt, dt_fmt, a_body))
+
+                parsed_addenda.sort(key=lambda x: x[0], reverse=True)
+                header_line = f"📘 [{lname}{header_meta_suffix}]"
+                parsed_data = {
+                    "header": header_line,
+                    "lname": lname,
+                    "eff_dt": law_eff_dt,
+                    "prom_no": law_prom_no,
+                    "articles": parsed_articles,
+                    "addenda": parsed_addenda,
+                }
+                _cache_set(parsed_cache_key, parsed_data)
+
+                # 기본(필터 없는) 25개 부칙 버전도 함께 캐싱하여 하위호환 보장
+                default_blocks = [txt for _, _, txt in parsed_articles] + [
+                    f"부칙 <{no_fmt}{dt_fmt}>\n{a_body}"
+                    for _, _, no_fmt, dt_fmt, a_body in parsed_addenda[:25]
+                ]
+                default_full_text = header_line + "\n\n" + "\n\n".join(default_blocks)
+                _cache_set(full_cache_key, default_full_text)
+                if law_eff_dt or law_prom_no:
+                    _cache_set(("full_law_xml_ver", lname.replace(" ", ""), law_eff_dt, law_prom_no), default_full_text)
+                break
+            except Exception:
                 continue
-            law_prom_no = (root.findtext(".//공포번호") or "").strip()
-            law_prom_dt = re.sub(r"\D", "", root.findtext(".//공포일자") or "")
-            law_eff_dt = re.sub(r"\D", "", root.findtext(".//시행일자") or "")
-            prom_no_str = f" | 공포번호: 제{law_prom_no}호" if law_prom_no else ""
-            prom_dt_str = f" | 공포일자: {law_prom_dt[:4]}.{law_prom_dt[4:6]}.{law_prom_dt[6:]}" if len(law_prom_dt) == 8 else ""
-            eff_dt_str = f" | 시행일자: {law_eff_dt[:4]}.{law_eff_dt[4:6]}.{law_eff_dt[6:]}" if len(law_eff_dt) == 8 else ""
-            header_meta_suffix = f"{prom_no_str}{prom_dt_str}{eff_dt_str}" 
-            qf_no_buchik = re.sub(r"부칙\s*제\s*\d+\s*조(?:\s*의\s*\d+)?", "", query_filter or "")
-            req_main_tuples = [
-                (int(m[0]), int(m[1]) if m[1] else 0)
-                for m in re.findall(r"제?\s*(\d+)\s*조(?:\s*의\s*(\d+))?", qf_no_buchik)
-            ]
-            req_main_prefixes = list(dict.fromkeys(
-                f"제{jo}조" + (f"의{gaji}" if gaji else "") for jo, gaji in req_main_tuples
-            ))
-            matched_art_rev_dates: set[str] = set()
-            related_main_prefixes: list[str] = list(req_main_prefixes)
 
-            article_blocks = []
-            for unit in root.findall(".//조문단위"):
-                jo_content = (unit.findtext("조문내용") or "").strip()
-                if not jo_content:
-                    continue
-                u_jo = int(re.sub(r"\D", "", unit.findtext("조문번호") or "") or 0)
-                u_gaji = int(re.sub(r"\D", "", unit.findtext("조문가지번호") or "") or 0)
-                lines = [jo_content]
-                for hang in unit.findall(".//항"):
-                    h_txt = (hang.findtext("항내용") or "").strip()
-                    if h_txt:
-                        lines.append(h_txt)
-                    for ho in hang.findall(".//호"):
-                        ho_txt = (ho.findtext("호내용") or "").strip()
-                        if ho_txt:
-                            lines.append("  " + ho_txt)
-                        for mok in ho.findall(".//목"):
-                            mok_txt = (mok.findtext("목내용") or "").strip()
-                            if mok_txt:
-                                lines.append("    " + mok_txt)
-                full_unit_txt = "\n".join(lines)
-                article_blocks.append(full_unit_txt)
+    if parsed_data is None:
+        return ""
 
-                is_req_unit = (u_jo, u_gaji) in req_main_tuples or any(
-                    full_unit_txt.replace(" ", "").startswith(tp + "(")
-                    or re.match(rf"^{re.escape(tp)}(?![0-9의])", full_unit_txt.replace(" ", ""))
-                    for tp in req_main_prefixes
-                )
-                if is_req_unit:
-                    # 날짜 태그 삭제 전 모든 <개정/신설/전문개정/본조신설 YYYY. M. D.> 날짜 수집 (2024년 이전 포함)
-                    for m_dt in re.findall(r"((?:19|20)\d{2})\.\s*(\d{1,2})\.\s*(\d{1,2})", full_unit_txt):
-                        matched_art_rev_dates.add(f"{int(m_dt[0]):04d}{int(m_dt[1]):02d}{int(m_dt[2]):02d}")
-                    u_no_other = re.sub(
-                        r"[「『][^」』]+[」』](?:\s*시행령|\s*시행규칙)?(?:\s*제\s*\d+\s*조(?:\s*의\s*\d+)?(?:\s*제\s*\d+\s*항)?(?:\s*제\s*\d+\s*호)?)+",
-                        "",
-                        full_unit_txt,
-                    )
-                    for m_rel in re.findall(r"제\s*(\d+)\s*조(?:\s*의\s*(\d+))?", u_no_other):
-                        rp = f"제{m_rel[0]}조" + (f"의{m_rel[1]}" if m_rel[1] else "")
-                        if rp not in related_main_prefixes:
-                            related_main_prefixes.append(rp)
+    if not req_main_prefixes:
+        cached_default = _cache_get(full_cache_key)
+        if cached_default is not None:
+            return cached_default
+        default_blocks = [txt for _, _, txt in parsed_data["articles"]] + [
+            f"부칙 <{no_fmt}{dt_fmt}>\n{a_body}"
+            for _, _, no_fmt, dt_fmt, a_body in parsed_data["addenda"][:25]
+        ]
+        return parsed_data["header"] + "\n\n" + "\n\n".join(default_blocks)
 
-            related_addenda_units = []
-            other_addenda_units = []
-            all_addenda_units = []
-            for a_unit in root.findall(".//부칙단위"):
-                anc_dt = re.sub(r"\D", "", a_unit.findtext("부칙공포일자") or "")
-                anc_no = (a_unit.findtext("부칙공포번호") or "").strip()
-                a_body = (a_unit.findtext("부칙내용") or "").strip()
-                if not a_body:
-                    a_body = "\n".join(t.strip() for t in a_unit.itertext() if t and t.strip())
-                if not a_body:
-                    continue
-                dt_fmt = f"{anc_dt[:4]}.{anc_dt[4:6]}.{anc_dt[6:]}." if len(anc_dt) == 8 else anc_dt
-                no_fmt = f"제{anc_no}호, " if anc_no else ""
-                dt_int = int(anc_dt) if anc_dt.isdigit() else 0
+    matched_art_rev_dates: set[str] = set()
+    related_main_prefixes: list[str] = list(req_main_prefixes)
+    article_blocks: list[str] = []
 
-                if req_main_prefixes:
-                    non_tabeop_body = _strip_tabeop_articles_from_addendum_body(a_body)
-                    body_no_own_hdr = re.sub(r"(?m)^\s*제\s*\d+\s*조(?:\s*의\s*\d+)?\s*\([^)]*\)", "", non_tabeop_body)
-                    body_clean = body_no_own_hdr.replace(" ", "")
-                    has_art_ref = bool(
-                        body_clean and any(
-                            re.search(rf"{re.escape(tp)}(?![0-9의])", body_clean)
-                            for tp in related_main_prefixes
-                        )
-                    )
-                    has_date_ref = bool(anc_dt and anc_dt in matched_art_rev_dates and non_tabeop_body.strip())
-                    if has_art_ref or has_date_ref:
-                        related_addenda_units.append((dt_int, f"부칙 <{no_fmt}{dt_fmt}> [본칙관련]\n{a_body}"))
-                    else:
-                        other_addenda_units.append((dt_int, f"부칙 <{no_fmt}{dt_fmt}>\n{a_body}"))
-                else:
-                    all_addenda_units.append((dt_int, f"부칙 <{no_fmt}{dt_fmt}>\n{a_body}"))
+    for u_jo, u_gaji, full_unit_txt in parsed_data["articles"]:
+        article_blocks.append(full_unit_txt)
+        is_req_unit = (u_jo, u_gaji) in req_main_tuples or any(
+            full_unit_txt.replace(" ", "").startswith(tp + "(")
+            or re.match(rf"^{re.escape(tp)}(?![0-9의])", full_unit_txt.replace(" ", ""))
+            for tp in req_main_prefixes
+        )
+        if is_req_unit:
+            for m_dt in re.findall(r"((?:19|20)\d{2})\.\s*(\d{1,2})\.\s*(\d{1,2})", full_unit_txt):
+                matched_art_rev_dates.add(f"{int(m_dt[0]):04d}{int(m_dt[1]):02d}{int(m_dt[2]):02d}")
+            u_no_other = re.sub(
+                r"[「『][^」』]+[」』](?:\s*시행령|\s*시행규칙)?(?:\s*제\s*\d+\s*조(?:\s*의\s*\d+)?(?:\s*제\s*\d+\s*항)?(?:\s*제\s*\d+\s*호)?)+",
+                "",
+                full_unit_txt,
+            )
+            for m_rel in re.findall(r"제\s*(\d+)\s*조(?:\s*의\s*(\d+))?", u_no_other):
+                rp = f"제{m_rel[0]}조" + (f"의{m_rel[1]}" if m_rel[1] else "")
+                if rp not in related_main_prefixes:
+                    related_main_prefixes.append(rp)
 
-            if req_main_prefixes:
-                related_addenda_units.sort(key=lambda x: x[0], reverse=True)
-                other_addenda_units.sort(key=lambda x: x[0], reverse=True)
-                # [문제 1 해결] 본칙 관련 부칙은 개수 제한 없이 전부 포함 + 그 밖의 최근 부칙 10건
-                for _, a_blk in related_addenda_units:
-                    article_blocks.append(a_blk)
-                for _, a_blk in other_addenda_units[:10]:
-                    article_blocks.append(a_blk)
-            else:
-                all_addenda_units.sort(key=lambda x: x[0], reverse=True)
-                for _, a_blk in all_addenda_units[:25]:
-                    article_blocks.append(a_blk)
+    related_addenda_units = []
+    other_addenda_units = []
+    for dt_int, anc_dt, no_fmt, dt_fmt, a_body in parsed_data["addenda"]:
+        non_tabeop_body = _strip_tabeop_articles_from_addendum_body(a_body)
+        body_no_own_hdr = re.sub(r"(?m)^\s*제\s*\d+\s*조(?:\s*의\s*\d+)?\s*\([^)]*\)", "", non_tabeop_body)
+        body_clean = body_no_own_hdr.replace(" ", "")
+        has_art_ref = bool(
+            body_clean and any(
+                re.search(rf"{re.escape(tp)}(?![0-9의])", body_clean)
+                for tp in related_main_prefixes
+            )
+        )
+        has_date_ref = bool(anc_dt and anc_dt in matched_art_rev_dates and non_tabeop_body.strip())
+        if has_art_ref or has_date_ref:
+            related_addenda_units.append((dt_int, f"부칙 <{no_fmt}{dt_fmt}> [본칙관련]\n{a_body}"))
+        else:
+            other_addenda_units.append((dt_int, f"부칙 <{no_fmt}{dt_fmt}>\n{a_body}"))
 
-            if article_blocks:
-                full_text = f"📘 [{lname}{header_meta_suffix}]\n\n" + "\n\n".join(article_blocks)
-                if not req_main_prefixes:
-                    _cache_set(full_cache_key, full_text)
-                    if law_eff_dt or law_prom_no:
-                        _cache_set(("full_law_xml_ver", lname.replace(" ", ""), law_eff_dt, law_prom_no), full_text)
-                return full_text
-        except Exception:
-            continue
-    return ""
+    for _, a_blk in related_addenda_units:
+        article_blocks.append(a_blk)
+    for _, a_blk in other_addenda_units[:10]:
+        article_blocks.append(a_blk)
+
+    return parsed_data["header"] + "\n\n" + "\n\n".join(article_blocks)
 
 def _resolve_law_id_if_name(doc_id: str) -> str:
     """
@@ -1934,14 +1968,19 @@ def get_law_details_for_gemini(doc_id: str, target: str = "law", query_filter: s
     clean_id = str(doc_id).strip()
     cache_key = ("detail_raw", today_ymd, clean_id, target, query_filter.strip())
 
-    # 동일 법령의 전체 XML이 이미 메모리에 캐싱되어 있으면 API 호출 없이 0.001초 만에 즉시 활용
-    full_law_cached = _cache_get(("full_law_xml", today_ymd, clean_id)) if target == "law" else None
-    raw_text = full_law_cached if full_law_cached is not None else _cache_get(cache_key)
+    # 1) 동일 (법령ID, 필터) 조합 캐시 우선 확인, 2) 없으면 구조화 XML 캐시(full_law_parsed)를 통해 0.001초 만에 조문별 부칙 선별
+    raw_text = _cache_get(cache_key)
+    if raw_text is None and target == "law" and not query_filter.strip():
+        raw_text = _cache_get(("full_law_xml", today_ymd, clean_id))
 
     if raw_text is not None:
         print(f"\n[시스템] ⚡ [메모리 캐시 즉시 히트(0.001초)] 원문 조회: ID '{clean_id}' (대상: {target}, 필터: '{query_filter}')")
     else:
-        print(f"\n[시스템] 📖 원문 정밀 조회 가동: ID '{clean_id}' (대상: {target}, 필터: '{query_filter}')")
+        has_parsed_cache = (target == "law" and clean_id.isdigit() and _cache_get(("full_law_parsed", today_ymd, clean_id)) is not None)
+        if has_parsed_cache:
+            print(f"\n[시스템] ⚡ [구조화 XML 캐시 즉시 조합(0.001초)] 원문 조회: ID '{clean_id}' (대상: {target}, 필터: '{query_filter}')")
+        else:
+            print(f"\n[시스템] 📖 원문 정밀 조회 가동: ID '{clean_id}' (대상: {target}, 필터: '{query_filter}')")
         if target == "law" and clean_id.isdigit():
             raw_text = _fetch_full_law_xml_direct(clean_id, query_filter)
             if not raw_text:
