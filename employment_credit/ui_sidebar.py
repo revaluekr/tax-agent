@@ -278,8 +278,9 @@ div[role="dialog"] button[data-baseweb="tab"][aria-selected="true"] div {
     color: #ffffff !important;
     font-weight: 800 !important;
 }
-/* 모달 내부 자율 에이전트 AI 보고서 양식·폰트크기(1.12rem)·색상 동기화 */
-div[role="dialog"] .ec-agent-report-wrap {
+/* 모달 내부 자율 에이전트 AI 보고서 양식·폰트크기(1.12rem)·색상 동기화 (네이티브 컨테이너 + 마크다운 파싱 보장) */
+div[role="dialog"] .ec-agent-report-wrap,
+div[role="dialog"] div[class*="st-key-ec_agent_report_box_"] {
     background: #ffffff !important;
     border: 1.5px solid #cbd5e1 !important;
     border-top: 5px solid #1e3a8a !important;
@@ -292,7 +293,8 @@ div[role="dialog"] .ec-agent-report-wrap {
     line-height: 1.72 !important;
     color: #1e293b !important;
 }
-div[role="dialog"] .ec-agent-report-wrap h3 {
+div[role="dialog"] .ec-agent-report-wrap h3,
+div[role="dialog"] div[class*="st-key-ec_agent_report_box_"] h3 {
     color: #1e3a8a !important;
     background: linear-gradient(90deg, #f1f5f9 0%, #ffffff 100%) !important;
     border-left: 5px solid #1e3a8a !important;
@@ -303,10 +305,12 @@ div[role="dialog"] .ec-agent-report-wrap h3 {
     font-size: 1.24rem !important;
     font-weight: 800 !important;
 }
-div[role="dialog"] .ec-agent-report-wrap h3:first-child {
+div[role="dialog"] .ec-agent-report-wrap h3:first-child,
+div[role="dialog"] div[class*="st-key-ec_agent_report_box_"] h3:first-child {
     margin-top: 2px !important;
 }
-div[role="dialog"] .ec-agent-report-wrap h4 {
+div[role="dialog"] .ec-agent-report-wrap h4,
+div[role="dialog"] div[class*="st-key-ec_agent_report_box_"] h4 {
     color: #1e40af !important;
     margin-top: 14px !important;
     margin-bottom: 6px !important;
@@ -317,13 +321,16 @@ div[role="dialog"] .ec-agent-report-wrap h4 {
     padding: 0 !important;
 }
 div[role="dialog"] .ec-agent-report-wrap p,
-div[role="dialog"] .ec-agent-report-wrap li {
+div[role="dialog"] .ec-agent-report-wrap li,
+div[role="dialog"] div[class*="st-key-ec_agent_report_box_"] p,
+div[role="dialog"] div[class*="st-key-ec_agent_report_box_"] li {
     font-size: 1.12rem !important;
     line-height: 1.68 !important;
     color: #1e293b !important;
     margin-bottom: 6px !important;
 }
-div[role="dialog"] .ec-agent-report-wrap table {
+div[role="dialog"] .ec-agent-report-wrap table,
+div[role="dialog"] div[class*="st-key-ec_agent_report_box_"] table {
     width: 100% !important;
     border-collapse: collapse !important;
     margin: 10px 0 14px 0 !important;
@@ -331,7 +338,8 @@ div[role="dialog"] .ec-agent-report-wrap table {
     border-top: 2px solid #1e293b !important;
     border-bottom: 2px solid #1e293b !important;
 }
-div[role="dialog"] .ec-agent-report-wrap th {
+div[role="dialog"] .ec-agent-report-wrap th,
+div[role="dialog"] div[class*="st-key-ec_agent_report_box_"] th {
     background: #1e293b !important;
     color: #ffffff !important;
     font-weight: 800 !important;
@@ -340,7 +348,8 @@ div[role="dialog"] .ec-agent-report-wrap th {
     border: 1px solid #334155 !important;
     text-align: center !important;
 }
-div[role="dialog"] .ec-agent-report-wrap td {
+div[role="dialog"] .ec-agent-report-wrap td,
+div[role="dialog"] div[class*="st-key-ec_agent_report_box_"] td {
     padding: 9px 12px !important;
     border: 1px solid #cbd5e1 !important;
     font-size: 0.98rem !important;
@@ -348,7 +357,8 @@ div[role="dialog"] .ec-agent-report-wrap td {
     font-weight: 500 !important;
     vertical-align: middle !important;
 }
-div[role="dialog"] .ec-agent-report-wrap tr:nth-child(even) td {
+div[role="dialog"] .ec-agent-report-wrap tr:nth-child(even) td,
+div[role="dialog"] div[class*="st-key-ec_agent_report_box_"] tr:nth-child(even) td {
     background: #f8fafc !important;
 }
 /* 법령별 하단 왼쪽 [PDF 출력] 버튼 스타일 */
@@ -376,48 +386,296 @@ div[class*="st-key-ec_law_pdf_wrap_"] [data-testid="stDownloadButton"] button:ho
 """
 
 
-def _clean_and_format_law_text_for_report(raw_text: str) -> str:
+def _heal_korean_box_wraps(s: str) -> str:
+    """법제처 고정폭 박스(┌───┐) 줄바꿈으로 인해 단어 중간이나 조사 앞에 삽입된 공백을 복원합니다."""
+    replacements = [
+        (r"과\s+세연도", "과세연도"),
+        (r"사\s+업연도", "사업연도"),
+        (r"청\s+년등", "청년등"),
+        (r"청년\s+등", "청년등"),
+        (r"청년등\s+상시", "청년등상시"),
+        (r"청년등상\s+시근로자", "청년등상시근로자"),
+        (r"청년등상시\s+근로자", "청년등상시근로자"),
+        (r"청년등상시근\s+로자", "청년등상시근로자"),
+        (r"청년등상시근로\s+자", "청년등상시근로자"),
+        (r"청년등\s+외", "청년등외"),
+        (r"청년등외\s+상시", "청년등외상시"),
+        (r"청년등외상\s+시근로자", "청년등외상시근로자"),
+        (r"청년등외상시\s+근로자", "청년등외상시근로자"),
+        (r"상\s+시근로자", "상시근로자"),
+        (r"상시\s+근로자", "상시근로자"),
+        (r"상시근\s+로자", "상시근로자"),
+        (r"상시근로\s+자", "상시근로자"),
+        (r"근\s+로자", "근로자"),
+        (r"금\s+액", "금액"),
+        (r"(\d)\s*만\s+원", r"\1만원"),
+        (r"제\s+외한다", "제외한다"),
+        (r"제외\s+한다", "제외한다"),
+        (r"포\s+함한다", "포함한다"),
+        (r"포함\s+한다", "포함한다"),
+        (r"말\s+한다", "말한다"),
+        (r"본\s+다", "본다"),
+        (r"같\s+다", "같다"),
+        (r"음\s+수", "음수"),
+        (r"경\s+우", "경우"),
+        (r"수\s+도권", "수도권"),
+        (r"수도\s+권", "수도권"),
+        (r"지\s+역", "지역"),
+        (r"개\s+시한", "개시한"),
+        (r"개시\s+한", "개시한"),
+        (r"계\s+산한", "계산한"),
+        (r"계산\s+한", "계산한"),
+        (r"계\s+산식", "계산식"),
+        (r"계산\s+식", "계산식"),
+        (r"증\s+가", "증가"),
+        (r"감\s+소", "감소"),
+        (r"인\s+원\s+수", "인원 수"),
+        (r"인\s+원수", "인원수"),
+        (r"인\s+원", "인원"),
+        (r"최소\s+고용", "최소고용"),
+        (r"고용\s+증가", "고용증가"),
+        (r"중\s+소기업", "중소기업"),
+        (r"중소\s+기업", "중소기업"),
+        (r"중\s+견기업", "중견기업"),
+        (r"중견\s+기업", "중견기업"),
+        (r"전\s+전전", "전전전"),
+        (r"전전\s+전", "전전전"),
+        (r"직\s+전", "직전"),
+        (r"해\s+당", "해당"),
+        (r"대\s+한", "대한"),
+        (r"이\s+하", "이하"),
+        (r"이\s+전", "이전"),
+        (r"소\s+득세", "소득세"),
+        (r"법\s+인세", "법인세"),
+        (r"수\s+를\s+뺀", "수를 뺀"),
+        (r"값\s+을\s+말한다", "값을 말한다"),
+        (r"수\s+에서", "수에서"),
+        (r"지역\s+에서", "지역에서"),
+        (r"계산식\s+에", "계산식에"),
+        (r"금액\s+이", "금액이"),
+        (r"금액\s+은", "금액은"),
+        (r"과세연도\s+는", "과세연도는"),
+        (r"과세연도\s+의", "과세연도의"),
+    ]
+    out = s
+    for pat, rep in replacements:
+        out = re.sub(pat, rep, out)
+    return re.sub(r"\s{2,}", " ", out).strip()
+
+
+def _convert_box_lines_to_md_table(box_lines: list[str]) -> list[str]:
     """
-    법제처 원문에서 불필요한 <img> 태그나 아이콘(📌, 📘 등)을 제거하고,
-    조문 제목(제29조의8 등)·항(①~⑳)·호(1.~20.)·목(가.~하.)이 자율 에이전트 AI 보고서 양식(1.12rem)으로
-    읽기 쉽게 줄바꿈·강조되도록 마크다운 문단으로 변환합니다. (원문 글자는 그대로 보존)
+    법제처 조문 원문 내 박스형 계산식(┌───┐ │ ... │ └───┘ 또는 | ... |)의 줄바꿈 끊김을 복원하고
+    깔끔한 마크다운 표(| 구분 | 계산식 및 산출 내역 |)로 변환합니다.
+    """
+    cleaned_lines: list[str] = []
+    for raw in box_lines:
+        s = raw.strip()
+        s = re.sub(r"^[┌┏┬┐┓├┣┼┤┫└┗┴┘┛─━│|┃｜+\-\s]+", "", s)
+        s = re.sub(r"[┌┏┬┐┓├┣┼┤┫└┗┴┘┛─━│|┃｜+\-\s]+$", "", s)
+        s = s.strip()
+        if s:
+            cleaned_lines.append(s)
+    if not cleaned_lines:
+        return []
+
+    merged: list[str] = []
+    new_item_re = re.compile(
+        r"^(?:A\s*\+\s*B(?:\s*\+\s*C)?|[A-Z]\s*[:：]|[*※]|직전\s*과세연도|전전\s*과세연도|전전전\s*과세연도|최소고용증가인원수)"
+    )
+    for ln in cleaned_lines:
+        if not merged:
+            merged.append(ln)
+            continue
+        prev = _heal_korean_box_wraps(merged[-1])
+        merged[-1] = prev
+        prev_ends_complete = bool(
+            re.search(r"(?:금액|만원\)|만원|본다\.|한다\.|합계|C)$", prev)
+        )
+        if re.match(r"^(?:A\s*\+\s*B|[A-Z]\s*[:：]|[*※])", ln):
+            merged.append(ln)
+        elif prev_ends_complete and new_item_re.match(ln):
+            merged.append(ln)
+        elif prev_ends_complete and ("×" in ln or "÷" in ln or "+" in ln):
+            merged.append(ln)
+        else:
+            if re.search(r"[×+\-÷=]$", prev):
+                merged[-1] = _heal_korean_box_wraps(prev + " " + ln)
+            elif ln.startswith(("(", ")", ",", ".")):
+                merged[-1] = _heal_korean_box_wraps(prev + ln)
+            elif re.search(
+                r"(?:해당\s*과|청년등상|청년등|대한\s*금|1,\d00만|\d00만|대비\s*청|과세연도는\s*제외|과세연도는\s*제|증가\s*인원|산출한\s*금)$",
+                prev,
+            ):
+                merged[-1] = _heal_korean_box_wraps(prev + ln)
+            else:
+                merged[-1] = _heal_korean_box_wraps(prev + " " + ln)
+
+    merged = [_heal_korean_box_wraps(m) for m in merged if m.strip()]
+
+    if len(merged) == 1:
+        return [
+            "| 구분 | 계산 산식 |",
+            "| :---: | :--- |",
+            f"| **계산식** | **{merged[0]}** |",
+        ]
+
+    rows: list[tuple[str, str]] = []
+    cur_key = "계산식"
+    for item in merged:
+        if re.match(r"^A\s*\+\s*B", item):
+            rows.append(("기본 산식", f"**{item}**"))
+        elif re.match(r"^([A-Z])\s*[:：]\s*(.*)$", item):
+            m_k = re.match(r"^([A-Z])\s*[:：]\s*(.*)$", item)
+            cur_key = f"{m_k.group(1)} 정의"
+            rows.append((cur_key, m_k.group(2).strip()))
+            cur_key = f"{m_k.group(1)} 산식"
+        elif item.startswith(("*", "※")):
+            rows.append(("비고", item))
+        else:
+            lbl = cur_key if "산식" in cur_key else "계산 산식"
+            rows.append((lbl, f"**{item}**" if ("×" in item or "+" in item or "÷" in item) else item))
+            if "산식" in cur_key:
+                cur_key = "계산 산식"
+
+    md_tbl = [
+        "| 구분 | 계산식 및 산출 내역 |",
+        "| :---: | :--- |",
+    ]
+    for k, v in rows:
+        md_tbl.append(f"| **{k}** | {v} |")
+    return md_tbl
+
+
+def _clean_and_format_law_text_for_report(raw_text: str, law_name: str = "조세특례제한법") -> str:
+    """
+    1) 법제처 원문의 <img> 태그는 삭제하지 않고 '[원문 이미지(계산식·표): 법제처 원문에서 확인]' 및 법제처 원문 링크 표로 표시합니다 (피드백 5).
+    2) 박스형 계산식(┌───┐ │ ... │ └───┘ 및 | ... | 박스)은 줄바꿈 끊김을 복원하여 깔끔한 마크다운 표 안에 넣어 표시합니다.
+    3) 4칸 공백 들여쓰기로 인해 마크다운이 코드 블록(<pre><code>)으로 오인하여 '**나.**' 기호가 그대로 노출되던 문제를 해결합니다.
     """
     if not raw_text:
         return ""
     s = str(raw_text)
-    s = re.sub(r"<img\b[^>]*>", "", s, flags=re.IGNORECASE)
     s = re.sub(r"[📌📘📗📙🌾🏛️📜📊⚖️]", "", s)
-    out_lines: list[str] = []
-    for raw_ln in s.splitlines():
-        ln = raw_ln.strip()
+    clean_law_nm = re.sub(r"\s+", "", str(law_name or "조세특례제한법"))
+    clean_law_url = f"https://www.law.go.kr/법령/{clean_law_nm}"
+
+    def _repl_img(m: re.Match) -> str:
+        return (
+            "\n\n| 구분 | 원문 계산식 · 표 이미지 안내 |\n"
+            "| :---: | :--- |\n"
+            f"| **계산식·표** | [원문 이미지(계산식·표): 법제처 원문에서 확인]({clean_law_url}) |\n\n"
+        )
+
+    s = re.sub(r"<img\b[^>]*>", _repl_img, s, flags=re.IGNORECASE)
+
+    lines = s.splitlines()
+    out_blocks: list[str] = []
+    i = 0
+    while i < len(lines):
+        ln = lines[i].strip()
         if not ln:
+            i += 1
             continue
-        if re.match(r"^제\s*\d+\s*조(?:\s*의\s*\d+)?\s*\(", ln):
-            out_lines.append(f"#### {ln}")
-        elif re.match(r"^\[?부칙\s*<", ln):
-            out_lines.append(f"#### {ln}")
-        elif re.match(r"^[①-⑳]", ln):
-            out_lines.append(f"- **{ln[0]}** {ln[1:].strip()}")
-        elif re.match(r"^\d+\.\s+", ln):
-            m_num = re.match(r"^(\d+\.)\s+(.*)$", ln)
+
+        # 1) 박스형 산식(┌───┐ ... └───┘ 또는 │ ... │) 감지 및 마크다운 표 변환
+        starts_top_box = bool(re.match(r"^[┌┏┬─━]", ln))
+        starts_vert_box = bool(re.match(r"^[│┃｜]", ln))
+        if starts_top_box or starts_vert_box:
+            box_buf: list[str] = []
+            in_closed_frame = starts_top_box
+            while i < len(lines):
+                b_ln = lines[i].strip()
+                if not b_ln:
+                    i += 1
+                    continue
+                if in_closed_frame:
+                    box_buf.append(b_ln)
+                    i += 1
+                    if re.match(r"^[└┗┴]", b_ln) or b_ln.endswith(("┘", "┛")):
+                        break
+                    continue
+                is_box_line = bool(
+                    re.match(r"^[┌┏┬┐┓├┣┼┤┫└┗┴┘┛─━│┃｜]", b_ln)
+                    or b_ln.endswith(("│", "┃", "｜", "┘", "┛", "┐", "┓", "─", "━"))
+                    or (b_ln.startswith("|") and b_ln.endswith("|") and "---" not in b_ln and b_ln.count("|") == 2)
+                )
+                if is_box_line:
+                    box_buf.append(b_ln)
+                    i += 1
+                    if re.match(r"^[└┗┴]", b_ln) or b_ln.endswith(("┘", "┛")):
+                        break
+                else:
+                    break
+            tbl_lines = _convert_box_lines_to_md_table(box_buf)
+            if tbl_lines:
+                out_blocks.append("\n".join(tbl_lines))
+            continue
+
+        # 2) ASCII 파이프(| ... |) 블록: 마크다운 구분선(| --- |)이 있으면 일반 표로 유지하고, 없으면 산식 박스로 간주하여 표로 변환
+        if ln.startswith("|") and ln.endswith("|"):
+            pipe_buf: list[str] = []
+            while i < len(lines):
+                t_ln = lines[i].strip()
+                if not t_ln:
+                    i += 1
+                    continue
+                if t_ln.startswith("|") and t_ln.endswith("|"):
+                    pipe_buf.append(t_ln)
+                    i += 1
+                elif re.match(r"^[└┗┴─━]+$", t_ln) or t_ln.endswith(("┘", "┛")):
+                    i += 1
+                    break
+                else:
+                    break
+            has_md_sep = any(re.match(r"^\|[\s\-:|]+\|$", p_ln) for p_ln in pipe_buf)
+            if has_md_sep:
+                out_blocks.append("\n".join(pipe_buf))
+            else:
+                tbl_lines = _convert_box_lines_to_md_table(pipe_buf)
+                if tbl_lines:
+                    out_blocks.append("\n".join(tbl_lines))
+            continue
+
+        # 3) 조문·항·호·목 포맷팅 (앞쪽 4칸 공백 들여쓰기 금지 — 코드블록 오인 및 **나.** 노출 원천 차단)
+        # 혹시 원문에 이미 "- **나.**" 또는 "**나.**" 형태로 들어온 경우에도 선행 공백을 제거하여 정상 리스트로 정규화
+        ln_clean = re.sub(r"^[-*•]\s+", "", ln).strip()
+        if re.match(r"^제\s*\d+\s*조(?:\s*의\s*\d+)?\s*\(", ln_clean):
+            out_blocks.append(f"#### {ln_clean}")
+        elif re.match(r"^\[?부칙\s*<", ln_clean):
+            out_blocks.append(f"#### {ln_clean}")
+        elif re.match(r"^[①-⑳]", ln_clean):
+            out_blocks.append(f"- **{ln_clean[0]}** {ln_clean[1:].strip()}")
+        elif re.match(r"^(?:\*\*)?\d+\.(?:\*\*)?\s+", ln_clean):
+            m_num = re.match(r"^(?:\*\*)?(\d+\.)(?:\*\*)?\s+(.*)$", ln_clean)
             if m_num:
-                out_lines.append(f"  - **{m_num.group(1)}** {m_num.group(2)}")
+                out_blocks.append(f"- **{m_num.group(1)}** {m_num.group(2)}")
             else:
-                out_lines.append(f"  - {ln}")
-        elif re.match(r"^[가-하]\.\s+", ln):
-            m_mok = re.match(r"^([가-하]\.)\s+(.*)$", ln)
+                out_blocks.append(f"- {ln_clean}")
+        elif re.match(r"^(?:\*\*)?[가-하]\.(?:\*\*)?\s+", ln_clean):
+            m_mok = re.match(r"^(?:\*\*)?([가-하]\.)(?:\*\*)?\s+(.*)$", ln_clean)
             if m_mok:
-                out_lines.append(f"    - **{m_mok.group(1)}** {m_mok.group(2)}")
+                out_blocks.append(f"- **{m_mok.group(1)}** {m_mok.group(2)}")
             else:
-                out_lines.append(f"    - {ln}")
+                out_blocks.append(f"- {ln_clean}")
+        elif re.match(r"^(?:\*\*)?[가-하]\)(?:\*\*)?\s+", ln_clean):
+            m_sub = re.match(r"^(?:\*\*)?([가-하]\))(?:\*\*)?\s+(.*)$", ln_clean)
+            if m_sub:
+                out_blocks.append(f"- **{m_sub.group(1)}** {m_sub.group(2)}")
+            else:
+                out_blocks.append(f"- {ln_clean}")
         else:
-            out_lines.append(ln)
-    return "\n\n".join(out_lines)
+            out_blocks.append(ln)
+        i += 1
+
+    return "\n\n".join(out_blocks)
 
 
+@st.cache_data(show_spinner=False)
 def _build_law_tab_pdf_bytes(title: str, md_content: str) -> bytes:
     """
-    [요구사항 5] 각 법령·예규 탭의 내용을 자율 에이전트 AI 보고서와 동일한 A4 PDF 양식으로 생성합니다.
+    [요구사항 5 & 피드백 6] 각 법령·예규 탭의 내용을 자율 에이전트 AI 보고서와 동일한 A4 PDF 양식으로 생성합니다.
+    - @st.cache_data로 캐싱하여 모달이 다시 그려질 때마다 5개 탭 PDF를 중복 생성하지 않습니다.
     """
     from reportlab.platypus import HRFlowable
     from .ui_common import _ensure_korean_pdf_font, _pdf_text
@@ -533,15 +791,18 @@ def _build_law_tab_pdf_bytes(title: str, md_content: str) -> bytes:
             if rows_data:
                 max_c = max(len(r) for r in rows_data)
                 padded = [r + [""] * (max_c - len(r)) for r in rows_data]
-                col_w = [usable_width / max_c] * max_c
-                if max_c == 4:
+                if max_c == 2:
+                    col_w = [usable_width * 0.22, usable_width * 0.78]
+                elif max_c == 4:
                     col_w = [usable_width * 0.22, usable_width * 0.20, usable_width * 0.36, usable_width * 0.22]
                 elif max_c == 5:
-                    col_w = [usable_width * 0.20, usable_width * 0.16, usable_width * 0.16, usable_width * 0.16, usable_width * 0.32]
+                    col_w = [usable_width * 0.20, usable_width * 0.18, usable_width * 0.14, usable_width * 0.14, usable_width * 0.34]
+                else:
+                    col_w = [usable_width / max_c] * max_c
                 pdf_rows = []
                 for r_idx, pr in enumerate(padded):
                     pdf_rows.append([
-                        Paragraph(_pdf_text(cell), style_th if r_idx == 0 else style_td)
+                        Paragraph(_pdf_text(re.sub(r"\[([^\]]+)\]\(https?://[^)]+\)", r"\1", cell)), style_th if r_idx == 0 else style_td)
                         for cell in pr
                     ])
                 t_obj = Table(pdf_rows, colWidths=col_w, repeatRows=1)
@@ -591,7 +852,7 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
     law_status = P.fetch_daily_ec_law_monitoring_status(tax_year=tax_yr, force_refresh=force_now)
     ruling_status = R.evaluate_ruling_monitoring_status(R.ADMIN_RULINGS_AND_NOTICES)
 
-    # ① 상단 상태 배너 (자동 인식)
+    # ① 상단 상태 배너 (개발자 용어 없이 명확한 일반 한국어 표현으로 표시)
     if law_status.get("needs_program_update"):
         un_cnt = int(law_status.get("unapplied_count") or 0)
         app_notes = []
@@ -607,19 +868,29 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
         c_warn, c_btn = st.columns([4.2, 1.3], vertical_alignment="center")
         with c_warn:
             st.warning(
-                f"**[당일 법령 API 연결 또는 원문 수신 실패 — 마지막 성공 결과 기준 표시 중]** "
-                f"(마지막 확인: `{law_status.get('last_checked_at', '확인 이력 없음')}`)"
+                f"**[당일 법령 조회 연결 지연 — 마지막 확인 결과 기준 표시 중]** "
+                f"(마지막 확인: `{law_status.get('last_checked_at', '이력 없음')}`)"
             )
         with c_btn:
             if st.button("지금 다시 조회", type="primary", use_container_width=True, key="btn_ec_law_retry_top"):
                 st.session_state["ec_force_law_refresh"] = True
                 st.rerun()
-    elif law_status.get("has_name_mismatch") or law_status.get("has_unset_baseline"):
+    elif law_status.get("has_missing_articles") or law_status.get("has_name_mismatch"):
         c_warn, c_btn = st.columns([4.2, 1.3], vertical_alignment="center")
         with c_warn:
             st.warning(
-                "**[기준 버전 미설정 · 확인 필요]** 법제처 원문은 정상 수신되었으나 일부 법령의 기준 해시가 아직 `rules.py`에 설정되지 않았습니다. "
-                "(하단 접힌 '개발자 도구'의 캡처 코드를 `rules.py`에 반영하면 초록불로 전환됩니다.)"
+                "**[일부 감시 조문 원문 확인 필요]** 법제처 응답에서 일부 감시 대상 조문이 누락되었거나 법령명 확인이 필요합니다."
+            )
+        with c_btn:
+            if st.button("지금 다시 조회", use_container_width=True, key="btn_ec_law_refresh_miss"):
+                st.session_state["ec_force_law_refresh"] = True
+                st.rerun()
+    elif law_status.get("has_unset_baseline"):
+        c_warn, c_btn = st.columns([4.2, 1.3], vertical_alignment="center")
+        with c_warn:
+            st.warning(
+                "**[기준 버전 미설정 · 확인 필요]** 법제처에서 최신 법령·시행령·시행규칙 원문을 정상적으로 불러왔으며, "
+                "현재 프로그램에는 통합고용세액공제 현행 세법이 모두 반영되어 있습니다. (최초 기준 버전 확정 전까지는 확인 필요 상태로 표시됩니다.)"
             )
         with c_btn:
             if st.button("지금 다시 조회", use_container_width=True, key="btn_ec_law_refresh_unset"):
@@ -629,7 +900,7 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
         c_ok, c_btn = st.columns([4.4, 1.2], vertical_alignment="center")
         with c_ok:
             st.success(
-                f"감시 대상 법령·시행령·시행규칙 조문 및 특정 부칙이 프로그램 기준 버전과 일치합니다 "
+                f"현재 법제처 최신 법령·시행령·시행규칙이 프로그램에 모두 반영되어 있습니다 "
                 f"(기준일: `{law_status.get('last_checked_at', '-')}`)"
             )
         with c_btn:
@@ -637,7 +908,7 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
                 st.session_state["ec_force_law_refresh"] = True
                 st.rerun()
 
-    # ② 원문 뷰어 (탭 옆 네모 그림/이모지 모두 제거 + 자율 에이전트 AI 보고서 양식·폰트·색상 적용 + 하단 왼쪽 [PDF 출력] 버튼)
+    # ② 원문 뷰어 (탭 옆 아이콘 제거 + 산식은 마크다운 표로 변환 + 자율 에이전트 AI 보고서 양식·폰트·색상 적용 + 하단 왼쪽 [PDF 출력] 버튼)
     laws_map = law_status.get("laws") or {}
     summary_rows = R.build_law_summary_table_rows(law_status, R.ADMIN_RULINGS_AND_NOTICES)
     summary_md_lines = [
@@ -667,13 +938,20 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
         app_lbl = str(app_info.get("detail") or app_info.get("label") or "-")
         watched_str = ", ".join(l_info.get("watched_articles") or b_info.get("감시조문") or ())
 
-        live_id = str(l_info.get("law_id") or "").strip() or "미조회"
+        live_id = str(l_info.get("law_id") or "").strip()
+        live_mst = str(l_info.get("mst_id") or "").strip()
         live_no = str(l_info.get("prom_no") or "").strip()
         live_pdt = str(l_info.get("prom_date") or "").strip() or "-"
         live_edt = str(l_info.get("enf_date") or "").strip() or "-"
-        live_no_disp = f"제{live_no}호 (ID: {live_id})" if live_no else "미조회"
+        id_parts = []
+        if live_id:
+            id_parts.append(f"법령ID: {live_id}")
+        if live_mst:
+            id_parts.append(f"일련번호: {live_mst}")
+        id_suffix = f" ({' · '.join(id_parts)})" if id_parts else ""
+        live_no_disp = f"제{live_no}호{id_suffix}" if live_no else "미조회"
 
-        base_id = str(b_info.get("법령ID") or "").strip() or "미설정"
+        base_id = str(b_info.get("법령ID") or "").strip()
         base_no = str(b_info.get("공포번호") or "").strip()
         base_pdt = str(b_info.get("공포일") or "").strip() or "-"
         base_edt = str(b_info.get("시행일") or "").strip() or "-"
@@ -682,23 +960,26 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
             or any(str(v or "").strip() for v in (b_info.get("세부조문해시") or {}).values())
         )
         if base_no and base_has_h:
-            base_no_disp = f"제{base_no}호 (ID: {base_id})"
+            base_no_disp = f"제{base_no}호" + (f" (법령ID: {base_id})" if base_id else "")
             base_status_disp = f"반영 완료 (반영일: {b_info.get('반영일', '-')})"
         elif base_no:
-            base_no_disp = f"제{base_no}호 (해시 미설정)"
+            base_no_disp = f"제{base_no}호"
             base_status_disp = "기준 버전 미설정 · 확인 필요"
         else:
             base_no_disp = "미설정"
             base_status_disp = "기준 버전 미설정 · 확인 필요"
 
         old_txt = _clean_and_format_law_text_for_report(
-            str(l_info.get("old_text") or b_info.get("기준원문_일부") or "")
+            str(l_info.get("old_text") or b_info.get("기준원문_일부") or ""),
+            law_name=law_key,
         )
         new_txt = _clean_and_format_law_text_for_report(
-            str(l_info.get("new_text") or l_info.get("old_text") or b_info.get("기준원문_일부") or "")
+            str(l_info.get("new_text") or l_info.get("old_text") or b_info.get("기준원문_일부") or ""),
+            law_name=law_key,
         )
         add_txt = _clean_and_format_law_text_for_report(
-            str(l_info.get("addenda_text") or b_info.get("적용시기_부칙원문") or "")
+            str(l_info.get("addenda_text") or b_info.get("적용시기_부칙원문") or ""),
+            law_name=law_key,
         )
 
         md_parts = [
@@ -706,7 +987,7 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
             f"- **감시 대상 조문**: {watched_str}",
             f"- **현재 판정 상태**: **{st_lbl}** ({app_lbl})",
             "",
-            "| 구분 | 공포번호 (법령ID) | 공포일자 | 시행일자 | 비고 |",
+            "| 구분 | 공포번호 (법령ID · 일련번호) | 공포일자 | 시행일자 | 비고 |",
             "| :--- | :--- | :---: | :---: | :--- |",
             f"| **현행 법령 (법제처 조회)** | **{live_no_disp}** | {live_pdt} | {live_edt} | 조회 기준일: {law_status.get('last_checked_at', '-')} |",
             f"| **계산 기준 법령 (프로그램 반영)** | **{base_no_disp}** | {base_pdt} | {base_edt} | {base_status_disp} |",
@@ -715,31 +996,38 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
 
         if l_info.get("is_unapplied"):
             md_parts.extend([
-                f"### 2. 구법(계산 기준 원문) vs 신법(현행 법제처 원문) 대비",
+                "### 2. 구법(계산 기준 원문) vs 신법(현행 법제처 원문) 대비",
+                "",
                 f"#### (1) 계산 기준 원문 (제{base_no or '-'}호)",
+                "",
                 old_txt or "기준 원문 없음",
                 "",
                 f"#### (2) 현행 법제처 원문 (제{live_no or '-'}호)",
+                "",
                 new_txt or "법제처 원문 미수신",
                 "",
             ])
         else:
             md_parts.extend([
                 f"### 2. {law_key} 감시 대상 조문 원문",
+                "",
                 new_txt or old_txt or "법제처 API 연결 후 조문 원문이 표시됩니다.",
                 "",
             ])
 
         md_parts.extend([
             f"### 3. {law_key} 관련 부칙(시행일·적용례·경과조치) 원문",
+            "",
             add_txt or "관련 부칙 원문 없음",
             "",
             "### 4. 법령 개정 및 예규·안내문 기준일자 요약표",
+            "",
             summary_table_md,
         ])
 
         full_tab_md = "\n".join(md_parts)
-        st.markdown(f"<div class='ec-agent-report-wrap'>\n\n{full_tab_md}\n\n</div>", unsafe_allow_html=True)
+        with st.container(key=f"ec_agent_report_box_{law_key}"):
+            st.markdown(full_tab_md, unsafe_allow_html=True)
 
         c_pdf_left, _ = st.columns([1.8, 5.2])
         with c_pdf_left:
@@ -775,15 +1063,19 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
             )
         r_md_parts.append("")
         r_md_parts.append("### 2. 수록 예규·안내문 및 서식 원문")
+        r_md_parts.append("")
         for idx_r, r_item in enumerate(ruling_status.get("all_items") or [], start=1):
             r_md_parts.append(f"#### ({idx_r}) {r_item['title']} ({r_item['agency']}, {r_item['interp_date']})")
-            r_md_parts.append(_clean_and_format_law_text_for_report(str(r_item.get("원문") or "")))
+            r_md_parts.append("")
+            r_md_parts.append(_clean_and_format_law_text_for_report(str(r_item.get("원문") or ""), law_name="조세특례제한법시행규칙"))
             r_md_parts.append("")
         r_md_parts.append("### 3. 법령 개정 및 예규·안내문 기준일자 요약표")
+        r_md_parts.append("")
         r_md_parts.append(summary_table_md)
 
         full_ruling_md = "\n".join(r_md_parts)
-        st.markdown(f"<div class='ec-agent-report-wrap'>\n\n{full_ruling_md}\n\n</div>", unsafe_allow_html=True)
+        with st.container(key="ec_agent_report_box_rulings"):
+            st.markdown(full_ruling_md, unsafe_allow_html=True)
 
         c_pdf_left_r, _ = st.columns([1.8, 5.2])
         with c_pdf_left_r:
@@ -832,7 +1124,7 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
     # ⑤ 접힌 개발자 도구 영역 ([기준 해시 코드 복사] — 읽기 전용, 런타임·디스크·세션 기준값 불변)
     with st.expander("개발자 도구 (현재 법제처 응답 기준 해시 코드 복사 · 읽기 전용)", expanded=False):
         st.caption(
-            "이 영역은 현재 수신된 법제처 원문에서 계산한 법령ID·공포번호·조문별 해시·특정 부칙 해시를 화면에 표시만 합니다. "
+            "이 영역은 현재 수신된 법제처 원문에서 계산한 법령ID·법령일련번호·공포번호·조문별 해시·특정 부칙 해시를 화면에 표시만 합니다. "
             "앱의 기준값(rules.py·디스크·세션)을 자동으로 변경하지 않으므로, 내용을 검토한 뒤 `employment_credit/rules.py`에 직접 붙여넣으세요."
         )
         if hasattr(P, "format_captured_baseline_code_readonly"):

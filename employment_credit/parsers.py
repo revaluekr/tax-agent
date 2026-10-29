@@ -531,8 +531,9 @@ def _save_json_safe(path: str, data: dict) -> None:
 def _parse_law_header_and_sections(raw_res: str, expected_law_name: str) -> dict[str, Any]:
     """
     law_api.py / agent.py가 반환한 법령 원문 텍스트에서
-    법령명(일치 검증), 법령ID, 공포번호, 공포일자, 시행일자, 조문별 본문(제11조의2 제8항 항 슬라이싱 포함),
-    특정 부칙 블록 해시 및 부칙 본문을 정밀 추출합니다.
+    법령명(일치 검증), 법령ID(고유번호)와 법령일련번호(MST) 분리, 공포번호, 공포일자, 시행일자,
+    조문별 본문(제11조의2 제8항 항 슬라이싱 포함), 누락 조문(missing_articles),
+    특정 부칙 블록 해시 및 조문별 앞 80자 미리보기를 정밀 추출합니다.
     """
     txt = str(raw_res or "").strip()
     if not txt or txt.startswith("❌") or txt.startswith("[검색 한도") or txt.startswith("[원문 조회 한도"):
@@ -545,7 +546,9 @@ def _parse_law_header_and_sections(raw_res: str, expected_law_name: str) -> dict
     parsed_clean = re.sub(r"\s+", "", parsed_law_name)
     law_name_mismatch = bool(not parsed_clean or parsed_clean != expected_clean)
 
-    m_id = re.search(r"(?:법령ID|일련번호)\s*:\s*(\d+)", first_line)
+    # [피드백 2] 머리말의 "(일련번호: N)"은 법령일련번호(MST)로만 저장하고, 법령ID와 엄격히 분리
+    m_law_id = re.search(r"법령ID\s*:\s*(\d+)", first_line)
+    m_mst_id = re.search(r"일련번호\s*:\s*(\d+)", first_line)
     m_no = re.search(r"공포번호\s*:\s*제?\s*(\d+)\s*호?", first_line)
     m_pdt = re.search(r"공포일자\s*:\s*(\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2})", first_line)
     m_edt = re.search(r"시행일자\s*:\s*(\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2})", first_line)
@@ -572,55 +575,153 @@ def _parse_law_header_and_sections(raw_res: str, expected_law_name: str) -> dict
         end_p = starts[idx + 1].start() if idx + 1 < len(starts) else len(pure_article_body)
         art_key = f"제{jo_n}조" + (f"의{gaji_n}" if gaji_n else "")
         art_chunk = pure_article_body[am.start():end_p].strip()
-        sub_articles[art_key] = art_chunk
+        if art_key not in sub_articles or len(art_chunk) > len(sub_articles[art_key]):
+            sub_articles[art_key] = art_chunk
 
-    # 감시 대상 세부조문 해시 구성 (시행령 제11조의2는 제8항만 슬라이싱하여 해시)
+    # [피드백 1] BASELINE의 감시조문 목록 기준으로 누락 조문을 missing_articles로 검출 (빈 원문 해시 금지)
     b_cfg = R.BASELINE_LAW_INFO.get(expected_law_name) or {}
     sub_hashes: dict[str, str] = {}
+    article_previews: dict[str, str] = {}
+    missing_articles: list[str] = []
     watched_core_chunks: list[str] = []
+
     for w_art in (b_cfg.get("감시조문") or ()):
         w_str = str(w_art).strip()
         if "별지" in w_str:
             continue
-        m_wh = re.match(r"^(제\d+조(?:의\d+)?)(?:\s*제(\d+)항)?$", w_str.replace(" ", ""))
+        m_wh = re.search(r"(제\s*\d+\s*조(?:\s*의\s*\d+)?)(?:\s*제\s*(\d+)\s*항)?", w_str)
         if not m_wh:
-            m_wh = re.search(r"(제\s*\d+\s*조(?:\s*의\s*\d+)?)(?:\s*제\s*(\d+)\s*항)?", w_str)
-        if m_wh:
-            base_art_k = re.sub(r"\s+", "", m_wh.group(1))
-            hang_num = int(m_wh.group(2)) if m_wh.group(2) else None
-            raw_art_txt = sub_articles.get(base_art_k, "")
-            if raw_art_txt and hang_num is not None:
-                sliced_txt = R.extract_article_paragraph_slice(raw_art_txt, hang_num) or raw_art_txt
-            else:
-                sliced_txt = raw_art_txt
-            if sliced_txt:
-                sub_hashes[w_str] = R.compute_law_text_hash(sliced_txt)
-                watched_core_chunks.append(sliced_txt)
+            continue
+        base_art_k = re.sub(r"\s+", "", m_wh.group(1))
+        hang_num = int(m_wh.group(2)) if m_wh.group(2) else None
+        raw_art_txt = sub_articles.get(base_art_k, "").strip()
+        if not raw_art_txt:
+            missing_articles.append(w_str)
+            continue
+        if hang_num is not None:
+            sliced_txt = R.extract_article_paragraph_slice(raw_art_txt, hang_num).strip()
+            if not sliced_txt:
+                missing_articles.append(w_str)
+                continue
+        else:
+            sliced_txt = raw_art_txt
+
+        h_val = R.compute_law_text_hash(sliced_txt)
+        if not h_val:
+            missing_articles.append(w_str)
+            continue
+        sub_hashes[w_str] = h_val
+        article_previews[w_str] = re.sub(r"\s+", " ", sliced_txt)[:80]
+        watched_core_chunks.append(sliced_txt)
 
     effective_article_text = "\n\n".join(watched_core_chunks) if watched_core_chunks else pure_article_body
-    article_hash = R.compute_law_text_hash(effective_article_text)
+    article_hash = R.compute_law_text_hash(effective_article_text) if not missing_articles else ""
 
     # 특정 부칙 블록만 정밀 해시 추출 (예: 21223_제34조, 35999_제2조, 36127_제11조)
     spec_add_hashes: dict[str, str] = {}
+    addenda_previews: dict[str, str] = {}
     for sp_spec in (b_cfg.get("특정부칙_목록") or ()):
-        sp_txt = R.extract_specific_addendum_target(add_part, str(sp_spec))
-        spec_add_hashes[str(sp_spec)] = R.compute_law_text_hash(sp_txt) if sp_txt else ""
+        sp_key = str(sp_spec).strip()
+        sp_txt = R.extract_specific_addendum_target(add_part, sp_key).strip()
+        if sp_txt:
+            spec_add_hashes[sp_key] = R.compute_law_text_hash(sp_txt)
+            addenda_previews[sp_key] = re.sub(r"\s+", " ", sp_txt)[:80]
+        else:
+            spec_add_hashes[sp_key] = ""
+            addenda_previews[sp_key] = "미발견"
 
     return {
         "_fetch_error": False,
         "_law_name_mismatch": law_name_mismatch,
         "법령명": parsed_law_name,
-        "법령ID": m_id.group(1).strip() if m_id else "",
+        "법령ID": m_law_id.group(1).strip() if m_law_id else "",
+        "법령일련번호": m_mst_id.group(1).strip() if m_mst_id else "",
         "공포번호": m_no.group(1).strip() if m_no else "",
         "공포일": m_pdt.group(1).strip() if m_pdt else "",
         "시행일": m_edt.group(1).strip() if m_edt else "",
+        "missing_articles": missing_articles,
         "조문해시": article_hash,
         "세부조문해시": sub_hashes,
         "특정부칙해시": spec_add_hashes,
+        "조문별_앞80자": article_previews,
+        "특정부칙_앞80자": addenda_previews,
         "조문원문": effective_article_text,
         "부칙원문": add_part,
         "세부조문원문": sub_articles,
     }
+
+
+def _fetch_single_law_by_individual_articles(
+    law_name: str,
+    watched_articles: list[str] | tuple[str, ...],
+    addenda_queries: list[str] | tuple[str, ...],
+) -> str:
+    """
+    [피드백 1 — 감시 조문 및 부칙 개별 조회]
+    쉼표로 묶어 한 번에 조회하면 law_api._parse_article_filter가 첫 조문만 인식하거나
+    agent.compress_legal_text 쿼터로 인해 뒷조문·부칙이 잘리므로,
+    각 감시 조문과 부칙을 개별 호출하여 합칩니다. (동일 법령 XML 메모리 캐시를 재사용하므로 추가 네트워크 비용 0)
+    """
+    import agent
+
+    header_line = ""
+    article_chunks: list[str] = []
+    addenda_chunks: list[str] = []
+
+    for w_art in watched_articles:
+        w_s = str(w_art).strip()
+        if "별지" in w_s:
+            continue
+        m_base = re.search(r"(제\s*\d+\s*조(?:\s*의\s*\d+)?)", w_s)
+        q_art = re.sub(r"\s+", "", m_base.group(1)) if m_base else w_s
+        w_tok = agent._TOOL_TRACE.set(agent._new_trace(unleash=True))
+        try:
+            res_a = str(agent.get_law_details_for_gemini(doc_id=law_name, target="law", query_filter=q_art) or "").strip()
+        except Exception:
+            res_a = ""
+        finally:
+            agent._TOOL_TRACE.reset(w_tok)
+
+        if not res_a or res_a.startswith("❌"):
+            continue
+        add_sp = re.search(r"(?m)^(?:\s*📌\s*\[[^\n]*부칙|\s*\[?부칙\s*<)", res_a)
+        main_p = res_a[:add_sp.start()].strip() if add_sp else res_a
+        lines = main_p.splitlines()
+        if lines and lines[0].strip().startswith("📘"):
+            if not header_line:
+                header_line = lines[0].strip()
+            body_a = "\n".join(lines[1:]).strip()
+        else:
+            body_a = main_p.strip()
+        if body_a and body_a not in article_chunks:
+            article_chunks.append(body_a)
+
+    for q_add in (addenda_queries or ("부칙",)):
+        w_tok = agent._TOOL_TRACE.set(agent._new_trace(unleash=True))
+        try:
+            res_b = str(agent.get_law_details_for_gemini(doc_id=law_name, target="law", query_filter=q_add) or "").strip()
+        except Exception:
+            res_b = ""
+        finally:
+            agent._TOOL_TRACE.reset(w_tok)
+
+        if not res_b or res_b.startswith("❌"):
+            continue
+        lines_b = res_b.splitlines()
+        if lines_b and lines_b[0].strip().startswith("📘") and not header_line:
+            header_line = lines_b[0].strip()
+        add_sp = re.search(r"(?m)^(?:\s*📌\s*\[[^\n]*부칙|\s*\[?부칙\s*<)", res_b)
+        if add_sp:
+            b_part = res_b[add_sp.start():].strip()
+            if b_part and b_part not in addenda_chunks:
+                addenda_chunks.append(b_part)
+
+    if not header_line or not article_chunks:
+        return ""
+    combined = header_line + "\n\n" + "\n\n".join(article_chunks)
+    if addenda_chunks:
+        combined += "\n\n📌 [법령 부칙 (시행일 · 적용례 · 경과조치)]\n\n" + "\n\n".join(addenda_chunks)
+    return combined
 
 
 def fetch_daily_ec_law_monitoring_status(
@@ -628,10 +729,9 @@ def fetch_daily_ec_law_monitoring_status(
     force_refresh: bool = False,
 ) -> dict[str, Any]:
     """
-    [피드백 2 & 3-2 반영 — 우회 로직 완전 제거, 실제 원문 해시 단일 비교]
-    - 로컬 일별 캐시(.workspace_storage/ec_law_daily_cache.json)에 당일(YYYY-MM-DD) 조회 결과가 있으면 재사용합니다.
-    - 디스크 스냅샷 우회나 '공포번호가 같으면 일치' 우회 없이, 파싱된 실제 원문 해시를 그대로
-      R.evaluate_law_monitoring_status()에 전달하여 BASELINE_LAW_INFO 코드 상수와 대조합니다.
+    [피드백 1, 2, 3, 4 전면 반영]
+    - 감시 조문 및 부칙을 개별 조회하여 제11조의2 제8항 및 특정 부칙(제34조·제11조 등) 누락을 원천 방지합니다.
+    - 법령ID와 법령일련번호(MST)를 분리하여 저장합니다.
     """
     today_str = date.today().isoformat()
     daily_cache = _load_json_safe(_DAILY_LAW_CACHE_PATH)
@@ -651,7 +751,7 @@ def fetch_daily_ec_law_monitoring_status(
         )
 
     try:
-        import agent
+        import agent  # noqa: F401
         import law_api
     except Exception:
         return R.evaluate_law_monitoring_status(
@@ -661,16 +761,16 @@ def fetch_daily_ec_law_monitoring_status(
             last_success_cache=last_success,
         )
 
-    law_queries = [
-        ("조세특례제한법", "제29조의8, 제132조, 제144조, 부칙 제34조"),
-        ("조세특례제한법 시행령", "제26조의8, 제11조의2, 제23조, 부칙 제2조, 부칙 제11조"),
-        ("조세특례제한법 시행규칙", "제14조, 부칙"),
-        ("농어촌특별세법", "제5조, 부칙"),
+    law_specs = [
+        ("조세특례제한법", ("제29조의8", "제132조", "제144조"), ("부칙 제34조", "부칙")),
+        ("조세특례제한법 시행령", ("제26조의8", "제11조의2 제8항", "제23조 제13항"), ("부칙 제11조", "부칙 제2조", "부칙")),
+        ("조세특례제한법 시행규칙", ("제14조",), ("부칙",)),
+        ("농어촌특별세법", ("제5조",), ("부칙",)),
     ]
 
-    # 법령명으로 검색하여 실제 응답의 법령명·법령ID를 함께 확인
-    law_id_map: dict[str, str] = {}
-    for l_nm, _ in law_queries:
+    # 법령명으로 검색하여 법령ID(고유번호)와 법령일련번호(MST)를 분리 추출
+    law_meta_map: dict[str, dict[str, str]] = {}
+    for l_nm, _, _ in law_specs:
         try:
             s_rows = law_api.search_law_data(l_nm, "law") or []
             if isinstance(s_rows, dict):
@@ -682,30 +782,28 @@ def fetch_daily_ec_law_monitoring_status(
             ]
             if exact_rows:
                 exact_rows.sort(key=lambda x: (str(x.get("공포일자", "")), str(x.get("시행일자", ""))), reverse=True)
-                lid = str(exact_rows[0].get("법령ID") or exact_rows[0].get("법령일련번호") or "").strip()
-                if lid:
-                    law_id_map[l_nm] = lid
+                top_r = exact_rows[0]
+                law_meta_map[l_nm] = {
+                    "법령ID": str(top_r.get("법령ID") or "").strip(),
+                    "법령일련번호": str(top_r.get("법령일련번호") or top_r.get("MST") or "").strip(),
+                }
         except Exception:
             pass
 
-    def _fetch_one(item: tuple[str, str]) -> tuple[str, str]:
-        lnm, qf = item
-        w_tok = agent._TOOL_TRACE.set(agent._new_trace(unleash=True))
+    def _fetch_one(spec: tuple[str, tuple[str, ...], tuple[str, ...]]) -> tuple[str, str]:
+        lnm, w_arts, add_qs = spec
         try:
-            r = agent.get_law_details_for_gemini(doc_id=lnm, target="law", query_filter=qf)
-            return lnm, str(r or "")
+            combined_txt = _fetch_single_law_by_individual_articles(lnm, w_arts, add_qs)
+            return lnm, combined_txt
         except Exception:
             return lnm, ""
-        finally:
-            agent._TOOL_TRACE.reset(w_tok)
 
     try:
         with ThreadPoolExecutor(max_workers=4) as pool:
-            raw_list = list(pool.map(_fetch_one, law_queries))
+            raw_list = list(pool.map(_fetch_one, law_specs))
     except Exception:
-        raw_list = [_fetch_one(it) for it in law_queries]
+        raw_list = [_fetch_one(sp) for sp in law_specs]
 
-    # 6-5: 별지 제10호의9·제10호의10 서식 개정일 조회 (law_api.search_law_data target="licbyl")
     form_rev_dates: dict[str, str] = {}
     try:
         byl_rows = law_api.search_law_data("통합고용세액공제", target="licbyl") or []
@@ -731,8 +829,11 @@ def fetch_daily_ec_law_monitoring_status(
                 tax_year=tax_year,
                 last_success_cache=last_success,
             )
-        if not parsed.get("법령ID") and l_nm in law_id_map:
-            parsed["법령ID"] = law_id_map[l_nm]
+        meta_m = law_meta_map.get(l_nm) or {}
+        if meta_m.get("법령ID"):
+            parsed["법령ID"] = meta_m["법령ID"]
+        if meta_m.get("법령일련번호") and not parsed.get("법령일련번호"):
+            parsed["법령일련번호"] = meta_m["법령일련번호"]
         if l_nm == "조세특례제한법 시행규칙" and form_rev_dates:
             parsed["서식개정일_목록"] = form_rev_dates
         fetched_laws[l_nm] = parsed
@@ -756,22 +857,29 @@ def fetch_daily_ec_law_monitoring_status(
 
 def format_captured_baseline_code_readonly(law_status: dict[str, Any] | None) -> str:
     """
-    [피드백 2-4] 상세보기 모달 하단 접힌 '개발자 도구' 영역에 표시할 읽기 전용 BASELINE_LAW_INFO 코드 스니펫 생성.
-    - 화면에 텍스트로 표시·복사만 제공하며, rules.py·디스크·세션의 기준값을 절대 변경하지 않습니다.
+    [피드백 2 & 3 반영] 상세보기 모달 하단 접힌 '개발자 도구' 영역에 표시할 읽기 전용 BASELINE_LAW_INFO 코드 스니펫 생성.
+    - 법령ID와 법령일련번호(MST)를 분리하여 출력하며, 조문별 원문 앞 80자 미리보기를 주석으로 함께 출력합니다.
     """
     laws_map = (law_status or {}).get("laws") or {}
-    out_lines = ["# [읽기 전용 캡처 결과] 검토 후 employment_credit/rules.py의 BASELINE_LAW_INFO에 반영하세요.", "CAPTURED_BASELINE_SNIPPET = {"]
+    out_lines = [
+        "# [읽기 전용 캡처 결과] 각 조문 앞 80자를 확인한 뒤 employment_credit/rules.py의 BASELINE_LAW_INFO에 반영하세요.",
+        "CAPTURED_BASELINE_SNIPPET = {",
+    ]
     for l_nm, b_cfg in R.BASELINE_LAW_INFO.items():
         l_info = laws_map.get(l_nm) or {}
         lid = str(l_info.get("law_id") or "")
+        mst = str(l_info.get("mst_id") or "")
         p_no = str(l_info.get("prom_no") or "")
         p_dt = str(l_info.get("prom_date") or "")
         e_dt = str(l_info.get("enf_date") or "")
         art_h = str(l_info.get("article_hash") or "")
         sub_h = l_info.get("sub_article_hashes") or {}
         spec_add_h = l_info.get("specific_addenda_hashes") or {}
+        new_txt_preview = re.sub(r"\s+", " ", str(l_info.get("new_text") or ""))[:80]
+        out_lines.append(f'    # [{l_nm} 원문 앞 80자]: {new_txt_preview or "미수신"}')
         out_lines.append(f'    "{l_nm}": {{')
         out_lines.append(f'        "법령ID": "{lid}",')
+        out_lines.append(f'        "법령일련번호": "{mst}",')
         out_lines.append(f'        "공포번호": "{p_no}",')
         out_lines.append(f'        "공포일": "{p_dt}",')
         out_lines.append(f'        "시행일": "{e_dt}",')
