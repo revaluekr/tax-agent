@@ -29,6 +29,7 @@ from . import rules as R
 from .headcount import parse_date, default_months_for_year, get_unit_rates, calc_increase_with_cap
 
 MAX_TEXT_CHARS = 120_000
+LIVE_LAW_TEXT_LIMIT = 18000
 FILE_WP_MARKER_RE = re.compile(r"^<<<FILE_WP:(.*?)>>>$")
 _RRN_LIKE_RE = re.compile(r"(?<!\d)(\d{6})\s*-\s*([1-8*])")
 
@@ -432,19 +433,58 @@ def _fetch_live_employment_law_context() -> tuple[str, dict | None]:
 
         ok_laws: set[str] = set()
         verified_buchik: set[tuple] = set()
+        valid_results = [
+            (law_nm, q_filter, res_s)
+            for law_nm, q_filter, res_s in results_ordered
+            if res_s and not res_s.startswith("❌") and not res_s.startswith("[검색 한도") and not res_s.startswith("[원문 조회 한도")
+        ]
+        n_valid_laws = max(1, len(valid_results))
+        # [문제 5 해결] LIVE_LAW_TEXT_LIMIT(18,000자) 기준으로 법령별 할당량을 계산하고(구분자 "\n\n" 감안),
+        # 각 법령 안에서는 본칙 >= 80%, 부칙 <= 20% 비율을 보장하며 "📌" 부칙 머리글과 [본칙관련] 부칙을 최우선 보존합니다.
+        per_law_quota = max(4400, (LIVE_LAW_TEXT_LIMIT - 2 * max(0, n_valid_laws - 1)) // n_valid_laws)
 
-        for law_nm, q_filter, res_s in results_ordered:
-            if res_s and not res_s.startswith("❌") and not res_s.startswith("[검색 한도") and not res_s.startswith("[원문 조회 한도"):
+        for law_nm, q_filter, res_s in valid_results:
+            if True:
                 # 메인 스레드의 trace에 원문 및 조문(본칙/부칙 분리) 기록 보장 (캐시에서 꺼낸 조문도 100% 기록됨)
                 agent._record("detail", res_s)
                 agent._record_law_articles(res_s)
-                if "📌" in res_s and len(res_s) > 9000:
+                if "📌" in res_s:
                     pin_idx = res_s.index("📌")
-                    head_part = res_s[:min(pin_idx, 6500)].rstrip()
-                    add_part_snip = res_s[pin_idx:pin_idx + 2500]
-                    fetched_snippets.append(head_part + "\n\n" + add_part_snip)
+                    main_raw_part = res_s[:pin_idx].rstrip()
+                    add_raw_part = res_s[pin_idx:].strip()
+                    add_lines = add_raw_part.splitlines()
+                    pin_hdr = add_lines[0].strip() if add_lines else "📌 [관련 최근 개정 부칙 발췌]"
+                    add_body_only = "\n".join(add_lines[1:]).strip() if len(add_lines) > 1 else ""
+                    # [본칙관련] 표시가 있는 부칙 블록을 먼저 배치
+                    add_starts = list(re.finditer(r"(?m)^\s*\[?부칙(?:\([^)]*\))?\s*<", add_body_only))
+                    if add_starts:
+                        rel_blks, oth_blks = [], []
+                        for idx_a, am in enumerate(add_starts):
+                            ep = add_starts[idx_a + 1].start() if idx_a + 1 < len(add_starts) else len(add_body_only)
+                            b_chunk = add_body_only[am.start():ep].strip()
+                            if "[본칙관련]" in (b_chunk.splitlines()[0] if b_chunk else ""):
+                                rel_blks.append(b_chunk)
+                            else:
+                                oth_blks.append(b_chunk)
+                        ordered_add_body = "\n\n".join(rel_blks + oth_blks)
+                    else:
+                        ordered_add_body = add_body_only
+                    full_add_part = (pin_hdr + "\n" + ordered_add_body).strip()
+
+                    if len(main_raw_part) + 2 + len(full_add_part) <= per_law_quota:
+                        fetched_snippets.append(main_raw_part + "\n\n" + full_add_part)
+                    else:
+                        max_add_q = max(300, int((per_law_quota - 2) * 0.20))
+                        use_add_len = min(len(full_add_part), max_add_q)
+                        use_main_len = max(int((per_law_quota - 2) * 0.80), (per_law_quota - 2) - use_add_len)
+                        if len(main_raw_part) < use_main_len:
+                            use_main_len = len(main_raw_part)
+                            use_add_len = min(len(full_add_part), (per_law_quota - 2) - use_main_len)
+                        fetched_snippets.append(
+                            main_raw_part[:use_main_len].rstrip() + "\n\n" + full_add_part[:use_add_len].rstrip()
+                        )
                 else:
-                    fetched_snippets.append(res_s[:9000])
+                    fetched_snippets.append(res_s[:per_law_quota])
                 clean_lnm = law_nm.replace(" ", "")
                 ok_laws.add(clean_lnm)
 
@@ -474,7 +514,7 @@ def _fetch_live_employment_law_context() -> tuple[str, dict | None]:
     finally:
         agent._TOOL_TRACE.reset(tok)
 
-    return "\n\n".join(fetched_snippets)[:22000], trace
+    return "\n\n".join(fetched_snippets)[:LIVE_LAW_TEXT_LIMIT], trace
 
 
 
@@ -1532,7 +1572,7 @@ def call_pro_argon_audit_commentary(
         "#### (2) 1·2차 사후관리(추징) 리스크 방어 및 최저한세·이월공제 검토\n"
         "#### (3) 세무신고 전 최종 구비서류 및 소명 체크포인트\n\n"
         f"{admin_ruling_text}\n\n"
-        f"[법제처 Open API 실시간 조회 법령 원문 발췌]\n{live_law_text[:18000]}\n\n"
+        f"[법제처 Open API 실시간 조회 법령 원문 발췌]\n{live_law_text[:LIVE_LAW_TEXT_LIMIT]}\n\n"
         f"[사업장 및 사원 판정·차이원인 정밀 분석 데이터]\n{summary_context_str[:25000]}"
     )
 
