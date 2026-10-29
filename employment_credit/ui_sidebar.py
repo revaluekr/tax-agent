@@ -390,11 +390,17 @@ div[class*="st-key-ec_agent_report_box_"] td {
     line-height: 1.58 !important;
 }
 .ec-agent-report-wrap th:first-child,
-.ec-agent-report-wrap td:first-child,
-div[class*="st-key-ec_agent_report_box_"] th:first-child,
-div[class*="st-key-ec_agent_report_box_"] td:first-child {
+div[class*="st-key-ec_agent_report_box_"] th:first-child {
     white-space: nowrap !important;
     min-width: 92px !important;
+    text-align: center !important;
+    font-weight: 800 !important;
+}
+.ec-agent-report-wrap td:first-child,
+div[class*="st-key-ec_agent_report_box_"] td:first-child {
+    white-space: normal !important;
+    word-break: keep-all !important;
+    min-width: 110px !important;
     text-align: center !important;
     font-weight: 800 !important;
 }
@@ -688,7 +694,7 @@ def _build_law_tab_pdf_bytes(title: str, md_content: str) -> bytes:
                 pdf_rows = []
                 for r_idx, pr in enumerate(padded):
                     pdf_rows.append([
-                        Paragraph(_pdf_text(re.sub(r"\[([^\]]+)\]\(https?://[^)]+\)", r"\1", cell)), style_th if r_idx == 0 else style_td)
+                        Paragraph(_pdf_text(re.sub(r"<[^>]+>", " ", re.sub(r"\[([^\]]+)\]\(https?://[^)]+\)", r"\1", cell))), style_th if r_idx == 0 else style_td)
                         for cell in pr
                     ])
                 t_obj = Table(pdf_rows, colWidths=col_w, repeatRows=1)
@@ -710,6 +716,12 @@ def _build_law_tab_pdf_bytes(title: str, md_content: str) -> bytes:
                 story.append(Spacer(1, 8))
             continue
 
+        if stripped.startswith("<div ") and stripped.endswith("</div>"):
+            clean_div_txt = re.sub(r"<[^>]+>", "", stripped).strip()
+            if clean_div_txt:
+                story.append(Paragraph("• " + _pdf_text(clean_div_txt), style_bullet))
+            i += 1
+            continue
         if stripped.startswith("### "):
             story.append(Paragraph(_pdf_text(stripped[4:]), style_h3))
         elif stripped.startswith("#### "):
@@ -807,6 +819,7 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
     summary_table_md = "\n".join(summary_md_lines)
 
     tab_names = [
+        "개정요약",
         "조세특례제한법",
         "조세특례제한법 시행령",
         "시행규칙·서식",
@@ -814,7 +827,29 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
         "예규·안내문 원문",
     ]
     tabs_root = st.container(key="ec_law_modal_tabs_root")
-    t_law, t_dec, t_rule, t_rural, t_rulings = tabs_root.tabs(tab_names)
+    t_summary, t_law, t_dec, t_rule, t_rural, t_rulings = tabs_root.tabs(tab_names)
+
+    with t_summary:
+        sum_tab_md = "\n".join([
+            R.build_amendment_summary_markdown(law_status=law_status, target_law=None, tax_year=tax_yr),
+            "### 3. 법령 개정 및 예규·안내문 기준일자 요약표",
+            "",
+            summary_table_md,
+        ])
+        with st.container(key="ec_agent_report_box_amend_summary"):
+            st.markdown(sum_tab_md, unsafe_allow_html=True)
+
+        c_pdf_left_sum, _ = st.columns([1.8, 5.2])
+        with c_pdf_left_sum:
+            with st.container(key="ec_law_pdf_wrap_amend_summary"):
+                st.download_button(
+                    "PDF 출력",
+                    data=_build_law_tab_pdf_bytes("통합고용세액공제 개정세법 핵심 요약 보고서", sum_tab_md),
+                    file_name="통합고용세액공제_개정세법_핵심요약보고서.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key="btn_dl_law_pdf_amend_summary",
+                )
 
     def _render_single_law_tab(law_key: str):
         l_info = laws_map.get(law_key) or {}
@@ -868,8 +903,16 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
             law_name=law_key,
         )
 
-        md_parts = [
-            f"### 1. {law_key} 기본정보 및 판정 현황",
+        law_amend_md = R.build_amendment_summary_markdown(
+            law_status=law_status, target_law=law_key, tax_year=tax_yr
+        )
+        sec_offset = 1 if law_amend_md else 0
+        md_parts = []
+        if law_amend_md:
+            md_parts.append(law_amend_md)
+
+        md_parts.extend([
+            f"### {1 + sec_offset}. {law_key} 기본정보 및 판정 현황",
             f"- **감시 대상 조문**: {watched_str}",
             f"- **현재 판정 상태**: **{st_lbl}** ({app_lbl})",
             "",
@@ -878,11 +921,11 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
             f"| **현행 법령 (법제처 조회)** | **{live_no_disp}** | {live_pdt} | {live_edt} | 조회 기준일: {law_status.get('last_checked_at', '-')} |",
             f"| **계산 기준 법령 (프로그램 반영)** | **{base_no_disp}** | {base_pdt} | {base_edt} | {base_status_disp} |",
             "",
-        ]
+        ])
 
         if l_info.get("is_unapplied"):
             md_parts.extend([
-                "### 2. 구법(계산 기준 원문) vs 신법(현행 법제처 원문) 대비",
+                f"### {2 + sec_offset}. 구법(계산 기준 원문) vs 신법(현행 법제처 원문) 대비",
                 "",
                 f"#### (1) 계산 기준 원문 (제{base_no or '-'}호)",
                 "",
@@ -895,18 +938,18 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
             ])
         else:
             md_parts.extend([
-                f"### 2. {law_key} 감시 대상 조문 원문",
+                f"### {2 + sec_offset}. {law_key} 감시 대상 조문 원문",
                 "",
                 new_txt or old_txt or "법제처 API 연결 후 조문 원문이 표시됩니다.",
                 "",
             ])
 
         md_parts.extend([
-            f"### 3. {law_key} 관련 부칙(시행일·적용례·경과조치) 원문",
+            f"### {3 + sec_offset}. {law_key} 관련 부칙(시행일·적용례·경과조치) 원문",
             "",
             add_txt or "관련 부칙 원문 없음",
             "",
-            "### 4. 법령 개정 및 예규·안내문 기준일자 요약표",
+            f"### {4 + sec_offset}. 법령 개정 및 예규·안내문 기준일자 요약표",
             "",
             summary_table_md,
         ])
