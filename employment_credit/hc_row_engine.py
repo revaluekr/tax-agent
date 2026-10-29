@@ -306,11 +306,11 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
     A_b2_yth_act = round(float(yth_b2a_frac) / months_in_year, 2)
     A_b3_yth_act = round(float(yth_b3a_frac) / months_in_year, 2)
 
-    # 코호트 연도별 방식 선택 규칙 (calc_method_for 일원화)
-    # # 확인 필요: '26.3월 국세청 안내 신뢰보호 원칙 연장 적용 (2026년 이후 평가연도에서 2024년 이하 코호트에 A를 계속 적용)
-    m_b1 = calc_method_for(int(year))
-    m_b2 = calc_method_for(int(year) - 1)
-    m_b3 = calc_method_for(int(year) - 2)
+    # 평가연도(year)와 코호트 연도를 함께 보는 방식 선택 규칙 (2026.5.22. 대통령령 제36342호 반영)
+    # # 확인 필요: 최초 공제연도 B방식 신고값과 평가연도 합계 절사값의 비교 — 2027년 국세청 신고 안내 확인
+    m_b1 = calc_method_for(int(year), eval_year=int(year))
+    m_b2 = calc_method_for(int(year) - 1, eval_year=int(year))
+    m_b3 = calc_method_for(int(year) - 2, eval_year=int(year))
 
     if m_b1 == "B":
         b1_reg_indiv, b1_yth_indiv, b1_gen_indiv = B_b1_reg, B_b1_yth, B_b1_gen
@@ -495,10 +495,10 @@ def year_totals(computed_rows: list[dict], months_in_year: int, year: int | None
     )
 
     # ── 3) 방식 선택 규칙(calc_method_for)에 따른 기본값 및 비교값 설정 ──
-    # # 확인 필요: '26.3월 국세청 안내 신뢰보호 원칙 연장 적용 (2026년 이후 평가연도에서 2024년 이하 코호트에 A를 계속 적용)
-    m_b1 = calc_method_for(eval_yr)
-    m_b2 = calc_method_for(eval_yr - 1)
-    m_b3 = calc_method_for(eval_yr - 2)
+    # # 확인 필요: 최초 공제연도 B방식 신고값과 평가연도 합계 절사값의 비교 — 2027년 국세청 신고 안내 확인
+    m_b1 = calc_method_for(eval_yr, eval_year=eval_yr)
+    m_b2 = calc_method_for(eval_yr - 1, eval_year=eval_yr)
+    m_b3 = calc_method_for(eval_yr - 2, eval_year=eval_yr)
 
     if m_b1 == "B":
         b1_reg, b1_yth, b1_gen = B_b1_reg, B_b1_yth, B_b1_gen
@@ -523,9 +523,9 @@ def year_totals(computed_rows: list[dict], months_in_year: int, year: int | None
         "calc_method_b1": m_b1,
         "calc_method_b2": m_b2,
         "calc_method_b3": m_b3,
-        "calc_badge_b1": calc_method_badge_label(m_b1),
-        "calc_badge_b2": calc_method_badge_label(m_b2),
-        "calc_badge_b3": calc_method_badge_label(m_b3),
+        "calc_badge_b1": calc_method_badge_label(m_b1, eval_year=eval_yr),
+        "calc_badge_b2": calc_method_badge_label(m_b2, eval_year=eval_yr),
+        "calc_badge_b3": calc_method_badge_label(m_b3, eval_year=eval_yr),
         "ab_diff_b1": (abs(A_b1_reg - B_b1_reg) >= 0.01 or abs(A_b1_yth - B_b1_yth) >= 0.01),
         "ab_diff_b2": (abs(A_b2_reg - B_b2_reg) >= 0.01 or abs(A_b2_yth - B_b2_yth) >= 0.01),
         "ab_diff_b3": (abs(A_b3_reg - B_b3_reg) >= 0.01 or abs(A_b3_yth - B_b3_yth) >= 0.01),
@@ -593,7 +593,7 @@ def year_totals(computed_rows: list[dict], months_in_year: int, year: int | None
 def regular_excluding_part_time(computed_rows: list[dict], emp_types: list[str], months_in_year: int, year: int | None = None) -> float:
     n = max(1, min(12, int(months_in_year or 12)))
     eval_yr = int(year) if year is not None else int((computed_rows[0].get("_eval_year") if computed_rows else 2026) or 2026)
-    m = calc_method_for(eval_yr)
+    m = calc_method_for(eval_yr, eval_year=eval_yr)
     if m == "B":
         return round(
             sum(

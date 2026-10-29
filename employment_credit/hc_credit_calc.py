@@ -241,7 +241,7 @@ def calc_new_2026_credit_abc(
     - 적용 방식: `calc_method_for(tax_year)` -> "B" (해당·비교연도 모두 B방식 사원별 절사 후 합계 인원 적용)
     """
     t = int(tax_year)
-    m_abc = calc_method_for(t)
+    m_abc = calc_method_for(t, eval_year=t)
     comp = valid_comparison_years_for_new_credit(t)
 
     def _sz_for(y: int | None) -> str:
@@ -431,7 +431,7 @@ def calc_legacy_post_management(
       # 확인 필요: '26.3월 국세청 안내 신뢰보호 원칙 연장 적용 (2026년 이후 평가연도에서 2024년 이하 코호트에 A를 계속 적용)
     """
     elapsed = int(eval_year) - int(cohort_year)
-    coh_method = calc_method_for(cohort_year)
+    coh_method = calc_method_for(cohort_year, eval_year=eval_year)
     rates = get_unit_rates(corp_size, is_capital, scheme="legacy")
     yth_rate = rates["청년등"]
     gen_rate = rates["청년등외"]
@@ -447,7 +447,7 @@ def calc_legacy_post_management(
             "eval_year": eval_year,
             "elapsed_year": elapsed,
             "calc_method": coh_method,
-            "calc_badge": calc_method_badge_label(coh_method),
+            "calc_badge": calc_method_badge_label(coh_method, eval_year=eval_year),
             "active": False,
             "case_code": "해당없음",
             "case_title": f"{cohort_year}년 귀속분 공제이력 없음 (사후관리 대상 아님)",
@@ -637,7 +637,7 @@ def calc_legacy_post_management(
         "eval_year": eval_year,
         "elapsed_year": elapsed,
         "calc_method": coh_method,
-        "calc_badge": calc_method_badge_label(coh_method),
+        "calc_badge": calc_method_badge_label(coh_method, eval_year=eval_year),
         "corp_size": R.normalize_corp_size(corp_size),
         "active": True,
         "case_code": case_code,
@@ -683,7 +683,7 @@ def calculate_tax_year_package(
       # 확인 필요: '26.3월 국세청 안내 신뢰보호 원칙 연장 적용 (2026년 이후 평가연도에서 2024년 이하 코호트에 A를 계속 적용)
     """
     t = int(tax_year)
-    cur_method = calc_method_for(t)
+    cur_method = calc_method_for(t, eval_year=t)
     pf = prior_filings or {}
     add_in = additional_inputs or {}
     basis = R.PM_BASIS_RECALC if pm_basis == R.PM_BASIS_RECALC else R.PM_BASIS_FILED
@@ -707,7 +707,7 @@ def calculate_tax_year_package(
     def _s(y: int, target_method: str | None = None) -> dict[str, Any]:
         d = summaries.get(y) or {}
         n_m = int(d.get("months_in_year", 12) or 12)
-        use_m = target_method or calc_method_for(y)
+        use_m = target_method or calc_method_for(y, eval_year=y)
         p_b1 = _pick_summary_by_method(d, method=use_m, block="b1")
         reg, yth, non_y = p_b1["reg"], p_b1["yth"], p_b1["gen"]
 
@@ -718,12 +718,12 @@ def calculate_tax_year_package(
         yth_tot = float(d.get("청년등_합계", round(yth * n_m, 2)) or 0.0)
         non_tot = float(d.get("청년외_합계", round(max(0.0, reg_tot - yth_tot), 2)) or 0.0)
 
-        m_b2 = calc_method_for(y - 1)
+        m_b2 = calc_method_for(y - 1, eval_year=y)
         p_b2 = _pick_summary_by_method(d, method=m_b2, block="b2")
         b2_r, b2_y, b2_ya = p_b2["reg"], p_b2["yth"], p_b2["yth_act"]
         b2_y_tot = float(d.get("b2_청년등_합계", round(b2_y * n_m, 2)) or 0.0)
 
-        m_b3 = calc_method_for(y - 2)
+        m_b3 = calc_method_for(y - 2, eval_year=y)
         p_b3 = _pick_summary_by_method(d, method=m_b3, block="b3")
         b3_r, b3_y, b3_ya = p_b3["reg"], p_b3["yth"], p_b3["yth_act"]
         b3_y_tot = float(d.get("b3_청년등_합계", round(b3_y * n_m, 2)) or 0.0)
@@ -739,11 +739,11 @@ def calculate_tax_year_package(
             "from_filed": bool(d.get("from_filed")),
             "months_in_year": n_m,
             "calc_method": use_m,
-            "calc_badge": calc_method_badge_label(use_m),
+            "calc_badge": calc_method_badge_label(use_m, eval_year=y if target_method is None else None),
             "calc_method_b2": m_b2,
-            "calc_badge_b2": calc_method_badge_label(m_b2),
+            "calc_badge_b2": calc_method_badge_label(m_b2, eval_year=y),
             "calc_method_b3": m_b3,
-            "calc_badge_b3": calc_method_badge_label(m_b3),
+            "calc_badge_b3": calc_method_badge_label(m_b3, eval_year=y),
             "regular": reg,
             "youth": yth,
             "non_youth": non_y,
@@ -788,7 +788,7 @@ def calculate_tax_year_package(
     def _s_new_cmp(y: int, base_s: dict[str, Any]) -> dict[str, Any]:
         """
         당해 연도(t) 1차 공제(구법·신법 A·B·C) 및 상시근로자 현황·추가공제 요건 비교 시:
-        - 계산방식은 `cur_method = calc_method_for(t)` (2025년 이후 "B")를 일관되게 적용합니다.
+        - 계산방식은 `cur_method = calc_method_for(t, eval_year=t)` (2025년 이후 "B")를 일관되게 적용합니다.
         - 2026년 이후 신법(t >= 2026) 비교 대상 연도(2025 <= y < t)에 nr_ 재산정 인원이 있으면 해당 방식(cur_method)의 nr_ 인원을 적용합니다.
         """
         yd = summaries.get(y) or {}
@@ -805,7 +805,7 @@ def calculate_tax_year_package(
                 base_s,
                 _nr_applied=True,
                 calc_method=cur_method,
-                calc_badge=calc_method_badge_label(cur_method),
+                calc_badge=calc_method_badge_label(cur_method, eval_year=t),
                 regular=nr_reg,
                 youth=nr_yth,
                 non_youth=nr_gen,
@@ -828,7 +828,7 @@ def calculate_tax_year_package(
         return dict(
             base_s,
             calc_method=cur_method,
-            calc_badge=calc_method_badge_label(cur_method),
+            calc_badge=calc_method_badge_label(cur_method, eval_year=t),
             regular=p_cmp["reg"],
             youth=p_cmp["yth"],
             non_youth=p_cmp["gen"],
@@ -898,13 +898,16 @@ def calculate_tax_year_package(
 
     def _cohort(cohort: int, elapsed: int) -> tuple[dict, dict, dict]:
         """
-        구법 코호트(cohort)의 사후관리·연속공제 비교:
-        - `coh_method = calc_method_for(cohort)`로 최초 공제연도 인원(cohort 및 cohort-1)과 평가연도 인원(t의 b2/b3) 모두 동일한 방식을 적용합니다.
-        # 확인 필요: '26.3월 국세청 안내 신뢰보호 원칙 연장 적용 (2026년 이후 평가연도에서 2024년 이하 코호트에 A를 계속 적용)
+        구법 코호트(cohort)의 사후관리·연속공제 비교 (2026.5.22. 대통령령 제36342호 반영):
+        - 평가연도(t)의 사후관리 인원(b2/b3)은 `coh_method = calc_method_for(cohort, eval_year=t)`로 계산합니다(t>=2026이면 합계 후 1회 절사 "A").
+        - 사후관리 비교의 '최초 공제연도 인원'은 기신고값을 그대로 사용하며(기신고 기준),
+          재계산 기준 표시 시에는 최초 공제연도 당시 규칙(`init_coh_method = calc_method_for(cohort, eval_year=cohort)` -> 2025년분은 B, 2024년 이하분은 A)으로 계산합니다.
+        # 확인 필요: 최초 공제연도 B방식 신고값과 평가연도 합계 절사값의 비교 — 2027년 국세청 신고 안내 확인
         """
         coh_method = calc_method_for(cohort)
+        pm_method = calc_method_for(cohort, eval_year=t)
         blk_name = "b2" if elapsed == 1 else "b3"
-        cur_pm_pick = _pick_summary_by_method(summaries.get(t), method=coh_method, block=blk_name)
+        cur_pm_pick = _pick_summary_by_method(summaries.get(t), method=pm_method, block=blk_name)
         cur_reg, cur_yth, cur_yth_act = cur_pm_pick["reg"], cur_pm_pick["yth"], cur_pm_pick["yth_act"]
 
         s_init_coh = _s(cohort, target_method=coh_method)
@@ -921,7 +924,7 @@ def calculate_tax_year_package(
         paid = int(_fv(f, "prior_clawback_paid_won") or 0)
         extra = {}
         if elapsed == 2:
-            prev_pm_pick = _pick_summary_by_method(summaries.get(t - 1), method=coh_method, block="b2")
+            prev_pm_pick = _pick_summary_by_method(summaries.get(t - 1), method=calc_method_for(cohort, eval_year=t - 1), block="b2")
             extra = dict(prev_pm_reg=prev_pm_pick["reg"] if prev_s["has_data"] else None,
                          prev_pm_yth=prev_pm_pick["yth"] if prev_s["has_data"] else None,
                          prev_pm_yth_actual=prev_pm_pick["yth_act"] if prev_s["has_data"] else None,
@@ -937,8 +940,8 @@ def calculate_tax_year_package(
                                             cur_reg, cur_yth, init_credit_claimed_won=claimed,
                                             unclaimed_carryforward_won=cf, cur_pm_yth_actual=cur_yth_act, **extra)
             r["corp_size"] = coh_sz
-            r["calc_method"] = coh_method
-            r["calc_badge"] = calc_method_badge_label(coh_method)
+            r["calc_method"] = pm_method
+            r["calc_badge"] = calc_method_badge_label(cohort, eval_year=t)
             r["rates_legacy"] = coh_rates
             r["base_label"] = label + (f" ({', '.join(borrowed)}은 기신고 숫자 사용)" if borrowed else "")
             if claimed > 0 and (vals.get("init_yth_inc") is not None or vals.get("init_gen_inc") is not None):
@@ -995,7 +998,7 @@ def calculate_tax_year_package(
                 recalc_claimed = y0_est_won + y1_est_won
             cap_note = f" ※ 한도는 재계산 증가인원 × 구법 단가로 추정({recalc_claimed:,}원)했습니다."
         r_recalc = _run(recalc, "세법원칙 기준", borrowed, claimed=recalc_claimed, cap_note=cap_note)
-        return r_filed, r_recalc, {"filed": filed, "recalc": recalc, "borrowed": borrowed, "calc_method": coh_method}
+        return r_filed, r_recalc, {"filed": filed, "recalc": recalc, "borrowed": borrowed, "calc_method": pm_method}
 
     if (t - 1) <= 2025:
         pm_y1_filed, pm_y1_recalc, base_y1 = _cohort(t - 1, 1)
