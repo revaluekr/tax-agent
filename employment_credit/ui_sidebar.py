@@ -200,12 +200,208 @@ def _int(v, default: int) -> int:
         return default
 
 
+
+@st.dialog("📜 통합고용세액공제 법령·시행령·규칙 및 예규·안내문 상세 보기", width="large")
+def _dlg_ec_law_monitoring_detail(tax_yr: int):
+    force_now = bool(st.session_state.pop("ec_force_law_refresh", False))
+    law_status = P.fetch_daily_ec_law_monitoring_status(tax_year=tax_yr, force_refresh=force_now)
+    ruling_status = R.evaluate_ruling_monitoring_status(R.ADMIN_RULINGS_AND_NOTICES)
+
+    # ① 상단 상태 배너 (자동 인식)
+    if law_status.get("needs_program_update"):
+        un_cnt = int(law_status.get("unapplied_count") or 0)
+        app_notes = []
+        for l_nm, l_info in (law_status.get("laws") or {}).items():
+            if isinstance(l_info, dict) and l_info.get("is_unapplied"):
+                app_d = (l_info.get("applicability") or {}).get("detail") or ""
+                app_notes.append(f"• **{l_nm}** (제{l_info.get('prom_no', '')}호, 시행 {l_info.get('enf_date', '')}): {app_d}")
+        notes_md = "\n".join(app_notes)
+        st.warning(
+            f"**[⚠️ 프로그램 반영 필요]** 기준 법령 이후 개정 **{un_cnt}건**이 감지되었습니다.\n\n{notes_md}"
+        )
+    elif law_status.get("api_failed"):
+        c_warn, c_btn = st.columns([4.2, 1.3], vertical_alignment="center")
+        with c_warn:
+            st.warning(
+                f"**[⚠️ 당일 법령 API 연결 또는 원문 수신 실패 — 마지막 성공 결과 기준 표시 중]** "
+                f"(마지막 확인: `{law_status.get('last_checked_at', '확인 이력 없음')}`)"
+            )
+        with c_btn:
+            if st.button("🔄 지금 다시 조회", type="primary", use_container_width=True, key="btn_ec_law_retry_top"):
+                st.session_state["ec_force_law_refresh"] = True
+                st.rerun()
+    else:
+        c_ok, c_btn = st.columns([4.4, 1.2], vertical_alignment="center")
+        with c_ok:
+            st.success(
+                f"✅ 감시 대상 법령·시행령·시행규칙 조문 및 부칙이 프로그램 기준 버전과 일치합니다 "
+                f"(기준일: `{law_status.get('last_checked_at', '-')}`)"
+            )
+        with c_btn:
+            if st.button("🔄 지금 다시 조회", use_container_width=True, key="btn_ec_law_refresh_ok"):
+                st.session_state["ec_force_law_refresh"] = True
+                st.rerun()
+
+    # ② 원문 뷰어 (법령·시행령·시행규칙·농특세법 + 예규·안내문 원문)
+    laws_map = law_status.get("laws") or {}
+    tab_names = [
+        "📘 조세특례제한법",
+        "📗 조세특례제한법 시행령",
+        "📙 시행규칙·서식",
+        "🌾 농어촌특별세법",
+        "🏛️ 예규·안내문 원문",
+    ]
+    t_law, t_dec, t_rule, t_rural, t_rulings = st.tabs(tab_names)
+
+    def _render_single_law_tab(law_key: str):
+        l_info = laws_map.get(law_key) or {}
+        b_info = R.BASELINE_LAW_INFO.get(law_key) or {}
+        st_lbl = str(l_info.get("status_label") or "기준 정보")
+        app_info = l_info.get("applicability") or {}
+        app_lbl = str(app_info.get("detail") or app_info.get("label") or "-")
+        watched_str = ", ".join(l_info.get("watched_articles") or b_info.get("감시조문") or ())
+        st.markdown(
+            f"**감시 대상 조문:** `{watched_str}` &nbsp;|&nbsp; "
+            f"**공포번호:** `제{l_info.get('prom_no') or b_info.get('공포번호', '')}호` &nbsp;|&nbsp; "
+            f"**공포일:** `{l_info.get('prom_date') or b_info.get('공포일', '')}` &nbsp;|&nbsp; "
+            f"**시행일:** `{l_info.get('enf_date') or b_info.get('시행일', '')}`\n\n"
+            f"**상태:** `{st_lbl}` &nbsp;|&nbsp; **{tax_yr}년 귀속 판정:** `{app_lbl}`"
+        )
+        old_txt = str(l_info.get("old_text") or b_info.get("기준원문_일부") or "").strip()
+        new_txt = str(l_info.get("new_text") or old_txt).strip()
+        add_txt = str(l_info.get("addenda_text") or b_info.get("적용시기_부칙원문") or "").strip()
+
+        if l_info.get("is_unapplied"):
+            st.markdown("##### ⚖️ 구법(프로그램 기준 원문) vs 신법(법제처 최신 원문) 대비")
+            c_old, c_new = st.columns(2)
+            with c_old:
+                st.text_area(
+                    f"구법 기준 원문 (제{l_info.get('base_prom_no') or b_info.get('공포번호', '')}호)",
+                    value=old_txt or "법제처 원문 미수신",
+                    height=220,
+                    key=f"ec_law_old_{law_key}",
+                )
+            with c_new:
+                st.text_area(
+                    f"신법 최신 원문 (제{l_info.get('prom_no', '')}호)",
+                    value=new_txt or "법제처 원문 미수신",
+                    height=220,
+                    key=f"ec_law_new_{law_key}",
+                )
+        else:
+            st.text_area(
+                f"📜 {law_key} 감시 대상 조문 원문",
+                value=new_txt or old_txt or "법제처 API 연결 후 조문 원문이 표시됩니다.",
+                height=210,
+                key=f"ec_law_cur_{law_key}",
+            )
+
+        st.text_area(
+            f"📌 {law_key} 관련 부칙(시행일·적용례·경과조치) 원문",
+            value=add_txt or "관련 부칙 원문 없음",
+            height=130,
+            key=f"ec_law_add_{law_key}",
+        )
+
+    with t_law:
+        _render_single_law_tab("조세특례제한법")
+    with t_dec:
+        _render_single_law_tab("조세특례제한법 시행령")
+    with t_rule:
+        _render_single_law_tab("조세특례제한법 시행규칙")
+    with t_rural:
+        _render_single_law_tab("농어촌특별세법")
+    with t_rulings:
+        for r_item in ruling_status.get("all_items") or []:
+            badge_r = "🟢 최근 반영(60일 이내)" if r_item.get("is_recent") else "⚪ 기준 수록"
+            st.markdown(
+                f"**{r_item['title']}** &nbsp;|&nbsp; 기관: `{r_item['agency']}` &nbsp;|&nbsp; "
+                f"해석일자: `{r_item['interp_date']}` &nbsp;|&nbsp; 수록일: `{r_item['surok_date']}` ({badge_r})"
+            )
+            st.text_area(
+                f"{r_item['title']} 원문",
+                value=str(r_item.get("원문") or ""),
+                height=160,
+                label_visibility="collapsed",
+                key=f"ec_ruling_orig_{r_item['key']}",
+            )
+
+    # ③ 하단 메타데이터 요약표
+    st.markdown("##### 📊 법령 개정 및 예규·안내문 기준일자 요약표")
+    summary_rows = R.build_law_summary_table_rows(law_status, R.ADMIN_RULINGS_AND_NOTICES)
+    st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+
+    # ④ 최하단 [🤖 AI 해석 보기] (사용자 클릭 시에만 실행 · 공유 캐시 재사용)
+    st.markdown("##### 🤖 AI 해석 (원문 기반 온디맨드 요약)")
+    st.caption("원문 하단에서 버튼을 클릭할 때만 생성되며, 동일한 법령·공포번호·조문해시에 대해서는 검증된 캐시를 재사용합니다.")
+    ca1, ca2 = st.columns([3.2, 1.8], vertical_alignment="center")
+    with ca1:
+        sel_ai_law = st.selectbox(
+            "AI 해석 대상 법령 선택",
+            options=list(R.BASELINE_LAW_INFO.keys()),
+            label_visibility="collapsed",
+            key="ec_ai_interp_law_select",
+        )
+    with ca2:
+        run_ai_interp = st.button(
+            "🤖 AI 해석 보기",
+            type="primary",
+            use_container_width=True,
+            key="btn_ec_run_law_ai_interp",
+        )
+
+    if run_ai_interp:
+        target_l_info = laws_map.get(sel_ai_law) or {}
+        with st.spinner(f"「{sel_ai_law}」 신·구 조문 및 부칙 원문 기반 AI 해석을 확인하고 있습니다..."):
+            interp_res = P.request_on_demand_law_ai_interpretation(sel_ai_law, target_l_info)
+            st.session_state["ec_last_ai_law_interp"] = interp_res
+
+    saved_interp = st.session_state.get("ec_last_ai_law_interp")
+    if isinstance(saved_interp, dict) and saved_interp.get("formatted_text"):
+        st.info(saved_interp["formatted_text"])
+
+
 def render_credit_sidebar():
     s = _S()
     tax_yr = int(s.get("tax_year") or R.DEFAULT_TAX_YEAR)
     if tax_yr not in R.SUPPORTED_TAX_YEARS:
         tax_yr = R.DEFAULT_TAX_YEAR
         s["tax_year"] = tax_yr
+
+    # [카드 1] 법령·시행령·시행규칙 개정 및 최신 반영 예규·안내문 모니터링 카드 (기존 엔진 출력 모드 위치 대체)
+    law_mon = P.fetch_daily_ec_law_monitoring_status(tax_year=tax_yr, force_refresh=False)
+    rul_mon = R.evaluate_ruling_monitoring_status(R.ADMIN_RULINGS_AND_NOTICES)
+
+    law_led_cls = str(law_mon.get("color") or "green")
+    law_badge_txt = str(law_mon.get("badge_text") or "")
+    law_badge_cls = "ec-law-badge-orange" if law_led_cls == "orange" else "ec-law-badge-green"
+    law_badge_html = f"<span class='{law_badge_cls}'>{law_badge_txt}</span>" if law_badge_txt else ""
+
+    rul_led_cls = str(rul_mon.get("color") or "gray")
+    rul_badge_txt = str(rul_mon.get("badge_text") or "")
+    rul_badge_html = f"<span class='ec-law-badge-green'>{rul_badge_txt}</span>" if rul_badge_txt else ""
+
+    with st.container(border=True):
+        st.markdown(
+            "<div class='sb-card-title'><span>⚖️ 개정사항·신규 세법해석</span></div>"
+            f"<div class='ec-law-status-row'>"
+            f"<span class='ec-law-status-left'><span class='ec-law-led-3d {law_led_cls}'></span>법령·시행령·규칙 개정</span>"
+            f"{law_badge_html}"
+            f"</div>"
+            f"<div class='ec-law-status-row' style='margin-bottom:8px;'>"
+            f"<span class='ec-law-status-left'><span class='ec-law-led-3d {rul_led_cls}'></span>최신 반영 예규·안내문</span>"
+            f"{rul_badge_html}"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+        if st.button(
+            "상세 보기",
+            use_container_width=True,
+            key="btn_ec_law_detail_open",
+            help="조세특례제한법·시행령·시행규칙(별지 서식) 및 국세청 예규·안내문의 원문, 부칙, 기준일자 요약표 및 AI 해석을 확인합니다.",
+        ):
+            _dlg_ec_law_monitoring_detail(tax_yr)
+
 
     # [Feature B] 통합고용세액공제 전용 자료·내용 초기화 카드 (내 작업공간 코드 위치 대체)
     has_any_ec_data = bool(

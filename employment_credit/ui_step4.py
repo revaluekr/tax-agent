@@ -765,9 +765,14 @@ def _build_report_markdown(
         else "미공제 이월액 0원 가정 시 금액 (산출세액 및 [조문:조세특례제한법 제132조] 최저한세[중소 7%] 한도 초과분은 [조문:조세특례제한법 제144조]에 따라 10년 이월공제되며 당기 농특세 비과세)"
     )
 
+    _law_mon_s4 = P.fetch_daily_ec_law_monitoring_status(tax_year=tax_yr) if hasattr(P, "fetch_daily_ec_law_monitoring_status") else None
+    _law_banner_stamp = R.build_report_law_banner_and_stamp(_law_mon_s4, tax_year=tax_yr) if hasattr(R, "build_report_law_banner_and_stamp") else {"top_warning_md": "", "top_warning_html": "", "bottom_stamp_md": ""}
+    _top_law_warn_lines = ([_law_banner_stamp["top_warning_md"], ""] if _law_banner_stamp.get("top_warning_md") else [])
+
     lines = [
         f"# {tax_yr}년 귀속 통합고용세액공제 및 사후관리 검토보고서",
         "",
+        *_top_law_warn_lines,
         "## Ⅰ. 사업자 기본사항 및 최종 세액 요약",
         "### (1) 사업자 기본사항",
         "",
@@ -844,6 +849,7 @@ f"- **[각주 2] [조문:조세특례제한법 시행령 제26조의8 제2항]·
         audit_body,
         "",
         f"<div style='color:#64748b;font-size:0.84rem;margin-top:8px;'>※ 원문 대조 불일치 인용 삭제: {int(s.get('pro_audit_quote_deleted_cnt') or 0)}건</div>",
+        f"<div style='color:#475569;font-size:0.82rem;margin-top:4px;'>{_law_banner_stamp.get('bottom_stamp_md', '')}</div>",
     ]
     full_md = _sanitize_markdown_tilde("\n".join(lines))
     if hasattr(P, "inject_verified_law_links"):
@@ -952,7 +958,7 @@ def _build_report_pdf_bytes(s: dict, log_tokens_fn=None, room_key: str = "", md_
             i += 1
             continue
 
-        if stripped.startswith("<div") and "원문 대조 불일치 인용 삭제:" in stripped:
+        if stripped.startswith("<div") and ("원문 대조 불일치 인용 삭제:" in stripped or "[기준 법령 버전]" in stripped):
             stripped = re.sub(r"<[^>]+>", "", stripped).strip()
         if stripped.startswith(">") or "적용 모델:" in stripped or "적용모델:" in stripped:
             i += 1
@@ -1357,6 +1363,11 @@ def _page_report(room_key: str = "", log_tokens_fn=None):
 
     corp_nm = (s.get("biz", {}).get("상호") or "통합고용세액공제").strip()
     corp_fn = re.sub(r'[\\/:*?"<>|\s]+', "_", corp_nm)[:30]
+
+    _page_law_mon = P.fetch_daily_ec_law_monitoring_status(tax_year=tax_yr) if hasattr(P, "fetch_daily_ec_law_monitoring_status") else None
+    _page_law_bs = R.build_report_law_banner_and_stamp(_page_law_mon, tax_year=tax_yr) if hasattr(R, "build_report_law_banner_and_stamp") else {}
+    if _page_law_bs.get("top_warning_html"):
+        st.markdown(_page_law_bs["top_warning_html"], unsafe_allow_html=True)
 
     last_m_cur = H.detect_last_paid_month(s.get("people") or {}, tax_yr)
     if s.get("assume_year_end", True) and last_m_cur < 12:

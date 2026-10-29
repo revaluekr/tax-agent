@@ -1461,7 +1461,7 @@ def _page_employees(room_key: str, log_tokens_fn=None):
     # ── 상단 타이틀 + 슬림 옵션 바 (첫 번째 사원표가 화면 상단에서 즉시 시작되도록 최적화) ──
     c_ttl, c_opt_pop = st.columns([4.2, 1.8])
     with c_ttl:
-        st.markdown(f"### 👥 2. 사원정보 및 상시근로자 판정 ({tax_yr}년 귀속)")
+        st.markdown(f"### 2. 사원정보 및 상시근로자 판정 ({tax_yr}년 귀속)")
     with c_opt_pop:
         if len(s.get("people") or {}) >= 35 and not s.get("use_year_tabs", False):
             st.caption("💡 인원수가 많을 때는 아래 **『연도별 탭 보기』**를 켜면 브라우저가 훨씬 빠릅니다.")

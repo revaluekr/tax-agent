@@ -470,6 +470,376 @@ def _fetch_live_employment_law_context() -> tuple[str, dict | None]:
     return "\n\n".join(fetched_snippets)[:15000], trace
 
 
+
+
+_DAILY_LAW_CACHE_PATH = os.path.join(".workspace_storage", "ec_law_daily_cache.json")
+_BASELINE_TEXT_CACHE_PATH = os.path.join(".workspace_storage", "ec_law_baseline_cache.json")
+_AI_INTERP_CACHE_PATH = os.path.join(".workspace_storage", "ec_law_ai_cache.json")
+
+def _call_gemini_text_plain(prompt: str, prefer_pro: bool = False, log_tokens_fn=None) -> str:
+    keys = _get_gemini_api_keys()
+    if not keys:
+        return ""
+    try:
+        from google import genai
+        from google.genai import types
+    except Exception:
+        return ""
+    models = _get_gemini_models(prefer_pro=prefer_pro)
+    for api_key in keys:
+        client = genai.Client(api_key=api_key)
+        for model_id in models:
+            try:
+                cfg = types.GenerateContentConfig(temperature=0.0)
+                resp = client.models.generate_content(model=model_id, contents=prompt, config=cfg)
+                um = getattr(resp, "usage_metadata", None)
+                if log_tokens_fn and um:
+                    in_tok = int(getattr(um, "prompt_token_count", 0) or 0)
+                    out_tok = int(getattr(um, "candidates_token_count", 0) or 0)
+                    try:
+                        log_tokens_fn(model_id, in_tok, out_tok, True, "")
+                    except Exception:
+                        pass
+                raw = (resp.text or "").strip()
+                if raw:
+                    return raw
+            except Exception:
+                continue
+    return ""
+
+
+
+def _load_json_safe(path: str) -> dict:
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_json_safe(path: str, data: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(path) or ".workspace_storage", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def _parse_law_header_and_sections(raw_res: str, law_name: str) -> dict[str, Any]:
+    """
+    law_api.py / agent.py가 반환한 법령 원문 텍스트에서
+    공포번호·공포일자·시행일자·조문본문·부칙본문·세부조문(제26조의8, 제11조의2 등)을 분리 추출합니다.
+    """
+    txt = str(raw_res or "").strip()
+    if not txt or txt.startswith("❌") or txt.startswith("[검색 한도") or txt.startswith("[원문 조회 한도"):
+        return {"_fetch_error": True}
+
+    m_no = re.search(r"공포번호\s*:\s*제?\s*(\d+)\s*호?", txt)
+    m_pdt = re.search(r"공포일자\s*:\s*(\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2})", txt)
+    m_edt = re.search(r"시행일자\s*:\s*(\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2})", txt)
+
+    add_split = re.search(r"(?m)^(?:\s*📌\s*\[[^\n]*부칙|\s*\[?부칙\s*<)", txt)
+    if add_split:
+        main_part = txt[:add_split.start()].strip()
+        add_part = txt[add_split.start():].strip()
+    else:
+        main_part = txt
+        add_part = ""
+
+    main_lines = main_part.splitlines()
+    if main_lines and main_lines[0].strip().startswith("📘"):
+        pure_article_body = "\n".join(main_lines[1:]).strip()
+    else:
+        pure_article_body = main_part.strip()
+
+    sub_articles: dict[str, str] = {}
+    starts = list(re.finditer(r"(?m)^\s*제\s*(\d+)\s*조(?:\s*의\s*(\d+))?(?:\s*\(|\s+)", pure_article_body))
+    for idx, am in enumerate(starts):
+        jo_n = int(am.group(1))
+        gaji_n = int(am.group(2) or 0)
+        end_p = starts[idx + 1].start() if idx + 1 < len(starts) else len(pure_article_body)
+        art_key = f"제{jo_n}조" + (f"의{gaji_n}" if gaji_n else "")
+        sub_articles[art_key] = pure_article_body[am.start():end_p].strip()
+
+    return {
+        "_fetch_error": False,
+        "공포번호": m_no.group(1).strip() if m_no else "",
+        "공포일": m_pdt.group(1).strip() if m_pdt else "",
+        "시행일": m_edt.group(1).strip() if m_edt else "",
+        "조문원문": pure_article_body,
+        "부칙원문": add_part,
+        "세부조문원문": sub_articles,
+    }
+
+
+def fetch_daily_ec_law_monitoring_status(
+    tax_year: int = R.DEFAULT_TAX_YEAR,
+    force_refresh: bool = False,
+) -> dict[str, Any]:
+    """
+    [1-3 하루 1회 조회 원칙 & 2-1/6-1/6-5 감시]
+    - 로컬 일별 캐시(.workspace_storage/ec_law_daily_cache.json)에 당일(YYYY-MM-DD) 성공 결과가 있으면
+      외부 API 호출 없이 즉시 평가 결과를 반환합니다.
+    - 당일 최초 조회이거나 force_refresh=True일 때만 법제처 API를 호출합니다.
+    """
+    today_str = date.today().isoformat()
+    daily_cache = _load_json_safe(_DAILY_LAW_CACHE_PATH)
+    last_success = daily_cache.get("last_success") if isinstance(daily_cache.get("last_success"), dict) else None
+
+    if (
+        not force_refresh
+        and daily_cache.get("checked_date") == today_str
+        and isinstance(daily_cache.get("fetched_laws"), dict)
+        and not daily_cache["fetched_laws"].get("_api_failed")
+    ):
+        return R.evaluate_law_monitoring_status(
+            daily_cache["fetched_laws"],
+            today=today_str,
+            tax_year=tax_year,
+            last_success_cache=last_success,
+        )
+
+    try:
+        import agent
+        import law_api
+    except Exception:
+        return R.evaluate_law_monitoring_status(
+            {"_api_failed": True},
+            today=today_str,
+            tax_year=tax_year,
+            last_success_cache=last_success,
+        )
+
+    law_queries = [
+        ("조세특례제한법", "제29조의8, 제132조, 제144조, 부칙 제34조"),
+        ("조세특례제한법 시행령", "제26조의8, 제11조의2, 제23조, 부칙 제2조, 부칙 제11조"),
+        ("조세특례제한법 시행규칙", "제14조, 부칙"),
+        ("농어촌특별세법", "제5조, 부칙"),
+    ]
+
+    def _fetch_one(item: tuple[str, str]) -> tuple[str, str]:
+        lnm, qf = item
+        w_tok = agent._TOOL_TRACE.set(agent._new_trace(unleash=True))
+        try:
+            r = agent.get_law_details_for_gemini(doc_id=lnm, target="law", query_filter=qf)
+            return lnm, str(r or "")
+        except Exception:
+            return lnm, ""
+        finally:
+            agent._TOOL_TRACE.reset(w_tok)
+
+    try:
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            raw_list = list(pool.map(_fetch_one, law_queries))
+    except Exception:
+        raw_list = [_fetch_one(it) for it in law_queries]
+
+    # 6-5: 별지 제10호의9·제10호의10 서식 개정일 조회 (law_api.search_law_data target="licbyl")
+    form_rev_dates: dict[str, str] = {}
+    try:
+        byl_rows = law_api.search_law_data("통합고용세액공제", target="licbyl") or []
+        for r_byl in byl_rows:
+            if not isinstance(r_byl, dict):
+                continue
+            b_title = str(r_byl.get("별표명") or r_byl.get("서식명") or "")
+            b_dt = R._fmt_dot_date(str(r_byl.get("공포일자") or r_byl.get("시행일자") or ""))
+            if "10호의9" in b_title and b_dt and b_dt != "-":
+                form_rev_dates["별지 제10호의9서식"] = b_dt
+            elif "10호의10" in b_title and b_dt and b_dt != "-":
+                form_rev_dates["별지 제10호의10서식"] = b_dt
+    except Exception:
+        pass
+
+    base_snap_store = _load_json_safe(_BASELINE_TEXT_CACHE_PATH)
+    fetched_laws: dict[str, Any] = {"_checked_at": today_str}
+    any_core_failed = False
+
+    for l_nm, raw_txt in raw_list:
+        parsed = _parse_law_header_and_sections(raw_txt, l_nm)
+        if parsed.get("_fetch_error"):
+            if l_nm in ("조세특례제한법", "조세특례제한법 시행령"):
+                any_core_failed = True
+                break
+            b_cfg = R.BASELINE_LAW_INFO.get(l_nm) or {}
+            fetched_laws[l_nm] = {
+                "공포번호": b_cfg.get("공포번호", ""),
+                "공포일": b_cfg.get("공포일", ""),
+                "시행일": b_cfg.get("시행일", ""),
+                "조문해시": b_cfg.get("조문해시", ""),
+                "부칙해시": b_cfg.get("부칙해시", ""),
+                "조문원문": b_cfg.get("기준원문_일부", ""),
+                "부칙원문": b_cfg.get("적용시기_부칙원문", ""),
+                "서식개정일_목록": form_rev_dates or dict(b_cfg.get("서식개정일_목록") or {}),
+            }
+            continue
+
+        b_cfg = R.BASELINE_LAW_INFO.get(l_nm) or {}
+        b_prom = str(b_cfg.get("공포번호") or "")
+        f_prom = str(parsed.get("공포번호") or b_prom)
+        f_pdt = str(parsed.get("공포일") or b_cfg.get("공포일") or "")
+        f_edt = str(parsed.get("시행일") or b_cfg.get("시행일") or "")
+        art_txt = str(parsed.get("조문원문") or "")
+        add_txt = str(parsed.get("부칙원문") or "")
+
+        live_art_hash = R.compute_law_text_hash(art_txt)
+        live_add_hash = R.compute_law_text_hash(add_txt)
+
+        snap_entry = base_snap_store.get(l_nm) if isinstance(base_snap_store.get(l_nm), dict) else {}
+        if f_prom == b_prom and art_txt:
+            snap_entry = {
+                "prom_no": b_prom,
+                "live_art_hash": live_art_hash,
+                "live_add_hash": live_add_hash,
+                "article_text": art_txt,
+                "addenda_text": add_txt,
+            }
+            base_snap_store[l_nm] = snap_entry
+
+        if snap_entry and snap_entry.get("live_art_hash") == live_art_hash:
+            eff_art_hash = str(b_cfg.get("조문해시") or live_art_hash)
+            eff_sub_hashes = dict(b_cfg.get("세부조문해시") or {})
+        elif f_prom == b_prom:
+            eff_art_hash = str(b_cfg.get("조문해시") or live_art_hash)
+            eff_sub_hashes = dict(b_cfg.get("세부조문해시") or {})
+        else:
+            eff_art_hash = live_art_hash
+            eff_sub_hashes = {}
+
+        if snap_entry and snap_entry.get("live_add_hash") == live_add_hash:
+            eff_add_hash = str(b_cfg.get("부칙해시") or live_add_hash)
+        elif f_prom == b_prom:
+            eff_add_hash = str(b_cfg.get("부칙해시") or live_add_hash)
+        else:
+            eff_add_hash = live_add_hash
+
+        old_txt_ref = str(snap_entry.get("article_text") or b_cfg.get("기준원문_일부") or art_txt)
+        fetched_laws[l_nm] = {
+            "공포번호": f_prom,
+            "공포일": f_pdt,
+            "시행일": f_edt,
+            "조문해시": eff_art_hash,
+            "부칙해시": eff_add_hash,
+            "세부조문해시": eff_sub_hashes,
+            "구법원문": old_txt_ref,
+            "조문원문": art_txt or str(b_cfg.get("기준원문_일부") or ""),
+            "부칙원문": add_txt or str(b_cfg.get("적용시기_부칙원문") or ""),
+            "서식개정일_목록": (
+                {**dict(b_cfg.get("서식개정일_목록") or {}), **form_rev_dates}
+                if l_nm == "조세특례제한법 시행규칙"
+                else {}
+            ),
+        }
+
+    if any_core_failed:
+        return R.evaluate_law_monitoring_status(
+            {"_api_failed": True},
+            today=today_str,
+            tax_year=tax_year,
+            last_success_cache=last_success,
+        )
+
+    _save_json_safe(_BASELINE_TEXT_CACHE_PATH, base_snap_store)
+    eval_res = R.evaluate_law_monitoring_status(
+        fetched_laws,
+        today=today_str,
+        tax_year=tax_year,
+        last_success_cache=last_success,
+    )
+    daily_cache["checked_date"] = today_str
+    daily_cache["fetched_laws"] = fetched_laws
+    daily_cache["last_success"] = {
+        "last_checked_at": today_str,
+        "unapplied_count": eval_res.get("unapplied_count", 0),
+        "laws": eval_res.get("laws", {}),
+    }
+    _save_json_safe(_DAILY_LAW_CACHE_PATH, daily_cache)
+    return eval_res
+
+
+def request_on_demand_law_ai_interpretation(
+    law_name: str,
+    law_info: dict[str, Any],
+    log_tokens_fn=None,
+) -> dict[str, Any]:
+    """
+    [3-④ 최하단 AI 해석 보기 — 온디맨드 실행]
+    - 입력 제한: ① 신·구 조문 원문, ② 부칙 원문, ③ 해당 조문이 연결된 앱 계산 항목 목록만 전달합니다.
+    - 출력 형식 고정: ① 무엇이 바뀌었나 / ② 언제부터 적용되나(부칙 원문 직접 인용) / ③ 앱 계산의 어느 부분에 영향이 있나 / ④ 실무 확인 사항
+    - 금지 사항 및 인용문 사후 검증을 통과한 결과만 공유 캐시(.workspace_storage/ec_law_ai_cache.json)에 저장합니다.
+    """
+    law_id = str(law_info.get("law_id") or (R.BASELINE_LAW_INFO.get(law_name) or {}).get("법령ID") or law_name)
+    old_prom = str(law_info.get("base_prom_no") or law_info.get("prom_no") or "")
+    new_prom = str(law_info.get("prom_no") or "")
+    art_hash = str(law_info.get("article_hash") or "")
+
+    old_text = str(law_info.get("old_text") or "").strip()
+    new_text = str(law_info.get("new_text") or "").strip()
+    addenda_text = str(law_info.get("addenda_text") or "").strip()
+    impact_items = list(law_info.get("impact_items") or (R.BASELINE_LAW_INFO.get(law_name) or {}).get("영향항목") or ())
+
+    disk_cache = _load_json_safe(_AI_INTERP_CACHE_PATH)
+    trace = {
+        "detail": [t for t in (old_text, new_text, addenda_text) if t],
+        "article_texts": {},
+        "addenda_texts": {},
+    }
+    models = _get_gemini_models(prefer_pro=False)
+    chosen_model = models[0] if models else "gemini-2.5-flash"
+
+    def _gen_fn() -> str:
+        if not old_text and not new_text and not addenda_text:
+            return (
+                "① 무엇이 바뀌었나\n- 현재 법제처 API 원문이 수신되지 않아 조문 변경 내역을 비교할 수 없습니다.\n\n"
+                "② 언제부터 적용되나(부칙 원문 인용)\n- 원문 조회 후 부칙 시행일 및 적용례를 확인하시기 바랍니다.\n\n"
+                "③ 앱 계산의 어느 부분에 영향이 있나\n- 연결 계산 항목: " + ", ".join(impact_items) + "\n\n"
+                "④ 실무 확인 사항\n- 상단 [지금 다시 조회] 버튼으로 법제처 원문을 수신한 뒤 다시 실행해 주세요."
+            )
+        prompt = (
+            f"당신은 대한민국 세법 조문 비교 분석 보조자입니다. 대상 법령은 「{law_name}」입니다.\n"
+            "아래 제공된 [① 구 조문 원문], [② 신(현행) 조문 원문], [③ 부칙 원문], [④ 앱 계산 연결 항목 목록]만을 사용하여 설명하세요.\n"
+            "[엄격 준수 규칙]\n"
+            "1. 반드시 아래 네 항목 제목을 그대로 사용하여 작성할 것:\n"
+            "   ① 무엇이 바뀌었나\n"
+            "   ② 언제부터 적용되나(부칙 원문 직접 인용)\n"
+            "   ③ 앱 계산의 어느 부분에 영향이 있나\n"
+            "   ④ 실무 확인 사항\n"
+            "2. 금액(원, 만원 등)이나 인원(명, 인 등) 같은 구체적 숫자 예시를 절대 쓰지 말 것.\n"
+            "3. '환급 가능', '추징 대상', '공제 가능' 같은 단정적 결론 어휘를 절대 쓰지 말 것.\n"
+            "4. 법령이나 부칙을 따옴표로 인용할 때는 아래 제공된 원문 글자 그대로만 인용할 것.\n\n"
+            f"[① 구 조문 원문 (제{old_prom}호)]\n{old_text[:5000] or '(현행과 동일)'}\n\n"
+            f"[② 신(현행) 조문 원문 (제{new_prom}호)]\n{new_text[:5000] or '(원문 미수신)'}\n\n"
+            f"[③ 부칙 원문]\n{addenda_text[:4000] or '(부칙 원문 없음)'}\n\n"
+            f"[④ 앱 계산 연결 항목 목록]\n- " + "\n- ".join(impact_items)
+        )
+        raw_ans = _call_gemini_text_plain(prompt, prefer_pro=False, log_tokens_fn=log_tokens_fn)
+        if raw_ans and str(raw_ans).strip():
+            return str(raw_ans).strip()
+        return (
+            f"① 무엇이 바뀌었나\n- 「{law_name}」(제{new_prom}호) 기준 감시 조문 및 부칙 원문이 유지·적용되고 있습니다.\n\n"
+            f"② 언제부터 적용되나(부칙 원문 직접 인용)\n- 부칙 기준: {addenda_text.splitlines()[0] if addenda_text else '시행일 기준 적용'}\n\n"
+            f"③ 앱 계산의 어느 부분에 영향이 있나\n- " + "\n- ".join(impact_items) + "\n\n"
+            "④ 실무 확인 사항\n- 상단 원문 뷰어의 조문 및 부칙 경과조치 원문을 신고서 작성 전 대조하시기 바랍니다."
+        )
+
+    res = R.get_or_create_ai_law_interpretation(
+        law_id=law_id,
+        old_prom_no=old_prom,
+        new_prom_no=new_prom,
+        article_hash=art_hash,
+        generator_fn=_gen_fn,
+        cache_store=disk_cache,
+        trace=trace,
+        model_name=chosen_model,
+    )
+    if not res.get("from_cache"):
+        _save_json_safe(_AI_INTERP_CACHE_PATH, disk_cache)
+    return res
+
+
 def _extract_26_8_mutatis_sentence(raw_text: str, is_already_sliced: bool = False) -> str:
     """
     조회된 법령 텍스트에서 오직 『제26조의8』 조문 본문 구간만 잘라내어,

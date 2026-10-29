@@ -1641,6 +1641,99 @@ div[class*="st-key-ec_step_nav_wait_"] button p {
     background: #22c55e;
     box-shadow: 0 0 6px rgba(34, 197, 94, 0.65);
 }
+/* 🟢🟠🟡⚪ 사이드바 법령·예규 모니터링 3D 입체 원형 표시등 및 상태줄 */
+.ec-law-status-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 8px;
+    margin-bottom: 5px;
+    background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    box-shadow: inset 0 1px 0 #ffffff, 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+.ec-law-status-left {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.84rem;
+    font-weight: 700;
+    color: #0f172a;
+    letter-spacing: -0.2px;
+}
+.ec-law-led-3d {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+.ec-law-led-3d.green {
+    background: radial-gradient(circle at 32% 32%, #86efac 0%, #22c55e 52%, #15803d 100%);
+    border: 1px solid #15803d;
+    box-shadow: inset 0 1px 2px rgba(255,255,255,0.75), 0 0 7px rgba(34, 197, 94, 0.65);
+}
+.ec-law-led-3d.orange {
+    background: radial-gradient(circle at 32% 32%, #fdba74 0%, #f97316 52%, #c2410c 100%);
+    border: 1px solid #c2410c;
+    box-shadow: inset 0 1px 2px rgba(255,255,255,0.75), 0 0 8px rgba(249, 115, 22, 0.72);
+}
+.ec-law-led-3d.yellow {
+    background: radial-gradient(circle at 32% 32%, #fef08a 0%, #facc15 52%, #b45309 100%);
+    border: 1px solid #b45309;
+    box-shadow: inset 0 1px 2px rgba(255,255,255,0.8), 0 0 7px rgba(250, 204, 21, 0.7);
+}
+.ec-law-led-3d.gray {
+    background: radial-gradient(circle at 32% 32%, #f1f5f9 0%, #94a3b8 60%, #475569 100%);
+    border: 1px solid #64748b;
+    box-shadow: inset 0 1px 1px rgba(255,255,255,0.6);
+}
+.ec-law-badge-orange {
+    background: #fff7ed;
+    color: #c2410c;
+    border: 1px solid #fdba74;
+    font-size: 0.73rem;
+    font-weight: 800;
+    padding: 1px 7px;
+    border-radius: 999px;
+}
+.ec-law-badge-green {
+    background: #dcfce7;
+    color: #15803d;
+    border: 1px solid #86efac;
+    font-size: 0.72rem;
+    font-weight: 800;
+    padding: 1px 7px;
+    border-radius: 999px;
+}
+.st-key-btn_ec_sidebar_reset_ask button,
+.st-key-btn_ec_law_detail_open button {
+    background: linear-gradient(180deg, #ffffff 0%, #f1f5f9 100%) !important;
+    border: 1px solid #94a3b8 !important;
+    border-bottom: 3px solid #64748b !important;
+    border-radius: 9px !important;
+    min-height: 2.3rem !important;
+    font-size: 0.86rem !important;
+    font-weight: 800 !important;
+    color: #0f172a !important;
+    box-shadow: 0 2px 5px rgba(15, 23, 42, 0.10) !important;
+    transition: all 0.12s ease !important;
+}
+.st-key-btn_ec_law_detail_open button:hover:not(:disabled) {
+    background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%) !important;
+    border-color: #3b82f6 !important;
+    border-bottom-color: #1d4ed8 !important;
+    color: #1e3a8a !important;
+    transform: translateY(-1px) !important;
+}
+.st-key-btn_ec_sidebar_reset_ask button:hover:not(:disabled) {
+    background: linear-gradient(180deg, #fff1f2 0%, #ffe4e6 100%) !important;
+    border-color: #f43f5e !important;
+    border-bottom-color: #e11d48 !important;
+    color: #be123c !important;
+    transform: translateY(-1px) !important;
+}
 .ec-req-pill {
     display: inline-block;
     background-color: #fee2e2;
