@@ -201,8 +201,392 @@ def _int(v, default: int) -> int:
 
 
 
-@st.dialog("📜 통합고용세액공제 법령·시행령·규칙 및 예규·안내문 상세 보기", width="large")
+_LAW_MODAL_REPORT_CSS = """
+<style>
+div[data-testid="stDialog"] {
+    display: flex !important;
+    align-items: flex-start !important;
+    justify-content: center !important;
+    padding-top: 3vh !important;
+    padding-bottom: 3vh !important;
+    overflow-y: auto !important;
+}
+div[data-testid="stDialog"] > div[role="dialog"],
+div[role="dialog"] {
+    width: min(1100px, 90vw);
+    min-width: 520px !important;
+    max-width: 96vw !important;
+    max-height: 86vh !important;
+    overflow-y: auto !important;
+    resize: both !important;
+    margin: 0 auto !important;
+    border-radius: 14px !important;
+    box-shadow: 0 12px 36px rgba(15, 23, 42, 0.24) !important;
+}
+/* 법령 탭: 하단 회색 줄을 검정색으로 변경 + 각 선택칸은 검정 테두리 네모칸 + 왼쪽 상단만 타원형 + 미선택 흰색 / 선택 시 그린(#16a34a) */
+div[role="dialog"] div[data-baseweb="tab-list"] {
+    border-bottom: 2px solid #000000 !important;
+    gap: 6px !important;
+    padding-bottom: 0px !important;
+    margin-bottom: 16px !important;
+    background: transparent !important;
+}
+div[role="dialog"] div[data-baseweb="tab-highlight"],
+div[role="dialog"] div[data-baseweb="tab-border"] {
+    display: none !important;
+    height: 0px !important;
+    background: transparent !important;
+}
+div[role="dialog"] button[data-baseweb="tab"] {
+    background-color: #ffffff !important;
+    color: #0f172a !important;
+    border: 1.5px solid #000000 !important;
+    border-bottom: none !important;
+    border-radius: 18px 0px 0px 0px !important;
+    padding: 9px 18px !important;
+    margin: 0 !important;
+    min-height: 40px !important;
+    font-family: 'Pretendard', 'Malgun Gothic', sans-serif !important;
+    font-size: 0.96rem !important;
+    font-weight: 700 !important;
+    box-shadow: none !important;
+    transition: all 0.12s ease-in-out !important;
+}
+div[role="dialog"] button[data-baseweb="tab"] p,
+div[role="dialog"] button[data-baseweb="tab"] span,
+div[role="dialog"] button[data-baseweb="tab"] div {
+    color: #0f172a !important;
+    font-weight: 700 !important;
+    font-size: 0.96rem !important;
+    margin: 0 !important;
+}
+div[role="dialog"] button[data-baseweb="tab"]:hover:not([aria-selected="true"]) {
+    background-color: #f0fdf4 !important;
+    color: #15803d !important;
+}
+div[role="dialog"] button[data-baseweb="tab"][aria-selected="true"] {
+    background-color: #16a34a !important;
+    color: #ffffff !important;
+    border: 1.5px solid #000000 !important;
+    border-bottom: none !important;
+    border-radius: 18px 0px 0px 0px !important;
+    font-weight: 800 !important;
+}
+div[role="dialog"] button[data-baseweb="tab"][aria-selected="true"] p,
+div[role="dialog"] button[data-baseweb="tab"][aria-selected="true"] span,
+div[role="dialog"] button[data-baseweb="tab"][aria-selected="true"] div {
+    color: #ffffff !important;
+    font-weight: 800 !important;
+}
+/* 모달 내부 자율 에이전트 AI 보고서 양식·폰트크기(1.12rem)·색상 동기화 */
+div[role="dialog"] .ec-agent-report-wrap {
+    background: #ffffff !important;
+    border: 1.5px solid #cbd5e1 !important;
+    border-top: 5px solid #1e3a8a !important;
+    border-radius: 12px !important;
+    padding: 22px 26px !important;
+    margin: 6px 0 14px 0 !important;
+    box-shadow: 0 3px 12px rgba(15, 23, 42, 0.05) !important;
+    font-family: 'Pretendard', 'Malgun Gothic', sans-serif !important;
+    font-size: 1.12rem !important;
+    line-height: 1.72 !important;
+    color: #1e293b !important;
+}
+div[role="dialog"] .ec-agent-report-wrap h3 {
+    color: #1e3a8a !important;
+    background: linear-gradient(90deg, #f1f5f9 0%, #ffffff 100%) !important;
+    border-left: 5px solid #1e3a8a !important;
+    padding: 8px 14px !important;
+    border-radius: 0 6px 6px 0 !important;
+    margin-top: 18px !important;
+    margin-bottom: 10px !important;
+    font-size: 1.24rem !important;
+    font-weight: 800 !important;
+}
+div[role="dialog"] .ec-agent-report-wrap h3:first-child {
+    margin-top: 2px !important;
+}
+div[role="dialog"] .ec-agent-report-wrap h4 {
+    color: #1e40af !important;
+    margin-top: 14px !important;
+    margin-bottom: 6px !important;
+    font-size: 1.14rem !important;
+    font-weight: 700 !important;
+    background: transparent !important;
+    border-left: none !important;
+    padding: 0 !important;
+}
+div[role="dialog"] .ec-agent-report-wrap p,
+div[role="dialog"] .ec-agent-report-wrap li {
+    font-size: 1.12rem !important;
+    line-height: 1.68 !important;
+    color: #1e293b !important;
+    margin-bottom: 6px !important;
+}
+div[role="dialog"] .ec-agent-report-wrap table {
+    width: 100% !important;
+    border-collapse: collapse !important;
+    margin: 10px 0 14px 0 !important;
+    font-size: 0.98rem !important;
+    border-top: 2px solid #1e293b !important;
+    border-bottom: 2px solid #1e293b !important;
+}
+div[role="dialog"] .ec-agent-report-wrap th {
+    background: #1e293b !important;
+    color: #ffffff !important;
+    font-weight: 800 !important;
+    font-size: 0.98rem !important;
+    padding: 10px 12px !important;
+    border: 1px solid #334155 !important;
+    text-align: center !important;
+}
+div[role="dialog"] .ec-agent-report-wrap td {
+    padding: 9px 12px !important;
+    border: 1px solid #cbd5e1 !important;
+    font-size: 0.98rem !important;
+    color: #1e293b !important;
+    font-weight: 500 !important;
+    vertical-align: middle !important;
+}
+div[role="dialog"] .ec-agent-report-wrap tr:nth-child(even) td {
+    background: #f8fafc !important;
+}
+/* 법령별 하단 왼쪽 [PDF 출력] 버튼 스타일 */
+div[class*="st-key-ec_law_pdf_wrap_"] [data-testid="stDownloadButton"] button {
+    background: linear-gradient(180deg, #dc2626 0%, #b91c1c 100%) !important;
+    border: 1.5px solid #991b1b !important;
+    border-bottom: 3px solid #7f1d1d !important;
+    color: #ffffff !important;
+    font-weight: 800 !important;
+    font-size: 0.92rem !important;
+    border-radius: 8px !important;
+    min-height: 38px !important;
+    box-shadow: 0 2px 5px rgba(185, 28, 28, 0.22) !important;
+}
+div[class*="st-key-ec_law_pdf_wrap_"] [data-testid="stDownloadButton"] button p,
+div[class*="st-key-ec_law_pdf_wrap_"] [data-testid="stDownloadButton"] button span {
+    color: #ffffff !important;
+    font-weight: 800 !important;
+}
+div[class*="st-key-ec_law_pdf_wrap_"] [data-testid="stDownloadButton"] button:hover {
+    background: linear-gradient(180deg, #b91c1c 0%, #991b1b 100%) !important;
+    transform: translateY(-1px) !important;
+}
+</style>
+"""
+
+
+def _clean_and_format_law_text_for_report(raw_text: str) -> str:
+    """
+    법제처 원문에서 불필요한 <img> 태그나 아이콘(📌, 📘 등)을 제거하고,
+    조문 제목(제29조의8 등)·항(①~⑳)·호(1.~20.)·목(가.~하.)이 자율 에이전트 AI 보고서 양식(1.12rem)으로
+    읽기 쉽게 줄바꿈·강조되도록 마크다운 문단으로 변환합니다. (원문 글자는 그대로 보존)
+    """
+    if not raw_text:
+        return ""
+    s = str(raw_text)
+    s = re.sub(r"<img\b[^>]*>", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"[📌📘📗📙🌾🏛️📜📊⚖️]", "", s)
+    out_lines: list[str] = []
+    for raw_ln in s.splitlines():
+        ln = raw_ln.strip()
+        if not ln:
+            continue
+        if re.match(r"^제\s*\d+\s*조(?:\s*의\s*\d+)?\s*\(", ln):
+            out_lines.append(f"#### {ln}")
+        elif re.match(r"^\[?부칙\s*<", ln):
+            out_lines.append(f"#### {ln}")
+        elif re.match(r"^[①-⑳]", ln):
+            out_lines.append(f"- **{ln[0]}** {ln[1:].strip()}")
+        elif re.match(r"^\d+\.\s+", ln):
+            m_num = re.match(r"^(\d+\.)\s+(.*)$", ln)
+            if m_num:
+                out_lines.append(f"  - **{m_num.group(1)}** {m_num.group(2)}")
+            else:
+                out_lines.append(f"  - {ln}")
+        elif re.match(r"^[가-하]\.\s+", ln):
+            m_mok = re.match(r"^([가-하]\.)\s+(.*)$", ln)
+            if m_mok:
+                out_lines.append(f"    - **{m_mok.group(1)}** {m_mok.group(2)}")
+            else:
+                out_lines.append(f"    - {ln}")
+        else:
+            out_lines.append(ln)
+    return "\n\n".join(out_lines)
+
+
+def _build_law_tab_pdf_bytes(title: str, md_content: str) -> bytes:
+    """
+    [요구사항 5] 각 법령·예규 탭의 내용을 자율 에이전트 AI 보고서와 동일한 A4 PDF 양식으로 생성합니다.
+    """
+    from reportlab.platypus import HRFlowable
+    from .ui_common import _ensure_korean_pdf_font, _pdf_text
+
+    reg_font, bold_font = _ensure_korean_pdf_font()
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=A4,
+        leftMargin=40,
+        rightMargin=40,
+        topMargin=42,
+        bottomMargin=48,
+    )
+    usable_width = A4[0] - 80
+    styles = getSampleStyleSheet()
+    style_title = ParagraphStyle(
+        "LawPDFTitle",
+        parent=styles["Normal"],
+        fontName=bold_font,
+        fontSize=15,
+        leading=22,
+        textColor=colors.HexColor("#0f172a"),
+        spaceAfter=10,
+    )
+    style_h3 = ParagraphStyle(
+        "LawPDFH3",
+        parent=styles["Normal"],
+        fontName=bold_font,
+        fontSize=12,
+        leading=18,
+        textColor=colors.HexColor("#1e3a8a"),
+        spaceBefore=12,
+        spaceAfter=6,
+        keepWithNext=True,
+    )
+    style_h4 = ParagraphStyle(
+        "LawPDFH4",
+        parent=styles["Normal"],
+        fontName=bold_font,
+        fontSize=10.5,
+        leading=15.5,
+        textColor=colors.HexColor("#1e40af"),
+        spaceBefore=8,
+        spaceAfter=4,
+        keepWithNext=True,
+    )
+    style_body = ParagraphStyle(
+        "LawPDFBody",
+        parent=styles["Normal"],
+        fontName=reg_font,
+        fontSize=9.6,
+        leading=15.2,
+        textColor=colors.HexColor("#1e293b"),
+        spaceAfter=4,
+        wordWrap="CJK",
+    )
+    style_bullet = ParagraphStyle(
+        "LawPDFBullet",
+        parent=style_body,
+        leftIndent=12,
+        firstLineIndent=-8,
+        spaceAfter=3.5,
+    )
+    style_th = ParagraphStyle(
+        "LawPDFTH",
+        parent=style_body,
+        fontName=bold_font,
+        fontSize=8.8,
+        leading=13,
+        textColor=colors.HexColor("#ffffff"),
+        alignment=1,
+    )
+    style_td = ParagraphStyle(
+        "LawPDFTD",
+        parent=style_body,
+        fontName=reg_font,
+        fontSize=8.6,
+        leading=13,
+        textColor=colors.HexColor("#1e293b"),
+        alignment=0,
+    )
+
+    story = [
+        Paragraph(_pdf_text(title), style_title),
+        HRFlowable(width="100%", thickness=1.2, color=colors.HexColor("#1e3a8a")),
+        Spacer(1, 8),
+    ]
+
+    raw_lines = (md_content or "").splitlines()
+    i = 0
+    while i < len(raw_lines):
+        line = raw_lines[i]
+        stripped = line.strip()
+        if not stripped:
+            story.append(Spacer(1, 3))
+            i += 1
+            continue
+
+        if stripped.startswith("|") and stripped.endswith("|"):
+            tbl_lines = []
+            while i < len(raw_lines):
+                r_s = raw_lines[i].strip()
+                if not (r_s.startswith("|") and r_s.endswith("|")):
+                    break
+                tbl_lines.append(r_s)
+                i += 1
+            rows_data = []
+            for r_s in tbl_lines:
+                if re.match(r"^\|[\s\-:|]+\|$", r_s):
+                    continue
+                rows_data.append([c.strip() for c in r_s.strip("|").split("|")])
+            if rows_data:
+                max_c = max(len(r) for r in rows_data)
+                padded = [r + [""] * (max_c - len(r)) for r in rows_data]
+                col_w = [usable_width / max_c] * max_c
+                if max_c == 4:
+                    col_w = [usable_width * 0.22, usable_width * 0.20, usable_width * 0.36, usable_width * 0.22]
+                elif max_c == 5:
+                    col_w = [usable_width * 0.20, usable_width * 0.16, usable_width * 0.16, usable_width * 0.16, usable_width * 0.32]
+                pdf_rows = []
+                for r_idx, pr in enumerate(padded):
+                    pdf_rows.append([
+                        Paragraph(_pdf_text(cell), style_th if r_idx == 0 else style_td)
+                        for cell in pr
+                    ])
+                t_obj = Table(pdf_rows, colWidths=col_w, repeatRows=1)
+                t_style = [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1e293b")),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("TOPPADDING", (0, 0), (-1, -1), 5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ]
+                for r_idx in range(1, len(pdf_rows)):
+                    if r_idx % 2 == 0:
+                        t_style.append(("BACKGROUND", (0, r_idx), (-1, r_idx), colors.HexColor("#f8fafc")))
+                t_obj.setStyle(TableStyle(t_style))
+                story.append(Spacer(1, 4))
+                story.append(t_obj)
+                story.append(Spacer(1, 8))
+            continue
+
+        if stripped.startswith("### "):
+            story.append(Paragraph(_pdf_text(stripped[4:]), style_h3))
+        elif stripped.startswith("#### "):
+            story.append(Paragraph(_pdf_text(stripped[5:]), style_h4))
+        elif stripped.startswith(("- ", "* ")):
+            indent_lv = (len(line) - len(line.lstrip(" "))) // 2
+            b_st = ParagraphStyle(
+                f"LawBul_{indent_lv}",
+                parent=style_bullet,
+                leftIndent=12 + indent_lv * 10,
+            )
+            story.append(Paragraph("• " + _pdf_text(stripped[2:]), b_st))
+        else:
+            story.append(Paragraph(_pdf_text(stripped), style_body))
+        i += 1
+
+    doc.build(story)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+@st.dialog("통합고용세액공제 법령·시행령·규칙 및 예규·안내문 상세 보기", width="large")
 def _dlg_ec_law_monitoring_detail(tax_yr: int):
+    st.markdown(_LAW_MODAL_REPORT_CSS, unsafe_allow_html=True)
     force_now = bool(st.session_state.pop("ec_force_law_refresh", False))
     law_status = P.fetch_daily_ec_law_monitoring_status(tax_year=tax_yr, force_refresh=force_now)
     ruling_status = R.evaluate_ruling_monitoring_status(R.ADMIN_RULINGS_AND_NOTICES)
@@ -217,50 +601,61 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
                 app_notes.append(f"• **{l_nm}** (현행 제{l_info.get('prom_no', '')}호, 시행 {l_info.get('enf_date', '')}): {app_d}")
         notes_md = "\n".join(app_notes)
         st.warning(
-            f"**[⚠️ 프로그램 반영 필요]** 기준 법령 이후 개정 **{un_cnt}건**이 감지되었습니다.\n\n{notes_md}"
+            f"**[프로그램 반영 필요]** 기준 법령 이후 개정 **{un_cnt}건**이 감지되었습니다.\n\n{notes_md}"
         )
     elif law_status.get("api_failed"):
         c_warn, c_btn = st.columns([4.2, 1.3], vertical_alignment="center")
         with c_warn:
             st.warning(
-                f"**[⚠️ 당일 법령 API 연결 또는 원문 수신 실패 — 마지막 성공 결과 기준 표시 중]** "
+                f"**[당일 법령 API 연결 또는 원문 수신 실패 — 마지막 성공 결과 기준 표시 중]** "
                 f"(마지막 확인: `{law_status.get('last_checked_at', '확인 이력 없음')}`)"
             )
         with c_btn:
-            if st.button("🔄 지금 다시 조회", type="primary", use_container_width=True, key="btn_ec_law_retry_top"):
+            if st.button("지금 다시 조회", type="primary", use_container_width=True, key="btn_ec_law_retry_top"):
                 st.session_state["ec_force_law_refresh"] = True
                 st.rerun()
     elif law_status.get("has_name_mismatch") or law_status.get("has_unset_baseline"):
         c_warn, c_btn = st.columns([4.2, 1.3], vertical_alignment="center")
         with c_warn:
             st.warning(
-                "**[⚠️ 기준 버전 미설정 · 확인 필요]** 일부 법령의 기준 해시가 설정되지 않았거나 법령명 확인이 필요합니다. "
-                "(하단 접힌 '개발자 도구' 또는 `capture_baseline_laws.py`로 기준 해시를 캡처해 `rules.py`에 반영하세요.)"
+                "**[기준 버전 미설정 · 확인 필요]** 법제처 원문은 정상 수신되었으나 일부 법령의 기준 해시가 아직 `rules.py`에 설정되지 않았습니다. "
+                "(하단 접힌 '개발자 도구'의 캡처 코드를 `rules.py`에 반영하면 초록불로 전환됩니다.)"
             )
         with c_btn:
-            if st.button("🔄 지금 다시 조회", use_container_width=True, key="btn_ec_law_refresh_unset"):
+            if st.button("지금 다시 조회", use_container_width=True, key="btn_ec_law_refresh_unset"):
                 st.session_state["ec_force_law_refresh"] = True
                 st.rerun()
     else:
         c_ok, c_btn = st.columns([4.4, 1.2], vertical_alignment="center")
         with c_ok:
             st.success(
-                f"✅ 감시 대상 법령·시행령·시행규칙 조문 및 특정 부칙이 프로그램 기준 버전과 일치합니다 "
+                f"감시 대상 법령·시행령·시행규칙 조문 및 특정 부칙이 프로그램 기준 버전과 일치합니다 "
                 f"(기준일: `{law_status.get('last_checked_at', '-')}`)"
             )
         with c_btn:
-            if st.button("🔄 지금 다시 조회", use_container_width=True, key="btn_ec_law_refresh_ok"):
+            if st.button("지금 다시 조회", use_container_width=True, key="btn_ec_law_refresh_ok"):
                 st.session_state["ec_force_law_refresh"] = True
                 st.rerun()
 
-    # ② 원문 뷰어 ("현행 법령(법제처 조회)"과 "계산 기준 법령(BASELINE_LAW_INFO)" 나란히 표시)
+    # ② 원문 뷰어 (탭 옆 네모 그림/이모지 모두 제거 + 자율 에이전트 AI 보고서 양식·폰트·색상 적용 + 하단 왼쪽 [PDF 출력] 버튼)
     laws_map = law_status.get("laws") or {}
+    summary_rows = R.build_law_summary_table_rows(law_status, R.ADMIN_RULINGS_AND_NOTICES)
+    summary_md_lines = [
+        "| 구분 | 항목 | 내용 | 데이터 출처 |",
+        "| :--- | :--- | :--- | :--- |",
+    ]
+    for sr in summary_rows:
+        summary_md_lines.append(
+            f"| **{sr['구분']}** | {sr['항목']} | {sr['내용']} | {sr['데이터 출처']} |"
+        )
+    summary_table_md = "\n".join(summary_md_lines)
+
     tab_names = [
-        "📘 조세특례제한법",
-        "📗 조세특례제한법 시행령",
-        "📙 시행규칙·서식",
-        "🌾 농어촌특별세법",
-        "🏛️ 예규·안내문 원문",
+        "조세특례제한법",
+        "조세특례제한법 시행령",
+        "시행규칙·서식",
+        "농어촌특별세법",
+        "예규·안내문 원문",
     ]
     t_law, t_dec, t_rule, t_rural, t_rulings = st.tabs(tab_names)
 
@@ -276,7 +671,7 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
         live_no = str(l_info.get("prom_no") or "").strip()
         live_pdt = str(l_info.get("prom_date") or "").strip() or "-"
         live_edt = str(l_info.get("enf_date") or "").strip() or "-"
-        live_ver_str = f"제{live_no}호 (공포 {live_pdt} · 시행 {live_edt} · ID {live_id})" if live_no else "법제처 원문 미조회"
+        live_no_disp = f"제{live_no}호 (ID: {live_id})" if live_no else "미조회"
 
         base_id = str(b_info.get("법령ID") or "").strip() or "미설정"
         base_no = str(b_info.get("공포번호") or "").strip()
@@ -287,52 +682,76 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
             or any(str(v or "").strip() for v in (b_info.get("세부조문해시") or {}).values())
         )
         if base_no and base_has_h:
-            base_ver_str = f"제{base_no}호 (공포 {base_pdt} · 시행 {base_edt} · ID {base_id})"
+            base_no_disp = f"제{base_no}호 (ID: {base_id})"
+            base_status_disp = f"반영 완료 (반영일: {b_info.get('반영일', '-')})"
         elif base_no:
-            base_ver_str = f"제{base_no}호 (공포 {base_pdt} · 시행 {base_edt} · 기준 버전 미설정 · 확인 필요)"
+            base_no_disp = f"제{base_no}호 (해시 미설정)"
+            base_status_disp = "기준 버전 미설정 · 확인 필요"
         else:
-            base_ver_str = "기준 버전 미설정 · 확인 필요"
+            base_no_disp = "미설정"
+            base_status_disp = "기준 버전 미설정 · 확인 필요"
 
-        st.markdown(
-            f"**감시 대상 조문:** `{watched_str}` &nbsp;|&nbsp; **상태:** `{st_lbl}` &nbsp;|&nbsp; **{tax_yr}년 귀속 판정:** `{app_lbl}`\n\n"
-            f"• **현행 법령(법제처 조회):** `{live_ver_str}`\n\n"
-            f"• **계산 기준 법령(프로그램 반영):** `{base_ver_str}`"
+        old_txt = _clean_and_format_law_text_for_report(
+            str(l_info.get("old_text") or b_info.get("기준원문_일부") or "")
         )
-        old_txt = str(l_info.get("old_text") or b_info.get("기준원문_일부") or "").strip()
-        new_txt = str(l_info.get("new_text") or old_txt).strip()
-        add_txt = str(l_info.get("addenda_text") or b_info.get("적용시기_부칙원문") or "").strip()
+        new_txt = _clean_and_format_law_text_for_report(
+            str(l_info.get("new_text") or l_info.get("old_text") or b_info.get("기준원문_일부") or "")
+        )
+        add_txt = _clean_and_format_law_text_for_report(
+            str(l_info.get("addenda_text") or b_info.get("적용시기_부칙원문") or "")
+        )
+
+        md_parts = [
+            f"### 1. {law_key} 기본정보 및 판정 현황",
+            f"- **감시 대상 조문**: {watched_str}",
+            f"- **현재 판정 상태**: **{st_lbl}** ({app_lbl})",
+            "",
+            "| 구분 | 공포번호 (법령ID) | 공포일자 | 시행일자 | 비고 |",
+            "| :--- | :--- | :---: | :---: | :--- |",
+            f"| **현행 법령 (법제처 조회)** | **{live_no_disp}** | {live_pdt} | {live_edt} | 조회 기준일: {law_status.get('last_checked_at', '-')} |",
+            f"| **계산 기준 법령 (프로그램 반영)** | **{base_no_disp}** | {base_pdt} | {base_edt} | {base_status_disp} |",
+            "",
+        ]
 
         if l_info.get("is_unapplied"):
-            st.markdown("##### ⚖️ 구법(계산 기준 원문) vs 신법(현행 법제처 원문) 대비")
-            c_old, c_new = st.columns(2)
-            with c_old:
-                st.text_area(
-                    f"계산 기준 원문 (제{base_no or '-'}호)",
-                    value=old_txt or "기준 원문 없음",
-                    height=220,
-                    key=f"ec_law_old_{law_key}",
-                )
-            with c_new:
-                st.text_area(
-                    f"현행 법제처 원문 (제{live_no or '-'}호)",
-                    value=new_txt or "법제처 원문 미수신",
-                    height=220,
-                    key=f"ec_law_new_{law_key}",
-                )
+            md_parts.extend([
+                f"### 2. 구법(계산 기준 원문) vs 신법(현행 법제처 원문) 대비",
+                f"#### (1) 계산 기준 원문 (제{base_no or '-'}호)",
+                old_txt or "기준 원문 없음",
+                "",
+                f"#### (2) 현행 법제처 원문 (제{live_no or '-'}호)",
+                new_txt or "법제처 원문 미수신",
+                "",
+            ])
         else:
-            st.text_area(
-                f"📜 {law_key} 감시 대상 조문 원문",
-                value=new_txt or old_txt or "법제처 API 연결 후 조문 원문이 표시됩니다.",
-                height=210,
-                key=f"ec_law_cur_{law_key}",
-            )
+            md_parts.extend([
+                f"### 2. {law_key} 감시 대상 조문 원문",
+                new_txt or old_txt or "법제처 API 연결 후 조문 원문이 표시됩니다.",
+                "",
+            ])
 
-        st.text_area(
-            f"📌 {law_key} 관련 부칙(시행일·적용례·경과조치) 원문",
-            value=add_txt or "관련 부칙 원문 없음",
-            height=130,
-            key=f"ec_law_add_{law_key}",
-        )
+        md_parts.extend([
+            f"### 3. {law_key} 관련 부칙(시행일·적용례·경과조치) 원문",
+            add_txt or "관련 부칙 원문 없음",
+            "",
+            "### 4. 법령 개정 및 예규·안내문 기준일자 요약표",
+            summary_table_md,
+        ])
+
+        full_tab_md = "\n".join(md_parts)
+        st.markdown(f"<div class='ec-agent-report-wrap'>\n\n{full_tab_md}\n\n</div>", unsafe_allow_html=True)
+
+        c_pdf_left, _ = st.columns([1.8, 5.2])
+        with c_pdf_left:
+            with st.container(key=f"ec_law_pdf_wrap_{law_key}"):
+                st.download_button(
+                    "PDF 출력",
+                    data=_build_law_tab_pdf_bytes(f"{law_key} 원문 및 기준일자 검토보고서", full_tab_md),
+                    file_name=f"통합고용세액공제_{law_key.replace(' ', '_')}_원문보고서.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key=f"btn_dl_law_pdf_{law_key}",
+                )
 
     with t_law:
         _render_single_law_tab("조세특례제한법")
@@ -343,27 +762,43 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
     with t_rural:
         _render_single_law_tab("농어촌특별세법")
     with t_rulings:
+        r_md_parts = [
+            "### 1. 국세청 예규·법령해석·신고안내문 수록 현황",
+            "",
+            "| 문서명 | 발행기관 | 해석일자 | 수록일(반영일) | 상태 |",
+            "| :--- | :--- | :---: | :---: | :---: |",
+        ]
         for r_item in ruling_status.get("all_items") or []:
-            badge_r = "🟢 최근 반영(60일 이내)" if r_item.get("is_recent") else "⚪ 기준 수록"
-            st.markdown(
-                f"**{r_item['title']}** &nbsp;|&nbsp; 기관: `{r_item['agency']}` &nbsp;|&nbsp; "
-                f"해석일자: `{r_item['interp_date']}` &nbsp;|&nbsp; 수록일: `{r_item['surok_date']}` ({badge_r})"
+            st_r = "최근 반영 (60일 이내)" if r_item.get("is_recent") else "기준 수록"
+            r_md_parts.append(
+                f"| **{r_item['title']}** | {r_item['agency']} | {r_item['interp_date']} | {r_item['surok_date']} | {st_r} |"
             )
-            st.text_area(
-                f"{r_item['title']} 원문",
-                value=str(r_item.get("원문") or ""),
-                height=160,
-                label_visibility="collapsed",
-                key=f"ec_ruling_orig_{r_item['key']}",
-            )
+        r_md_parts.append("")
+        r_md_parts.append("### 2. 수록 예규·안내문 및 서식 원문")
+        for idx_r, r_item in enumerate(ruling_status.get("all_items") or [], start=1):
+            r_md_parts.append(f"#### ({idx_r}) {r_item['title']} ({r_item['agency']}, {r_item['interp_date']})")
+            r_md_parts.append(_clean_and_format_law_text_for_report(str(r_item.get("원문") or "")))
+            r_md_parts.append("")
+        r_md_parts.append("### 3. 법령 개정 및 예규·안내문 기준일자 요약표")
+        r_md_parts.append(summary_table_md)
 
-    # ③ 하단 메타데이터 요약표
-    st.markdown("##### 📊 법령 개정 및 예규·안내문 기준일자 요약표")
-    summary_rows = R.build_law_summary_table_rows(law_status, R.ADMIN_RULINGS_AND_NOTICES)
-    st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+        full_ruling_md = "\n".join(r_md_parts)
+        st.markdown(f"<div class='ec-agent-report-wrap'>\n\n{full_ruling_md}\n\n</div>", unsafe_allow_html=True)
 
-    # ④ 최하단 [🤖 AI 해석 보기] (사용자 클릭 시에만 실행 · 공유 캐시 재사용)
-    st.markdown("##### 🤖 AI 해석 (원문 기반 온디맨드 요약)")
+        c_pdf_left_r, _ = st.columns([1.8, 5.2])
+        with c_pdf_left_r:
+            with st.container(key="ec_law_pdf_wrap_rulings"):
+                st.download_button(
+                    "PDF 출력",
+                    data=_build_law_tab_pdf_bytes("국세청 예규·안내문 및 별지서식 원문 보고서", full_ruling_md),
+                    file_name="통합고용세액공제_예규_안내문_원문보고서.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key="btn_dl_law_pdf_rulings",
+                )
+
+    # ④ 최하단 [AI 해석 보기] (사용자 클릭 시에만 실행 · 공유 캐시 재사용)
+    st.markdown("##### AI 해석 (원문 기반 온디맨드 요약)")
     st.caption("원문 하단에서 버튼을 클릭할 때만 생성되며, 동일한 법령·공포번호·조문해시에 대해서는 검증된 캐시를 재사용합니다.")
     ca1, ca2 = st.columns([3.2, 1.8], vertical_alignment="center")
     with ca1:
@@ -375,7 +810,7 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
         )
     with ca2:
         run_ai_interp = st.button(
-            "🤖 AI 해석 보기",
+            "AI 해석 보기",
             type="primary",
             use_container_width=True,
             key="btn_ec_run_law_ai_interp",
@@ -389,10 +824,13 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
 
     saved_interp = st.session_state.get("ec_last_ai_law_interp")
     if isinstance(saved_interp, dict) and saved_interp.get("formatted_text"):
-        st.info(saved_interp["formatted_text"])
+        st.markdown(
+            f"<div class='ec-agent-report-wrap'>\n\n{saved_interp['formatted_text']}\n\n</div>",
+            unsafe_allow_html=True,
+        )
 
     # ⑤ 접힌 개발자 도구 영역 ([기준 해시 코드 복사] — 읽기 전용, 런타임·디스크·세션 기준값 불변)
-    with st.expander("🛠️ 개발자 도구 (현재 법제처 응답 기준 해시 코드 복사 · 읽기 전용)", expanded=False):
+    with st.expander("개발자 도구 (현재 법제처 응답 기준 해시 코드 복사 · 읽기 전용)", expanded=False):
         st.caption(
             "이 영역은 현재 수신된 법제처 원문에서 계산한 법령ID·공포번호·조문별 해시·특정 부칙 해시를 화면에 표시만 합니다. "
             "앱의 기준값(rules.py·디스크·세션)을 자동으로 변경하지 않으므로, 내용을 검토한 뒤 `employment_credit/rules.py`에 직접 붙여넣으세요."

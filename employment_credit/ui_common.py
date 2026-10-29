@@ -1140,26 +1140,89 @@ CSS = """
 <style>
 @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
 
-/* 🪟 모달(Dialog) 창 정중앙 배치 및 시인성 강화 */
+/* 🪟 모달(Dialog) 창 상·하단 잘림 방지, 내부 스크롤바 및 우측 하단 드래그 크기 조절(resize: both) */
 div[data-testid="stDialog"] {
     display: flex !important;
-    align-items: center !important;
+    align-items: flex-start !important;
     justify-content: center !important;
+    padding-top: 3vh !important;
+    padding-bottom: 3vh !important;
+    overflow-y: auto !important;
 }
 div[data-testid="stDialog"] > div[role="dialog"],
 div[role="dialog"] {
-    width: min(1160px, 92vw) !important;
-    max-width: 92vw !important;
-    margin: auto !important;
+    width: min(1100px, 90vw);
+    min-width: 520px !important;
+    max-width: 96vw !important;
+    max-height: 86vh !important;
+    overflow-y: auto !important;
+    resize: both !important;
+    margin: 0 auto !important;
     border-radius: 14px !important;
+    box-shadow: 0 12px 36px rgba(15, 23, 42, 0.24) !important;
 }
 div[role="dialog"] li,
 div[role="dialog"] p {
     font-family: 'Pretendard', 'Malgun Gothic', sans-serif !important;
-    font-size: 0.98rem !important;
-    line-height: 1.62 !important;
+    font-size: 1.12rem !important;
+    line-height: 1.68 !important;
     color: #1e293b !important;
     word-break: keep-all !important;
+}
+/* 모달 내 법령 선택 탭: 하단 검정색 줄 + 검정 테두리 네모칸 + 좌측 상단만 타원형 + 선택 시 그린(#16a34a) */
+div[role="dialog"] div[data-baseweb="tab-list"] {
+    border-bottom: 2px solid #000000 !important;
+    gap: 6px !important;
+    padding-bottom: 0px !important;
+    margin-bottom: 14px !important;
+    background: transparent !important;
+}
+div[role="dialog"] div[data-baseweb="tab-highlight"],
+div[role="dialog"] div[data-baseweb="tab-border"] {
+    display: none !important;
+    height: 0px !important;
+    background: transparent !important;
+}
+div[role="dialog"] button[data-baseweb="tab"] {
+    background-color: #ffffff !important;
+    color: #0f172a !important;
+    border: 1.5px solid #000000 !important;
+    border-bottom: none !important;
+    border-radius: 18px 0px 0px 0px !important;
+    padding: 9px 18px !important;
+    margin: 0 !important;
+    min-height: 40px !important;
+    font-family: 'Pretendard', 'Malgun Gothic', sans-serif !important;
+    font-size: 0.96rem !important;
+    font-weight: 700 !important;
+    box-shadow: none !important;
+    transition: all 0.12s ease-in-out !important;
+}
+div[role="dialog"] button[data-baseweb="tab"] p,
+div[role="dialog"] button[data-baseweb="tab"] span,
+div[role="dialog"] button[data-baseweb="tab"] div {
+    color: #0f172a !important;
+    font-weight: 700 !important;
+    font-size: 0.96rem !important;
+    margin: 0 !important;
+}
+div[role="dialog"] button[data-baseweb="tab"]:hover:not([aria-selected="true"]) {
+    background-color: #f0fdf4 !important;
+    color: #15803d !important;
+}
+div[role="dialog"] button[data-baseweb="tab"][aria-selected="true"] {
+    background-color: #16a34a !important;
+    color: #ffffff !important;
+    border: 1.5px solid #000000 !important;
+    border-bottom: none !important;
+    border-radius: 18px 0px 0px 0px !important;
+    font-weight: 800 !important;
+}
+div[role="dialog"] button[data-baseweb="tab"][aria-selected="true"] p,
+div[role="dialog"] button[data-baseweb="tab"][aria-selected="true"] span,
+div[role="dialog"] button[data-baseweb="tab"][aria-selected="true"] div {
+    color: #ffffff !important;
+    font-weight: 800 !important;
 }
 .ec-rev-scroll-wrap {
     max-height: 62vh;
