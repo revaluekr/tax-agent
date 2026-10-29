@@ -438,7 +438,13 @@ def _fetch_live_employment_law_context() -> tuple[str, dict | None]:
                 # 메인 스레드의 trace에 원문 및 조문(본칙/부칙 분리) 기록 보장 (캐시에서 꺼낸 조문도 100% 기록됨)
                 agent._record("detail", res_s)
                 agent._record_law_articles(res_s)
-                fetched_snippets.append(res_s[:4800])
+                if "📌" in res_s and len(res_s) > 9000:
+                    pin_idx = res_s.index("📌")
+                    head_part = res_s[:min(pin_idx, 6500)].rstrip()
+                    add_part_snip = res_s[pin_idx:pin_idx + 2500]
+                    fetched_snippets.append(head_part + "\n\n" + add_part_snip)
+                else:
+                    fetched_snippets.append(res_s[:9000])
                 clean_lnm = law_nm.replace(" ", "")
                 ok_laws.add(clean_lnm)
 
@@ -468,7 +474,7 @@ def _fetch_live_employment_law_context() -> tuple[str, dict | None]:
     finally:
         agent._TOOL_TRACE.reset(tok)
 
-    return "\n\n".join(fetched_snippets)[:15000], trace
+    return "\n\n".join(fetched_snippets)[:22000], trace
 
 
 
@@ -1526,7 +1532,7 @@ def call_pro_argon_audit_commentary(
         "#### (2) 1·2차 사후관리(추징) 리스크 방어 및 최저한세·이월공제 검토\n"
         "#### (3) 세무신고 전 최종 구비서류 및 소명 체크포인트\n\n"
         f"{admin_ruling_text}\n\n"
-        f"[법제처 Open API 실시간 조회 법령 원문 발췌]\n{live_law_text[:10000]}\n\n"
+        f"[법제처 Open API 실시간 조회 법령 원문 발췌]\n{live_law_text[:18000]}\n\n"
         f"[사업장 및 사원 판정·차이원인 정밀 분석 데이터]\n{summary_context_str[:25000]}"
     )
 
