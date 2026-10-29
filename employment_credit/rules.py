@@ -687,10 +687,10 @@ ADMIN_RULINGS_AND_NOTICES = {
             "발행기관": "국세청 법인세과",
             "발행연월": "2026-03",
             "해석일자": "'26.3월",
-            "수록일": "2026-03-25",
+            "수록일": "2026-10-29",
         },
         "해석일자": "'26.3월",
-        "수록일": "2026-03-25",
+        "수록일": "2026-10-29",
         "원문": (
             "'26년 3월 법인세 통합고용세액공제 상시근로자 수 계산 안내\n"
             "안녕하십니까, 국세청 법인세과입니다.\n"
@@ -726,10 +726,10 @@ ADMIN_RULINGS_AND_NOTICES = {
             "발행기관": "국세청 법인세과",
             "발행연월": "2026-03",
             "해석일자": "'26.3월",
-            "수록일": "2026-03-25",
+            "수록일": "2026-10-29",
         },
         "해석일자": "'26.3월",
-        "수록일": "2026-03-25",
+        "수록일": "2026-10-29",
         # 제공된 원본 이미지가 계산방식 표까지만 있으므로 그 범위까지만 수록함
         "원문": (
             "'26년 3월 법인세 신고 협조 안내문\n"
@@ -753,10 +753,10 @@ ADMIN_RULINGS_AND_NOTICES = {
             "발행기관": "조세특례제한법 시행규칙(별지 서식)",
             "발행연월": "2026-03",
             "해석일자": "2026.03.20",
-            "수록일": "2026-03-25",
+            "수록일": "2026-10-29",
         },
         "해석일자": "2026.03.20",
-        "수록일": "2026-03-25",
+        "수록일": "2026-10-29",
         "원문": (
             "■ 조세특례제한법 시행규칙 [별지 제10호의10서식] <개정 2026. 3. 20.>\n"
             "통합고용세액공제 상시근로자 명세서\n"
@@ -809,11 +809,14 @@ import re as _re
 from datetime import date as _date, datetime as _datetime
 
 LAW_MONITOR_WINDOW_DAYS = 60  # 반영일·수록일로부터 2개월(60일)간 표시
+NEW_ADDENDA_WATCH_KEYWORDS: tuple[str, ...] = ("제29조의8", "제26조의8", "제11조의2", "통합고용")
 
 
 def compute_law_text_hash(text: str) -> str:
-    """공백·줄바꿈을 모두 제거한 뒤 SHA-256 해시를 반환합니다 (타법개정 가짜 주황불 차단용)."""
+    """공백·줄바꿈을 모두 제거한 뒤 SHA-256 해시를 반환합니다 (빈 문자열이면 빈 문자열 반환)."""
     compact = _re.sub(r"\s+", "", str(text or ""))
+    if not compact:
+        return ""
     return _hashlib.sha256(compact.encode("utf-8")).hexdigest()
 
 
@@ -838,34 +841,187 @@ def _fmt_dot_date(d_str: str) -> str:
     return str(d_str or "-").strip()
 
 
-# 법제처 원문에서 확인된 기준 문장 및 서식 원문만으로 기준 해시 구성 (임의 요약·재구성 문장 사용 금지)
-_BASE_VERBATIM_26_8_6 = "⑥ 제2항에 따른 상시근로자 수 및 제4항에 따른 청년등상시근로자 수의 계산방법에 관하여는 제11조의2제8항을 준용한다."
-_BASE_VERBATIM_11_2_8_REF = "조세특례제한법 시행령 제11조의2 제8항 상시근로자 수 계산방법 준용 기준(대통령령 제36127호)"
-_BASE_VERBATIM_LAW_29_8_REF = "조세특례제한법 제29조의8, 제132조, 제144조 기준(법률 제21223호)"
-_BASE_VERBATIM_LAW_ADD_34_REF = "조세특례제한법 부칙 <제21223호, 2025.12.23.> 제34조(통합고용세액공제에 관한 경과조치)"
-_BASE_VERBATIM_DEC_ADD_11_REF = "조세특례제한법 시행령 부칙 <제36127호, 2026.2.27.> 제11조(통합고용세액공제에 관한 적용례 등)"
-_BASE_VERBATIM_RULE_FORM_REF = str(ADMIN_RULINGS_AND_NOTICES["조특칙_별지_제10호의10_서식"]["원문"])
-_BASE_VERBATIM_RURAL_5_REF = "농어촌특별세법 제5조 제1항 기준(법률 제21065호)"
+def extract_article_paragraph_slice(article_text: str, hang_no: int) -> str:
+    """
+    조문 본문에서 특정 항(예: 시행령 제11조의2 제8항 -> ⑧) 구간만 정밀 추출합니다.
+    (제11조의2의 R&D 세액공제 항인 ①~⑦, ⑨~⑪이 개정될 때 가짜 주황불이 켜지는 것을 방지)
+    """
+    txt = str(article_text or "").strip()
+    if not txt or not (1 <= int(hang_no) <= 20):
+        return ""
+    target_circle = chr(0x2460 + int(hang_no) - 1)
+    all_circles = "".join(chr(0x2460 + i) for i in range(20))
+    m_start = _re.search(rf"(?m)(?:^|\n)\s*({target_circle}[\s\S]*)", txt)
+    if not m_start:
+        m_start = _re.search(rf"({target_circle}[\s\S]*)", txt)
+    if not m_start:
+        return ""
+    tail = m_start.group(1)
+    other_circles = all_circles.replace(target_circle, "")
+    m_next = _re.search(
+        rf"(?m)^\s*(?:[{other_circles}]|\[본조신설|\[전문개정|\[제\d+조|\[조문시행일자)",
+        tail[1:],
+    )
+    if m_next:
+        return tail[: 1 + m_next.start()].strip()
+    return tail.strip()
 
+
+def extract_addenda_units(addenda_text: str) -> list[dict[str, Any]]:
+    """
+    법령 부칙 원문에서 개별 <부칙단위> 블록(공포번호, 공포일, 조문별 본문)을 분리 추출합니다.
+    """
+    txt = str(addenda_text or "").strip()
+    if not txt:
+        return []
+    hdr_re = _re.compile(
+        r"(?m)^\s*\[?부칙\s*<\s*(?:제?\s*(\d+)\s*호\s*,\s*)?(\d{4}\s*\.\s*\d{1,2}\s*\.\s*\d{1,2})\.?[^>]*>\]?"
+    )
+    matches = list(hdr_re.finditer(txt))
+    if not matches:
+        return [{
+            "prom_no": "",
+            "prom_date": "",
+            "header": "부칙",
+            "body": txt,
+            "articles": {},
+        }]
+
+    units: list[dict[str, Any]] = []
+    for idx, m in enumerate(matches):
+        p_no = str(m.group(1) or "").strip()
+        p_dt = _fmt_dot_date(m.group(2) or "")
+        end_pos = matches[idx + 1].start() if idx + 1 < len(matches) else len(txt)
+        blk = txt[m.start():end_pos].strip()
+        lines = blk.splitlines()
+        hdr_line = lines[0].strip() if lines else "부칙"
+        body_part = "\n".join(lines[1:]).strip()
+
+        arts: dict[str, str] = {}
+        art_starts = list(_re.finditer(r"(?m)^\s*제\s*(\d+)\s*조(?:\s*의\s*(\d+))?(?:\s*\(|\s+)", body_part))
+        for a_idx, am in enumerate(art_starts):
+            jo_n = int(am.group(1))
+            gaji_n = int(am.group(2) or 0)
+            a_end = art_starts[a_idx + 1].start() if a_idx + 1 < len(art_starts) else len(body_part)
+            a_key = f"제{jo_n}조" + (f"의{gaji_n}" if gaji_n else "")
+            arts[a_key] = body_part[am.start():a_end].strip()
+
+        units.append({
+            "prom_no": p_no,
+            "prom_date": p_dt,
+            "header": hdr_line,
+            "body": body_part,
+            "full_block": blk,
+            "articles": arts,
+        })
+    return units
+
+
+def extract_specific_addendum_target(addenda_text: str, target_spec: str) -> str:
+    """
+    '21223_제34조', '36127_제11조', '35999_제2조' 형식의 특정 부칙 조문만 정밀 추출합니다.
+    (부칙 전체나 최신 타법개정 부칙을 해시하지 않고, 지정된 경과조치·적용례 부칙 조문만 해시 비교)
+    """
+    spec = str(target_spec or "").strip()
+    if not spec:
+        return ""
+    parts = spec.split("_", 1)
+    req_prom = _re.sub(r"\D", "", parts[0])
+    req_art = parts[1].replace(" ", "") if len(parts) > 1 else ""
+
+    units = extract_addenda_units(addenda_text)
+    for u in units:
+        u_prom = _re.sub(r"\D", "", str(u.get("prom_no") or ""))
+        if req_prom and u_prom and u_prom != req_prom:
+            continue
+        if req_art:
+            arts = u.get("articles") or {}
+            if req_art in arts:
+                return arts[req_art]
+            for k_a, v_a in arts.items():
+                if k_a.replace(" ", "") == req_art:
+                    return v_a
+            # 부칙 블록 본문에서 직접 정규식 탐색
+            m_direct = _re.search(
+                rf"(?m)(^\s*{_re.escape(req_art)}(?:\s*\(|\s+)[\s\S]*?)(?=^\s*제\s*\d+\s*조|\Z)",
+                str(u.get("body") or ""),
+            )
+            if m_direct:
+                return m_direct.group(1).strip()
+        elif req_prom and u_prom == req_prom:
+            return str(u.get("body") or u.get("full_block") or "").strip()
+    return ""
+
+
+def detect_new_employment_credit_addenda(
+    addenda_text: str,
+    base_prom_no: str,
+    known_addenda_specs: list[str] | tuple[str, ...] = (),
+) -> list[dict[str, str]]:
+    """
+    [피드백 2-1] 기준 공포번호(base_prom_no) 이후 새로 추가된 부칙 블록 중
+    '제29조의8', '제26조의8', '제11조의2', '통합고용'을 언급하는 블록만 추출합니다.
+    (통합고용 관련 언급이 없는 타법개정 부칙 블록은 무시하여 가짜 주황불 원천 차단)
+    """
+    units = extract_addenda_units(addenda_text)
+    if not units:
+        return []
+    base_no_int = int(_re.sub(r"\D", "", str(base_prom_no or "")) or 0)
+    known_proms = {
+        _re.sub(r"\D", "", str(sp).split("_", 1)[0])
+        for sp in (known_addenda_specs or ())
+        if str(sp).strip()
+    }
+    if base_no_int > 0:
+        known_proms.add(str(base_no_int))
+
+    detected: list[dict[str, str]] = []
+    for u in units:
+        u_prom = _re.sub(r"\D", "", str(u.get("prom_no") or ""))
+        u_no_int = int(u_prom) if u_prom.isdigit() else 0
+        if u_prom and u_prom in known_proms:
+            continue
+        if base_no_int > 0 and u_no_int > 0 and u_no_int <= base_no_int:
+            continue
+        compact_blk = _re.sub(r"\s+", "", str(u.get("full_block") or u.get("body") or ""))
+        matched_kws = [kw for kw in NEW_ADDENDA_WATCH_KEYWORDS if kw.replace(" ", "") in compact_blk]
+        if matched_kws:
+            detected.append({
+                "prom_no": u_prom,
+                "prom_date": str(u.get("prom_date") or ""),
+                "header": str(u.get("header") or "부칙"),
+                "matched_keywords": ", ".join(matched_kws),
+                "body": str(u.get("full_block") or u.get("body") or ""),
+            })
+    return detected
+
+
+# [원칙 준수]
+# - 설명 문장 해시나 웹페이지 주소 추정 법령ID("001584" 등), 미확인 공포번호를 하드코딩하지 않습니다.
+# - 캡처 스크립트(capture_baseline_laws.py)로 법제처 API 실제 응답 원문을 캡처하기 전에는
+#   법령ID와 해시를 빈 문자열("")로 두며, 빈 해시인 법령은 "기준 버전 미설정 · 확인 필요"(노랑)로 정직하게 표시합니다.
 BASELINE_LAW_INFO: dict[str, dict[str, Any]] = {
     "조세특례제한법": {
-        "법령ID": "001592",
+        "법령ID": "",
         "법령명": "조세특례제한법",
         "법종구분": "법률",
         "감시조문": ("제29조의8", "제132조", "제144조"),
         "관련부칙": "부칙 <제21223호, 2025.12.23.> 제34조",
+        "특정부칙_목록": ("21223_제34조",),
         "공포번호": "21223",
         "공포일": "2025.12.23",
         "시행일": "2026.01.01",
-        "반영일": "2026-03-20",
-        "조문해시": compute_law_text_hash(_BASE_VERBATIM_LAW_29_8_REF),
-        "부칙해시": compute_law_text_hash(_BASE_VERBATIM_LAW_ADD_34_REF),
+        "반영일": "2026-10-29",
+        "조문해시": "",
         "세부조문해시": {
-            "제29조의8": compute_law_text_hash(_BASE_VERBATIM_LAW_29_8_REF),
-            "제132조": compute_law_text_hash("조세특례제한법제132조_21223"),
-            "제144조": compute_law_text_hash("조세특례제한법제144조_21223"),
+            "제29조의8": "",
+            "제132조": "",
+            "제144조": "",
         },
-        "적용시기_부칙원문": "부칙 <제21223호, 2025.12.23.> 제1조(시행일) 2026.1.1. 시행 / 제34조(통합고용세액공제에 관한 경과조치)",
+        "특정부칙해시": {
+            "21223_제34조": "",
+        },
+        "적용시기_부칙원문": "",
         "영향항목": [
             "1차년도 기본공제 산식(제29조의8 제1항 A·B·C 구조 및 공제단가표)",
             "청년등 상시근로자 증가인원 한도 Cap(제29조의8 제1항 제1호 괄호)",
@@ -876,23 +1032,27 @@ BASELINE_LAW_INFO: dict[str, dict[str, Any]] = {
         ],
     },
     "조세특례제한법 시행령": {
-        "법령ID": "001781",
+        "법령ID": "",
         "법령명": "조세특례제한법 시행령",
         "법종구분": "대통령령",
         "감시조문": ("제26조의8", "제11조의2 제8항", "제23조 제13항"),
         "관련부칙": "부칙 <제35999호, 2025.12.31.> 제2조, 부칙 <제36127호, 2026.02.27.> 제11조",
+        "특정부칙_목록": ("35999_제2조", "36127_제11조"),
         "공포번호": "36127",
         "공포일": "2026.02.27",
         "시행일": "2026.02.27",
-        "반영일": "2026-03-20",
-        "조문해시": compute_law_text_hash(_BASE_VERBATIM_26_8_6 + _BASE_VERBATIM_11_2_8_REF),
-        "부칙해시": compute_law_text_hash(_BASE_VERBATIM_DEC_ADD_11_REF),
+        "반영일": "2026-10-29",
+        "조문해시": "",
         "세부조문해시": {
-            "제26조의8": compute_law_text_hash(_BASE_VERBATIM_26_8_6),
-            "제11조의2 제8항": compute_law_text_hash(_BASE_VERBATIM_11_2_8_REF),
+            "제26조의8": "",
+            "제11조의2 제8항": "",
         },
-        "기준원문_일부": _BASE_VERBATIM_26_8_6,
-        "적용시기_부칙원문": "부칙 <제36127호, 2026.02.27.> 제1조(시행일) 공포한 날부터 시행 / 제2조(일반적 적용례) 영 시행 이후 과세표준을 신고하는 경우부터 적용 / 제11조(통합고용세액공제에 관한 적용례 등)",
+        "특정부칙해시": {
+            "35999_제2조": "",
+            "36127_제11조": "",
+        },
+        "기준원문_일부": "⑥ 제2항에 따른 상시근로자 수 및 제4항에 따른 청년등상시근로자 수의 계산방법에 관하여는 제11조의2제8항을 준용한다.",
+        "적용시기_부칙원문": "",
         "영향항목": [
             "소비성서비스업 제외 업종 판정(제26조의8 제1항)",
             "상시근로자 범위 및 제외사유 6종 판정(제26조의8 제2항 제1호~제6호)",
@@ -903,23 +1063,27 @@ BASELINE_LAW_INFO: dict[str, dict[str, Any]] = {
         ],
     },
     "조세특례제한법 시행규칙": {
-        "법령ID": "001850",
+        "법령ID": "",
         "법령명": "조세특례제한법 시행규칙",
         "법종구분": "기획재정부령",
         "감시조문": ("제14조", "별지 제10호의9서식", "별지 제10호의10서식"),
-        "관련부칙": "부칙 <제1180호, 2026.03.20.>",
-        "공포번호": "1180",
-        "공포일": "2026.03.20",
-        "시행일": "2026.03.20",
-        "반영일": "2026-03-25",
+        "관련부칙": "",
+        "특정부칙_목록": (),
+        "공포번호": "",
+        "공포일": "",
+        "시행일": "",
+        "반영일": "2026-10-29",
         "서식개정일": "2026.03.20",
         "서식개정일_목록": {
-            "별지 제10호의9서식": "2026.03.20",
+            "별지 제10호의9서식": "",
             "별지 제10호의10서식": "2026.03.20",
         },
-        "조문해시": compute_law_text_hash(_BASE_VERBATIM_RULE_FORM_REF),
-        "부칙해시": compute_law_text_hash("조세특례제한법시행규칙부칙_1180_20260320"),
-        "기준원문_일부": _BASE_VERBATIM_RULE_FORM_REF,
+        "조문해시": "",
+        "세부조문해시": {
+            "제14조": "",
+        },
+        "특정부칙해시": {},
+        "기준원문_일부": str(ADMIN_RULINGS_AND_NOTICES["조특칙_별지_제10호의10_서식"]["원문"]),
         "적용시기_부칙원문": "■ 조세특례제한법 시행규칙 [별지 제10호의10서식] <개정 2026. 3. 20.>",
         "영향항목": [
             "통합고용세액공제 공제세액계산서(별지 제10호의9서식)",
@@ -927,18 +1091,22 @@ BASELINE_LAW_INFO: dict[str, dict[str, Any]] = {
         ],
     },
     "농어촌특별세법": {
-        "법령ID": "001586",
+        "법령ID": "",
         "법령명": "농어촌특별세법",
         "법종구분": "법률",
         "감시조문": ("제5조",),
-        "관련부칙": "부칙 <제21065호, 2025.10.01.>",
-        "공포번호": "21065",
-        "공포일": "2025.10.01",
-        "시행일": "2026.01.01",
-        "반영일": "2026-01-15",
-        "조문해시": compute_law_text_hash(_BASE_VERBATIM_RURAL_5_REF),
-        "부칙해시": compute_law_text_hash("농어촌특별세법부칙_21065_20251001"),
-        "적용시기_부칙원문": "조세특례제한법에 따라 감면받는 소득세·법인세 감면세액의 100분의 20 (제5조 제1항 제1호)",
+        "관련부칙": "",
+        "특정부칙_목록": (),
+        "공포번호": "",
+        "공포일": "",
+        "시행일": "",
+        "반영일": "2026-10-29",
+        "조문해시": "",
+        "세부조문해시": {
+            "제5조": "",
+        },
+        "특정부칙해시": {},
+        "적용시기_부칙원문": "",
         "영향항목": [
             "당기 실제 공제받는 통합고용세액공제액에 대한 농어촌특별세 20% 산출(제5조 제1항 제1호)",
         ],
@@ -955,8 +1123,7 @@ def judge_amendment_tax_year_applicability(
     [6-2 채택] 개정 법령의 현재 작업 중 귀속연도(tax_year) 적용 여부를 3단계로 판정합니다.
     - "적용 없음 (시행 YYYY.MM.DD.)": 시행일 연도가 귀속연도 이후(enf_year > tax_year)이고 부칙에 소급·신고기준 특례 적용 문언이 없을 때
     - "적용 대상": 시행일 연도가 귀속연도 이전/동일(enf_year <= tax_year)이고 부칙에 차기 연도 이후 개시 한정 배제 문언이 없을 때
-    - "부칙 확인 필요": 그 밖에 판단이 불확실한 경우 (예: 시행일은 차기 연도이나 부칙에 과세표준 신고기준 적용 문언이 있는 경우)
-    - 보고서 경고(needs_report_warning)는 "적용 대상"과 "부칙 확인 필요" 모두 True로 설정합니다.
+    - "부칙 확인 필요": 그 밖에 판단이 불확실한 경우
     """
     ty = int(tax_year or DEFAULT_TAX_YEAR)
     enf_dt = _parse_iso_or_dot_date(enf_date_str)
@@ -1026,14 +1193,17 @@ def evaluate_law_monitoring_status(
     last_success_cache: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
-    법령·시행령·시행규칙(서식 포함) 개정 상태, 3D 불 색상(green/orange/yellow), [N건] 배지,
-    모달 상단 [프로그램 반영 필요] 배너 및 귀속연도 적용 여부를 결정론적으로 판정합니다.
+    [피드백 2 & 3-2 전면 반영]
+    1) 판정 기준은 오직 '실제 법제처 원문 해시 == BASELINE_LAW_INFO 코드 상수 해시' 단일 기준입니다 (디스크 스냅샷·공포번호 우회 없음).
+    2) 부칙은 특정 부칙 조문(특정부칙해시)만 해시 비교하며, 기준 공포번호 이후 새 부칙 블록은
+       ('제29조의8', '제26조의8', '제11조의2', '통합고용') 언급이 있을 때만 주황(신규 적용례·경과조치 감지)으로 판정합니다.
+    3) 응답 법령명이 감시 대상 법령명과 일치하지 않으면 노랑('법령명 불일치 · 확인 필요')으로 판정합니다.
+    4) BASELINE_LAW_INFO에 기준 해시가 비어 있으면 노랑('기준 버전 미설정 · 확인 필요')으로 판정합니다.
     """
     base_map = baseline_info or BASELINE_LAW_INFO
     today_dt = _parse_iso_or_dot_date(today) or _date.today()
     ty = int(tax_year or DEFAULT_TAX_YEAR)
 
-    # 당일 조회 실패 또는 원문 파싱 실패 처리 (원칙 3: 확인하지 못한 것을 확인한 것처럼 초록으로 표시하지 않음)
     if (
         not fetched_laws
         or not isinstance(fetched_laws, dict)
@@ -1050,16 +1220,21 @@ def evaluate_law_monitoring_status(
             else:
                 fallback_laws[l_name] = {
                     "law_name": l_name,
+                    "law_id": str(b_item.get("법령ID") or ""),
+                    "base_law_id": str(b_item.get("법령ID") or ""),
                     "status": "check_failed",
-                    "status_label": "당일 조회 실패 (기준 정보 표시)",
+                    "status_label": "당일 조회 실패 (확인 필요)",
                     "is_unapplied": False,
-                    "prom_no": b_item.get("공포번호", ""),
-                    "prom_date": b_item.get("공포일", ""),
-                    "enf_date": b_item.get("시행일", ""),
-                    "applied_date": b_item.get("반영일", ""),
-                    "old_text": b_item.get("기준원문_일부", ""),
+                    "base_prom_no": str(b_item.get("공포번호") or ""),
+                    "base_prom_date": str(b_item.get("공포일") or ""),
+                    "base_enf_date": str(b_item.get("시행일") or ""),
+                    "prom_no": "",
+                    "prom_date": "",
+                    "enf_date": "",
+                    "applied_date": str(b_item.get("반영일") or ""),
+                    "old_text": str(b_item.get("기준원문_일부") or ""),
                     "new_text": "",
-                    "addenda_text": b_item.get("적용시기_부칙원문", ""),
+                    "addenda_text": str(b_item.get("적용시기_부칙원문") or ""),
                     "applicability": {
                         "status": "check_needed",
                         "label": "부칙 확인 필요",
@@ -1070,6 +1245,8 @@ def evaluate_law_monitoring_status(
         return {
             "color": "yellow",
             "api_failed": True,
+            "has_unset_baseline": False,
+            "has_name_mismatch": False,
             "unapplied_count": prev_unapplied,
             "recent_applied_count": 0,
             "badge_text": f"[{prev_unapplied}건]" if prev_unapplied > 0 else "",
@@ -1082,9 +1259,11 @@ def evaluate_law_monitoring_status(
     unapplied_count = 0
     recent_applied_count = 0
     applicable_unapplied_count = 0
+    has_unset_baseline = False
+    has_name_mismatch = False
 
     for l_name, b_item in base_map.items():
-        f_item = fetched_laws.get(l_name) or {}
+        f_item = fetched_laws.get(l_name)
         if not isinstance(f_item, dict) or f_item.get("_fetch_error"):
             return evaluate_law_monitoring_status(
                 {"_api_failed": True},
@@ -1094,66 +1273,179 @@ def evaluate_law_monitoring_status(
                 last_success_cache=last_success_cache,
             )
 
+        b_law_id = str(b_item.get("법령ID") or "").strip()
+        f_law_id = str(f_item.get("법령ID") or f_item.get("law_id") or b_law_id).strip()
         b_prom_no = str(b_item.get("공포번호") or "").strip()
-        f_prom_no = str(f_item.get("공포번호") or f_item.get("prom_no") or b_prom_no).strip()
-        f_prom_dt = _fmt_dot_date(f_item.get("공포일") or f_item.get("prom_date") or b_item.get("공포일") or "")
-        f_enf_dt = _fmt_dot_date(f_item.get("시행일") or f_item.get("enf_date") or b_item.get("시행일") or "")
+        b_prom_dt = _fmt_dot_date(str(b_item.get("공포일") or ""))
+        b_enf_dt = _fmt_dot_date(str(b_item.get("시행일") or ""))
         b_applied_str = str(b_item.get("반영일") or "")
 
-        b_art_hash = str(b_item.get("조문해시") or "")
-        b_add_hash = str(b_item.get("부칙해시") or "")
+        f_prom_no = str(f_item.get("공포번호") or f_item.get("prom_no") or "").strip()
+        f_prom_dt = _fmt_dot_date(str(f_item.get("공포일") or f_item.get("prom_date") or ""))
+        f_enf_dt = _fmt_dot_date(str(f_item.get("시행일") or f_item.get("enf_date") or ""))
 
+        # [피드백 3-2-1] 응답 법령명이 감시 대상 법령명과 일치하는지 검증
+        resp_law_nm = str(f_item.get("법령명") or f_item.get("parsed_law_name") or l_name).strip()
+        name_mismatch = bool(
+            f_item.get("_law_name_mismatch")
+            or (_re.sub(r"\s+", "", resp_law_nm) != _re.sub(r"\s+", "", l_name))
+        )
+        if name_mismatch:
+            has_name_mismatch = True
+            evaluated_laws[l_name] = {
+                "law_name": l_name,
+                "parsed_law_name": resp_law_nm,
+                "law_id": f_law_id,
+                "base_law_id": b_law_id,
+                "status": "law_name_mismatch",
+                "status_label": f"법령명 불일치 · 확인 필요 (응답: {resp_law_nm})",
+                "is_unapplied": False,
+                "base_prom_no": b_prom_no,
+                "base_prom_date": b_prom_dt,
+                "base_enf_date": b_enf_dt,
+                "prom_no": f_prom_no,
+                "prom_date": f_prom_dt,
+                "enf_date": f_enf_dt,
+                "applied_date": b_applied_str,
+                "article_hash": "",
+                "base_article_hash": str(b_item.get("조문해시") or ""),
+                "old_text": str(b_item.get("기준원문_일부") or ""),
+                "new_text": "",
+                "addenda_text": "",
+                "applicability": {
+                    "status": "check_needed",
+                    "label": "확인 필요",
+                    "detail": f"API 응답 법령명({resp_law_nm})이 감시 대상({l_name})과 불일치",
+                    "needs_report_warning": True,
+                },
+                "watched_articles": list(b_item.get("감시조문") or ()),
+                "impact_items": list(b_item.get("영향항목") or ()),
+            }
+            continue
+
+        # [피드백 2-3] 캡처 전 상태(기준 해시 빈 값) 판정 -> 노랑 "기준 버전 미설정 · 확인 필요"
+        b_art_hash = str(b_item.get("조문해시") or "").strip()
+        b_sub_hashes = {
+            k: str(v or "").strip()
+            for k, v in (b_item.get("세부조문해시") or {}).items()
+        }
+        has_any_base_hash = bool(b_art_hash or any(b_sub_hashes.values()))
+        if not has_any_base_hash:
+            has_unset_baseline = True
+            add_txt_unset = str(f_item.get("부칙원문") or f_item.get("addenda_text") or b_item.get("적용시기_부칙원문") or "")
+            evaluated_laws[l_name] = {
+                "law_name": l_name,
+                "law_id": f_law_id,
+                "base_law_id": b_law_id,
+                "status": "baseline_not_set",
+                "status_label": "기준 버전 미설정 · 확인 필요",
+                "is_unapplied": False,
+                "base_prom_no": b_prom_no,
+                "base_prom_date": b_prom_dt,
+                "base_enf_date": b_enf_dt,
+                "prom_no": f_prom_no,
+                "prom_date": f_prom_dt,
+                "enf_date": f_enf_dt,
+                "applied_date": b_applied_str,
+                "article_hash": str(f_item.get("조문해시") or compute_law_text_hash(str(f_item.get("조문원문") or ""))),
+                "base_article_hash": "",
+                "old_text": str(b_item.get("기준원문_일부") or ""),
+                "new_text": str(f_item.get("조문원문") or f_item.get("article_text") or ""),
+                "addenda_text": add_txt_unset,
+                "applicability": {
+                    "status": "check_needed",
+                    "label": "기준 버전 미설정 · 확인 필요",
+                    "detail": "기준 버전 미설정 · 확인 필요 (캡처 스크립트로 기준 해시 등록 필요)",
+                    "needs_report_warning": True,
+                },
+                "watched_articles": list(b_item.get("감시조문") or ()),
+                "impact_items": list(b_item.get("영향항목") or ()),
+            }
+            continue
+
+        # 1) 감시 조문 해시 비교 (코드 상수 해시 vs 실제 원문 해시 단일 기준)
         if "조문해시" in f_item or "article_hash" in f_item:
-            f_art_hash = str(f_item.get("조문해시") or f_item.get("article_hash") or "")
+            f_art_hash = str(f_item.get("조문해시") or f_item.get("article_hash") or "").strip()
         elif "조문원문" in f_item or "article_text" in f_item:
             f_art_hash = compute_law_text_hash(str(f_item.get("조문원문") or f_item.get("article_text") or ""))
         else:
-            f_art_hash = b_art_hash
+            f_art_hash = ""
 
-        if "부칙해시" in f_item or "addenda_hash" in f_item:
-            f_add_hash = str(f_item.get("부칙해시") or f_item.get("addenda_hash") or "")
-        elif "부칙원문" in f_item or "addenda_text" in f_item:
-            f_add_hash = compute_law_text_hash(str(f_item.get("부칙원문") or f_item.get("addenda_text") or ""))
-        else:
-            f_add_hash = b_add_hash
+        art_changed = bool(b_art_hash and f_art_hash != b_art_hash)
 
-        # 6-1: 세부 감시조문 해시 비교 (예: 시행령 제11조의2 제8항 단독 개정 감지)
+        # 세부 감시조문 해시 비교 (시행령 제11조의2 제8항 등)
         sub_changed = False
-        b_sub_hashes = b_item.get("세부조문해시") or {}
         f_sub_hashes = f_item.get("세부조문해시") or f_item.get("sub_article_hashes") or {}
-        if isinstance(b_sub_hashes, dict) and isinstance(f_sub_hashes, dict) and f_sub_hashes:
+        if isinstance(f_sub_hashes, dict) and f_sub_hashes:
             for s_k, b_sh in b_sub_hashes.items():
-                if s_k in f_sub_hashes and str(f_sub_hashes[s_k]) != str(b_sh):
+                if b_sh and s_k in f_sub_hashes and str(f_sub_hashes[s_k]).strip() != b_sh:
                     sub_changed = True
                     break
 
-        # 6-5: 시행규칙 별지 제10호의9·제10호의10 서식 개정일 비교
+        # 2) [피드백 2-1] 부칙 해시 범위 한정:
+        #    (a) 특정 부칙 블록(특정부칙해시: 예 21223_제34조, 36127_제11조) 해시 비교
+        #    (b) 기준 공포번호 이후 새로 추가된 부칙 블록 중 ('제29조의8', '제26조의8', '제11조의2', '통합고용') 언급 블록 감지
+        add_txt = str(f_item.get("부칙원문") or f_item.get("addenda_text") or "")
+        b_spec_add_hashes = {
+            k: str(v or "").strip()
+            for k, v in (b_item.get("특정부칙해시") or {}).items()
+            if str(v or "").strip()
+        }
+        f_spec_add_hashes = f_item.get("특정부칙해시") or f_item.get("specific_addenda_hashes") or {}
+        spec_add_changed = False
+        if b_spec_add_hashes:
+            for sp_k, b_sp_h in b_spec_add_hashes.items():
+                if isinstance(f_spec_add_hashes, dict) and sp_k in f_spec_add_hashes:
+                    f_sp_h = str(f_spec_add_hashes[sp_k] or "").strip()
+                elif add_txt:
+                    extracted_sp = extract_specific_addendum_target(add_txt, sp_k)
+                    f_sp_h = compute_law_text_hash(extracted_sp) if extracted_sp else b_sp_h
+                else:
+                    f_sp_h = b_sp_h
+                if f_sp_h != b_sp_h:
+                    spec_add_changed = True
+                    break
+        elif b_item.get("부칙해시"):
+            b_legacy_add_h = str(b_item.get("부칙해시") or "").strip()
+            f_legacy_add_h = str(f_item.get("부칙해시") or f_item.get("addenda_hash") or "").strip()
+            if b_legacy_add_h and f_legacy_add_h and f_legacy_add_h != b_legacy_add_h:
+                spec_add_changed = True
+
+        known_specs = list(b_item.get("특정부칙_목록") or b_spec_add_hashes.keys())
+        new_rel_addenda = detect_new_employment_credit_addenda(add_txt, b_prom_no, known_specs) if add_txt else []
+        new_addenda_detected = len(new_rel_addenda) > 0
+
+        # 3) 시행규칙 별지 서식 개정일 비교
         form_changed = False
         b_forms = b_item.get("서식개정일_목록") or {}
         f_forms = f_item.get("서식개정일_목록") or f_item.get("form_rev_dates") or {}
         if isinstance(b_forms, dict) and isinstance(f_forms, dict) and f_forms:
             for fm_k, b_fdt in b_forms.items():
-                if fm_k in f_forms and _fmt_dot_date(str(f_forms[fm_k])) != _fmt_dot_date(str(b_fdt)):
+                if b_fdt and fm_k in f_forms and _fmt_dot_date(str(f_forms[fm_k])) != _fmt_dot_date(str(b_fdt)):
                     form_changed = True
                     break
-        elif f_item.get("서식개정일") and b_item.get("서식개정일"):
-            if _fmt_dot_date(str(f_item["서식개정일"])) != _fmt_dot_date(str(b_item["서식개정일"])):
-                form_changed = True
 
-        hash_diff = (f_art_hash != b_art_hash) or (f_add_hash != b_add_hash) or sub_changed or form_changed
-        add_txt = str(f_item.get("부칙원문") or f_item.get("addenda_text") or b_item.get("적용시기_부칙원문") or "")
-        app_judgment = judge_amendment_tax_year_applicability(f_enf_dt, add_txt, tax_year=ty)
+        hash_diff = art_changed or sub_changed or spec_add_changed or new_addenda_detected or form_changed
+        eff_enf_for_judge = f_enf_dt if (f_enf_dt and f_enf_dt != "-") else b_enf_dt
+        app_judgment = judge_amendment_tax_year_applicability(
+            eff_enf_for_judge,
+            add_txt or str(b_item.get("적용시기_부칙원문") or ""),
+            tax_year=ty,
+        )
 
         if hash_diff:
             status_code = "amended_unapplied"
-            status_lbl = "개정 감지 (프로그램 미반영)"
+            if new_addenda_detected and not (art_changed or sub_changed):
+                status_lbl = "신규 적용례·경과조치 부칙 감지 (프로그램 미반영)"
+            else:
+                status_lbl = "개정 감지 (프로그램 미반영)"
             is_unapplied = True
             unapplied_count += 1
             if app_judgment.get("needs_report_warning"):
                 applicable_unapplied_count += 1
         else:
             is_unapplied = False
-            if f_prom_no != b_prom_no:
+            if f_prom_no and b_prom_no and f_prom_no != b_prom_no:
                 status_code = "other_article_amended"
                 status_lbl = "타 조문 개정 (통합고용세액공제 변동 없음)"
             else:
@@ -1168,22 +1460,26 @@ def evaluate_law_monitoring_status(
 
         evaluated_laws[l_name] = {
             "law_name": l_name,
-            "law_id": b_item.get("법령ID", ""),
+            "law_id": f_law_id,
+            "base_law_id": b_law_id,
             "status": status_code,
             "status_label": status_lbl,
             "is_unapplied": is_unapplied,
             "base_prom_no": b_prom_no,
-            "prom_no": f_prom_no,
-            "prom_date": f_prom_dt,
-            "enf_date": f_enf_dt,
+            "base_prom_date": b_prom_dt,
+            "base_enf_date": b_enf_dt,
+            "prom_no": f_prom_no or b_prom_no,
+            "prom_date": f_prom_dt if f_prom_dt != "-" else b_prom_dt,
+            "enf_date": f_enf_dt if f_enf_dt != "-" else b_enf_dt,
             "applied_date": b_applied_str,
             "article_hash": f_art_hash,
             "base_article_hash": b_art_hash,
-            "addenda_hash": f_add_hash,
-            "base_addenda_hash": b_add_hash,
+            "sub_article_hashes": f_sub_hashes if isinstance(f_sub_hashes, dict) else {},
+            "specific_addenda_hashes": f_spec_add_hashes if isinstance(f_spec_add_hashes, dict) else {},
+            "new_relevant_addenda": new_rel_addenda,
             "old_text": str(f_item.get("구법원문") or f_item.get("old_text") or b_item.get("기준원문_일부") or ""),
             "new_text": str(f_item.get("조문원문") or f_item.get("article_text") or f_item.get("new_text") or b_item.get("기준원문_일부") or ""),
-            "addenda_text": add_txt,
+            "addenda_text": add_txt or str(b_item.get("적용시기_부칙원문") or ""),
             "applicability": app_judgment,
             "watched_articles": list(b_item.get("감시조문") or ()),
             "impact_items": list(b_item.get("영향항목") or ()),
@@ -1192,6 +1488,9 @@ def evaluate_law_monitoring_status(
     if unapplied_count > 0:
         top_color = "orange"
         badge_str = f"[{unapplied_count}건]"
+    elif has_name_mismatch or has_unset_baseline:
+        top_color = "yellow"
+        badge_str = ""
     else:
         top_color = "green"
         badge_str = f"최근 반영 {recent_applied_count}건" if recent_applied_count > 0 else ""
@@ -1200,6 +1499,8 @@ def evaluate_law_monitoring_status(
     return {
         "color": top_color,
         "api_failed": False,
+        "has_unset_baseline": has_unset_baseline,
+        "has_name_mismatch": has_name_mismatch,
         "unapplied_count": unapplied_count,
         "applicable_unapplied_count": applicable_unapplied_count,
         "recent_applied_count": recent_applied_count,
@@ -1228,7 +1529,7 @@ def evaluate_ruling_monitoring_status(
         if not isinstance(r_val, dict):
             continue
         src_info = r_val.get("출처") if isinstance(r_val.get("출처"), dict) else {}
-        surok_str = str(r_val.get("수록일") or src_info.get("수록일") or "2026-03-25").strip()
+        surok_str = str(r_val.get("수록일") or src_info.get("수록일") or "2026-10-29").strip()
         interp_dt_str = str(
             r_val.get("해석일자")
             or src_info.get("해석일자")
@@ -1265,40 +1566,50 @@ def evaluate_ruling_monitoring_status(
 def build_law_summary_table_rows(
     law_status: dict[str, Any] | None = None,
     rulings_dict: dict[str, dict] | None = None,
+    baseline_info: dict[str, dict] | None = None,
 ) -> list[dict[str, str]]:
-    """[3-③] 상세 보기 모달 하단 메타데이터 요약표(법령 개정 공포일·시행일·적용시기 / 해석 해석일자·수록일 / 공통 기준일) 생성."""
+    """
+    [피드백 3-2-2 반영] 상세 보기 모달 하단 요약표:
+    '현행 법령(법제처 조회)' 값과 '계산 기준 법령(BASELINE_LAW_INFO)' 값을 명확히 구분하여 나란히 표시합니다.
+    """
+    base_map = baseline_info or BASELINE_LAW_INFO
     rows: list[dict[str, str]] = []
     laws_map = dict((law_status or {}).get("laws") or {})
-    if not laws_map:
-        for l_nm, b_info in BASELINE_LAW_INFO.items():
-            laws_map[l_nm] = {
-                "law_name": l_nm,
-                "prom_no": b_info.get("공포번호", ""),
-                "prom_date": b_info.get("공포일", ""),
-                "enf_date": b_info.get("시행일", ""),
-                "addenda_text": b_info.get("적용시기_부칙원문", ""),
-            }
 
-    for l_nm, l_info in laws_map.items():
-        p_no = str(l_info.get("prom_no") or "").strip()
-        p_dt = str(l_info.get("prom_date") or "").strip()
-        e_dt = str(l_info.get("enf_date") or "").strip()
-        add_summary = str(l_info.get("addenda_text") or "").strip()
-        first_add_line = add_summary.splitlines()[0] if add_summary else "-"
+    for l_nm, b_info in base_map.items():
+        l_info = laws_map.get(l_nm) or {}
+        b_no = str(b_info.get("공포번호") or "").strip()
+        b_pdt = str(b_info.get("공포일") or "").strip()
+        b_edt = str(b_info.get("시행일") or "").strip()
+        b_has_hash = bool(
+            str(b_info.get("조문해시") or "").strip()
+            or any(str(v or "").strip() for v in (b_info.get("세부조문해시") or {}).values())
+        )
+        base_prom_disp = f"{b_pdt} (제{b_no}호)" if (b_no and b_has_hash) else (f"{b_pdt} (제{b_no}호 · 해시 미설정)" if b_no else "기준 버전 미설정 · 확인 필요")
+        base_enf_disp = b_edt if (b_edt and b_has_hash) else (f"{b_edt} (해시 미설정)" if b_edt else "기준 버전 미설정 · 확인 필요")
+
+        f_no = str(l_info.get("prom_no") or "").strip()
+        f_pdt = str(l_info.get("prom_date") or "").strip()
+        f_edt = str(l_info.get("enf_date") or "").strip()
+        live_prom_disp = f"{f_pdt} (제{f_no}호)" if f_no else "미조회"
+        live_enf_disp = f_edt if f_edt and f_edt != "-" else "미조회"
+
+        add_summary = str(l_info.get("addenda_text") or b_info.get("적용시기_부칙원문") or "").strip()
+        first_add_line = add_summary.splitlines()[0] if add_summary else "원문 조회 후 표시"
         if len(add_summary.splitlines()) > 1:
             first_add_line += " 외"
-        prom_disp = f"{p_dt} (제{p_no}호)" if p_no else p_dt
+
         rows.append({
             "구분": f"법령 개정 ({l_nm})",
-            "항목": "공포일",
-            "내용": prom_disp,
-            "데이터 출처": "법제처 API <공포일자>, <공포번호>",
+            "항목": "공포일 (현행 조회 / 계산 기준)",
+            "내용": f"현행: {live_prom_disp} | 계산 기준: {base_prom_disp}",
+            "데이터 출처": "법제처 API <공포일자>·<공포번호> / BASELINE_LAW_INFO",
         })
         rows.append({
             "구분": f"법령 개정 ({l_nm})",
-            "항목": "시행일",
-            "내용": e_dt,
-            "데이터 출처": "법제처 API <시행일자>, <조문시행일자>",
+            "항목": "시행일 (현행 조회 / 계산 기준)",
+            "내용": f"현행: {live_enf_disp} | 계산 기준: {base_enf_disp}",
+            "데이터 출처": "법제처 API <시행일자> / BASELINE_LAW_INFO",
         })
         rows.append({
             "구분": f"법령 개정 ({l_nm})",
@@ -1445,7 +1756,10 @@ def build_report_law_banner_and_stamp(
     baseline_info: dict[str, dict] | None = None,
 ) -> dict[str, str]:
     """
-    [4-3 & 6-4] 4단계 보고서 최상단 경고 배너(미반영 개정 또는 당일 조회 실패) 및 하단 기준 법령 버전 스탬프를 생성합니다.
+    [4-3, 6-4 & 피드백 3-2-2]
+    - 4단계 보고서 최상단 경고 배너(미반영 개정 또는 당일 조회 실패/기준 버전 미설정/법령명 불일치) 생성
+    - 보고서 하단 기준 법령 스탬프에는 오직 BASELINE_LAW_INFO 값만 사용하며,
+      캡처 전(법령ID·공포번호·조문해시 빈 값)이면 API 응답 값으로 대체하지 않고 '기준 버전 미설정 · 확인 필요'로 표시합니다.
     """
     base_map = baseline_info or BASELINE_LAW_INFO
     ty = int(tax_year or DEFAULT_TAX_YEAR)
@@ -1461,6 +1775,14 @@ def build_report_law_banner_and_stamp(
                 f"<div style='background:#fef9c3;border:1.5px solid #facc15;border-left:5px solid #eab308;"
                 f"padding:10px 14px;border-radius:8px;color:#854d0e;font-weight:700;margin-bottom:10px;'>"
                 f"{msg_fail}</div>"
+            )
+        elif law_status.get("has_name_mismatch") or law_status.get("has_unset_baseline"):
+            msg_unset = "기준 버전 미설정 또는 법령 확인 필요 항목이 있습니다 · 직접 확인 필요"
+            warnings_md.append(f"**[법령 확인 안내] {msg_unset}**")
+            warnings_html.append(
+                f"<div style='background:#fef9c3;border:1.5px solid #facc15;border-left:5px solid #eab308;"
+                f"padding:10px 14px;border-radius:8px;color:#854d0e;font-weight:700;margin-bottom:10px;'>"
+                f"{msg_unset}</div>"
             )
 
         laws_eval = law_status.get("laws") or {}
@@ -1486,12 +1808,21 @@ def build_report_law_banner_and_stamp(
                 f"{msg_un}</div>"
             )
 
+    # [피드백 3-2-2] 보고서 하단 기준 법령 스탬프에는 BASELINE_LAW_INFO 값만 사용 (API 응답 값 대체 금지)
     stamp_parts: list[str] = []
     for l_nm, b_info in base_map.items():
-        k_type = b_info.get("법종구분", "법령")
-        p_no = b_info.get("공포번호", "")
-        e_dt = b_info.get("시행일", "")
-        stamp_parts.append(f"{l_nm}({k_type} 제{p_no}호, 시행 {e_dt}.)")
+        k_type = str(b_info.get("법종구분") or "법령").strip()
+        b_id = str(b_info.get("법령ID") or "").strip()
+        p_no = str(b_info.get("공포번호") or "").strip()
+        e_dt = str(b_info.get("시행일") or "").strip()
+        has_hash = bool(
+            str(b_info.get("조문해시") or "").strip()
+            or any(str(v or "").strip() for v in (b_info.get("세부조문해시") or {}).values())
+        )
+        if b_id and p_no and e_dt and has_hash:
+            stamp_parts.append(f"{l_nm}({k_type} 제{p_no}호, 시행 {e_dt}.)")
+        else:
+            stamp_parts.append(f"{l_nm}(기준 버전 미설정 · 확인 필요)")
     bottom_stamp_md = "※ [기준 법령 버전] " + " · ".join(stamp_parts)
 
     return {
@@ -2415,22 +2746,97 @@ def verify_golden_case_invariants() -> tuple[bool, list[str]]:
         errors.append("8-9(4) 실패: 서류에서 읽은 사원(_manual 아님)의 입사일·급여가 모두 비어 있는데 worked_in_year가 True를 반환함")
 
 
-    # ── 9) 법령·예규 모니터링 및 AI 해석 안전장치 (5장 1~11번 & 6장 채택항목) 단위 테스트 ──
+    # ── 9) 법령·예규 모니터링 및 AI 해석 안전장치 (5장 1~11번 + 6장 채택항목 + 2차 피드백 6건) 단위 테스트 ──
+    # 테스트용으로 캡처 완료된 기준 법령 스냅샷 픽스처 구성
+    captured_test_baseline: dict[str, dict[str, Any]] = {
+        "조세특례제한법": {
+            **BASELINE_LAW_INFO["조세특례제한법"],
+            "법령ID": "001584",
+            "공포번호": "21223",
+            "공포일": "2025.12.23",
+            "시행일": "2026.01.01",
+            "반영일": "2026-10-29",
+            "조문해시": compute_law_text_hash(
+                "제29조의8(통합고용세액공제) ① 조문 원문\n\n"
+                "제132조(최저한세액에 미달하는 세액에 대한 감면 등의 배제) ① 원문\n\n"
+                "제144조(세액공제액의 이월공제) ① 원문"
+            ),
+            "세부조문해시": {
+                "제29조의8": compute_law_text_hash("제29조의8(통합고용세액공제) ① 조문 원문"),
+                "제132조": compute_law_text_hash("제132조(최저한세액에 미달하는 세액에 대한 감면 등의 배제) ① 원문"),
+                "제144조": compute_law_text_hash("제144조(세액공제액의 이월공제) ① 원문"),
+            },
+            "특정부칙_목록": ("21223_제34조",),
+            "특정부칙해시": {
+                "21223_제34조": compute_law_text_hash("제34조(통합고용세액공제에 관한 경과조치) 종전의 규정에 따른다."),
+            },
+        },
+        "조세특례제한법 시행령": {
+            **BASELINE_LAW_INFO["조세특례제한법 시행령"],
+            "법령ID": "001781",
+            "공포번호": "36127",
+            "공포일": "2026.02.27",
+            "시행일": "2026.02.27",
+            "반영일": "2026-10-29",
+            "조문해시": compute_law_text_hash(_extract_26_8 := "제26조의8(통합고용세액공제) ⑥ 제11조의2제8항을 준용한다."),
+            "세부조문해시": {
+                "제26조의8": compute_law_text_hash(_extract_26_8),
+                "제11조의2 제8항": compute_law_text_hash("⑧ 법 제12조의2제3항 및 제5항을 적용할 때 상시근로자 수 계산식"),
+            },
+            "특정부칙_목록": ("36127_제11조",),
+            "특정부칙해시": {
+                "36127_제11조": compute_law_text_hash("제11조(통합고용세액공제에 관한 적용례 등) ① 경과조치 원문"),
+            },
+        },
+        "조세특례제한법 시행규칙": {
+            **BASELINE_LAW_INFO["조세특례제한법 시행규칙"],
+            "법령ID": "001850",
+            "공포번호": "1180",
+            "공포일": "2026.03.20",
+            "시행일": "2026.03.20",
+            "반영일": "2026-10-29",
+            "조문해시": compute_law_text_hash(str(ADMIN_RULINGS_AND_NOTICES["조특칙_별지_제10호의10_서식"]["원문"])),
+            "세부조문해시": {
+                "제14조": compute_law_text_hash(str(ADMIN_RULINGS_AND_NOTICES["조특칙_별지_제10호의10_서식"]["원문"])),
+            },
+            "서식개정일_목록": {
+                "별지 제10호의9서식": "2026.03.20",
+                "별지 제10호의10서식": "2026.03.20",
+            },
+            "특정부칙해시": {},
+        },
+        "농어촌특별세법": {
+            **BASELINE_LAW_INFO["농어촌특별세법"],
+            "법령ID": "001586",
+            "공포번호": "21065",
+            "공포일": "2025.10.01",
+            "시행일": "2026.01.01",
+            "반영일": "2026-10-29",
+            "조문해시": compute_law_text_hash("제5조(과세표준과 세율) ① 100분의 20"),
+            "세부조문해시": {
+                "제5조": compute_law_text_hash("제5조(과세표준과 세율) ① 100분의 20"),
+            },
+            "특정부칙해시": {},
+        },
+    }
+
     base_mock_fetched = {
         l_nm: {
+            "법령명": l_nm,
+            "법령ID": b_info["법령ID"],
             "공포번호": b_info["공포번호"],
             "공포일": b_info["공포일"],
             "시행일": b_info["시행일"],
             "조문해시": b_info["조문해시"],
-            "부칙해시": b_info["부칙해시"],
             "세부조문해시": dict(b_info.get("세부조문해시") or {}),
+            "특정부칙해시": dict(b_info.get("특정부칙해시") or {}),
             "서식개정일_목록": dict(b_info.get("서식개정일_목록") or {}),
         }
-        for l_nm, b_info in BASELINE_LAW_INFO.items()
+        for l_nm, b_info in captured_test_baseline.items()
     }
 
     # (9-1) 조문 해시가 기준과 같음 → 초록
-    st_1 = evaluate_law_monitoring_status(base_mock_fetched, today="2026-04-10", tax_year=2026)
+    st_1 = evaluate_law_monitoring_status(base_mock_fetched, baseline_info=captured_test_baseline, today="2026-11-10", tax_year=2026)
     if st_1["color"] != "green" or st_1["unapplied_count"] != 0 or st_1["needs_program_update"] is not False:
         errors.append(f"9-1 실패: 조문 해시 일치 시 초록불 판정 불일치 ({st_1})")
 
@@ -2439,57 +2845,109 @@ def verify_golden_case_invariants() -> tuple[bool, list[str]]:
     diff_mock_fetched["조세특례제한법"] = {
         **diff_mock_fetched["조세특례제한법"],
         "공포번호": "21999",
-        "공포일": "2026.06.01",
-        "시행일": "2026.06.01",
+        "공포일": "2026.11.01",
+        "시행일": "2026.11.01",
         "조문해시": compute_law_text_hash("제29조의8 개정된 새로운 조문 본문"),
     }
-    st_2 = evaluate_law_monitoring_status(diff_mock_fetched, today="2026-06-15", tax_year=2026)
+    st_2 = evaluate_law_monitoring_status(diff_mock_fetched, baseline_info=captured_test_baseline, today="2026-11-15", tax_year=2026)
     if st_2["color"] != "orange" or st_2["unapplied_count"] != 1 or not st_2["needs_program_update"]:
         errors.append(f"9-2 실패: 조문 해시 불일치 시 주황불·미반영 1건 판정 불일치 ({st_2})")
 
-    # (9-3) 법령 전체 공포번호만 바뀌고 감시 조문·부칙 해시는 같음 → 초록, "타 조문 개정" 처리
+    # (9-3) 법령 전체 공포번호만 바뀌고 감시 조문·특정 부칙 해시는 같음 + 무관한 새 부칙 블록(통합고용 언급 없음)만 추가된 원문 → 초록, "타 조문 개정" 처리
+    unrelated_new_addenda_txt = (
+        "부칙 <제21467호, 2026.03.17.>\n"
+        "제1조(시행일) 이 법은 공포 후 6개월이 경과한 날부터 시행한다.\n"
+        "제2조(일반적 경과조치) 이 법 시행 당시 종전의 규정에 따른다.\n\n"
+        "부칙 <제21223호, 2025.12.23.>\n"
+        "제34조(통합고용세액공제에 관한 경과조치) 종전의 규정에 따른다."
+    )
     other_art_fetched = {k: dict(v) for k, v in base_mock_fetched.items()}
     other_art_fetched["조세특례제한법"] = {
         **other_art_fetched["조세특례제한법"],
-        "공포번호": "21888",
-        "공포일": "2026.05.01",
+        "공포번호": "21467",
+        "공포일": "2026.03.17",
+        "부칙원문": unrelated_new_addenda_txt,
     }
-    st_3 = evaluate_law_monitoring_status(other_art_fetched, today="2026-06-10", tax_year=2026)
+    st_3 = evaluate_law_monitoring_status(other_art_fetched, baseline_info=captured_test_baseline, today="2026-11-10", tax_year=2026)
     law_3_info = st_3["laws"]["조세특례제한법"]
     if st_3["color"] != "green" or st_3["unapplied_count"] != 0 or "타 조문 개정" not in law_3_info["status_label"]:
-        errors.append(f"9-3 실패: 타법/타조문 개정 시 초록 유지 및 상태 문구 불일치 ({law_3_info})")
+        errors.append(f"9-3 실패: 무관한 새 부칙만 추가된 타법개정 시 초록 유지 실패 ({law_3_info})")
+
+    # (9-3b) 새 부칙 블록에 "제29조의8" 언급 → 주황 (신규 적용례·경과조치 감지)
+    related_new_addenda_txt = (
+        "부칙 <제21500호, 2026.11.01.>\n"
+        "제1조(시행일) 이 법은 2027년 1월 1일부터 시행한다.\n"
+        "제5조(통합고용세액공제에 관한 적용례) 제29조의8의 개정규정은 이 법 시행 이후 개시하는 과세연도 분부터 적용한다.\n\n"
+        "부칙 <제21223호, 2025.12.23.>\n"
+        "제34조(통합고용세액공제에 관한 경과조치) 종전의 규정에 따른다."
+    )
+    new_buchik_fetched = {k: dict(v) for k, v in base_mock_fetched.items()}
+    new_buchik_fetched["조세특례제한법"] = {
+        **new_buchik_fetched["조세특례제한법"],
+        "공포번호": "21500",
+        "공포일": "2026.11.01",
+        "시행일": "2027.01.01",
+        "부칙원문": related_new_addenda_txt,
+    }
+    st_3b = evaluate_law_monitoring_status(new_buchik_fetched, baseline_info=captured_test_baseline, today="2026-11-10", tax_year=2026)
+    if st_3b["color"] != "orange" or st_3b["unapplied_count"] != 1:
+        errors.append(f"9-3b 실패: 새 부칙 블록에 제29조의8 언급 시 주황 판정 실패 ({st_3b})")
+
+    # (9-3c) 기준 해시 빈 값(캡처 전 기본 BASELINE_LAW_INFO) → 노랑 "기준 버전 미설정 · 확인 필요"
+    st_unset = evaluate_law_monitoring_status(base_mock_fetched, baseline_info=BASELINE_LAW_INFO, today="2026-11-10", tax_year=2026)
+    if (
+        st_unset["color"] != "yellow"
+        or not st_unset.get("has_unset_baseline")
+        or "기준 버전 미설정" not in st_unset["laws"]["조세특례제한법"]["status_label"]
+    ):
+        errors.append(f"9-3c 실패: 기준 해시 빈 값일 때 노랑 '기준 버전 미설정' 미표시 ({st_unset})")
+
+    # (9-3d) API 응답의 법령명이 감시 대상과 다르면 노랑 처리되는지 검증
+    mismatch_fetched = {k: dict(v) for k, v in base_mock_fetched.items()}
+    mismatch_fetched["조세특례제한법"] = {
+        **mismatch_fetched["조세특례제한법"],
+        "법령명": "조세특례제한법 시행령",
+    }
+    st_mismatch = evaluate_law_monitoring_status(mismatch_fetched, baseline_info=captured_test_baseline, today="2026-11-10", tax_year=2026)
+    if (
+        st_mismatch["color"] != "yellow"
+        or not st_mismatch.get("has_name_mismatch")
+        or "법령명 불일치" not in st_mismatch["laws"]["조세특례제한법"]["status_label"]
+    ):
+        errors.append(f"9-3d 실패: 응답 법령명 불일치 시 노랑 판정 실패 ({st_mismatch})")
 
     # (9-4) 조회 실패 → 노랑, 마지막 성공 결과 유지
     st_4 = evaluate_law_monitoring_status(
         None,
-        today="2026-06-20",
+        baseline_info=captured_test_baseline,
+        today="2026-11-20",
         tax_year=2026,
-        last_success_cache={"last_checked_at": "2026-06-19 09:00", "unapplied_count": 0, "laws": st_1["laws"]},
+        last_success_cache={"last_checked_at": "2026-11-19 09:00", "unapplied_count": 0, "laws": st_1["laws"]},
     )
-    if st_4["color"] != "yellow" or not st_4["api_failed"] or st_4["last_checked_at"] != "2026-06-19 09:00":
+    if st_4["color"] != "yellow" or not st_4["api_failed"] or st_4["last_checked_at"] != "2026-11-19 09:00":
         errors.append(f"9-4 실패: 조회 실패 시 노란불 및 마지막 성공 결과 유지 불일치 ({st_4})")
 
     # (9-5) 미반영 건: 감지 후 61일, 200일이 지나도 주황 [N건] 표시 유지
-    st_5_61d = evaluate_law_monitoring_status(diff_mock_fetched, today="2026-08-05", tax_year=2026)
-    st_5_200d = evaluate_law_monitoring_status(diff_mock_fetched, today="2026-12-25", tax_year=2026)
+    st_5_61d = evaluate_law_monitoring_status(diff_mock_fetched, baseline_info=captured_test_baseline, today="2027-01-05", tax_year=2026)
+    st_5_200d = evaluate_law_monitoring_status(diff_mock_fetched, baseline_info=captured_test_baseline, today="2027-05-25", tax_year=2026)
     if (
         st_5_61d["color"] != "orange" or st_5_61d["badge_text"] != "[1건]"
         or st_5_200d["color"] != "orange" or st_5_200d["badge_text"] != "[1건]"
     ):
         errors.append(f"9-5 실패: 미반영 건 61일·200일 경과 후 주황 [1건] 유지 실패 ({st_5_61d['badge_text']}, {st_5_200d['badge_text']})")
 
-    # (9-6) 반영 완료 건: 반영일(2026-03-25) + 59일(2026-05-18) → 초록 "최근 반영 N건" 표시 / 반영일 + 61일(2026-05-26) → 미표시
-    st_6_59d = evaluate_law_monitoring_status(base_mock_fetched, today="2026-05-18", tax_year=2026)
-    st_6_61d = evaluate_law_monitoring_status(base_mock_fetched, today="2026-05-26", tax_year=2026)
+    # (9-6) 반영 완료 건: 반영일(2026-10-29) + 59일(2026-12-27) → 초록 "최근 반영 N건" 표시 / 반영일 + 61일(2026-12-29) → 미표시
+    st_6_59d = evaluate_law_monitoring_status(base_mock_fetched, baseline_info=captured_test_baseline, today="2026-12-27", tax_year=2026)
+    st_6_61d = evaluate_law_monitoring_status(base_mock_fetched, baseline_info=captured_test_baseline, today="2026-12-29", tax_year=2026)
     if (
         st_6_59d["color"] != "green" or not st_6_59d["badge_text"].startswith("최근 반영 ")
         or st_6_61d["color"] != "green" or st_6_61d["badge_text"] != ""
     ):
         errors.append(f"9-6 실패: 반영 완료 건 59일 표시 / 61일 미표시 검증 실패 (59d={st_6_59d['badge_text']}, 61d={st_6_61d['badge_text']})")
 
-    # (9-7) 예규·안내문: 수록일(2026-03-25) + 59일(2026-05-23) → 초록 [N건] / 수록일 + 61일(2026-05-25) → 회색
-    rul_59d = evaluate_ruling_monitoring_status(ADMIN_RULINGS_AND_NOTICES, today="2026-05-23")
-    rul_61d = evaluate_ruling_monitoring_status(ADMIN_RULINGS_AND_NOTICES, today="2026-05-25")
+    # (9-7) 예규·안내문: 수록일(2026-10-29) + 59일(2026-12-27) → 초록 [N건] / 수록일 + 61일(2026-12-29) → 회색
+    rul_59d = evaluate_ruling_monitoring_status(ADMIN_RULINGS_AND_NOTICES, today="2026-12-27")
+    rul_61d = evaluate_ruling_monitoring_status(ADMIN_RULINGS_AND_NOTICES, today="2026-12-29")
     if (
         rul_59d["color"] != "green" or rul_59d["badge_text"] != f"[{len(ADMIN_RULINGS_AND_NOTICES)}건]"
         or rul_61d["color"] != "gray" or rul_61d["badge_text"] != ""
@@ -2511,33 +2969,47 @@ def verify_golden_case_invariants() -> tuple[bool, list[str]]:
     def _mock_ai_gen():
         call_counter["n"] += 1
         return "① 무엇이 바뀌었나: 조문 개정 요약\n② 언제부터 적용되나: 부칙에 따름\n③ 앱 계산 영향: 기본공제\n④ 실무 확인 사항: 신고서 확인"
-    res_c1 = get_or_create_ai_law_interpretation("001592", "21223", "21999", "hash123", _mock_ai_gen, cache_store=test_cache_store)
-    res_c2 = get_or_create_ai_law_interpretation("001592", "21223", "21999", "hash123", _mock_ai_gen, cache_store=test_cache_store)
+    res_c1 = get_or_create_ai_law_interpretation("001584", "21223", "21999", "hash123", _mock_ai_gen, cache_store=test_cache_store)
+    res_c2 = get_or_create_ai_law_interpretation("001584", "21223", "21999", "hash123", _mock_ai_gen, cache_store=test_cache_store)
     if call_counter["n"] != 1 or res_c1["from_cache"] is not False or res_c2["from_cache"] is not True or "AI 해석(원문 아님)" not in res_c2["formatted_text"]:
         errors.append(f"9-9 실패: AI 해석 캐시 재사용 검증 실패 (calls={call_counter['n']}, c2={res_c2})")
 
-    # (9-10) 보고서: 미반영 개정이 있는 상태에서 보고서 최상단 경고와 하단 기준 법령 스탬프가 모두 포함되는지 (+ 6-4 노란불 경고)
-    rep_warn_orange = build_report_law_banner_and_stamp(st_2, tax_year=2026)
-    rep_warn_yellow = build_report_law_banner_and_stamp(st_4, tax_year=2026)
+    # (9-10) 보고서: (a) 캡처된 기준이 있을 때 상단 경고와 하단 기준 법령 스탬프 출력,
+    #                (b) BASELINE에 법령ID·공포번호·조문해시가 비어 있으면 스탬프가 "기준 버전 미설정"으로 나오는지 검증
+    rep_warn_orange = build_report_law_banner_and_stamp(st_2, tax_year=2026, baseline_info=captured_test_baseline)
+    rep_warn_yellow = build_report_law_banner_and_stamp(st_4, tax_year=2026, baseline_info=captured_test_baseline)
+    rep_unset_stamp = build_report_law_banner_and_stamp(st_unset, tax_year=2026, baseline_info=BASELINE_LAW_INFO)
     if (
         "기준 법령 이후 개정 1건 미반영 · 확인 필요" not in rep_warn_orange["top_warning_md"]
         or "기준 법령 버전" not in rep_warn_orange["bottom_stamp_md"]
         or "제21223호" not in rep_warn_orange["bottom_stamp_md"]
         or "제36127호" not in rep_warn_orange["bottom_stamp_md"]
         or "법령 최신 여부 확인 실패" not in rep_warn_yellow["top_warning_md"]
+        or "기준 버전 미설정" not in rep_unset_stamp["bottom_stamp_md"]
     ):
-        errors.append(f"9-10 실패: 보고서 상단 미반영/조회실패 경고 또는 하단 스탬프 누락 ({rep_warn_orange}, {rep_warn_yellow})")
+        errors.append(f"9-10 실패: 보고서 상단 경고 또는 하단 스탬프(미설정 포함) 검증 실패 ({rep_warn_orange}, {rep_unset_stamp})")
 
-    # (9-11) 채택 항목 6-1(제11조의2 제8항 감시) · 6-2(귀속연도 3단계 판정) · 6-5(별지 서식 개정일 감시) 검증
+    # (9-11) 채택 항목 6-1(제11조의2 제8항 감시 및 항 슬라이싱) · 6-2(귀속연도 3단계 판정) · 6-5(별지 서식 개정일 감시) 검증
+    sample_11_2_full = (
+        "제11조의2(연구개발특구 감면) ① 제1항 R&D 본문.\n"
+        "⑦ 제7항 본문.\n"
+        "⑧ 법 제12조의2제3항 및 제5항을 적용할 때 상시근로자 수 계산식 본문.\n"
+        "1. 계산식\n"
+        "⑨ 법 제12조의2제7항 세액 본문."
+    )
+    sliced_p8 = extract_article_paragraph_slice(sample_11_2_full, 8)
+    if not sliced_p8.startswith("⑧") or "⑨" in sliced_p8 or "①" in sliced_p8:
+        errors.append(f"9-11(슬라이싱) 실패: 제11조의2 제8항 구간 추출 오류 ({sliced_p8})")
+
     sub_11_2_fetched = {k: dict(v) for k, v in base_mock_fetched.items()}
     sub_11_2_fetched["조세특례제한법 시행령"] = {
         **sub_11_2_fetched["조세특례제한법 시행령"],
         "세부조문해시": {
             **sub_11_2_fetched["조세특례제한법 시행령"]["세부조문해시"],
-            "제11조의2 제8항": compute_law_text_hash("제11조의2 제8항 산식 변경"),
+            "제11조의2 제8항": compute_law_text_hash("⑧ 제11조의2 제8항 산식 변경"),
         },
     }
-    st_sub = evaluate_law_monitoring_status(sub_11_2_fetched, today="2026-06-15", tax_year=2026)
+    st_sub = evaluate_law_monitoring_status(sub_11_2_fetched, baseline_info=captured_test_baseline, today="2026-11-15", tax_year=2026)
     if st_sub["color"] != "orange" or st_sub["unapplied_count"] != 1:
         errors.append(f"9-11(6-1) 실패: 시행령 제11조의2 제8항 단독 변경 시 주황불 미감지 ({st_sub})")
 
@@ -2546,10 +3018,10 @@ def verify_golden_case_invariants() -> tuple[bool, list[str]]:
         **form_diff_fetched["조세특례제한법 시행규칙"],
         "서식개정일_목록": {
             "별지 제10호의9서식": "2026.03.20",
-            "별지 제10호의10서식": "2026.09.01",
+            "별지 제10호의10서식": "2026.11.01",
         },
     }
-    st_form = evaluate_law_monitoring_status(form_diff_fetched, today="2026-09-05", tax_year=2026)
+    st_form = evaluate_law_monitoring_status(form_diff_fetched, baseline_info=captured_test_baseline, today="2026-11-05", tax_year=2026)
     if st_form["color"] != "orange" or st_form["unapplied_count"] != 1:
         errors.append(f"9-11(6-5) 실패: 별지 서식 개정일 변경 시 주황불 미감지 ({st_form})")
 
@@ -2562,5 +3034,41 @@ def verify_golden_case_invariants() -> tuple[bool, list[str]]:
         or j_chk["status"] != "check_needed"
     ):
         errors.append(f"9-11(6-2) 실패: 귀속연도 적용 여부 3단계 판정 불일치 ({j_not_app}, {j_app}, {j_chk})")
+
+
+    # (9-12) 디스크 캐시 파일이 전혀 없는 상태에서도 파서(_parse_law_header_and_sections) + 판정 결과가 동일한지 검증
+    for cache_f in (
+        ".workspace_storage/ec_law_daily_cache.json",
+        ".workspace_storage/ec_law_baseline_cache.json",
+    ):
+        try:
+            import os as _os_chk
+            if _os_chk.path.exists(cache_f):
+                _os_chk.remove(cache_f)
+        except Exception:
+            pass
+
+    raw_law_unrelated_add = (
+        "📘 [조세특례제한법 | 공포번호: 제21467호 | 공포일자: 2026.03.17 | 시행일자: 2026.09.18] (일련번호: 001584)\n\n"
+        "제29조의8(통합고용세액공제) ① 조문 원문\n\n"
+        "제132조(최저한세액에 미달하는 세액에 대한 감면 등의 배제) ① 원문\n\n"
+        "제144조(세액공제액의 이월공제) ① 원문\n\n"
+        "📌 [법령 부칙 (시행일 · 적용례 · 경과조치)]\n\n"
+        "부칙 <제21467호, 2026.03.17.>\n"
+        "제1조(시행일) 이 법은 공포 후 6개월이 경과한 날부터 시행한다.\n"
+        "제2조(일반적 경과조치) 이 법 시행 당시 종전의 규정에 따른다.\n\n"
+        "부칙 <제21223호, 2025.12.23.>\n"
+        "제34조(통합고용세액공제에 관한 경과조치) 종전의 규정에 따른다."
+    )
+    parsed_unrel = P._parse_law_header_and_sections(raw_law_unrelated_add, "조세특례제한법")
+    parsed_mismatch = P._parse_law_header_and_sections(raw_law_unrelated_add, "조세특례제한법 시행령")
+    if parsed_unrel.get("_law_name_mismatch") is not False or parsed_mismatch.get("_law_name_mismatch") is not True:
+        errors.append(f"9-12 실패: 파서 법령명 일치/불일치 판정 오류 ({parsed_unrel.get('_law_name_mismatch')}, {parsed_mismatch.get('_law_name_mismatch')})")
+
+    no_disk_fetched_green = {**base_mock_fetched, "조세특례제한법": parsed_unrel}
+    st_nodisk_green = evaluate_law_monitoring_status(no_disk_fetched_green, baseline_info=captured_test_baseline, today="2026-11-10", tax_year=2026)
+    st_nodisk_unset = evaluate_law_monitoring_status(no_disk_fetched_green, baseline_info=BASELINE_LAW_INFO, today="2026-11-10", tax_year=2026)
+    if st_nodisk_green["color"] != "green" or st_nodisk_unset["color"] != "yellow":
+        errors.append(f"9-12 실패: 디스크 캐시 없는 상태에서 파서 연동 판정 불일치 (green={st_nodisk_green['color']}, unset={st_nodisk_unset['color']})")
 
     return (len(errors) == 0), errors

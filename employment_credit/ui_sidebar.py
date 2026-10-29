@@ -214,7 +214,7 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
         for l_nm, l_info in (law_status.get("laws") or {}).items():
             if isinstance(l_info, dict) and l_info.get("is_unapplied"):
                 app_d = (l_info.get("applicability") or {}).get("detail") or ""
-                app_notes.append(f"• **{l_nm}** (제{l_info.get('prom_no', '')}호, 시행 {l_info.get('enf_date', '')}): {app_d}")
+                app_notes.append(f"• **{l_nm}** (현행 제{l_info.get('prom_no', '')}호, 시행 {l_info.get('enf_date', '')}): {app_d}")
         notes_md = "\n".join(app_notes)
         st.warning(
             f"**[⚠️ 프로그램 반영 필요]** 기준 법령 이후 개정 **{un_cnt}건**이 감지되었습니다.\n\n{notes_md}"
@@ -230,11 +230,22 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
             if st.button("🔄 지금 다시 조회", type="primary", use_container_width=True, key="btn_ec_law_retry_top"):
                 st.session_state["ec_force_law_refresh"] = True
                 st.rerun()
+    elif law_status.get("has_name_mismatch") or law_status.get("has_unset_baseline"):
+        c_warn, c_btn = st.columns([4.2, 1.3], vertical_alignment="center")
+        with c_warn:
+            st.warning(
+                "**[⚠️ 기준 버전 미설정 · 확인 필요]** 일부 법령의 기준 해시가 설정되지 않았거나 법령명 확인이 필요합니다. "
+                "(하단 접힌 '개발자 도구' 또는 `capture_baseline_laws.py`로 기준 해시를 캡처해 `rules.py`에 반영하세요.)"
+            )
+        with c_btn:
+            if st.button("🔄 지금 다시 조회", use_container_width=True, key="btn_ec_law_refresh_unset"):
+                st.session_state["ec_force_law_refresh"] = True
+                st.rerun()
     else:
         c_ok, c_btn = st.columns([4.4, 1.2], vertical_alignment="center")
         with c_ok:
             st.success(
-                f"✅ 감시 대상 법령·시행령·시행규칙 조문 및 부칙이 프로그램 기준 버전과 일치합니다 "
+                f"✅ 감시 대상 법령·시행령·시행규칙 조문 및 특정 부칙이 프로그램 기준 버전과 일치합니다 "
                 f"(기준일: `{law_status.get('last_checked_at', '-')}`)"
             )
         with c_btn:
@@ -242,7 +253,7 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
                 st.session_state["ec_force_law_refresh"] = True
                 st.rerun()
 
-    # ② 원문 뷰어 (법령·시행령·시행규칙·농특세법 + 예규·안내문 원문)
+    # ② 원문 뷰어 ("현행 법령(법제처 조회)"과 "계산 기준 법령(BASELINE_LAW_INFO)" 나란히 표시)
     laws_map = law_status.get("laws") or {}
     tab_names = [
         "📘 조세특례제한법",
@@ -256,34 +267,54 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
     def _render_single_law_tab(law_key: str):
         l_info = laws_map.get(law_key) or {}
         b_info = R.BASELINE_LAW_INFO.get(law_key) or {}
-        st_lbl = str(l_info.get("status_label") or "기준 정보")
+        st_lbl = str(l_info.get("status_label") or "기준 버전 미설정 · 확인 필요")
         app_info = l_info.get("applicability") or {}
         app_lbl = str(app_info.get("detail") or app_info.get("label") or "-")
         watched_str = ", ".join(l_info.get("watched_articles") or b_info.get("감시조문") or ())
+
+        live_id = str(l_info.get("law_id") or "").strip() or "미조회"
+        live_no = str(l_info.get("prom_no") or "").strip()
+        live_pdt = str(l_info.get("prom_date") or "").strip() or "-"
+        live_edt = str(l_info.get("enf_date") or "").strip() or "-"
+        live_ver_str = f"제{live_no}호 (공포 {live_pdt} · 시행 {live_edt} · ID {live_id})" if live_no else "법제처 원문 미조회"
+
+        base_id = str(b_info.get("법령ID") or "").strip() or "미설정"
+        base_no = str(b_info.get("공포번호") or "").strip()
+        base_pdt = str(b_info.get("공포일") or "").strip() or "-"
+        base_edt = str(b_info.get("시행일") or "").strip() or "-"
+        base_has_h = bool(
+            str(b_info.get("조문해시") or "").strip()
+            or any(str(v or "").strip() for v in (b_info.get("세부조문해시") or {}).values())
+        )
+        if base_no and base_has_h:
+            base_ver_str = f"제{base_no}호 (공포 {base_pdt} · 시행 {base_edt} · ID {base_id})"
+        elif base_no:
+            base_ver_str = f"제{base_no}호 (공포 {base_pdt} · 시행 {base_edt} · 기준 버전 미설정 · 확인 필요)"
+        else:
+            base_ver_str = "기준 버전 미설정 · 확인 필요"
+
         st.markdown(
-            f"**감시 대상 조문:** `{watched_str}` &nbsp;|&nbsp; "
-            f"**공포번호:** `제{l_info.get('prom_no') or b_info.get('공포번호', '')}호` &nbsp;|&nbsp; "
-            f"**공포일:** `{l_info.get('prom_date') or b_info.get('공포일', '')}` &nbsp;|&nbsp; "
-            f"**시행일:** `{l_info.get('enf_date') or b_info.get('시행일', '')}`\n\n"
-            f"**상태:** `{st_lbl}` &nbsp;|&nbsp; **{tax_yr}년 귀속 판정:** `{app_lbl}`"
+            f"**감시 대상 조문:** `{watched_str}` &nbsp;|&nbsp; **상태:** `{st_lbl}` &nbsp;|&nbsp; **{tax_yr}년 귀속 판정:** `{app_lbl}`\n\n"
+            f"• **현행 법령(법제처 조회):** `{live_ver_str}`\n\n"
+            f"• **계산 기준 법령(프로그램 반영):** `{base_ver_str}`"
         )
         old_txt = str(l_info.get("old_text") or b_info.get("기준원문_일부") or "").strip()
         new_txt = str(l_info.get("new_text") or old_txt).strip()
         add_txt = str(l_info.get("addenda_text") or b_info.get("적용시기_부칙원문") or "").strip()
 
         if l_info.get("is_unapplied"):
-            st.markdown("##### ⚖️ 구법(프로그램 기준 원문) vs 신법(법제처 최신 원문) 대비")
+            st.markdown("##### ⚖️ 구법(계산 기준 원문) vs 신법(현행 법제처 원문) 대비")
             c_old, c_new = st.columns(2)
             with c_old:
                 st.text_area(
-                    f"구법 기준 원문 (제{l_info.get('base_prom_no') or b_info.get('공포번호', '')}호)",
-                    value=old_txt or "법제처 원문 미수신",
+                    f"계산 기준 원문 (제{base_no or '-'}호)",
+                    value=old_txt or "기준 원문 없음",
                     height=220,
                     key=f"ec_law_old_{law_key}",
                 )
             with c_new:
                 st.text_area(
-                    f"신법 최신 원문 (제{l_info.get('prom_no', '')}호)",
+                    f"현행 법제처 원문 (제{live_no or '-'}호)",
                     value=new_txt or "법제처 원문 미수신",
                     height=220,
                     key=f"ec_law_new_{law_key}",
@@ -359,6 +390,15 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
     saved_interp = st.session_state.get("ec_last_ai_law_interp")
     if isinstance(saved_interp, dict) and saved_interp.get("formatted_text"):
         st.info(saved_interp["formatted_text"])
+
+    # ⑤ 접힌 개발자 도구 영역 ([기준 해시 코드 복사] — 읽기 전용, 런타임·디스크·세션 기준값 불변)
+    with st.expander("🛠️ 개발자 도구 (현재 법제처 응답 기준 해시 코드 복사 · 읽기 전용)", expanded=False):
+        st.caption(
+            "이 영역은 현재 수신된 법제처 원문에서 계산한 법령ID·공포번호·조문별 해시·특정 부칙 해시를 화면에 표시만 합니다. "
+            "앱의 기준값(rules.py·디스크·세션)을 자동으로 변경하지 않으므로, 내용을 검토한 뒤 `employment_credit/rules.py`에 직접 붙여넣으세요."
+        )
+        if hasattr(P, "format_captured_baseline_code_readonly"):
+            st.code(P.format_captured_baseline_code_readonly(law_status), language="python")
 
 
 def render_credit_sidebar():

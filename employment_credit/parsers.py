@@ -473,8 +473,8 @@ def _fetch_live_employment_law_context() -> tuple[str, dict | None]:
 
 
 _DAILY_LAW_CACHE_PATH = os.path.join(".workspace_storage", "ec_law_daily_cache.json")
-_BASELINE_TEXT_CACHE_PATH = os.path.join(".workspace_storage", "ec_law_baseline_cache.json")
 _AI_INTERP_CACHE_PATH = os.path.join(".workspace_storage", "ec_law_ai_cache.json")
+
 
 def _call_gemini_text_plain(prompt: str, prefer_pro: bool = False, log_tokens_fn=None) -> str:
     keys = _get_gemini_api_keys()
@@ -508,7 +508,6 @@ def _call_gemini_text_plain(prompt: str, prefer_pro: bool = False, log_tokens_fn
     return ""
 
 
-
 def _load_json_safe(path: str) -> dict:
     if not os.path.exists(path):
         return {}
@@ -529,18 +528,27 @@ def _save_json_safe(path: str, data: dict) -> None:
         pass
 
 
-def _parse_law_header_and_sections(raw_res: str, law_name: str) -> dict[str, Any]:
+def _parse_law_header_and_sections(raw_res: str, expected_law_name: str) -> dict[str, Any]:
     """
     law_api.py / agent.py가 반환한 법령 원문 텍스트에서
-    공포번호·공포일자·시행일자·조문본문·부칙본문·세부조문(제26조의8, 제11조의2 등)을 분리 추출합니다.
+    법령명(일치 검증), 법령ID, 공포번호, 공포일자, 시행일자, 조문별 본문(제11조의2 제8항 항 슬라이싱 포함),
+    특정 부칙 블록 해시 및 부칙 본문을 정밀 추출합니다.
     """
     txt = str(raw_res or "").strip()
     if not txt or txt.startswith("❌") or txt.startswith("[검색 한도") or txt.startswith("[원문 조회 한도"):
         return {"_fetch_error": True}
 
-    m_no = re.search(r"공포번호\s*:\s*제?\s*(\d+)\s*호?", txt)
-    m_pdt = re.search(r"공포일자\s*:\s*(\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2})", txt)
-    m_edt = re.search(r"시행일자\s*:\s*(\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2})", txt)
+    first_line = txt.splitlines()[0].strip() if txt.splitlines() else ""
+    m_title = re.search(r"📘\s*\[\s*([^\]|]+)", first_line)
+    parsed_law_name = m_title.group(1).strip() if m_title else ""
+    expected_clean = re.sub(r"\s+", "", str(expected_law_name or ""))
+    parsed_clean = re.sub(r"\s+", "", parsed_law_name)
+    law_name_mismatch = bool(not parsed_clean or parsed_clean != expected_clean)
+
+    m_id = re.search(r"(?:법령ID|일련번호)\s*:\s*(\d+)", first_line)
+    m_no = re.search(r"공포번호\s*:\s*제?\s*(\d+)\s*호?", first_line)
+    m_pdt = re.search(r"공포일자\s*:\s*(\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2})", first_line)
+    m_edt = re.search(r"시행일자\s*:\s*(\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2})", first_line)
 
     add_split = re.search(r"(?m)^(?:\s*📌\s*\[[^\n]*부칙|\s*\[?부칙\s*<)", txt)
     if add_split:
@@ -563,14 +571,53 @@ def _parse_law_header_and_sections(raw_res: str, law_name: str) -> dict[str, Any
         gaji_n = int(am.group(2) or 0)
         end_p = starts[idx + 1].start() if idx + 1 < len(starts) else len(pure_article_body)
         art_key = f"제{jo_n}조" + (f"의{gaji_n}" if gaji_n else "")
-        sub_articles[art_key] = pure_article_body[am.start():end_p].strip()
+        art_chunk = pure_article_body[am.start():end_p].strip()
+        sub_articles[art_key] = art_chunk
+
+    # 감시 대상 세부조문 해시 구성 (시행령 제11조의2는 제8항만 슬라이싱하여 해시)
+    b_cfg = R.BASELINE_LAW_INFO.get(expected_law_name) or {}
+    sub_hashes: dict[str, str] = {}
+    watched_core_chunks: list[str] = []
+    for w_art in (b_cfg.get("감시조문") or ()):
+        w_str = str(w_art).strip()
+        if "별지" in w_str:
+            continue
+        m_wh = re.match(r"^(제\d+조(?:의\d+)?)(?:\s*제(\d+)항)?$", w_str.replace(" ", ""))
+        if not m_wh:
+            m_wh = re.search(r"(제\s*\d+\s*조(?:\s*의\s*\d+)?)(?:\s*제\s*(\d+)\s*항)?", w_str)
+        if m_wh:
+            base_art_k = re.sub(r"\s+", "", m_wh.group(1))
+            hang_num = int(m_wh.group(2)) if m_wh.group(2) else None
+            raw_art_txt = sub_articles.get(base_art_k, "")
+            if raw_art_txt and hang_num is not None:
+                sliced_txt = R.extract_article_paragraph_slice(raw_art_txt, hang_num) or raw_art_txt
+            else:
+                sliced_txt = raw_art_txt
+            if sliced_txt:
+                sub_hashes[w_str] = R.compute_law_text_hash(sliced_txt)
+                watched_core_chunks.append(sliced_txt)
+
+    effective_article_text = "\n\n".join(watched_core_chunks) if watched_core_chunks else pure_article_body
+    article_hash = R.compute_law_text_hash(effective_article_text)
+
+    # 특정 부칙 블록만 정밀 해시 추출 (예: 21223_제34조, 35999_제2조, 36127_제11조)
+    spec_add_hashes: dict[str, str] = {}
+    for sp_spec in (b_cfg.get("특정부칙_목록") or ()):
+        sp_txt = R.extract_specific_addendum_target(add_part, str(sp_spec))
+        spec_add_hashes[str(sp_spec)] = R.compute_law_text_hash(sp_txt) if sp_txt else ""
 
     return {
         "_fetch_error": False,
+        "_law_name_mismatch": law_name_mismatch,
+        "법령명": parsed_law_name,
+        "법령ID": m_id.group(1).strip() if m_id else "",
         "공포번호": m_no.group(1).strip() if m_no else "",
         "공포일": m_pdt.group(1).strip() if m_pdt else "",
         "시행일": m_edt.group(1).strip() if m_edt else "",
-        "조문원문": pure_article_body,
+        "조문해시": article_hash,
+        "세부조문해시": sub_hashes,
+        "특정부칙해시": spec_add_hashes,
+        "조문원문": effective_article_text,
         "부칙원문": add_part,
         "세부조문원문": sub_articles,
     }
@@ -581,10 +628,10 @@ def fetch_daily_ec_law_monitoring_status(
     force_refresh: bool = False,
 ) -> dict[str, Any]:
     """
-    [1-3 하루 1회 조회 원칙 & 2-1/6-1/6-5 감시]
-    - 로컬 일별 캐시(.workspace_storage/ec_law_daily_cache.json)에 당일(YYYY-MM-DD) 성공 결과가 있으면
-      외부 API 호출 없이 즉시 평가 결과를 반환합니다.
-    - 당일 최초 조회이거나 force_refresh=True일 때만 법제처 API를 호출합니다.
+    [피드백 2 & 3-2 반영 — 우회 로직 완전 제거, 실제 원문 해시 단일 비교]
+    - 로컬 일별 캐시(.workspace_storage/ec_law_daily_cache.json)에 당일(YYYY-MM-DD) 조회 결과가 있으면 재사용합니다.
+    - 디스크 스냅샷 우회나 '공포번호가 같으면 일치' 우회 없이, 파싱된 실제 원문 해시를 그대로
+      R.evaluate_law_monitoring_status()에 전달하여 BASELINE_LAW_INFO 코드 상수와 대조합니다.
     """
     today_str = date.today().isoformat()
     daily_cache = _load_json_safe(_DAILY_LAW_CACHE_PATH)
@@ -621,6 +668,26 @@ def fetch_daily_ec_law_monitoring_status(
         ("농어촌특별세법", "제5조, 부칙"),
     ]
 
+    # 법령명으로 검색하여 실제 응답의 법령명·법령ID를 함께 확인
+    law_id_map: dict[str, str] = {}
+    for l_nm, _ in law_queries:
+        try:
+            s_rows = law_api.search_law_data(l_nm, "law") or []
+            if isinstance(s_rows, dict):
+                s_rows = [s_rows]
+            target_norm = re.sub(r"\s+", "", l_nm)
+            exact_rows = [
+                r for r in s_rows
+                if re.sub(r"\s+", "", str(r.get("법령명한글") or r.get("법령명_한글") or "")) == target_norm
+            ]
+            if exact_rows:
+                exact_rows.sort(key=lambda x: (str(x.get("공포일자", "")), str(x.get("시행일자", ""))), reverse=True)
+                lid = str(exact_rows[0].get("법령ID") or exact_rows[0].get("법령일련번호") or "").strip()
+                if lid:
+                    law_id_map[l_nm] = lid
+        except Exception:
+            pass
+
     def _fetch_one(item: tuple[str, str]) -> tuple[str, str]:
         lnm, qf = item
         w_tok = agent._TOOL_TRACE.set(agent._new_trace(unleash=True))
@@ -654,95 +721,22 @@ def fetch_daily_ec_law_monitoring_status(
     except Exception:
         pass
 
-    base_snap_store = _load_json_safe(_BASELINE_TEXT_CACHE_PATH)
     fetched_laws: dict[str, Any] = {"_checked_at": today_str}
-    any_core_failed = False
-
     for l_nm, raw_txt in raw_list:
         parsed = _parse_law_header_and_sections(raw_txt, l_nm)
         if parsed.get("_fetch_error"):
-            if l_nm in ("조세특례제한법", "조세특례제한법 시행령"):
-                any_core_failed = True
-                break
-            b_cfg = R.BASELINE_LAW_INFO.get(l_nm) or {}
-            fetched_laws[l_nm] = {
-                "공포번호": b_cfg.get("공포번호", ""),
-                "공포일": b_cfg.get("공포일", ""),
-                "시행일": b_cfg.get("시행일", ""),
-                "조문해시": b_cfg.get("조문해시", ""),
-                "부칙해시": b_cfg.get("부칙해시", ""),
-                "조문원문": b_cfg.get("기준원문_일부", ""),
-                "부칙원문": b_cfg.get("적용시기_부칙원문", ""),
-                "서식개정일_목록": form_rev_dates or dict(b_cfg.get("서식개정일_목록") or {}),
-            }
-            continue
+            return R.evaluate_law_monitoring_status(
+                {"_api_failed": True},
+                today=today_str,
+                tax_year=tax_year,
+                last_success_cache=last_success,
+            )
+        if not parsed.get("법령ID") and l_nm in law_id_map:
+            parsed["법령ID"] = law_id_map[l_nm]
+        if l_nm == "조세특례제한법 시행규칙" and form_rev_dates:
+            parsed["서식개정일_목록"] = form_rev_dates
+        fetched_laws[l_nm] = parsed
 
-        b_cfg = R.BASELINE_LAW_INFO.get(l_nm) or {}
-        b_prom = str(b_cfg.get("공포번호") or "")
-        f_prom = str(parsed.get("공포번호") or b_prom)
-        f_pdt = str(parsed.get("공포일") or b_cfg.get("공포일") or "")
-        f_edt = str(parsed.get("시행일") or b_cfg.get("시행일") or "")
-        art_txt = str(parsed.get("조문원문") or "")
-        add_txt = str(parsed.get("부칙원문") or "")
-
-        live_art_hash = R.compute_law_text_hash(art_txt)
-        live_add_hash = R.compute_law_text_hash(add_txt)
-
-        snap_entry = base_snap_store.get(l_nm) if isinstance(base_snap_store.get(l_nm), dict) else {}
-        if f_prom == b_prom and art_txt:
-            snap_entry = {
-                "prom_no": b_prom,
-                "live_art_hash": live_art_hash,
-                "live_add_hash": live_add_hash,
-                "article_text": art_txt,
-                "addenda_text": add_txt,
-            }
-            base_snap_store[l_nm] = snap_entry
-
-        if snap_entry and snap_entry.get("live_art_hash") == live_art_hash:
-            eff_art_hash = str(b_cfg.get("조문해시") or live_art_hash)
-            eff_sub_hashes = dict(b_cfg.get("세부조문해시") or {})
-        elif f_prom == b_prom:
-            eff_art_hash = str(b_cfg.get("조문해시") or live_art_hash)
-            eff_sub_hashes = dict(b_cfg.get("세부조문해시") or {})
-        else:
-            eff_art_hash = live_art_hash
-            eff_sub_hashes = {}
-
-        if snap_entry and snap_entry.get("live_add_hash") == live_add_hash:
-            eff_add_hash = str(b_cfg.get("부칙해시") or live_add_hash)
-        elif f_prom == b_prom:
-            eff_add_hash = str(b_cfg.get("부칙해시") or live_add_hash)
-        else:
-            eff_add_hash = live_add_hash
-
-        old_txt_ref = str(snap_entry.get("article_text") or b_cfg.get("기준원문_일부") or art_txt)
-        fetched_laws[l_nm] = {
-            "공포번호": f_prom,
-            "공포일": f_pdt,
-            "시행일": f_edt,
-            "조문해시": eff_art_hash,
-            "부칙해시": eff_add_hash,
-            "세부조문해시": eff_sub_hashes,
-            "구법원문": old_txt_ref,
-            "조문원문": art_txt or str(b_cfg.get("기준원문_일부") or ""),
-            "부칙원문": add_txt or str(b_cfg.get("적용시기_부칙원문") or ""),
-            "서식개정일_목록": (
-                {**dict(b_cfg.get("서식개정일_목록") or {}), **form_rev_dates}
-                if l_nm == "조세특례제한법 시행규칙"
-                else {}
-            ),
-        }
-
-    if any_core_failed:
-        return R.evaluate_law_monitoring_status(
-            {"_api_failed": True},
-            today=today_str,
-            tax_year=tax_year,
-            last_success_cache=last_success,
-        )
-
-    _save_json_safe(_BASELINE_TEXT_CACHE_PATH, base_snap_store)
     eval_res = R.evaluate_law_monitoring_status(
         fetched_laws,
         today=today_str,
@@ -758,6 +752,36 @@ def fetch_daily_ec_law_monitoring_status(
     }
     _save_json_safe(_DAILY_LAW_CACHE_PATH, daily_cache)
     return eval_res
+
+
+def format_captured_baseline_code_readonly(law_status: dict[str, Any] | None) -> str:
+    """
+    [피드백 2-4] 상세보기 모달 하단 접힌 '개발자 도구' 영역에 표시할 읽기 전용 BASELINE_LAW_INFO 코드 스니펫 생성.
+    - 화면에 텍스트로 표시·복사만 제공하며, rules.py·디스크·세션의 기준값을 절대 변경하지 않습니다.
+    """
+    laws_map = (law_status or {}).get("laws") or {}
+    out_lines = ["# [읽기 전용 캡처 결과] 검토 후 employment_credit/rules.py의 BASELINE_LAW_INFO에 반영하세요.", "CAPTURED_BASELINE_SNIPPET = {"]
+    for l_nm, b_cfg in R.BASELINE_LAW_INFO.items():
+        l_info = laws_map.get(l_nm) or {}
+        lid = str(l_info.get("law_id") or "")
+        p_no = str(l_info.get("prom_no") or "")
+        p_dt = str(l_info.get("prom_date") or "")
+        e_dt = str(l_info.get("enf_date") or "")
+        art_h = str(l_info.get("article_hash") or "")
+        sub_h = l_info.get("sub_article_hashes") or {}
+        spec_add_h = l_info.get("specific_addenda_hashes") or {}
+        out_lines.append(f'    "{l_nm}": {{')
+        out_lines.append(f'        "법령ID": "{lid}",')
+        out_lines.append(f'        "공포번호": "{p_no}",')
+        out_lines.append(f'        "공포일": "{p_dt}",')
+        out_lines.append(f'        "시행일": "{e_dt}",')
+        out_lines.append(f'        "반영일": "{date.today().isoformat()}",')
+        out_lines.append(f'        "조문해시": "{art_h}",')
+        out_lines.append(f'        "세부조문해시": {json.dumps(sub_h, ensure_ascii=False)},')
+        out_lines.append(f'        "특정부칙해시": {json.dumps(spec_add_h, ensure_ascii=False)},')
+        out_lines.append("    },")
+    out_lines.append("}")
+    return "\n".join(out_lines)
 
 
 def request_on_demand_law_ai_interpretation(
