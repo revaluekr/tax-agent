@@ -441,7 +441,7 @@ def _fetch_live_employment_law_context() -> tuple[str, dict | None]:
         n_valid_laws = max(1, len(valid_results))
         # [문제 5 해결] LIVE_LAW_TEXT_LIMIT(18,000자) 기준으로 법령별 할당량을 계산하고(구분자 "\n\n" 감안),
         # 각 법령 안에서는 본칙 >= 80%, 부칙 <= 20% 비율을 보장하며 "📌" 부칙 머리글과 [본칙관련] 부칙을 최우선 보존합니다.
-        per_law_quota = max(4400, (LIVE_LAW_TEXT_LIMIT - 2 * max(0, n_valid_laws - 1)) // n_valid_laws)
+        per_law_quota = max(1200, (LIVE_LAW_TEXT_LIMIT - 2 * max(0, n_valid_laws - 1)) // n_valid_laws)
 
         for law_nm, q_filter, res_s in valid_results:
             if True:
@@ -732,7 +732,7 @@ def _fetch_single_law_by_individual_articles(
     if hasattr(agent, "_fetch_full_law_xml_direct"):
         for cid in cand_ids:
             try:
-                full_uncompressed = str(agent._fetch_full_law_xml_direct(cid) or "").strip()
+                full_uncompressed = str(agent._fetch_full_law_xml_direct(cid, query_filter=" ".join(watched_articles)) or "").strip()
                 if full_uncompressed and not full_uncompressed.startswith("❌"):
                     break
             except Exception:
