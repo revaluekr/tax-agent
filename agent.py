@@ -1244,7 +1244,7 @@ def _fetch_full_law_xml_direct(doc_id: str, query_filter: str = "") -> str:
                 no_fmt = f"제{anc_no}호, " if anc_no else ""
                 addenda_units.append((int(anc_dt) if anc_dt.isdigit() else 0, f"부칙 <{no_fmt}{dt_fmt}>\n{a_body}"))
             addenda_units.sort(key=lambda x: x[0], reverse=True)
-            for _, a_blk in addenda_units[:15]:
+            for _, a_blk in addenda_units[:25]:
                 article_blocks.append(a_blk)
             if article_blocks:
                 full_text = f"📘 [{lname}{header_meta_suffix}]\n\n" + "\n\n".join(article_blocks)
@@ -1323,65 +1323,144 @@ def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
     cleaned = re.sub(r"\[(전문개정|본조신설|제목개정|제\d+조에서 이동)[^\]]*\]", _keep_recent_rev_tag, cleaned)
 
     mult = 3 if _is_unleashed() else 1
-    art_matches = re.findall(r"제?\s*(\d+)\s*조(?:\s*의\s*(\d+))?", query_filter or "")
-    base_limit = 20000 if art_matches else 5000
+    wants_add = "부칙" in (query_filter or "")
+    qf_without_buchik_arts = re.sub(r"부칙\s*제\s*\d+\s*조(?:\s*의\s*\d+)?", "", query_filter or "")
+    main_art_matches = re.findall(r"제?\s*(\d+)\s*조(?:\s*의\s*(\d+))?", qf_without_buchik_arts)
+    all_art_matches = re.findall(r"제?\s*(\d+)\s*조(?:\s*의\s*(\d+))?", query_filter or "")
+    art_matches = main_art_matches if main_art_matches else all_art_matches
+    base_limit = 20000 if (all_art_matches or wants_add) else 5000
     limit = base_limit * mult
 
-    if art_matches:
+    if all_art_matches or wants_add:
         target_prefixes = list(dict.fromkeys(
             f"제{m[0]}조" + (f"의{m[1]}" if m[1] else "")
             for m in art_matches
         ))
-        wants_add = "부칙" in (query_filter or "")
+        # '부칙'만 단독 조회한 경우, 같은 질문(trace)에서 이미 조회한 해당 법령의 본칙 조문번호들을 자동으로 target_prefixes에 보강
+        if not main_art_matches and wants_add:
+            tr_cur = _TOOL_TRACE.get()
+            if isinstance(tr_cur, dict):
+                hdr_line = cleaned.split("\n", 1)[0] if cleaned else ""
+                m_hdr = re.search(r"📘\s*\[([^\]|\(]+)", hdr_line)
+                cur_law_norm = re.sub(r"\s+", "", m_hdr.group(1)) if m_hdr else ""
+                for (t_law, t_jo, t_gaji) in (tr_cur.get("articles") or set()):
+                    if not cur_law_norm or re.sub(r"\s+", "", str(t_law)) == cur_law_norm:
+                        p_str = f"제{t_jo}조" + (f"의{t_gaji}" if t_gaji else "")
+                        if p_str not in target_prefixes:
+                            target_prefixes.append(p_str)
+
         blocks = cleaned.split("\n\n")
         header = blocks[0] if blocks else ""
         exact_articles = []
         other_mentions = []
-        addenda_matches = []
-        addenda_all = []
+        raw_addenda_blocks = []
 
+        exact_by_tp: dict[str, list[str]] = {tp: [] for tp in target_prefixes}
         for blk in blocks[1:]:
             blk_s = blk.strip()
             blk_clean = blk_s.replace(" ", "")
             is_add_blk = blk_s.startswith("부칙") or blk_s.startswith("[부칙") or blk_s.startswith("📌")
             if is_add_blk:
-                slim_blk = law_api._slim_large_addendum_block(blk_s, query_filter) if hasattr(law_api, "_slim_large_addendum_block") else blk_s
-                addenda_all.append(slim_blk)
-                if any(tp in blk_clean for tp in target_prefixes) or any(kw in blk_clean for kw in ("통합고용", "고용증대", "경과조치")):
-                    addenda_matches.append(slim_blk)
+                raw_addenda_blocks.append((blk_s, blk_clean))
                 continue
-            if any(
-                blk_clean.startswith(tp + "(") or blk_clean.startswith(tp + " ") or blk_clean == tp
-                or re.match(rf"^{re.escape(tp)}(?![0-9의])", blk_clean)
-                for tp in target_prefixes
-            ):
-                exact_articles.append(blk_s)
-            elif any(tp in blk_clean for tp in target_prefixes):
+            matched_tp = None
+            for tp in target_prefixes:
+                if (
+                    blk_clean.startswith(tp + "(") or blk_clean.startswith(tp + " ") or blk_clean == tp
+                    or re.match(rf"^{re.escape(tp)}(?![0-9의])", blk_clean)
+                ):
+                    matched_tp = tp
+                    break
+            if matched_tp is not None:
+                exact_by_tp[matched_tp].append(blk_s)
+            elif target_prefixes and any(tp in blk_clean for tp in target_prefixes):
                 other_mentions.append(blk_s)
+        for tp in target_prefixes:
+            exact_articles.extend(exact_by_tp.get(tp) or [])
+
+        # [본칙 기반 부칙 범위 확정]
+        # 1) 타법 인용(「근로기준법」 제2조 등)을 먼저 제거한 뒤, 본칙이 직접 준용·인용하는 같은 법/모법 조문번호만 추출
+        related_prefixes = list(target_prefixes)
+        main_rev_dates: set[str] = set()
+        for ea_txt in exact_articles:
+            for m_dt in re.findall(r"(202\d)\.\s*(\d{1,2})\.\s*(\d{1,2})", ea_txt):
+                main_rev_dates.add(f"{int(m_dt[0]):04d}{int(m_dt[1]):02d}{int(m_dt[2]):02d}")
+            ea_no_other_law = re.sub(
+                r"[「『][^」』]+[」』](?:\s*시행령|\s*시행규칙)?(?:\s*제\s*\d+\s*조(?:\s*의\s*\d+)?(?:\s*제\s*\d+\s*항)?(?:\s*제\s*\d+\s*호)?)+",
+                "",
+                ea_txt,
+            )
+            for m_rel in re.findall(r"(?:법\s*|이\s*영\s*|같은\s*법\s*|같은\s*영\s*|제\d+항에\s*따른\s*|에\s*관하여는\s*)?제\s*(\d+)\s*조(?:\s*의\s*(\d+))?", ea_no_other_law):
+                rp = f"제{m_rel[0]}조" + (f"의{m_rel[1]}" if m_rel[1] else "")
+                if rp not in related_prefixes:
+                    related_prefixes.append(rp)
+
+        eff_qf_for_slim = " ".join(related_prefixes) if related_prefixes else (query_filter or "")
+
+        addenda_matched_strict = []
+        addenda_fallback = []
+        addenda_all = []
+        for blk_s, blk_clean in raw_addenda_blocks:
+            slim_blk = law_api._slim_large_addendum_block(blk_s, eff_qf_for_slim) if hasattr(law_api, "_slim_large_addendum_block") else blk_s
+            addenda_all.append(slim_blk)
+            # 부칙 자체의 조문 제목('제1조(시행일)', '제2조(경과조치)' 등)을 제거한 본문 내용에서만 본칙 조문번호 매칭 검사
+            blk_body_without_own_jo = re.sub(r"(?m)^\s*제\s*\d+\s*조(?:\s*의\s*\d+)?\s*\([^)]*\)", "", blk_s)
+            blk_body_clean = blk_body_without_own_jo.replace(" ", "")
+            has_exact_prefix = bool(
+                related_prefixes and any(
+                    re.search(rf"{re.escape(tp)}(?![0-9의])", blk_body_clean)
+                    for tp in related_prefixes
+                )
+            )
+            # 부칙 공포일자가 본칙의 <개정 YYYY.M.D.> 날짜와 일치하고 일반적 적용례가 있는 경우(타법개정 제외)
+            m_anc = re.search(r"부칙[^\n]*?(202\d)\.\s*(\d{1,2})\.\s*(\d{1,2})", blk_s.splitlines()[0] if blk_s else "")
+            anc_ymd = f"{int(m_anc.group(1)):04d}{int(m_anc.group(2)):02d}{int(m_anc.group(3)):02d}" if m_anc else ""
+            has_rev_date_match = bool(anc_ymd and anc_ymd in main_rev_dates and "다른법령의개정" not in blk_clean)
+
+            if has_exact_prefix:
+                addenda_matched_strict.append(slim_blk)
+            elif has_rev_date_match and ("일반적적용례" in blk_clean or "통합고용" in blk_clean):
+                addenda_matched_strict.append(slim_blk)
+            elif not related_prefixes and any(kw in blk_clean for kw in ("적용례", "경과조치")) and "다른법령의개정" not in blk_clean:
+                addenda_fallback.append(slim_blk)
+
+        addenda_matches = addenda_matched_strict if addenda_matched_strict else addenda_fallback
 
         if wants_add and not exact_articles and addenda_all:
             picked_add = addenda_matches if addenda_matches else addenda_all[:5 * mult]
-            cleaned = header + "\n\n📌 [법령 부칙 (시행일·적용례·경과조치)]\n\n" + "\n\n".join(picked_add)
+            cleaned = header + "\n\n📌 [법령 부칙 (본칙 한정 시행일·적용례·경과조치)]\n\n" + "\n\n".join(picked_add)
         elif exact_articles:
+            add_section = ""
+            if addenda_matches:
+                # 본칙(80% 이상 보장)이 절대 소외되지 않도록 부칙 비중은 전체 한도의 최대 18% 이내(Flash 3,500자)로 제한
+                add_Cap = 3500 * mult if wants_add else 3000 * mult
+                max_add_cnt = max(6, len(addenda_matched_strict))
+                add_txt = "\n\n".join(addenda_matches[:max_add_cnt])[:add_Cap]
+                add_section = "\n\n📌 [관련 최근 개정 부칙(본칙 한정 시행일·적용례·경과조치) 발췌]\n" + add_txt
+            elif wants_add and addenda_all:
+                add_txt = "\n\n".join(addenda_all[:3 * mult])[:3000 * mult]
+                add_section = "\n\n📌 [최근 개정 부칙(시행일·적용례·경과조치)]\n" + add_txt
+
+            # 본칙에 최소 80% 이상(Flash 기준 약 16,200자 이상)을 우선 배정하고, 장문 조문은 앞부분(제1항~)과 뒷부분(후반 항·준용규정)을 함께 보존
+            avail_for_articles = max(14000 * mult, limit - len(header) - len(add_section) - 200)
             total_exact_len = sum(len(x) for x in exact_articles)
-            if len(exact_articles) > 1 and total_exact_len > limit:
-                per_art_quota = max(5000, (limit - len(header) - 200) // len(exact_articles))
+            if total_exact_len > avail_for_articles:
+                per_art_quota = max(3500, avail_for_articles // len(exact_articles))
                 balanced_articles = []
                 for ea in exact_articles:
                     if len(ea) > per_art_quota:
-                        balanced_articles.append(ea[:per_art_quota] + f"\n...[※ 해당 조문 {len(ea):,}자 중 {per_art_quota:,}자 표시]")
+                        head_q = int(per_art_quota * 0.68)
+                        tail_q = per_art_quota - head_q
+                        balanced_articles.append(
+                            ea[:head_q]
+                            + f"\n...[※ 중략 (원문 {len(ea):,}자 중 앞·뒤 핵심 항 표시)]...\n"
+                            + ea[-tail_q:]
+                        )
                     else:
                         balanced_articles.append(ea)
-                cleaned = header + "\n\n" + "\n\n".join(balanced_articles)
+                cleaned = header + "\n\n" + "\n\n".join(balanced_articles) + add_section
             else:
-                cleaned = header + "\n\n" + "\n\n".join(exact_articles)
-            if addenda_matches:
-                add_Cap = 4500 * mult if wants_add else 2500 * mult
-                add_txt = "\n\n".join(addenda_matches[:4 if wants_add else 2])[:add_Cap]
-                cleaned += "\n\n📌 [관련 최근 개정 부칙(시행일·적용례·경과조치) 발췌]\n" + add_txt
-            elif wants_add and addenda_all:
-                add_txt = "\n\n".join(addenda_all[:3 * mult])[:4500 * mult]
-                cleaned += "\n\n📌 [최근 개정 부칙(시행일·적용례·경과조치)]\n" + add_txt
+                cleaned = header + "\n\n" + "\n\n".join(exact_articles) + add_section
         elif other_mentions:
             cleaned = header + "\n\n" + "\n\n".join(other_mentions[:3 * mult])
     elif query_filter and query_filter.strip():
