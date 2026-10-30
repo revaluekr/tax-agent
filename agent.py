@@ -1177,7 +1177,7 @@ def _semantic_verify(api_key: str, claims: list, sources: dict, user_query: str 
     )
     client = make_genai_client(api_key, 50000)
 
-    verifier_candidates = list(dict.fromkeys([VERIFIER_MODEL_ID, FLASH_BACKUP_ID, FLASH_LITE_ID, FLASH_FALLBACK_ID]))
+    verifier_candidates = _skip_slow_models(list(dict.fromkeys([VERIFIER_MODEL_ID, FLASH_BACKUP_ID, FLASH_LITE_ID, FLASH_FALLBACK_ID])))
     resp = None
     used_v_model = VERIFIER_MODEL_ID
     last_v_err = None
@@ -1192,13 +1192,17 @@ def _semantic_verify(api_key: str, claims: list, sources: dict, user_query: str 
                     thinking_config=types.ThinkingConfig(thinking_budget=1024),
                 )
                 resp = client.models.generate_content(model=vm_id, contents=prompt, config=fast_cfg)
-            except Exception:
+            except Exception as e_fast:
+                if _is_slow_error(e_fast) or _is_model_not_found(e_fast):
+                    raise
                 std_cfg = types.GenerateContentConfig(response_mime_type="application/json", temperature=0.0)
                 resp = client.models.generate_content(model=vm_id, contents=prompt, config=std_cfg)
             used_v_model = vm_id
             break
         except Exception as e:
             last_v_err = e
+            if _is_slow_error(e):
+                _mark_slow_model(vm_id)
             continue
     if resp is None:
         raise last_v_err or RuntimeError("감수 모델 호출 실패")
@@ -1830,6 +1834,24 @@ PAID_PRO_MODEL_IDS = (
         "gemini-2.5-pro",                                                                      # 4순위: 안정형 2.5 Pro 백업
     ]
 )
+
+# 504(서버 시간 초과)·응답 지연이 난 모델은 일정 시간 건너뛰어, 질문마다 같은 모델에서 수십 초씩 허비하지 않게 합니다.
+_SLOW_MODEL_UNTIL: dict[str, float] = {}
+_SLOW_MODEL_TTL_SEC = 900
+
+def _is_slow_error(e: Exception) -> bool:
+    s = str(e)
+    return bool(re.search(r"\b504\b|DEADLINE_EXCEEDED|timed? ?out|ReadTimeout", s, flags=re.IGNORECASE))
+
+def _mark_slow_model(model_id: str) -> None:
+    _SLOW_MODEL_UNTIL[model_id] = time.time() + _SLOW_MODEL_TTL_SEC
+
+def _skip_slow_models(model_ids: list[str]) -> list[str]:
+    """최근 응답 지연 모델을 뒤로 미룹니다(모두 지연 상태면 원래 순서 유지)."""
+    now = time.time()
+    fast = [m for m in model_ids if _SLOW_MODEL_UNTIL.get(m, 0) <= now]
+    slow = [m for m in model_ids if _SLOW_MODEL_UNTIL.get(m, 0) > now]
+    return fast + slow if fast else list(model_ids)
 
 def _is_model_not_found(e: Exception) -> bool:
     s = str(e)
@@ -3169,11 +3191,11 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False, room
             types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
         ]
 
-        flash_candidates = list(dict.fromkeys([FLASH_MODEL_ID, FLASH_BACKUP_ID, FLASH_LITE_ID, FLASH_FALLBACK_ID]))
+        flash_candidates = _skip_slow_models(list(dict.fromkeys([FLASH_MODEL_ID, FLASH_BACKUP_ID, FLASH_LITE_ID, FLASH_FALLBACK_ID])))
         execution_plan = []
         for lbl, k in live_pool:
             if tier_mode == "PRO":
-                for m in dict.fromkeys(PAID_PRO_MODEL_IDS):
+                for m in _skip_slow_models(list(dict.fromkeys(PAID_PRO_MODEL_IDS))):
                     execution_plan.append((lbl, k, m, f"{mode_badge} *(🔑 {lbl} · {m})*"))
                 for m in flash_candidates:
                     execution_plan.append((lbl, k, m, f"⚡ **[Pro 실패 → Flash 백업 (3배 리미트 개방 유지)]** *(🔑 {lbl} · {m})*"))
@@ -3215,12 +3237,14 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False, room
                 except Exception as e:
                     if _is_model_not_found(e):
                         dead_models.add(target_model)
+                    if _is_slow_error(e):
+                        _mark_slow_model(target_model)
                     m_code = re.search(r"\b(4\d\d|5\d\d)\b", str(e))
                     err_short = m_code.group(1) if m_code else str(e).splitlines()[0][:40]
                     retry_tag = "(재시도)" if attempt == 1 else ""
                     diag_notes.append(f"{key_label}({target_model}){retry_tag}: {err_short} · {time.time() - _t_try:.0f}초")
                     last_error = e
-                    if attempt == 0 and err_short in ("500", "503", "504"):
+                    if attempt == 0 and err_short in ("500", "503"):
                         time.sleep(1.5)
                         continue
                     break
