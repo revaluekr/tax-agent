@@ -2918,12 +2918,15 @@ def _execute_with_key_and_model(
             )
         )
     )
+    stage_secs: list[tuple[str, float]] = []
     trace_token = _TOOL_TRACE.set(_new_trace(unleash=unleash))
     try:
         _emit_live_status(f"🔎 1단계: 질의 쟁점 분석 및 법제처·공공기관 DB 탐색 중 ({model_id})...")
+        _t_stage = time.time()
         response = chat.send_message(user_input)
         raw_output = extract_safe_text(response)
         trace = _TOOL_TRACE.get()
+        stage_secs = [("1차 답변+도구조회", time.time() - _t_stage)]
 
         tool_res_chars = sum(len(x) for x in trace["list"]) + sum(len(x) for x in trace["detail"])
         tool_call_cnt = sum(trace["counts"].values())
@@ -2936,11 +2939,13 @@ def _execute_with_key_and_model(
         )
 
         if not raw_output:
+            _t_stage = time.time()
             follow_up = chat.send_message(
                 "지금까지 조회한 법령 조문과 계산 결과를 바탕으로 추가 도구 호출 없이 즉시 <precheck> 3단 크로스체크(최소 200자 이상)를 먼저 작성한 뒤 [1. 결론 -> 2. 내용 -> 3. 관련법령] 순서로 답변을 작성해 주세요."
             )
             raw_output = extract_safe_text(follow_up)
             _extract_and_log_response_usage(follow_up, model_id, count_call=False, est_in_chars=500, est_out_chars=len(raw_output))
+            stage_secs.append(("빈 응답 재요청", time.time() - _t_stage))
     finally:
         _TOOL_TRACE.reset(trace_token)
 
@@ -2961,7 +2966,9 @@ def _execute_with_key_and_model(
         )
         trace_token_p = _TOOL_TRACE.set(trace)
         try:
+            _t_stage = time.time()
             p_resp = chat.send_message(enforce_precheck_msg)
+            stage_secs.append(("precheck 재작성", time.time() - _t_stage))
             p_raw = extract_safe_text(p_resp)
             _extract_and_log_response_usage(p_resp, model_id, count_call=False, est_in_chars=len(enforce_precheck_msg), est_out_chars=len(p_raw))
             if p_raw:
@@ -3007,6 +3014,7 @@ def _execute_with_key_and_model(
                       "다시 쓴 답변에는 이 검증 요청이나 삭제 사실, 시스템에 대한 언급을 절대 넣지 마세요."
                 )
                 trace_token2 = _TOOL_TRACE.set(trace)
+                _t_stage = time.time()
                 try:
                     retry_resp = chat.send_message(fix_msg)
                     retry_text = extract_safe_text(retry_resp)
@@ -3016,6 +3024,7 @@ def _execute_with_key_and_model(
                     print(f"[시스템]    ↳ 재작성 요청 실패: {e}")
                 finally:
                     _TOOL_TRACE.reset(trace_token2)
+                    stage_secs.append(("미검증 근거 재작성", time.time() - _t_stage))
 
                 if retry_text:
                     retry_body, retry_precheck = _extract_and_strip_precheck(retry_text)
@@ -3043,6 +3052,7 @@ def _execute_with_key_and_model(
             claims, sources = _extract_claims(final_text, trace)
             if claims:
                 print(f"[시스템] 🧪 의미 검증 가동: 주장 {len(claims)}건 / 원문 {len(sources)}건")
+                _t_stage = time.time()
                 try:
                     verdicts = _semantic_verify(api_key, claims, sources, user_input)
                     final_text, cnt = _apply_semantic_results(final_text, claims, verdicts, sources)
@@ -3052,6 +3062,7 @@ def _execute_with_key_and_model(
                 except Exception as e:
                     print(f"[시스템]    ↳ 의미 검증 실패: {e}")
                     citation_note += "\n> 🧪 의미 검증을 수행하지 못했습니다(검증 모델 오류). 근거 표시 문장은 직접 확인하세요."
+                stage_secs.append(("의미 검증", time.time() - _t_stage))
 
         final_text = _inject_direct_law_links(final_text, trace)
 
@@ -3089,6 +3100,8 @@ def _execute_with_key_and_model(
     if limit_hit:
         diag += "\n> ⚠️ 도구 호출 한도에 도달해 조회가 중간에 끊겼습니다. 결론을 원문과 대조해 확인하세요."
     diag += citation_note
+    if stage_secs:
+        diag += "\n> ⏱ 단계별 소요: " + " · ".join(f"{nm} {sec:.0f}초" for nm, sec in stage_secs)
 
     if _show_diag():
         final_text += diag
@@ -3102,6 +3115,7 @@ def _execute_with_key_and_model(
 #    - Flash 모드: gemini-3.8-flash → gemini-3.6-flash → gemini-3.5-flash-lite → gemini-2.5-flash
 #    - Pro 심층 모드(1번 아르곤 직결): gemini-4-argon → gemini-3.1-pro-preview-customtools → gemini-3.1-pro-preview → gemini-2.5-pro
 def run_agent(user_input: str, raw_query: str = "", has_file: bool = False, room_key: str = "", status_callback=None) -> str:
+    _t_run = time.time()
     live_pool = get_live_gemini_key_pool()
     if not live_pool:
         return "❌ 설정된 Gemini 유료 API 키가 없습니다. .env 또는 Streamlit Secrets에 GEMINI_PAID_KEY를 넣어 주세요."
@@ -3175,6 +3189,7 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False, room
             if target_model in dead_models:
                 continue
             for attempt in range(2):
+                _t_try = time.time()
                 try:
                     final_text, precheck_len = _execute_with_key_and_model(
                         api_key=current_key,
@@ -3187,6 +3202,8 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False, room
                     )
                     precheck_badge = f" · 🛡️ **3단 크로스체크 완료({precheck_len:,}자 검증)**" if precheck_len > 0 else ""
                     diag_header = f"> {final_badge}{precheck_badge}\n"
+                    if _show_diag():
+                        diag_header += f"> ⏱ 전체 {time.time() - _t_run:.0f}초 (이번 성공 시도 {time.time() - _t_try:.0f}초)\n"
                     if recommend_pro_notice:
                         diag_header += recommend_pro_notice
                     if diag_notes:
@@ -3201,7 +3218,7 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False, room
                     m_code = re.search(r"\b(4\d\d|5\d\d)\b", str(e))
                     err_short = m_code.group(1) if m_code else str(e).splitlines()[0][:40]
                     retry_tag = "(재시도)" if attempt == 1 else ""
-                    diag_notes.append(f"{key_label}({target_model}){retry_tag}: {err_short}")
+                    diag_notes.append(f"{key_label}({target_model}){retry_tag}: {err_short} · {time.time() - _t_try:.0f}초")
                     last_error = e
                     if attempt == 0 and err_short in ("500", "503", "504"):
                         time.sleep(1.5)
