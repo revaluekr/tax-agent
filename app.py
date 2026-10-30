@@ -842,7 +842,7 @@ def generate_banner_law_diff_table(
     ]
     for m_id in dict.fromkeys(models_to_try):
         try:
-            client = genai.Client(api_key=api_key, http_options={"timeout": 60000})
+            client = agent.make_genai_client(api_key, 60000)
             resp = client.models.generate_content(model=m_id, contents=prompt)
             out_txt = agent.extract_safe_text(resp) if hasattr(agent, "extract_safe_text") else (resp.text or "")
             um = getattr(resp, "usage_metadata", None)
@@ -1376,7 +1376,7 @@ def _ocr_with_gemini_flash(file_bytes: bytes, mime_type: str, filename: str, roo
     last_err = ""
     for m_id in dict.fromkeys(models_to_try):
         try:
-            client = genai.Client(api_key=api_key, http_options={"timeout": 90000})
+            client = agent.make_genai_client(api_key, 90000)
             resp = client.models.generate_content(
                 model=m_id,
                 contents=[
@@ -2427,6 +2427,12 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
 
     api_rows = [
         {
+            "site_org": "1. Google Cloud Vertex AI (크레딧 차감)",
+            "api_info": "Gemini 유료 에이전트 엔진 — 서비스 계정 연결 (GEMINI_USE_VERTEX = on)",
+            "api_code": f"`{agent.vertex_project_id() or '프로젝트 ID 미설정 (GCP_PROJECT_ID)'} · {agent.vertex_location()}`",
+            "led_status": "🟢 정상 연동 (Vertex)" if agent._vertex_credentials() is not None else "🔴 서비스 계정 JSON 오류",
+            "link_md": "[🔗 사이트 이동](https://console.cloud.google.com/vertex-ai)"
+        } if getattr(agent, "is_vertex_enabled", lambda: False)() else {
             "site_org": "1. Google AI Studio (Google Cloud)",
             "api_info": "Gemini 유료 에이전트 엔진 (Argon / 3.8 Flash / 3.1 Pro)",
             "api_code": f"`{_format_api_code_display(gemini_raw, show_full_code)}`" if gemini_raw else "`미설정 (GEMINI_PAID_KEY)`",

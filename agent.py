@@ -41,13 +41,93 @@ def _safe_float(raw_val, default_val: float) -> float:
     except Exception:
         return float(default_val)
 
+# ---------------------------------------------------------
+# Gemini 연결 방식: AI Studio API 키(기본) / Vertex AI 서비스 계정(Google Cloud 크레딧 차감)
+# - Secrets에 GEMINI_USE_VERTEX = "on" 이면 Vertex AI로 호출합니다.
+#   필요 항목: GCP_PROJECT_ID, GCP_LOCATION(기본 global), GCP_SERVICE_ACCOUNT_JSON(서비스 계정 JSON 전체)
+#   또는 [gcp_service_account] 표 형식
+# - GEMINI_VERTEX_FALLBACK = "on" 일 때만 Vertex 실패 시 AI Studio 키(유료 결제)로 넘어갑니다.
+# ---------------------------------------------------------
+VERTEX_KEY_SENTINEL = "__VERTEX_AI__"
+_VERTEX_CREDS = None
+_VERTEX_CREDS_LOCK = threading.Lock()
+
+def _secret_on(key_name: str) -> bool:
+    return _get_secret_or_env(key_name).lower() in ("on", "true", "1", "yes")
+
+def is_vertex_enabled() -> bool:
+    return _secret_on("GEMINI_USE_VERTEX")
+
+def is_vertex_fallback_enabled() -> bool:
+    return _secret_on("GEMINI_VERTEX_FALLBACK")
+
+def _load_vertex_sa_info() -> dict | None:
+    try:
+        if hasattr(st, "secrets") and "gcp_service_account" in st.secrets:
+            return dict(st.secrets["gcp_service_account"])
+    except Exception:
+        pass
+    raw = _get_secret_or_env("GCP_SERVICE_ACCOUNT_JSON")
+    if not raw:
+        return None
+    try:
+        info = json.loads(raw)
+    except Exception:
+        return None
+    return info if isinstance(info, dict) and info.get("private_key") and info.get("client_email") else None
+
+def _vertex_credentials():
+    global _VERTEX_CREDS
+    with _VERTEX_CREDS_LOCK:
+        if _VERTEX_CREDS is None:
+            info = _load_vertex_sa_info()
+            if not info:
+                return None
+            from google.oauth2 import service_account
+            _VERTEX_CREDS = service_account.Credentials.from_service_account_info(
+                info, scopes=["https://www.googleapis.com/auth/cloud-platform"]
+            )
+        return _VERTEX_CREDS
+
+def vertex_project_id() -> str:
+    creds = _vertex_credentials()
+    return _get_secret_or_env("GCP_PROJECT_ID") or str(getattr(creds, "project_id", "") or "")
+
+def vertex_location() -> str:
+    return _get_secret_or_env("GCP_LOCATION") or "global"
+
+def make_genai_client(api_key: str, timeout_ms: int | None = None):
+    """api_key가 VERTEX_KEY_SENTINEL이면 Vertex AI(서비스 계정) 클라이언트, 아니면 AI Studio 클라이언트를 만듭니다."""
+    if api_key == VERTEX_KEY_SENTINEL:
+        creds = _vertex_credentials()
+        if creds is None:
+            raise RuntimeError(
+                "Vertex AI 설정 오류: Secrets의 GCP_SERVICE_ACCOUNT_JSON(서비스 계정 JSON)을 읽지 못했습니다. "
+                "JSON 전체를 작은따옴표 3개(''') 사이에 붙여넣었는지 확인하세요."
+            )
+        kw = {"vertexai": True, "project": vertex_project_id(), "location": vertex_location(), "credentials": creds}
+    else:
+        kw = {"api_key": api_key}
+    if timeout_ms:
+        try:
+            return genai.Client(**kw, http_options={"timeout": int(timeout_ms)})
+        except Exception:
+            pass
+    return genai.Client(**kw)
+
 def get_live_gemini_key_pool() -> list[tuple[str, str]]:
     """
     유료키만 사용합니다.
+    - GEMINI_USE_VERTEX = "on" 이면 Vertex AI(서비스 계정)만 사용합니다(GEMINI_VERTEX_FALLBACK = "on"이면 아래 키를 예비로 추가).
     - GEMINI_PAID_KEY(기본) → GEMINI_API_KEY(예비, 다른 값일 때만) 순서로 사용합니다.
     """
     pool = []
     seen = set()
+    if is_vertex_enabled():
+        pool.append(("☁️ Vertex AI(크레딧)", VERTEX_KEY_SENTINEL))
+        seen.add(VERTEX_KEY_SENTINEL)
+        if not is_vertex_fallback_enabled():
+            return pool
     for env_name, lbl in [("GEMINI_PAID_KEY", "💳 유료키"), ("GEMINI_API_KEY", "💳 유료키(예비)"), ("GOOGLE_API_KEY", "💳 유료키(GOOGLE)")]:
         k = _get_secret_or_env(env_name)
         if k and k not in seen:
@@ -534,6 +614,10 @@ def _resolve_law_name(prefix: str, titles: list[str]):
        정확히 인식하도록 정규식을 `법률?`로 확장합니다.
     """
     tail = _norm(prefix)[-45:]
+    # 'A법 및 동법 시행령 제4조'처럼 앞 법령을 가리키는 '동법/같은 법 시행령·시행규칙'은 'A법 시행령·시행규칙'으로 해석
+    m_same = re.search(r"([가-힣ㆍ·]{2,35}?법률?)(?:및|과|와|,|또는)(?:동법|같은법)(시행령|시행규칙)$", tail)
+    if m_same:
+        return _resolve_law_name(m_same.group(1) + m_same.group(2), titles)
     for suf in _REF_SKIP_SUFFIX:
         if tail == suf or (tail.endswith(suf) and not re.search(r"[가-힣]$", tail[:-len(suf)])):
             return None
@@ -1091,10 +1175,7 @@ def _semantic_verify(api_key: str, claims: list, sources: dict, user_query: str 
         '출력은 JSON 배열만: [{"id": 1, "verdict": "supported", "reason": "..."}]\n\n'
         f"[사용자 질문(사례 전제)]\n{user_query[:3000]}\n\n[원문]\n{src_block}\n\n[주장]\n{claim_block}"
     )
-    try:
-        client = genai.Client(api_key=api_key, http_options={"timeout": 50000})
-    except Exception:
-        client = genai.Client(api_key=api_key)
+    client = make_genai_client(api_key, 50000)
 
     verifier_candidates = list(dict.fromkeys([VERIFIER_MODEL_ID, FLASH_BACKUP_ID, FLASH_LITE_ID, FLASH_FALLBACK_ID]))
     resp = None
@@ -2823,10 +2904,7 @@ def _execute_with_key_and_model(
     max_remote_calls = 30 if unleash else 20
     max_out_tokens = 32768 if unleash else 16384
 
-    try:
-        temp_client = genai.Client(api_key=api_key, http_options={"timeout": timeout_ms})
-    except Exception:
-        temp_client = genai.Client(api_key=api_key)
+    temp_client = make_genai_client(api_key, timeout_ms)
 
     chat = temp_client.chats.create(
         model=model_id,

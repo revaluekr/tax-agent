@@ -1,7 +1,7 @@
 google-genai
 requests
 python-dotenv
-streamlit>=1.40
+streamlit==1.66.1
 pandas
 openpyxl
 xlrd
