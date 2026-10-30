@@ -939,9 +939,24 @@ def _patch_violation_lines(chat, answer: str, violations: list[tuple], trace: di
         "(줄 전체를 지워야 하면 빈 문자열). 다른 줄은 고치지 마세요. 줄 앞의 목록 기호(-, 1), 숫자 등)와 문체는 그대로 유지하세요.\n"
         "출력은 JSON 배열만: [{\"id\": 1, \"text\": \"수정된 한 줄 전체\"}]"
     )
+    # 줄 수정은 간단한 작업이므로 이 요청에만 생각량 상한(1024)을 겁니다.
+    # (send_message의 config는 대화 설정 전체를 대체하므로 기존 설정(도구·시스템 지시 등)을 복사해 생각량만 추가)
+    limited_cfg = None
+    try:
+        base_cfg = getattr(chat, "_config", None)
+        if base_cfg is not None:
+            limited_cfg = base_cfg.model_copy(update={"thinking_config": types.ThinkingConfig(thinking_budget=1024)})
+    except Exception:
+        limited_cfg = None
     trace_token = _TOOL_TRACE.set(trace)
     try:
-        resp = chat.send_message(patch_msg)
+        try:
+            resp = chat.send_message(patch_msg, config=limited_cfg) if limited_cfg is not None else chat.send_message(patch_msg)
+        except Exception as e_lim:
+            if limited_cfg is None or _is_slow_error(e_lim):
+                raise
+            print(f"[시스템]    ↳ 부분 수정 생각량 제한 거부({str(e_lim)[:60]}) → 제한 없이 재요청")
+            resp = chat.send_message(patch_msg)
         raw = extract_safe_text(resp)
         _extract_and_log_response_usage(resp, model_id, count_call=False, est_in_chars=len(patch_msg), est_out_chars=len(raw))
     except Exception as e:
