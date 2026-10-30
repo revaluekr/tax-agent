@@ -49,6 +49,9 @@ def _safe_float(raw_val, default_val: float) -> float:
 # - GEMINI_VERTEX_FALLBACK = "on" 일 때만 Vertex 실패 시 AI Studio 키(유료 결제)로 넘어갑니다.
 # ---------------------------------------------------------
 VERTEX_KEY_SENTINEL = "__VERTEX_AI__"
+# 429(처리량 초과)·503(일시 불가)은 같은 요청만 2~8초 간격으로 최대 2번 다시 보냅니다.
+# (대화 전체를 다음 모델로 처음부터 다시 하지 않도록 함. 504·시간 초과는 재시도해도 오래 걸리므로 제외)
+_REQUEST_RETRY_OPTIONS = {"attempts": 3, "initial_delay": 2.0, "max_delay": 8.0, "http_status_codes": [429, 503]}
 _VERTEX_CREDS = None
 _VERTEX_CREDS_LOCK = threading.Lock()
 
@@ -108,6 +111,13 @@ def make_genai_client(api_key: str, timeout_ms: int | None = None):
         kw = {"vertexai": True, "project": vertex_project_id(), "location": vertex_location(), "credentials": creds}
     else:
         kw = {"api_key": api_key}
+    http_opts: dict = {"retry_options": dict(_REQUEST_RETRY_OPTIONS)}
+    if timeout_ms:
+        http_opts["timeout"] = int(timeout_ms)
+    try:
+        return genai.Client(**kw, http_options=http_opts)
+    except Exception:
+        pass
     if timeout_ms:
         try:
             return genai.Client(**kw, http_options={"timeout": int(timeout_ms)})
@@ -1161,6 +1171,12 @@ def _extract_claims(answer: str, trace: dict, max_claims: int = 20) -> tuple[lis
             total += min(len(d), src_char_cap)
     return claims, sources
 
+_VERIFY_INFO = threading.local()
+
+def get_last_verify_info() -> dict:
+    """현재 스레드에서 마지막으로 실행된 의미 검증의 모델·설정·소요 시간."""
+    return dict(getattr(_VERIFY_INFO, "data", {}) or {})
+
 def _semantic_verify(api_key: str, claims: list, sources: dict, user_query: str = "") -> dict:
     _emit_live_status("🛡️ 3단계: 듀얼 AI 감수(_semantic_verify) 정밀 판정 중...")
     src_block = "\n\n".join(f"[{sid}] {label}\n{text}" for sid, (label, text) in sources.items())
@@ -1178,6 +1194,11 @@ def _semantic_verify(api_key: str, claims: list, sources: dict, user_query: str 
     client = make_genai_client(api_key, 50000)
 
     verifier_candidates = _skip_slow_models(list(dict.fromkeys([VERIFIER_MODEL_ID, FLASH_BACKUP_ID, FLASH_LITE_ID, FLASH_FALLBACK_ID])))
+    _VERIFY_INFO.data = {}
+    _t_verify = time.time()
+    used_cfg = ""
+    fast_err = ""
+    failed_models: list[str] = []
     resp = None
     used_v_model = VERIFIER_MODEL_ID
     last_v_err = None
@@ -1192,18 +1213,25 @@ def _semantic_verify(api_key: str, claims: list, sources: dict, user_query: str 
                     thinking_config=types.ThinkingConfig(thinking_budget=1024),
                 )
                 resp = client.models.generate_content(model=vm_id, contents=prompt, config=fast_cfg)
+                used_cfg = "생각 제한 1024"
             except Exception as e_fast:
                 if _is_slow_error(e_fast) or _is_model_not_found(e_fast):
                     raise
+                m_fc = re.search(r"\b(4\d\d|5\d\d)\b", str(e_fast))
+                fast_err = m_fc.group(1) if m_fc else str(e_fast).splitlines()[0][:40]
                 std_cfg = types.GenerateContentConfig(response_mime_type="application/json", temperature=0.0)
                 resp = client.models.generate_content(model=vm_id, contents=prompt, config=std_cfg)
+                used_cfg = f"생각 제한 없음(제한 설정 거부: {fast_err})"
             used_v_model = vm_id
             break
         except Exception as e:
             last_v_err = e
+            failed_models.append(vm_id)
             if _is_slow_error(e):
                 _mark_slow_model(vm_id)
             continue
+    _VERIFY_INFO.data = {"model": used_v_model if resp is not None else "", "cfg": used_cfg,
+                         "secs": time.time() - _t_verify, "failed": failed_models}
     if resp is None:
         raise last_v_err or RuntimeError("감수 모델 호출 실패")
 
@@ -3081,6 +3109,11 @@ def _execute_with_key_and_model(
                     citation_note += (f"\n> 🧪 의미 검증 {len(claims)}건: 일치 {cnt['supported']} · "
                                       f"원문 확인 필요 {cnt['partial']} · 불일치 {cnt['unsupported']}"
                                       + (f" · 판정 누락 {cnt['unknown']}" if cnt.get("unknown") else ""))
+                    v_info = get_last_verify_info()
+                    if v_info.get("model"):
+                        citation_note += (f" (검증 모델 {v_info['model']} · {v_info.get('cfg') or '-'}"
+                                          + (f" · 실패 후 넘어감: {', '.join(v_info['failed'])}" if v_info.get("failed") else "")
+                                          + ")")
                 except Exception as e:
                     print(f"[시스템]    ↳ 의미 검증 실패: {e}")
                     citation_note += "\n> 🧪 의미 검증을 수행하지 못했습니다(검증 모델 오류). 근거 표시 문장은 직접 확인하세요."
