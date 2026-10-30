@@ -919,6 +919,67 @@ def _violation_labels(violations: list[tuple]) -> list[str]:
 def _show_diag() -> bool:
     return _get_secret_or_env("SHOW_DIAGNOSTICS").lower() in ("on", "true", "1")
 
+def _patch_violation_lines(chat, answer: str, violations: list[tuple], trace: dict, model_id: str) -> tuple[str, bool]:
+    """
+    미검증 근거가 있는 '본문 줄'만 AI에게 보내 해당 줄의 수정본만 받아 끼워 넣습니다(답변 전체 재작성보다 빠름).
+    - AI는 필요하면 도구로 원문을 조회한 뒤 근거 표시를 붙이거나, 조회할 수 없으면 그 근거·서술을 빼고 줄을 다시 씁니다.
+    - 응답 형식이 깨졌거나 수정본에 여전히 미검증 근거가 남으면 (원문, False)를 돌려 전체 재작성으로 넘어갑니다.
+    """
+    lines = answer.split("\n")
+    targets = [(ln, labels) for ln, labels, in_refs in violations if not in_refs and 0 <= ln < len(lines)]
+    if not targets:
+        return answer, False
+    items = []
+    for k, (ln, labels) in enumerate(targets, 1):
+        items.append(f"[{k}] 원래 줄: {lines[ln].strip()}\n    문제: {'; '.join(labels)}")
+    patch_msg = (
+        "방금 답변의 아래 줄들에 도구 조회 기록으로 확인되지 않는 근거가 있습니다.\n\n" + "\n".join(items) + "\n\n"
+        "각 줄에 대해 ① 필요하면 get_law_details_for_gemini 등으로 원문을 조회해 확인한 뒤 근거 표시"
+        "([조문:정식법령명 제N조], [판례:사건번호] 등)를 붙여 다시 쓰거나, ② 조회할 수 없으면 그 근거와 관련 서술을 빼고 다시 쓰세요"
+        "(줄 전체를 지워야 하면 빈 문자열). 다른 줄은 고치지 마세요. 줄 앞의 목록 기호(-, 1), 숫자 등)와 문체는 그대로 유지하세요.\n"
+        "출력은 JSON 배열만: [{\"id\": 1, \"text\": \"수정된 한 줄 전체\"}]"
+    )
+    trace_token = _TOOL_TRACE.set(trace)
+    try:
+        resp = chat.send_message(patch_msg)
+        raw = extract_safe_text(resp)
+        _extract_and_log_response_usage(resp, model_id, count_call=False, est_in_chars=len(patch_msg), est_out_chars=len(raw))
+    except Exception as e:
+        print(f"[시스템]    ↳ 부분 수정 요청 실패: {e}")
+        return answer, False
+    finally:
+        _TOOL_TRACE.reset(trace_token)
+    m = re.search(r"\[\s*\{.*\}\s*\]", raw or "", flags=re.DOTALL)
+    try:
+        fixes = json.loads(m.group(0)) if m else None
+    except Exception:
+        fixes = None
+    if not isinstance(fixes, list):
+        print("[시스템]    ↳ 부분 수정 응답 형식 오류 → 전체 재작성으로 전환")
+        return answer, False
+    by_id = {}
+    for f in fixes:
+        if isinstance(f, dict) and str(f.get("id", "")).isdigit() and isinstance(f.get("text"), str):
+            by_id[int(f["id"])] = f["text"].replace("\n", " ").strip()
+    if any(k not in by_id for k in range(1, len(targets) + 1)):
+        print("[시스템]    ↳ 부분 수정 응답에 빠진 줄이 있음 → 전체 재작성으로 전환")
+        return answer, False
+    new_lines = list(lines)
+    drop = set()
+    for k, (ln, _) in enumerate(targets, 1):
+        txt = by_id[k]
+        if not txt:
+            drop.add(ln)
+            continue
+        lead = lines[ln][: len(lines[ln]) - len(lines[ln].lstrip(" "))]
+        new_lines[ln] = lead + txt.lstrip(" ")
+    patched = "\n".join(l for i, l in enumerate(new_lines) if i not in drop)
+    patched = _clean_latex_for_export(re.sub(r"\s*<br\s*/?>\s*", " / ", patched))
+    if any(not in_refs for _, _, in_refs in _scan_violations(patched, trace)):
+        print("[시스템]    ↳ 부분 수정 후에도 미검증 근거 남음 → 전체 재작성으로 전환")
+        return answer, False
+    return patched, True
+
 def _redact_lines(answer: str, violations: list[tuple]) -> str:
     """
     - 지어낸 사건번호('조회 기록 없음')는 어느 모드에서나 즉시 삭제합니다.
@@ -3051,8 +3112,15 @@ def _execute_with_key_and_model(
             has_body_violation = any(not in_refs for _, _, in_refs in violations)
             first_labels = _violation_labels(violations)
 
+            patched_ok = False
             if has_body_violation:
-                print(f"[시스템] 🔒 본문 미검증 근거 {len(first_labels)}건 감지 → 재작성 요청: {first_labels[:8]}")
+                print(f"[시스템] 🔒 본문 미검증 근거 {len(first_labels)}건 감지 → 해당 줄만 부분 수정 요청: {first_labels[:8]}")
+                _t_stage = time.time()
+                final_text, patched_ok = _patch_violation_lines(chat, final_text, violations, trace, model_id)
+                stage_secs.append(("미검증 근거 부분 수정" if patched_ok else "부분 수정 시도(실패)", time.time() - _t_stage))
+
+            if has_body_violation and not patched_ok:
+                print(f"[시스템] 🔒 본문 미검증 근거 {len(first_labels)}건 → 전체 재작성 요청: {first_labels[:8]}")
                 fix_msg = (
                     "방금 답변에서 도구 조회 기록으로 확인되지 않는 근거가 발견되었습니다:\n- "
                     + "\n- ".join(first_labels[:15])
@@ -3074,7 +3142,7 @@ def _execute_with_key_and_model(
                     print(f"[시스템]    ↳ 재작성 요청 실패: {e}")
                 finally:
                     _TOOL_TRACE.reset(trace_token2)
-                    stage_secs.append(("미검증 근거 재작성", time.time() - _t_stage))
+                    stage_secs.append(("미검증 근거 전체 재작성", time.time() - _t_stage))
 
                 if retry_text:
                     retry_body, retry_precheck = _extract_and_strip_precheck(retry_text)
@@ -3093,8 +3161,9 @@ def _execute_with_key_and_model(
                 citation_note = (f"\n> 🚫 미검증 근거 후처리({_verify_mode()} 모드): "
                                  + "; ".join(short[:10]))
             else:
-                citation_note = ("\n> 🔒 미검증 근거가 감지되어 **재작성**(원문 조회 또는 삭제)했습니다. (최초 감지 "
-                                 + str(len(first_labels)) + "건)")
+                citation_note = ("\n> 🔒 미검증 근거가 감지되어 "
+                                 + ("**해당 줄만 수정**" if patched_ok else "**재작성**")
+                                 + "(원문 조회 또는 삭제)했습니다. (최초 감지 " + str(len(first_labels)) + "건)")
         else:
             citation_note = "\n> ✅ 답변의 판례·조문·예규 근거가 모두 이번 조회 기록과 일치합니다."
 
