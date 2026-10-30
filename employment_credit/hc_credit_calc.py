@@ -899,9 +899,12 @@ def calculate_tax_year_package(
     def _cohort(cohort: int, elapsed: int) -> tuple[dict, dict, dict]:
         """
         구법 코호트(cohort)의 사후관리·연속공제 비교 (2026.5.22. 대통령령 제36342호 반영):
-        - 평가연도(t)의 사후관리 인원(b2/b3)은 `coh_method = calc_method_for(cohort, eval_year=t)`로 계산합니다(t>=2026이면 합계 후 1회 절사 "A").
-        - 사후관리 비교의 '최초 공제연도 인원'은 기신고값을 그대로 사용하며(기신고 기준),
-          재계산 기준 표시 시에는 최초 공제연도 당시 규칙(`init_coh_method = calc_method_for(cohort, eval_year=cohort)` -> 2025년분은 B, 2024년 이하분은 A)으로 계산합니다.
+        - `pm_method = calc_method_for(cohort, eval_year=t)`: 평가연도(t)의 사후관리 인원(b2/b3) 계산방식
+          (t >= 2026이면 합계 후 1회 절사 "A"). 결과 dict의 calc_method·calc_badge도 이 기준으로 표시합니다.
+        - 직전연도(t-1) 1차 사후관리 인원(elapsed == 2일 때의 prev_pm_pick)은 `calc_method_for(cohort, eval_year=t - 1)`로 계산합니다.
+        - `coh_method = calc_method_for(cohort)`: 최초 공제연도 인원(cohort 및 cohort-1, s_init_coh·s_before_coh) 계산방식
+          (최초 공제연도 당시 규칙 → 2025년분은 B, 2024년 이하분은 A). 세법원칙(재계산) 기준에만 쓰이며,
+          기신고 기준은 기신고값을 그대로 사용합니다.
         # 확인 필요: 최초 공제연도 B방식 신고값과 평가연도 합계 절사값의 비교 — 2027년 국세청 신고 안내 확인
         """
         coh_method = calc_method_for(cohort)

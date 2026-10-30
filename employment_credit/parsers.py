@@ -225,6 +225,15 @@ def classify_file(name: str, text: str = "") -> str | None:
 # ══════════════════════════════════════════════════════════════════
 # 2. 하이브리드 Flash / Pro(Argon) AI 추출 및 심층 진단 호출기
 # ══════════════════════════════════════════════════════════════════
+def _make_genai_client(api_key: str, timeout_ms: int | None = None):
+    """agent.make_genai_client(AI Studio 키 / Vertex AI 서비스 계정 자동 선택)를 사용합니다."""
+    import agent
+    if hasattr(agent, "make_genai_client"):
+        return agent.make_genai_client(api_key, timeout_ms)
+    from google import genai
+    return genai.Client(api_key=api_key)
+
+
 def _get_gemini_api_keys() -> list[str]:
     keys: list[str] = []
     try:
@@ -234,6 +243,9 @@ def _get_gemini_api_keys() -> list[str]:
                 k = item[1] if isinstance(item, (list, tuple)) and len(item) >= 2 else str(item)
                 if k and k not in keys:
                     keys.append(k)
+        # Vertex AI 전용 모드에서는 AI Studio 키(카드 결제)를 섞지 않음
+        if hasattr(agent, "is_vertex_enabled") and agent.is_vertex_enabled() and not agent.is_vertex_fallback_enabled():
+            return keys
     except Exception:
         pass
 
@@ -330,7 +342,7 @@ def call_gemini_json(
     )
 
     for api_key in keys:
-        client = genai.Client(api_key=api_key)
+        client = _make_genai_client(api_key)
         for model_id in models:
             try:
                 try:
@@ -534,7 +546,7 @@ def _call_gemini_text_plain(prompt: str, prefer_pro: bool = False, log_tokens_fn
         return ""
     models = _get_gemini_models(prefer_pro=prefer_pro)
     for api_key in keys:
-        client = genai.Client(api_key=api_key)
+        client = _make_genai_client(api_key)
         for model_id in models:
             try:
                 cfg = types.GenerateContentConfig(temperature=0.0)
@@ -1599,10 +1611,7 @@ def call_pro_argon_audit_commentary(
             ]
 
             for api_key in keys:
-                try:
-                    client = genai.Client(api_key=api_key, http_options={"timeout": 75000})
-                except Exception:
-                    client = genai.Client(api_key=api_key)
+                client = _make_genai_client(api_key, 75000)
 
                 for model_id in models:
                     tok_trace = _ag._TOOL_TRACE.set(trace)
