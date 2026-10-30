@@ -1279,6 +1279,7 @@ def _semantic_verify(api_key: str, claims: list, sources: dict, user_query: str 
     used_v_model = VERIFIER_MODEL_ID
     last_v_err = None
     for vm_id in verifier_candidates:
+        _t_vm = time.time()
         try:
             # [속도 개선 ④] 감수기가 단위 환산(천분율→백분율 등)과 복합 조문 논리는 정확히 계산하되
             # 과도한 장문 추론으로 지연되지 않도록 thinking_budget=1024(핵심 추론 보장)를 부여하여 지능 저하 없이 속도만 단축합니다.
@@ -1302,7 +1303,9 @@ def _semantic_verify(api_key: str, claims: list, sources: dict, user_query: str 
             break
         except Exception as e:
             last_v_err = e
-            failed_models.append(vm_id)
+            m_vc = re.search(r"\b(4\d\d|5\d\d)\b", str(e))
+            v_code = m_vc.group(1) if m_vc else ("시간 초과" if _is_slow_error(e) else str(e).splitlines()[0][:30])
+            failed_models.append(f"{vm_id}: {v_code} · {time.time() - _t_vm:.0f}초")
             if _is_slow_error(e):
                 _mark_slow_model(vm_id)
             continue
