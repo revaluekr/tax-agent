@@ -1993,7 +1993,8 @@ def _trigger_agent_task(
     current_file_info = _normalize_room_file_entry(st.session_state.room_files[selected_room])
     st.session_state.room_files[selected_room] = current_file_info
 
-    effective_prompt = raw_prompt.strip()
+    effective_prompt = raw_prompt.strip().replace("[일반]", "", 1).strip() if raw_prompt.strip().startswith("[일반]") else raw_prompt.strip()
+    general_mode_on = bool(getattr(agent, "is_general_mode_enabled", lambda: False)()) and not st.session_state.get("law_mode_state", True)
     if force_flash or budget_exceeded:
         if effective_prompt.startswith("[프로]"):
             effective_prompt = effective_prompt.replace("[프로]", "", 1).strip()
@@ -2002,6 +2003,8 @@ def _trigger_agent_task(
 
     has_attached_file = bool(current_file_info["name"] and current_file_info["text"])
     display_prompt = f"📎 **[첨부파일: {current_file_info['name']}]**\n\n{effective_prompt}" if has_attached_file else effective_prompt
+    if general_mode_on:
+        display_prompt = "🌐 " + display_prompt
 
     if st.session_state.room_titles[selected_room] in ["빈 대화방", "메인 대화"] and not current_messages:
         auto_title = raw_prompt.strip().replace("[프로]", "").strip().replace("\n", " ")[:14]
@@ -2050,6 +2053,11 @@ def _trigger_agent_task(
         )
     else:
         full_input_for_agent = f"{history_context}[현재 사용자 질문]: {effective_prompt}" if history_context else effective_prompt
+
+    if general_mode_on:
+        # 일반(웹 검색) 모드: agent.run_agent가 "[일반]" 표시를 보고 법령 도구 없이 Gemini + Google 검색 경로로 처리
+        effective_prompt = f"[일반] {effective_prompt}"
+        full_input_for_agent = full_input_for_agent.replace("[현재 사용자 질문]: ", "[현재 사용자 질문]: [일반] ", 1) if "[현재 사용자 질문]: " in full_input_for_agent else f"[일반] {full_input_for_agent}"
 
     new_task_info = {
         "status": "running",
@@ -2619,12 +2627,25 @@ with st.sidebar:
         # 📦 [카드 1] 엔진 출력 모드 제어 (자율 에이전트AI 모드에서만 노출; 통합고용세액공제 모드에서는 법령·예규 모니터링 카드로 대체)
         with st.container(border=True):
             is_pro_now = st.session_state.get("pro_toggle_state", False)
+            gm_feature = bool(getattr(agent, "is_general_mode_enabled", lambda: False)())
+            if "law_mode_toggle" not in st.session_state:
+                st.session_state.law_mode_toggle = bool(st.session_state.get("law_mode_state", True))
+            is_law_now = bool(st.session_state.law_mode_toggle)
             mode_pill = (
                 "<span class='sb-badge-pro'>👑 Argon 직결 (3배 개방)</span>"
                 if is_pro_now else
                 "<span class='sb-badge-green'>⚡ Flash 고속</span>"
             )
+            if gm_feature and not is_law_now:
+                mode_pill = "<span class='sb-badge-amber'>🌐 일반·웹 검색</span>" + (" <span class='sb-badge-pro'>👑 Pro</span>" if is_pro_now else "")
             st.markdown(f"<div class='sb-card-title'><span>🚀 엔진 출력 모드</span>{mode_pill}</div>", unsafe_allow_html=True)
+            if gm_feature:
+                law_toggle_on = st.toggle(
+                    "법령 검색 모드",
+                    key="law_mode_toggle",
+                    help="켜짐(기본): 법제처 등 법령·공공 DB를 조회하고 근거 검증을 거쳐 답변합니다. 꺼짐: 법령 도구 없이 Gemini가 Google 웹 검색을 활용해 자유롭게 추론·답변합니다(근거 검증 없음)."
+                )
+                st.session_state.law_mode_state = law_toggle_on
             pro_toggle_on = st.toggle(
                 "Pro 심층 모드 (Argon 직결 · 3배 개방)",
                 value=is_pro_now,
@@ -2854,6 +2875,8 @@ mode_badge_html = (
     if pro_toggle_on else
     "⚡ <b>Flash 표준 모드 (고속 검토)</b>"
 )
+if getattr(agent, "is_general_mode_enabled", lambda: False)() and not st.session_state.get("law_mode_state", True):
+    mode_badge_html = ("👑 <b>Pro</b> · " if pro_toggle_on else "") + "🌐 <b>일반 모드 (법령 검색 OFF · 웹 검색)</b>"
 st.markdown(
     f"<div class='top-mini-status-bar'>"
     f"<span>💬 <b>{selected_room} [{current_room_title}]</b> ({q_count_now}건 대화 중)</span>"

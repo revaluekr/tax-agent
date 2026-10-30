@@ -3256,7 +3256,121 @@ def _execute_with_key_and_model(
 # 4. 실행 순서(유료키 전용):
 #    - Flash 모드: gemini-3.8-flash → gemini-3.6-flash → gemini-3.5-flash-lite → gemini-2.5-flash
 #    - Pro 심층 모드(1번 아르곤 직결): gemini-4-argon → gemini-3.1-pro-preview-customtools → gemini-3.1-pro-preview → gemini-2.5-pro
+
+# ---------------------------------------------------------
+# 🌐 일반 모드 (법령 검색 모드 OFF): 법령 도구·precheck·근거 검증 없이 Gemini + Google 웹 검색으로 자유 답변
+# - app.py가 질문 앞에 "[일반]" 표시를 붙여 넘기면 run_agent가 이 경로로 보냅니다.
+# - 화면 노출 여부는 Secrets의 ENABLE_GENERAL_MODE = "on" 으로 정합니다(없으면 기존 화면 그대로).
+# ---------------------------------------------------------
+GENERAL_MODE_TAG = "[일반]"
+
+GENERAL_SYSTEM_PROMPT = (
+    "당신은 유능한 한국어 AI 어시스턴트입니다. 질문에 맞춰 자유롭게 추론하고 답하세요. "
+    "최신 정보·사실 확인이 필요하면 Google 검색을 활용하고, 검색으로 확인한 내용은 출처를 함께 밝히세요. "
+    "이전 대화 맥락이 함께 주어지면 이어서 답하세요. "
+    "세무·법률 판단이 핵심인 질문이라면 답변 끝에 '정확한 법령 근거 확인은 법령 검색 모드를 켜고 다시 질문하세요'라고 한 줄 안내하세요."
+)
+
+def is_general_mode_enabled() -> bool:
+    return _secret_on("ENABLE_GENERAL_MODE")
+
+def _is_general_request(raw_query: str, user_input: str) -> bool:
+    if not is_general_mode_enabled():
+        return False
+    rq = (raw_query or "").lstrip()
+    return rq.startswith(GENERAL_MODE_TAG) or f"[현재 사용자 질문]: {GENERAL_MODE_TAG}" in (user_input or "")
+
+def _strip_general_tag(text: str) -> str:
+    return (text or "").replace(f"[현재 사용자 질문]: {GENERAL_MODE_TAG}", "[현재 사용자 질문]:").replace(GENERAL_MODE_TAG, "", 1).strip()
+
+def _grounding_sources_md(resp) -> str:
+    """Google 검색 근거(grounding_metadata)의 웹 출처를 마크다운 목록으로 반환합니다."""
+    try:
+        gm = resp.candidates[0].grounding_metadata
+    except Exception:
+        gm = None
+    if not gm:
+        return ""
+    seen, rows = set(), []
+    for ch in (getattr(gm, "grounding_chunks", None) or []):
+        web = getattr(ch, "web", None)
+        uri = getattr(web, "uri", "") if web else ""
+        if uri and uri not in seen:
+            seen.add(uri)
+            title = (getattr(web, "title", "") or uri).replace("[", "(").replace("]", ")")
+            rows.append(f"- [{title}]({uri})")
+    queries = [q for q in (getattr(gm, "web_search_queries", None) or []) if q]
+    out = ""
+    if rows:
+        out += "\n\n---\n**🔎 참고한 웹 출처**\n" + "\n".join(rows[:10])
+    if queries and _show_diag():
+        out += "\n> 🔍 검색어: " + " · ".join(queries[:6])
+    return out
+
+def run_general_agent(user_input: str, raw_query: str = "", has_file: bool = False, room_key: str = "", status_callback=None) -> str:
+    _t_run = time.time()
+    live_pool = get_live_gemini_key_pool()
+    if not live_pool:
+        return "❌ 설정된 Gemini 유료 API 키가 없습니다. .env 또는 Streamlit Secrets에 GEMINI_PAID_KEY를 넣어 주세요."
+    clean_input = _strip_general_tag(user_input)
+    clean_query = _strip_general_tag(raw_query) if raw_query else clean_input
+    rk_token = set_active_room_key(room_key) if room_key else None
+    cb_token = set_live_status_callback(status_callback) if status_callback else None
+    try:
+        tier_mode, _, notice = select_optimal_model(user_query=clean_query, has_file=has_file, full_input_len=len(clean_input))
+        is_pro = (tier_mode == "PRO")
+        flash_candidates = _skip_slow_models(list(dict.fromkeys([FLASH_MODEL_ID, FLASH_BACKUP_ID, FLASH_LITE_ID, FLASH_FALLBACK_ID])))
+        models = (_skip_slow_models(list(dict.fromkeys(PAID_PRO_MODEL_IDS))) + flash_candidates) if is_pro else flash_candidates
+        prompt_text = clean_input.replace("[현재 사용자 질문]: [프로]", "[현재 사용자 질문]:", 1)
+        if prompt_text.lstrip().startswith("[프로]"):
+            prompt_text = prompt_text.replace("[프로]", "", 1).strip()
+        cfg = types.GenerateContentConfig(
+            system_instruction=GENERAL_SYSTEM_PROMPT,
+            tools=[types.Tool(google_search=types.GoogleSearch())],
+            max_output_tokens=32768 if is_pro else 16384,
+        )
+        diag_notes, last_error = [], None
+        for key_label, current_key in live_pool:
+            for model_id in models:
+                _t_try = time.time()
+                try:
+                    _emit_live_status(f"🌐 일반 모드: Gemini 추론 + 웹 검색 중 ({model_id})...")
+                    client = make_genai_client(current_key, 180000 if is_pro else 120000)
+                    resp = client.models.generate_content(model=model_id, contents=prompt_text, config=cfg)
+                    text = extract_safe_text(resp)
+                    if not text:
+                        raise ValueError("빈 응답이 반환되었습니다.")
+                    _extract_and_log_response_usage(resp, model_id, count_call=True,
+                                                    est_in_chars=len(prompt_text) + len(GENERAL_SYSTEM_PROMPT),
+                                                    est_out_chars=len(text))
+                    badge = ("👑 **[Pro 일반 모드 · 웹 검색]**" if is_pro else "🌐 **[일반 모드 · 웹 검색]**") + f" *(🔑 {key_label} · {model_id})*"
+                    header = f"> {badge}"
+                    if _show_diag():
+                        header += f" ⏱ 전체 {time.time() - _t_run:.0f}초 (이번 성공 시도 {time.time() - _t_try:.0f}초)"
+                    header += "\n"
+                    if notice:
+                        header += notice
+                    if diag_notes and _show_diag():
+                        header += f"> *(ℹ️ 앞선 시도 실패: {' | '.join(diag_notes)})*\n"
+                    return header + "\n" + text + _grounding_sources_md(resp)
+                except Exception as e:
+                    last_error = e
+                    if _is_slow_error(e):
+                        _mark_slow_model(model_id)
+                    m_code = re.search(r"\b(4\d\d|5\d\d)\b", str(e))
+                    err_short = m_code.group(1) if m_code else str(e).splitlines()[0][:40]
+                    diag_notes.append(f"{key_label}({model_id}): {err_short} · {time.time() - _t_try:.0f}초")
+                    continue
+        return f"❌ 모든 API 키 호출이 실패했습니다. 마지막 오류: {str(last_error)}"
+    finally:
+        if cb_token is not None:
+            _LIVE_STATUS_CB.reset(cb_token)
+        if rk_token is not None:
+            _ACTIVE_ROOM_KEY.reset(rk_token)
+
 def run_agent(user_input: str, raw_query: str = "", has_file: bool = False, room_key: str = "", status_callback=None) -> str:
+    if _is_general_request(raw_query, user_input):
+        return run_general_agent(user_input, raw_query, has_file, room_key, status_callback)
     _t_run = time.time()
     live_pool = get_live_gemini_key_pool()
     if not live_pool:
