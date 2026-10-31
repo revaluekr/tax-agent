@@ -326,7 +326,9 @@ def calc_withholding_tax(
     children_8_to_20: int = 0,
     rate_pct: int = 100,
     year_month: str = "2026-10",
+    reduction_pct: float = 0,
 ) -> dict[str, int]:
+    """reduction_pct: 소득세 감면율(%) — 예) 중소기업 취업자 소득세 감면 90%면 간이세액의 10%만 원천징수 (조세특례제한법 제30조)."""
     w = max(0, int(round(float(taxable_monthly_krw or 0))))
     base_tax = _lookup_earned_base_tax_10k(w, dependents)
     child_ded = calc_child_tax_deduction(children_8_to_20, year_month=year_month)
@@ -339,6 +341,10 @@ def calc_withholding_tax(
         income_tax = floor_10won((Decimal(tax_100) * Decimal(pct)) / Decimal(100))
     else:
         income_tax = floor_10won(tax_100)
+
+    red = max(0.0, min(100.0, float(reduction_pct or 0)))
+    if red > 0:
+        income_tax = floor_10won((Decimal(income_tax) * (Decimal(100) - Decimal(str(red)))) / Decimal(100))
 
     if income_tax < 1000:
         income_tax = 0
@@ -431,6 +437,7 @@ def gross_up_employee_net_to_gross(
     year_month: str = "2026-10",
     fixed_ins: dict[str, int] | None = None,
     is_ceo: bool = False,
+    income_tax_reduction_pct: float = 0,
 ) -> dict[str, int]:
     target_net = max(0, int(round(float(target_net_pay or 0))))
     non_tax = max(0, int(round(float(non_taxable_pay or 0))))
@@ -479,6 +486,7 @@ def gross_up_employee_net_to_gross(
             children_8_to_20=children_8_to_20,
             rate_pct=tax_rate_pct,
             year_month=year_month,
+            reduction_pct=income_tax_reduction_pct,
         )
         inc_tax = wt["소득세"]
         loc_tax = wt["지방소득세"]
@@ -544,6 +552,7 @@ def lookup_monthly_withholding_tax(
     children_8_20: int = 0,
     withholding_rate_pct: int = 100,
     effective_table: str = "2026.03",
+    income_tax_reduction_pct: float = 0,
 ) -> dict[str, int]:
     ym = "2026-03" if str(effective_table).startswith("2026") else "2024-03"
     res = calc_withholding_tax(
@@ -552,6 +561,7 @@ def lookup_monthly_withholding_tax(
         children_8_to_20=children_8_20,
         rate_pct=withholding_rate_pct,
         year_month=ym,
+        reduction_pct=income_tax_reduction_pct,
     )
     return {
         "income_tax": res["소득세"],
@@ -587,6 +597,7 @@ def calculate_employee_payroll_row(
     student_loan_repayment: int = 0,
     effective_table: str = "2026.03",
     is_ceo: bool = False,
+    income_tax_reduction_pct: float = 0,
 ) -> dict[str, Any]:
     """
     단일 근로자 급여대장 행 전체 계산:
@@ -642,6 +653,7 @@ def calculate_employee_payroll_row(
         children_8_20=children_8_20,
         withholding_rate_pct=withholding_rate_pct,
         effective_table=effective_table,
+        income_tax_reduction_pct=income_tax_reduction_pct,
     )
     inc_tax = floor_10won(tax_res["income_tax"])
     loc_tax = floor_10won(tax_res["local_tax"])
@@ -680,6 +692,7 @@ def calculate_employee_payroll_row(
         "학자금상환액": student_loan,
         "소득세": inc_tax,
         "지방소득세": loc_tax,
+        "소득세감면율": max(0.0, min(100.0, float(income_tax_reduction_pct or 0))),
         "공제액계": total_deduction,
         "차인지급액": net_pay,
     }
@@ -717,6 +730,7 @@ def solve_gross_from_net_employee(
     student_loan_repayment: int = 0,
     effective_table: str = "2026.03",
     is_ceo: bool = False,
+    income_tax_reduction_pct: float = 0,
 ) -> dict[str, int]:
     ym = "2026-03" if str(effective_table).startswith("2026") else "2024-03"
     fixed = dict(notice_insurance) if notice_insurance else None
@@ -731,6 +745,7 @@ def solve_gross_from_net_employee(
         year_month=ym,
         fixed_ins=fixed,
         is_ceo=is_ceo,
+        income_tax_reduction_pct=income_tax_reduction_pct,
     )
     return {
         "base_pay": res["기본급"],

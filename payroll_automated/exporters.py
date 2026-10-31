@@ -1532,3 +1532,52 @@ def get_freelancer_statement_preview_b64() -> str:
     b64_str = base64.b64encode(jpg_b).decode("ascii")
     _PREVIEW_B64_CACHE[cache_key] = b64_str
     return b64_str
+
+
+# ─────────────────────────────────────────────────────────────
+# 당월 검토보고 PDF (급여 / 사업소득 공통 — 화면 보고서와 같은 내용)
+# ─────────────────────────────────────────────────────────────
+
+def export_review_report_pdf(report: Dict[str, Any]) -> bytes:
+    """화면의 당월 검토보고(제목·섹션·표·설명·목록)를 A4 가로 PDF로 만듭니다."""
+    from xml.sax.saxutils import escape as _esc
+    font_reg, font_bold = get_korean_font_names()
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=14 * mm, rightMargin=14 * mm, topMargin=12 * mm, bottomMargin=12 * mm,
+                            title=str(report.get("title") or "검토보고"))
+    accent = colors.HexColor(str(report.get("accent") or "#1e3a8a"))
+    st_title = ParagraphStyle("rt", fontName=font_bold, fontSize=15, leading=20, spaceAfter=8, textColor=colors.HexColor("#0f172a"))
+    st_h = ParagraphStyle("rh", fontName=font_bold, fontSize=11.5, leading=16, spaceBefore=10, spaceAfter=5, textColor=colors.HexColor("#0f172a"),
+                          borderPadding=(3, 6, 3, 6), backColor=colors.HexColor("#f1f5f9"), borderColor=accent, borderWidth=0, leftIndent=0)
+    st_p = ParagraphStyle("rp", fontName=font_reg, fontSize=9.5, leading=14, textColor=colors.HexColor("#1e293b"))
+    st_note = ParagraphStyle("rn", parent=st_p, fontSize=8.5, leading=12, textColor=colors.HexColor("#475569"))
+    st_cell = ParagraphStyle("rc", fontName=font_reg, fontSize=9, leading=12, alignment=2)
+    st_cell_c = ParagraphStyle("rcc", parent=st_cell, alignment=1)
+    st_head = ParagraphStyle("rhd", fontName=font_bold, fontSize=9, leading=12, alignment=1, textColor=colors.HexColor("#0f172a"))
+    avail = landscape(A4)[0] - 28 * mm
+    flow = [Paragraph(_esc(str(report.get("title") or "")), st_title)]
+    for sec in report.get("sections", []):
+        flow.append(Paragraph(_esc(str(sec.get("heading") or "")), st_h))
+        if sec.get("intro"):
+            flow.append(Paragraph(_esc(str(sec["intro"])), st_p))
+            flow.append(Spacer(1, 4))
+        if sec.get("headers"):
+            widths = [avail * float(w) / 100.0 for w in sec.get("widths") or [100.0 / len(sec["headers"])] * len(sec["headers"])]
+            data = [[Paragraph(_esc(str(h)), st_head) for h in sec["headers"]]]
+            for r in sec.get("rows", []):
+                data.append([Paragraph(_esc(str(v)), st_cell if str(v).endswith("원") else st_cell_c) for v in r])
+            t = Table(data, colWidths=widths, repeatRows=1)
+            t.setStyle(TableStyle([
+                ("GRID", (0, 0), (-1, -1), 0.6, colors.HexColor("#cbd5e1")),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f1f5f9")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]))
+            flow.append(t)
+            flow.append(Spacer(1, 4))
+        for n in sec.get("notes", []):
+            flow.append(Paragraph("* " + _esc(str(n)), st_note))
+        for k, v in sec.get("bullets", []):
+            flow.append(Paragraph(f"• <b>{_esc(str(k))}:</b> {_esc(str(v))}", st_p))
+    doc.build(flow)
+    return buf.getvalue()

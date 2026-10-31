@@ -62,6 +62,7 @@ from .exporters import (
     export_freelancer_statements_jpg_zip,
     export_freelancer_statements_pdf_zip,
     export_payroll_ledger_pdf,
+    export_review_report_pdf,
     export_wehago_freelancer_excel,
     export_wehago_payroll_excel,
     get_freelancer_statement_preview_b64,
@@ -78,6 +79,7 @@ from .parsers import (
 )
 from .tax_tables import (
     EI_STABILITY_TIERS,
+    NON_TAXABLE_LIMITS,
     calc_4ins_employer_share,
     calculate_employee_payroll_row,
     calculate_freelancer_row,
@@ -579,6 +581,7 @@ def _recalculate_all_employee_rows(pstate: Dict[str, Any]) -> None:
                 student_loan_repayment=int(emp.get("학자금상환액", 0) or 0),
                 effective_table=eff_tbl,
                 is_ceo=ceo_flag,
+                income_tax_reduction_pct=float(emp.get("소득세감면율", 0) or 0),
             )
             emp["기본급"] = solved["base_pay"]
 
@@ -601,6 +604,7 @@ def _recalculate_all_employee_rows(pstate: Dict[str, Any]) -> None:
             student_loan_repayment=int(emp.get("학자금상환액", 0) or 0),
             effective_table=eff_tbl,
             is_ceo=ceo_flag,
+            income_tax_reduction_pct=float(emp.get("소득세감면율", 0) or 0),
         )
         emp.update(calc)
         if "사업장" not in emp:
@@ -984,25 +988,116 @@ def _report_header_common(pstate: Dict[str, Any]) -> Tuple[str, str, str]:
     return corp_disp, ym, pay_dt
 
 
-@st.dialog("당월 급여 검토보고 (4대보험 근로소득자)", width="large")
-def _dlg_monthly_review_report_emp():
-    """급여명세서 화면 전용 검토보고 — 이전 구성(검토 요약표 → 사업주 부담 추정 → 인원 변동)을 유지하고,
-    디자인·폰트·간격만 자율 에이전트AI 보고서 스타일(pa-agent-report-box)을 따릅니다. 사업소득자는 포함하지 않습니다."""
-    pstate = _get_payroll_state()
+def _won(v: Any) -> str:
+    return f"{int(v or 0):,}원"
+
+
+def _birth_from_rrn(rrn: Any) -> Optional[datetime]:
+    """주민번호(뒷자리 가림 포함)에서 생년월일 추정. 성별자리가 없으면 만 15세 이상이 되는 세기로 추정."""
+    s = re.sub(r"[^0-9*]", "", str(rrn or ""))
+    if len(s) < 6 or not s[:6].isdigit():
+        return None
+    yy, mm, dd = int(s[:2]), int(s[2:4]), int(s[4:6])
+    g = s[6] if len(s) > 6 and s[6].isdigit() else ""
+    if g in ("1", "2", "5", "6"):
+        cent = 1900
+    elif g in ("3", "4", "7", "8"):
+        cent = 2000
+    elif g in ("9", "0"):
+        cent = 1800
+    else:
+        cent = 2000 if 2000 + yy <= datetime.now().year - 15 else 1900
+    try:
+        return datetime(cent + yy, mm, dd)
+    except ValueError:
+        return None
+
+
+def _age_on(birth: datetime, on: datetime) -> int:
+    return on.year - birth.year - ((on.month, on.day) < (birth.month, birth.day))
+
+
+def _parse_ymd(v: Any) -> Optional[datetime]:
+    m = re.search(r"(\d{4})\D?(\d{1,2})\D?(\d{1,2})", str(v or ""))
+    if not m:
+        return None
+    try:
+        return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return None
+
+
+def _tax_saving_review(emps: List[Dict[str, Any]], ym: str) -> Dict[str, Any]:
+    """절세·감면 검토: 중소기업 취업자 소득세 감면(조특법 제30조, 시행령 제27조) 후보와 비과세 항목 점검."""
+    try:
+        ref = datetime(int(str(ym)[:4]), int(str(ym)[5:7]), 1)
+    except Exception:
+        ref = datetime.now()
+    youth, senior, military, applied, mismatch, unknown = [], [], [], [], [], []
+    for e in emps:
+        nm = str(e.get("성명") or "").strip()
+        if not nm or is_ceo_position(e.get("직급", "")) or re.search(r"이사|임원", str(e.get("직급") or "")):
+            continue
+        red = float(e.get("소득세감면율", 0) or 0)
+        birth, hire = _birth_from_rrn(e.get("주민등록번호")), _parse_ymd(e.get("입사일"))
+        if not birth or not hire:
+            if not red:
+                unknown.append(nm)
+            continue
+        age = _age_on(birth, hire)
+        in_window = datetime(2012, 1, 1) <= hire <= datetime(2026, 12, 31)
+        y_end = datetime(hire.year + 5, hire.month, 1)
+        o_end = datetime(hire.year + 3, hire.month, 1)
+        tag = f"{nm}(입사 {hire:%Y-%m-%d}, 입사 시 {age}세"
+        if red:
+            ok = (in_window and 15 <= age <= 34 and red == 90 and ref <= y_end) or (red == 70 and in_window and ref <= o_end)
+            (applied if ok else mismatch).append(f"{tag}, 적용 {int(red)}%)")
+            continue
+        if in_window and 15 <= age <= 34 and ref <= y_end:
+            youth.append(f"{tag}, 감면기간 {y_end:%Y-%m}까지)")
+        elif in_window and 35 <= age <= 40 and ref <= y_end:
+            military.append(f"{tag})")
+        elif hire >= datetime(2014, 1, 1) and hire <= datetime(2026, 12, 31) and age >= 60 and ref <= o_end:
+            senior.append(f"{tag}, 감면기간 {o_end:%Y-%m}까지)")
+    j = lambda xs: ", ".join(xs) if xs else "해당 없음"
+    bullets = [
+        ("청년(근로계약 체결일 현재 15~34세) — 90% 감면 검토 대상", j(youth)),
+        ("병역 이행 기간(최대 6년) 차감 시 청년 해당 가능 — 병역 확인 필요", j(military)),
+        ("60세 이상 — 70% 감면 검토 대상", j(senior)),
+        ("장애인·경력단절 근로자 — 70% 감면 가능", "인적 자료로 판단할 수 없어 해당자 여부를 확인해 주세요"),
+        ("감면 적용 중", j(applied)),
+    ]
+    if mismatch:
+        bullets.append(("감면율·나이·감면기간 확인 필요", j(mismatch)))
+    if unknown:
+        bullets.append(("주민번호 또는 입사일이 없어 판단 못 함", j(unknown)))
+    meal_over = [str(e.get("성명")) for e in emps if int(e.get("식대", 0) or 0) > NON_TAXABLE_LIMITS["식대"]]
+    car_any = [str(e.get("성명")) for e in emps if int(e.get("자가운전보조금", 0) or 0) > 0]
+    other = [
+        ("식대 비과세", (f"월 20만 원 초과 지급자 {', '.join(meal_over)} — 초과분은 과세" if meal_over else "월 20만 원 이하로 지급 중")
+         + " (사내 식사를 제공받는 근로자는 식대 비과세 불가 — 소득세법 제12조 제3호 러목)"),
+        ("자가운전보조금", ("지급자 " + ", ".join(car_any) + " — 본인 명의 차량을 업무에 직접 쓰고 실비를 따로 받지 않는 경우에만 월 20만 원 비과세" if car_any else "지급 없음")),
+        ("출산·보육 관련 비과세", "6세 이하 자녀 보육수당은 자녀 1명당 월 20만 원, 출산지원금은 출생일 이후 2년 이내 최대 2회 지급분 전액 비과세 (소득세법 제12조 제3호 머목) — 해당 근로자가 있으면 급여 항목 분리 검토"),
+        ("통합고용세액공제", "상시근로자 증가 시 [통합고용세액공제 계산 연동]으로 공제액 검토"),
+    ]
+    notes = [
+        "중소기업 취업자 소득세 감면(조세특례제한법 제30조, 같은 법 시행령 제27조): 2026.12.31.까지 중소기업체에 취업한 청년은 취업일부터 5년, "
+        "60세 이상·장애인·경력단절 근로자는 3년이 되는 날이 속하는 달까지 소득세의 90%(청년)·70%를 감면하며, 과세기간별 200만 원이 한도입니다.",
+        "나이는 근로계약 체결일 기준이며, 이 보고서는 입사일로 추정했습니다. 임원, 최대주주·그 배우자와 친족, 일용근로자, 국민연금·건강보험료 납부가 확인되지 않는 사람, "
+        "감면 대상 업종이 아닌 기업은 제외되니 확인해 주세요.",
+        "감면은 근로자가 회사에 감면신청서를 내야 적용되며, 회사는 신청받은 달의 다음 달 10일까지 원천징수 관할 세무서에 명단을 제출해야 합니다.",
+    ]
+    return {"bullets": bullets, "other": other, "notes": notes}
+
+
+def _build_emp_review_report(pstate: Dict[str, Any]) -> Dict[str, Any]:
+    """급여 검토보고 내용(화면·PDF 공통)."""
     emps = pstate.get("employees", [])
     corp_disp, ym, pay_dt = _report_header_common(pstate)
-    diag = analyze_payroll_warnings(
-        employees=emps,
-        freelancers=[],
-        prev_employees=pstate.get("prev_employees", []),
-        prev_freelancers=[],
-    )
+    diag = analyze_payroll_warnings(employees=emps, freelancers=[], prev_employees=pstate.get("prev_employees", []), prev_freelancers=[])
     sm = lambda k: sum(int(e.get(k, 0) or 0) for e in emps)
-    tot_gross, tot_nontax, tot_taxable = sm("지급액계"), sm("비과세합계"), sm("과세급여")
     tot_ins = sm("국민연금") + sm("건강보험") + sm("장기요양보험료") + sm("고용보험")
     tot_settle = sm("건강보험료정산") + sm("장기요양보험료정산") + sm("국민연금정산")
-    tot_itax, tot_ltax, tot_ded, tot_net = sm("소득세"), sm("지방소득세"), sm("공제액계"), sm("차인지급액")
-
     tier_map = dict(EI_STABILITY_TIERS)
     tier_lbl = pstate.get("ei_stability_tier") or EI_STABILITY_TIERS[0][0]
     tier_rate = tier_map.get(tier_lbl, EI_STABILITY_TIERS[0][1])
@@ -1018,77 +1113,140 @@ def _dlg_monthly_review_report_emp():
         )
         for k in own:
             own[k] += int(r_own.get(k, 0) or 0)
-
     mv = diag["movement_summary"]
     j = lambda xs: ", ".join(xs) if xs else "해당 없음"
-    html = _report_html([
-        "<div class='pay-modal-scroll-box'><div class='pa-agent-report-box'>",
-        f"<h3>[{corp_disp}] {ym} 귀속 급여 및 원천징수 검토 요약</h3>",
-        f"<p>지급일: <b>{pay_dt or '미입력'}</b> · 근로소득자 <b>{len(emps)}명</b></p>",
-        "<table style='table-layout:fixed;'><colgroup>" + "<col style='width:11.9%'>" * 7 + "<col style='width:16.7%'></colgroup>"
-        "<thead><tr><th>지급액계</th><th>비과세</th><th>과세급여</th><th>4대보험 공제</th><th>소득세</th><th>지방소득세</th><th>공제액계</th><th>차인지급액(실지급)</th></tr></thead>",
-        f"<tbody><tr><td style='text-align:right;'>{tot_gross:,}원</td><td style='text-align:right;'>{tot_nontax:,}원</td>"
-        f"<td style='text-align:right;'>{tot_taxable:,}원</td><td style='text-align:right;'>{tot_ins + tot_settle:,}원</td>"
-        f"<td style='text-align:right;'>{tot_itax:,}원</td><td style='text-align:right;'>{tot_ltax:,}원</td>"
-        f"<td style='text-align:right;'>{tot_ded:,}원</td><td style='text-align:right; font-weight:800; color:#1e3a8a;'>{tot_net:,}원</td></tr></tbody></table>",
-        (f"<p style='font-size:0.92rem; color:#475569;'>* 4대보험 공제에는 정산분 {tot_settle:,}원이 포함되어 있습니다.</p>" if tot_settle else ""),
-        "<h3>사업주 부담 4대보험 추정 (산재보험 제외)</h3>",
-        "<table style='table-layout:fixed;'><colgroup>" + "<col style='width:18.5%'>" * 4 + "<col style='width:26%'></colgroup>"
-        "<thead><tr><th>국민연금</th><th>건강보험</th><th>장기요양</th><th>고용보험</th><th>사업주 부담 합계</th></tr></thead>",
-        f"<tbody><tr><td style='text-align:right;'>{own['국민연금_사업주']:,}원</td><td style='text-align:right;'>{own['건강보험_사업주']:,}원</td>"
-        f"<td style='text-align:right;'>{own['장기요양_사업주']:,}원</td><td style='text-align:right;'>{own['고용보험_사업주']:,}원</td>"
-        f"<td style='text-align:right; font-weight:800; color:#1e3a8a;'>{own['합계_사업주']:,}원</td></tr></tbody></table>",
-        f"<p style='font-size:0.92rem; color:#475569;'>* 국민연금·건강·장기요양은 근로자 부담분(고지 반영 시 고지 금액)과 같은 금액이며, "
-        f"고용보험은 과세급여 × (실업급여 0.9% + 고용안정·직능 {tier_lbl.split('·')[-1].strip()})로 추정했습니다 (대표이사·고용보험 0원 대상자 제외, 정산분 미포함).</p>",
-        "<h3>전월 대비 인원 변동 및 4대보험 신고 대상</h3>",
-        f"<ul><li><b>신규 입사 (자격취득신고 대상):</b> {j(mv.get('new_hires'))}</li>"
-        f"<li><b>퇴사·제외 (자격상실신고 대상):</b> {j(mv.get('retirees'))}</li>"
-        f"<li><b>전월 대비 급여 20% 이상 변동자:</b> {j(mv.get('pay_changes'))}</li></ul>",
-        "</div></div>",
-    ])
-    st.markdown(html, unsafe_allow_html=True)
-    if st.button("닫기", type="primary", width="stretch", key="btn_close_monthly_rep_emp"):
-        st.rerun()
+    reduced = [e for e in emps if float(e.get("소득세감면율", 0) or 0) > 0]
+    saving = _tax_saving_review(emps, ym)
+    sections = [
+        {"heading": f"[{corp_disp}] {ym} 귀속 급여 및 원천징수 검토 요약",
+         "intro": f"지급일: {pay_dt or '미입력'} · 근로소득자 {len(emps)}명",
+         "headers": ["지급액계", "비과세", "과세급여", "4대보험 공제", "소득세", "지방소득세", "공제액계", "차인지급액(실지급)"],
+         "widths": [11.9] * 7 + [16.7],
+         "rows": [[_won(sm("지급액계")), _won(sm("비과세합계")), _won(sm("과세급여")), _won(tot_ins + tot_settle),
+                   _won(sm("소득세")), _won(sm("지방소득세")), _won(sm("공제액계")), _won(sm("차인지급액"))]],
+         "notes": ([f"4대보험 공제에는 정산분 {tot_settle:,}원이 포함되어 있습니다."] if tot_settle else [])
+         + ([f"소득세 감면 적용: {len(reduced)}명 (감면율만큼 간이세액에서 차감)"] if reduced else [])},
+        {"heading": "사업주 부담 4대보험 추정 (산재보험 제외)",
+         "headers": ["국민연금", "건강보험", "장기요양", "고용보험", "사업주 부담 합계"],
+         "widths": [18.5] * 4 + [26.0],
+         "rows": [[_won(own["국민연금_사업주"]), _won(own["건강보험_사업주"]), _won(own["장기요양_사업주"]),
+                   _won(own["고용보험_사업주"]), _won(own["합계_사업주"])]],
+         "notes": [f"국민연금·건강·장기요양은 근로자 부담분(고지 반영 시 고지 금액)과 같은 금액이며, 고용보험은 과세급여 × (실업급여 0.9% + 고용안정·직능 "
+                   f"{tier_lbl.split('·')[-1].strip()})로 추정했습니다 (대표이사·고용보험 0원 대상자 제외, 정산분 미포함)."]},
+        {"heading": "전월 대비 인원 변동 및 4대보험 신고 대상",
+         "bullets": [("신규 입사 (자격취득신고 대상)", j(mv.get("new_hires"))),
+                     ("퇴사·제외 (자격상실신고 대상)", j(mv.get("retirees"))),
+                     ("전월 대비 급여 20% 이상 변동자", j(mv.get("pay_changes")))]},
+        {"heading": "절세·감면 검토 — 중소기업 취업자 소득세 감면",
+         "bullets": saving["bullets"], "notes": saving["notes"]},
+        {"heading": "절세·감면 검토 — 비과세 항목 및 기타",
+         "bullets": saving["other"]},
+    ]
+    return {"title": "당월 급여 검토보고 (4대보험 근로소득자)", "kind": "급여", "accent": "#1e3a8a", "sections": sections}
+
+
+def _build_free_review_report(pstate: Dict[str, Any]) -> Dict[str, Any]:
+    """사업소득 검토보고 내용(화면·PDF 공통)."""
+    frees = pstate.get("freelancers", [])
+    prev = pstate.get("prev_freelancers", []) or []
+    corp_disp, ym, pay_dt = _report_header_common(pstate)
+    sm = lambda k: sum(int(f.get(k, 0) or 0) for f in frees)
+    by_code: Dict[str, List[Dict[str, Any]]] = {}
+    for f in frees:
+        by_code.setdefault(_ind_code_only(f.get("소득구분") or "940909"), []).append(f)
+    cur_names = {str(f.get("성명") or "").strip() for f in frees if str(f.get("성명") or "").strip()}
+    prev_names = {str(f.get("성명") or "").strip() for f in prev if str(f.get("성명") or "").strip()}
+    j = lambda xs: ", ".join(sorted(xs)) if xs else "해당 없음"
+    sections = [
+        {"heading": f"[{corp_disp}] {ym} 귀속 사업소득 지급 및 원천징수 검토 요약",
+         "intro": f"지급일: {pay_dt or '미입력'} · 사업소득자 {len(frees)}명",
+         "headers": ["지급총액(세전)", "소득세(3%)", "지방소득세(0.3%)", "원천징수 합계", "차인지급액(실지급)"],
+         "widths": [18.5] * 4 + [26.0],
+         "rows": [[_won(sm("지급총액")), _won(sm("소득세")), _won(sm("지방소득세")), _won(sm("공제액계")), _won(sm("차인지급액"))]]},
+        {"heading": "업종코드별 지급 현황",
+         "headers": ["업종코드(내용)", "인원", "지급총액"],
+         "widths": [45.0, 20.0, 35.0],
+         "rows": [[_ind_label(c), f"{len(fs)}명", _won(sum(int(f.get('지급총액', 0) or 0) for f in fs))] for c, fs in sorted(by_code.items())]},
+        {"heading": "전월 대비 지급 대상 변동",
+         "bullets": ([("신규 지급 대상", j(cur_names - prev_names)), ("전월 지급, 당월 미지급", j(prev_names - cur_names))]
+                     if prev_names else []),
+         "intro": "" if prev_names else "전월 누적 자료가 없어 비교하지 않았습니다."},
+        {"heading": "절세·점검 검토",
+         "bullets": [
+             ("소액부징수(원천징수세액 1천 원 미만은 징수하지 않음)", j({str(f.get("성명")) for f in frees if int(f.get("지급총액", 0) or 0) > 0 and int(f.get("소득세", 0) or 0) == 0})),
+             ("업종코드 기본값(940909 기타자영업) 사용", j({str(f.get("성명")) for f in frees if _ind_code_only(f.get("소득구분")) == "940909"})
+              + " — 실제 용역 내용에 맞는 업종코드인지 확인"),
+             ("근로자성 점검", "매월 같은 금액·정해진 근무시간·회사 지휘감독을 받는 경우 근로자로 볼 위험이 있어 4대보험·근로소득 처리 여부를 검토"),
+             ("간이지급명세서", "원천징수대상 사업소득은 간이지급명세서 제출 대상입니다 (소득세법 제164조의3) — 제출 기한 확인"),
+         ]},
+    ]
+    return {"title": "당월 사업소득 검토보고 (3.3% 사업소득자)", "kind": "사업소득", "accent": "#4c1d95", "sections": sections}
+
+
+def _render_review_report_html(rep: Dict[str, Any]) -> str:
+    parts = ["<div class='pay-modal-scroll-box'><div class='pa-agent-report-box'>"]
+    for sec in rep["sections"]:
+        parts.append(f"<h3>{sec['heading']}</h3>")
+        if sec.get("intro"):
+            parts.append(f"<p>{sec['intro']}</p>")
+        if sec.get("headers"):
+            cols = "".join(f"<col style='width:{w}%'>" for w in sec["widths"])
+            head = "".join(f"<th>{h}</th>" for h in sec["headers"])
+            body = ""
+            for r in sec["rows"]:
+                tds = []
+                for ci, v in enumerate(r):
+                    is_last = ci == len(r) - 1
+                    align = "center" if not str(v).endswith("원") else "right"
+                    style = f"text-align:{align};" + (f" font-weight:800; color:{rep['accent']};" if is_last and len(sec['rows']) == 1 else "")
+                    tds.append(f"<td style='{style}'>{v}</td>")
+                body += "<tr>" + "".join(tds) + "</tr>"
+            parts.append(f"<table style='table-layout:fixed;'><colgroup>{cols}</colgroup><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>")
+        for n in sec.get("notes", []):
+            parts.append(f"<p style='font-size:0.92rem; color:#475569;'>* {n}</p>")
+        if sec.get("bullets"):
+            parts.append("<ul>" + "".join(f"<li><b>{k}:</b> {v}</li>" for k, v in sec["bullets"]) + "</ul>")
+    parts.append("</div></div>")
+    return _report_html(parts)
+
+
+def _render_review_report_buttons(pstate: Dict[str, Any], rep: Dict[str, Any], key: str) -> None:
+    """보고서 하단: [PDF 다운] [닫기] — 파일명 '거래처명_당월 급여검토보고_YYMM.pdf' / '거래처명_당월 사업소득검토보고_YYMM.pdf'."""
+    corp = (pstate.get("corp_name") or "거래처").strip().replace(" ", "")
+    ym_digits = re.sub(r"[^0-9]", "", str(pstate.get("year_month") or ""))
+    yymm = ym_digits[2:6] if len(ym_digits) >= 6 else datetime.now().strftime("%y%m")
+    fname = f"{corp}_당월 {rep['kind']}검토보고_{yymm}.pdf"
+    c_pdf, c_close = st.columns([1, 1], gap="small")
+    with c_pdf:
+        st.download_button(
+            "PDF 다운",
+            data=_lazy_bytes(export_review_report_pdf, rep),
+            file_name=fname,
+            mime="application/pdf",
+            width="stretch",
+            key=f"btn_dl_review_pdf_{key}",
+        )
+    with c_close:
+        if st.button("닫기", type="primary", width="stretch", key=f"btn_close_monthly_rep_{key}"):
+            st.rerun()
+
+
+@st.dialog("당월 급여 검토보고 (4대보험 근로소득자)", width="large")
+def _dlg_monthly_review_report_emp():
+    """급여명세서 화면 전용 검토보고 — 사업소득자는 포함하지 않습니다."""
+    pstate = _get_payroll_state()
+    rep = _build_emp_review_report(pstate)
+    st.markdown(_render_review_report_html(rep), unsafe_allow_html=True)
+    _render_review_report_buttons(pstate, rep, "emp")
 
 
 @st.dialog("당월 사업소득 검토보고 (3.3% 사업소득자)", width="large")
 def _dlg_monthly_review_report_free():
     """사업소득 화면 전용 검토보고 — 근로소득자 내용은 포함하지 않습니다."""
     pstate = _get_payroll_state()
-    frees = pstate.get("freelancers", [])
-    prev = pstate.get("prev_freelancers", []) or []
-    corp_disp, ym, pay_dt = _report_header_common(pstate)
-    sm = lambda k: sum(int(f.get(k, 0) or 0) for f in frees)
-    tot_gross, tot_itax, tot_ltax, tot_ded, tot_net = sm("지급총액"), sm("소득세"), sm("지방소득세"), sm("공제액계"), sm("차인지급액")
-    by_code: Dict[str, List[str]] = {}
-    for f in frees:
-        by_code.setdefault(str(f.get("소득구분") or "940909"), []).append(str(f.get("성명") or ""))
-    code_rows = "".join(
-        f"<tr><td style='text-align:center;'>{_ind_label(c)}</td><td style='text-align:center;'>{len(ns)}명</td>"
-        f"<td style='text-align:right;'>{sum(int(f.get('지급총액', 0) or 0) for f in frees if str(f.get('소득구분') or '940909') == c):,}원</td></tr>"
-        for c, ns in sorted(by_code.items())
-    )
-    cur_names = {str(f.get("성명") or "").strip() for f in frees if str(f.get("성명") or "").strip()}
-    prev_names = {str(f.get("성명") or "").strip() for f in prev if str(f.get("성명") or "").strip()}
-    j = lambda xs: ", ".join(sorted(xs)) if xs else "해당 없음"
-    html = _report_html([
-        "<div class='pay-modal-scroll-box'><div class='pa-agent-report-box'>",
-        f"<h3>[{corp_disp}] {ym} 귀속 사업소득 지급 및 원천징수 검토 요약</h3>",
-        f"<p>지급일: <b>{pay_dt or '미입력'}</b> · 사업소득자 <b>{len(frees)}명</b></p>",
-        "<table><thead><tr><th>지급총액(세전)</th><th>소득세(3%)</th><th>지방소득세(0.3%)</th><th>원천징수 합계</th><th>차인지급액(실지급)</th></tr></thead>",
-        f"<tbody><tr><td style='text-align:right;'>{tot_gross:,}원</td><td style='text-align:right;'>{tot_itax:,}원</td>"
-        f"<td style='text-align:right;'>{tot_ltax:,}원</td><td style='text-align:right;'>{tot_ded:,}원</td>"
-        f"<td style='text-align:right; font-weight:800; color:#4c1d95;'>{tot_net:,}원</td></tr></tbody></table>",
-        "<h3>업종코드별 지급 현황</h3>",
-        f"<table><thead><tr><th>업종코드(내용)</th><th>인원</th><th>지급총액</th></tr></thead><tbody>{code_rows}</tbody></table>",
-        "<h3>전월 대비 지급 대상 변동</h3>",
-        (f"<ul><li><b>신규 지급 대상:</b> {j(cur_names - prev_names)}</li><li><b>전월 지급, 당월 미지급:</b> {j(prev_names - cur_names)}</li></ul>"
-         if prev_names else "<p>전월 누적 자료가 없어 비교하지 않았습니다.</p>"),
-        "</div></div>",
-    ])
-    st.markdown(html, unsafe_allow_html=True)
-    if st.button("닫기", type="primary", width="stretch", key="btn_close_monthly_rep_free"):
-        st.rerun()
+    rep = _build_free_review_report(pstate)
+    st.markdown(_render_review_report_html(rep), unsafe_allow_html=True)
+    _render_review_report_buttons(pstate, rep, "free")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1312,7 +1470,6 @@ def render_payroll_automated_sidebar() -> None:
             width="stretch",
             disabled=(not is_emp_mode),
             key="btn_pay_bridge_credit",
-            help=None if not is_emp_mode else "현재 사업장 급여내역을 통합고용세액공제 1단계 원천징수부 자료로 즉시 연동합니다.",
         ):
             pstate["client_db"] = upsert_monthly_data_into_db(
                 client_db=pstate.get("client_db", {}),
@@ -1338,6 +1495,9 @@ def render_payroll_automated_sidebar() -> None:
             st.rerun()
         if not is_emp_mode:
             st.caption("사업소득 화면에서는 통합고용세액공제 계산 연동이 비활성화됩니다.")
+        else:
+            # 버튼 위 말풍선 대신 버튼 아래 안내 (위쪽 [당월 검토보고] 버튼을 가리지 않도록)
+            st.caption("현재 사업장 급여내역을 통합고용세액공제 1단계 원천징수부 자료로 즉시 연동합니다.")
 
     # (5) 거래처별 월별 누적 작업 백업 (.paybak) 카드
     with st.container(border=True):
@@ -1423,6 +1583,7 @@ EMP_GRID_COLUMNS: List[Tuple[str, str, int, bool, str]] = [
     ("사원코드", "코드", 46, True, "text"),
     ("성명", "성명", 62, True, "text"),
     ("주민등록번호", "주민등록번호", 108, True, "text"),
+    ("소득세감면율", "소득세감면", 76, True, "select_red"),
     ("입사일", "입사일", 80, True, "text"),
     ("퇴사일", "퇴사일", 80, True, "text"),
     ("직급", "직급", 50, True, "text"),
@@ -1674,6 +1835,8 @@ def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
                     r[k] = str(e.get(k) if e.get(k) is not None else wp_default)
                 elif k == "사원코드":
                     r[k] = str(e.get(k) or f"{idx:03d}")
+                elif ctype == "select_red":
+                    r[k] = _reduction_label(e.get(k))
                 elif ctype.startswith("numeric"):
                     r[k] = int(e.get(k, 0) or 0)
                 else:
@@ -1709,6 +1872,24 @@ def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
             width = 42
         pinned = "left" if field in ("사업장", "사원코드", "성명") else None
         is_first_col = (field == "사업장")
+        if ctype == "select_red":
+            gb.configure_column(
+                field,
+                header_name=header_name,
+                width=width,
+                minWidth=width - 4,
+                editable=editable,
+                suppressMenu=True,
+                cellEditor="agSelectCellEditor",
+                cellEditorParams={"values": REDUCTION_OPTIONS},
+                cellRenderer=JsCode(
+                    "function(p){var v=(p.value==null)?'':String(p.value);"
+                    "return v+'<span style=\"float:right;color:#64748b;\">▾</span>';}"
+                ),
+                headerTooltip="중소기업 취업자 소득세 감면(조특법 제30조): 청년 90% / 60세 이상·장애인·경력단절 근로자 70% — 근로자 감면신청 후 적용",
+                cellStyle={"textAlign": "center"},
+            )
+            continue
         if ctype == "select_mode":
             gb.configure_column(
                 field,
@@ -1817,7 +1998,12 @@ def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
             merged = dict(orig)
             for k, _, _, _, ctype in EMP_GRID_COLUMNS:
                 val = row.get(k)
-                if ctype.startswith("numeric"):
+                if ctype == "select_red":
+                    red_v = _reduction_value(val)
+                    if float(orig.get(k, 0) or 0) != red_v:
+                        changed = True
+                    merged[k] = red_v
+                elif ctype.startswith("numeric"):
                     num_v = int(round(float(val or 0))) if pd.notna(val) and str(val).strip() != "" else 0
                     if int(orig.get(k, 0) or 0) != num_v:
                         changed = True
@@ -1833,6 +2019,22 @@ def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
             _recalculate_all_employee_rows(pstate)
             pstate["grid_version"] += 1
             st.rerun()
+
+
+REDUCTION_OPTIONS = ["", "90%", "70%"]  # 중소기업 취업자 소득세 감면율 (조특법 제30조: 청년 90%, 그 외 대상 70%)
+
+
+def _reduction_label(v: Any) -> str:
+    try:
+        f = float(v or 0)
+    except Exception:
+        f = 0.0
+    return f"{int(f)}%" if f > 0 else ""
+
+
+def _reduction_value(v: Any) -> float:
+    m = re.search(r"(\d+(?:\.\d+)?)", str(v or ""))
+    return float(m.group(1)) if m else 0.0
 
 
 def _ind_short_name(code: str) -> str:
@@ -2081,8 +2283,8 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
             if is_emp_mode:
                 next_idx = len(pstate["employees"]) + 1
                 row_calc = calculate_employee_payroll_row(
-                    base_pay=2_200_000,
-                    meal_allowance=200_000,
+                    base_pay=0,
+                    meal_allowance=0,
                     dependents=1,
                     children_8_20=0,
                     effective_table=pstate.get("effective_table", "2026.03"),

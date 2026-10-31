@@ -262,6 +262,17 @@ def normalize_korean_name(raw_name: Any) -> str:
     return s.strip()
 
 
+def _name_match_keys(raw_name: Any) -> List[str]:
+    """이름 대조용 키: 괄호 밖 이름, 괄호 안 이름(예: '이영희(LEE YOUNG)' / 'KIM MINA(김미나)' 둘 다 대응), 공백·대소문자 무시."""
+    s = str(raw_name or "").strip()
+    keys = [normalize_korean_name(s)]
+    for inner in re.findall(r"\(([^)]*)\)", s):
+        k = re.sub(r"\s+", "", inner).strip()
+        if k:
+            keys.append(k)
+    return [k.upper() for k in keys if k]
+
+
 def is_valid_person_name(name: str) -> bool:
     if not name or len(name) < 2 or len(name) > 15:
         return False
@@ -1558,7 +1569,7 @@ def _parse_nhis_multiline_text(text: str) -> Dict[str, Dict[str, Any]]:
     """
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     starts = [i for i in range(1, len(lines) - 1)
-              if re.fullmatch(r"\d{11}", lines[i]) and re.fullmatch(r"[가-힣A-Za-z()\s]{2,30}", lines[i - 1])]
+              if re.fullmatch(r"\d{10,12}", lines[i]) and re.fullmatch(r"[가-힣A-Za-z()·.\s]{2,30}", lines[i - 1])]
     records: Dict[str, Dict[str, Any]] = {}
     for k, i in enumerate(starts):
         end = starts[k + 1] - 1 if k + 1 < len(starts) else len(lines)
@@ -1786,16 +1797,21 @@ def apply_insurance_notices_to_employees(
     by_name: Dict[str, Dict[str, Any]] = {
         normalize_korean_name(emp.get("성명", "")): emp for emp in employees
     }
+    by_key: Dict[str, Dict[str, Any]] = {}
+    for emp in employees:
+        for k in _name_match_keys(emp.get("성명", "")):
+            by_key.setdefault(k, emp)
 
     for notice in notice_results:
         ntype = notice.get("notice_type", "")
         recs = notice.get("records", {})
         matched_cnt = 0
+        matched_ids = set()
         for name, n_data in recs.items():
-            norm = normalize_korean_name(name)
-            if norm not in by_name:
+            emp = next((by_key[k] for k in _name_match_keys(name) if k in by_key), None)
+            if emp is None:
                 continue
-            emp = by_name[norm]
+            matched_ids.add(id(emp))
             matched_cnt += 1
 
             if n_data.get("주민등록번호") and (
@@ -1823,8 +1839,7 @@ def apply_insurance_notices_to_employees(
             logs.append(f"[{ntype} 고지내역] 총 {len(recs)}명 중 급여대장 {matched_cnt}명 자동 매칭 완료")
         if ntype == "건강보험" and recs:
             # 건강보험 고지서가 있는데 고지 명단에 없는 직원 = 당월 건강·장기요양 고지 없음 → 0원 (요율 계산으로 채우지 않음)
-            notice_names = {normalize_korean_name(n) for n in recs.keys()}
-            absent = [nm for nm, emp in by_name.items() if nm and nm not in notice_names]
+            absent = [nm for nm, emp in by_name.items() if nm and id(emp) not in matched_ids]
             for nm in absent:
                 by_name[nm]["_nhis_absent"] = True
             if absent:
@@ -1858,6 +1873,7 @@ def apply_insurance_notices_to_employees(
                 student_loan_repayment=emp.get("학자금상환액", 0),
                 effective_table=effective_table,
                 is_ceo=ceo_flag,
+                income_tax_reduction_pct=float(emp.get("소득세감면율", 0) or 0),
             )
             emp["기본급"] = solved["base_pay"]
 
@@ -1879,6 +1895,7 @@ def apply_insurance_notices_to_employees(
             student_loan_repayment=emp.get("학자금상환액", 0),
             effective_table=effective_table,
             is_ceo=ceo_flag,
+            income_tax_reduction_pct=float(emp.get("소득세감면율", 0) or 0),
         )
         emp.update(recalc)
         if emp.get("_nhis_absent"):
@@ -2144,11 +2161,7 @@ def parse_kakao_text_instructions(
             base_e = existing_emp_map.get(person_name, {})
             deps = base_e.get("부양가족수", 1)
             children = base_e.get("자녀수", 0)
-            # 식대 기본값: 기존 사원이면 그 사원의 식대, 신규면 (금액 200만 원 이상) 또는 (같은 거래처 다수 사원이 식대 20만 원)일 때 20만 원
-            _peers = [e for e in (existing_employees or []) if str(e.get("성명", "")).strip()]
-            _peer_meal = bool(_peers) and sum(1 for e in _peers if int(e.get("식대", 0) or 0) >= 200_000) * 2 > len(_peers)
-            _default_meal = 200_000 if (amount >= 2_000_000 or (_peer_meal and amount > 200_000)) else 0
-            meal = meal_val if m_meal else base_e.get("식대", _default_meal)
+            meal = meal_val if m_meal else int(base_e.get("식대", 0) or 0)  # 식대는 카톡에 적혀 있거나 기존 사원 자료에 있을 때만 (자동 20만 원 분할 없음)
 
             if is_net:
                 solved = solve_gross_from_net_employee(
@@ -2157,6 +2170,7 @@ def parse_kakao_text_instructions(
                     dependents=deps,
                     children_8_20=children,
                     effective_table=effective_table,
+                    income_tax_reduction_pct=float(base_e.get("소득세감면율", 0) or 0),
                 )
                 row_calc = calculate_employee_payroll_row(
                     base_pay=solved["base_pay"],
@@ -2164,6 +2178,7 @@ def parse_kakao_text_instructions(
                     dependents=deps,
                     children_8_20=children,
                     effective_table=effective_table,
+                    income_tax_reduction_pct=float(base_e.get("소득세감면율", 0) or 0),
                 )
                 in_mode = "세후역산"
                 target_net = amount
@@ -2175,6 +2190,7 @@ def parse_kakao_text_instructions(
                     dependents=deps,
                     children_8_20=children,
                     effective_table=effective_table,
+                    income_tax_reduction_pct=float(base_e.get("소득세감면율", 0) or 0),
                 )
                 in_mode = "세전"
                 target_net = 0
