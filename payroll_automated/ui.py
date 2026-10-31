@@ -417,6 +417,41 @@ EMP_ZIP_MAX = 200
 FREE_ZIP_MAX = 100
 
 
+def _zip_bytes_to_files(zip_bytes: bytes) -> List[Tuple[str, bytes]]:
+    import io as _io
+    import zipfile as _zf
+    out: List[Tuple[str, bytes]] = []
+    with _zf.ZipFile(_io.BytesIO(zip_bytes)) as zf:
+        for nm in zf.namelist():
+            if not nm.endswith("/"):
+                out.append((nm, zf.read(nm)))
+    return out
+
+
+def _trigger_multi_download(files: List[Tuple[str, bytes]], mime: str, key: str) -> None:
+    """여러 파일을 압축하지 않고 개별 파일로 한 번에 내려받게 합니다.
+    브라우저가 '여러 파일 다운로드 허용'을 물으면 [허용]을 누르면 됩니다(처음 한 번)."""
+    import base64 as _b64
+    import json as _json
+    payload = _json.dumps([{"n": n, "d": _b64.b64encode(b).decode("ascii")} for n, b in files], ensure_ascii=False)
+    html = (
+        "<div style='font-family:sans-serif;font-size:12px;color:#334155;'>"
+        "<button id='go' style='padding:4px 10px;border:1px solid #cbd5e1;border-radius:6px;background:#f8fafc;cursor:pointer;'>"
+        f"다운로드가 시작되지 않으면 여기를 누르세요 ({len(files)}개)</button></div>"
+        "<script>"
+        f"const FILES={payload};const MIME={_json.dumps(mime)};"
+        "async function go(){for(const f of FILES){const bin=atob(f.d);const arr=new Uint8Array(bin.length);"
+        "for(let i=0;i<bin.length;i++){arr[i]=bin.charCodeAt(i);}"
+        "const url=URL.createObjectURL(new Blob([arr],{type:MIME}));const a=document.createElement('a');"
+        "a.href=url;a.download=f.n;document.body.appendChild(a);a.click();a.remove();"
+        "setTimeout(()=>URL.revokeObjectURL(url),8000);await new Promise(r=>setTimeout(r,250));}}"
+        "document.getElementById('go').onclick=go;go();"
+        "</script>"
+    )
+    st.iframe(html, height=40)
+    st.caption(f"{len(files)}개 파일 다운로드를 시작했습니다. 브라우저가 '여러 파일 다운로드'를 물으면 [허용]을 눌러 주세요.")
+
+
 def _lazy_bytes(fn, *args, enabled: bool = True, **kwargs):
     """다운로드 버튼을 누를 때만 파일을 만들도록 호출 가능한 객체를 돌려줍니다."""
     import copy as _copy
@@ -2195,35 +2230,23 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
                     sel_batch_lbl = st.selectbox("급여명세서 ZIP 다운로드 구간", options=batch_options, key="emp_zip_batch_sel")
                     emp_start_idx = batch_options.index(sel_batch_lbl) * EMP_ZIP_MAX
 
-            c_tpl, c_mag, dl1, dl2, dl3, dl4, dl5 = st.columns(
-                [1.55, 0.28, 1.35, 1.45, 1.5, 1.0, 1.2], gap="small", vertical_alignment="center"
+            c_tpl, c_mag, dl_pdf, dl_img, dl_led, dl_xls, dl_enc = st.columns(
+                [1.6, 0.28, 1.55, 1.6, 1.15, 1.45, 1.0], gap="small", vertical_alignment="center"
             )
             selected_tpl = _render_employee_template_selector(pstate, c_tpl, c_mag)
             inc_cnt = min(EMP_ZIP_MAX, max(0, len(emps) - emp_start_idx))
-
-            with dl1:
-                # [위하고 급여 업로드양식] = 거래처명_위하고 업로드 양식_년월(4자리).xlsx ('사업장' 열 자동 제외)
-                st.download_button(
-                    label="위하고 급여 업로드양식 (.xlsx)",
-                    data=_lazy_bytes(export_wehago_payroll_excel, emps),
-                    file_name=f"{c_safe}_위하고 업로드 양식_{yymm_short}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    width="stretch",
-                    disabled=(len(emps) == 0),
-                    key="btn_dl_wehago_emp_xlsx",
-                )
-            with dl4:
+            with dl_enc:
                 enc_chk = st.checkbox(
                     "생년월일 6자리 암호",
                     value=bool(pstate.get("encrypt_payslip_zip", False)),
                     key="chk_pay_enc_birth",
-                    help="체크 시 각 인별 급여명세서 PDF에 주민등록번호 앞 6자리(YYMMDD) 비밀번호가 설정되어 압축됩니다.",
+                    help="체크 시 압축 파일 안의 각 급여명세서 PDF에 주민등록번호 앞 6자리(YYMMDD) 비밀번호가 설정됩니다.",
                 )
                 pstate["encrypt_payslip_zip"] = enc_chk
-            with dl2:
-                # [급여명세서 일괄 다운 (PDF)] zip = 거래처명_급여명세서_년월(4자리).zip / 내부 = 근로자명_급여명세서_년월(4자리).pdf
+            with dl_pdf:
+                # [급여명세서 일괄 다운(PDF), 압축] zip = 거래처명_급여명세서_YYMM.zip / 내부 = 근로자명_급여명세서_YYMM.pdf
                 st.download_button(
-                    label=f"급여명세서 일괄 다운 (PDF · {inc_cnt}명)",
+                    label="급여명세서 일괄 다운(PDF), 압축",
                     data=_lazy_bytes(
                         export_employee_payslips_zip,
                         enabled=bool(emps),
@@ -2241,32 +2264,32 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
                     width="stretch",
                     disabled=(len(emps) == 0),
                     key="btn_dl_payslips_zip",
+                    help=f"{inc_cnt}명의 급여명세서 PDF를 zip 파일 하나로 내려받습니다.",
                 )
-            with dl3:
-                # [급여명세서 일괄 다운 (이미지)] zip = 거래처명_급여명세서_년월(4자리).zip / 내부 = 근로자명_급여명세서_년월(4자리).jpg
-                st.download_button(
-                    label=f"급여명세서 일괄 다운 (이미지 · {inc_cnt}명)",
-                    data=_lazy_bytes(
-                        export_employee_payslips_jpg_zip,
-                        enabled=bool(emps),
-                        employees=emps,
-                        corp_name=pstate.get("corp_name", ""),
-                        year_month=ym_disp,
-                        pay_date=pstate.get("pay_date", ""),
-                        start_index=emp_start_idx,
-                        max_count=EMP_ZIP_MAX,
-                        template_type=selected_tpl,
-                    ),
-                    file_name=f"{c_safe}_급여명세서_{yymm_short}.zip",
-                    mime="application/zip",
+            with dl_img:
+                # [급여명세서 일괄 다운(이미지), 개별] = 근로자명_급여명세서_YYMM.jpg 를 압축 없이 각각 한 번에
+                if st.button(
+                    "급여명세서 일괄 다운(이미지), 개별",
                     width="stretch",
                     disabled=(len(emps) == 0),
-                    key="btn_dl_payslips_jpg_zip",
-                )
-            with dl5:
-                # [급여대장 다운로드 (PDF)] = 거래처명_급여대장_년월(4자리).pdf
+                    key="btn_dl_payslips_jpg_each",
+                    help=f"{inc_cnt}명의 급여명세서 이미지(JPG)를 압축 없이 각각 한 번에 내려받습니다.",
+                ):
+                    with st.spinner("급여명세서 이미지를 만드는 중..."):
+                        files = _zip_bytes_to_files(export_employee_payslips_jpg_zip(
+                            employees=emps,
+                            corp_name=pstate.get("corp_name", ""),
+                            year_month=ym_disp,
+                            pay_date=pstate.get("pay_date", ""),
+                            start_index=emp_start_idx,
+                            max_count=EMP_ZIP_MAX,
+                            template_type=selected_tpl,
+                        ))
+                    _trigger_multi_download(files, "image/jpeg", "emp_jpg")
+            with dl_led:
+                # [급여대장 다운(PDF)] = 거래처명_급여대장_YYMM.pdf
                 st.download_button(
-                    label="급여대장 다운로드 (PDF)",
+                    label="급여대장 다운(PDF)",
                     data=_lazy_bytes(
                         export_payroll_ledger_pdf,
                         enabled=bool(emps),
@@ -2280,6 +2303,17 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
                     width="stretch",
                     disabled=(len(emps) == 0),
                     key="btn_dl_payroll_ledger_pdf",
+                )
+            with dl_xls:
+                # [위하고 급여 업로드 양식(.xlsx)] = 거래처명_위하고 업로드 양식_YYMM.xlsx ('사업장' 열 자동 제외)
+                st.download_button(
+                    label="위하고 급여 업로드 양식(.xlsx)",
+                    data=_lazy_bytes(export_wehago_payroll_excel, emps),
+                    file_name=f"{c_safe}_위하고 업로드 양식_{yymm_short}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    width="stretch",
+                    disabled=(len(emps) == 0),
+                    key="btn_dl_wehago_emp_xlsx",
                 )
     else:
         st.markdown(
@@ -2324,89 +2358,63 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
                     sel_fbatch_lbl = st.selectbox("사업소득명세서 ZIP 다운로드 구간", options=f_batch_options, key="free_zip_batch_sel")
                     free_start_idx = f_batch_options.index(sel_fbatch_lbl) * FREE_ZIP_MAX
 
-            fd1, fd2, fd3, fd4 = st.columns([1.55, 1.95, 1.65, 1.45], gap="small", vertical_alignment="center")
             f_inc_cnt = min(FREE_ZIP_MAX, max(0, len(frees) - free_start_idx))
+            fp_btn, fp_mag, fi_btn, fi_mag, f_led, f_xls = st.columns(
+                [1.75, 0.28, 1.8, 0.28, 1.3, 1.6], gap="small", vertical_alignment="center"
+            )
+            free_b64 = get_freelancer_statement_preview_b64()
 
-            with fd1:
-                # [위하고 사업소득 업로드양식] = 거래처명_위하고 업로드양식_년월(4자리).xlsx
-                st.download_button(
-                    label="위하고 사업소득 업로드양식 (.xlsx)",
-                    data=_lazy_bytes(
-                        export_wehago_freelancer_excel,
-                        freelancers=frees,
-                        default_year_month=ym_disp,
-                        default_pay_date=pstate.get("pay_date", ""),
-                    ),
-                    file_name=f"{c_safe}_위하고 업로드양식_{yymm_short}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    width="stretch",
-                    disabled=(len(frees) == 0),
-                    key="btn_dl_wehago_free_xlsx",
-                )
-            with fd2:
-                # [사업소득명세서 PDF 압축] + 오른쪽 옆 돋보기 마우스 오버(:hover) 양식 샘플 미리보기
-                c_fpdf_btn, c_fpdf_mag = st.columns([4.3, 1.0], gap="small", vertical_alignment="center")
-                with c_fpdf_btn:
-                    st.download_button(
-                        label=f"사업소득명세서 PDF 압축 ({f_inc_cnt}명)",
-                        data=_lazy_bytes(
-                            export_freelancer_statements_pdf_zip,
-                            enabled=bool(frees),
-                            freelancers=frees,
-                            corp_name=pstate.get("corp_name", ""),
-                            year_month=ym_disp,
-                            pay_date=pstate.get("pay_date", ""),
-                            start_index=free_start_idx,
-                            max_count=FREE_ZIP_MAX,
-                        ),
-                        file_name=f"{c_safe}_사업소득명세서_{yymm_short}.zip",
-                        mime="application/zip",
-                        width="stretch",
-                        disabled=(len(frees) == 0),
-                        key="btn_dl_free_pdf_zip",
+            def _free_mag() -> None:
+                if free_b64:
+                    st.markdown(
+                        "<div class=\"pay-tpl-hover-wrap\" title=\"마우스를 올리면 사업소득명세서 양식 미리보기가 표시됩니다\">"
+                        f"{MAGNIFIER_SVG}"
+                        "<div class=\"pay-tpl-hover-popup\"><div class=\"pay-tpl-hover-title\"><span>사업소득명세서 양식 미리보기</span>"
+                        "<span style=\"color:#7c3aed;\">샘플</span></div>"
+                        f"<img src=\"data:image/png;base64,{free_b64}\" alt=\"사업소득명세서 미리보기\" /></div></div>",
+                        unsafe_allow_html=True,
                     )
-                with c_fpdf_mag:
-                    free_b64 = get_freelancer_statement_preview_b64()
-                    if free_b64:
-                        st.markdown(
-                            f"""
-                            <div class="pay-tpl-hover-wrap" title="마우스를 가져다 대면 사업소득명세서 양식 샘플이 표시됩니다">
-                                {MAGNIFIER_SVG}
-                                <div class="pay-tpl-hover-popup">
-                                    <div class="pay-tpl-hover-title">
-                                        <span>사업소득명세서 양식 미리보기</span>
-                                        <span style="color:#7c3aed;">샘플</span>
-                                    </div>
-                                    <img src="data:image/png;base64,{free_b64}" alt="사업소득명세서 미리보기" />
-                                </div>
-                            </div>
-                            """,
-                            unsafe_allow_html=True,
-                        )
-            with fd3:
-                # [사업소득명세서 이미지 압축] = 거래처명_사업소득명세서_년월(4자리).zip
-                st.download_button(
-                    label=f"사업소득명세서 이미지 압축 ({f_inc_cnt}명)",
-                    data=_lazy_bytes(
-                        export_freelancer_statements_jpg_zip,
-                        enabled=bool(frees),
-                        freelancers=frees,
-                        corp_name=pstate.get("corp_name", ""),
-                        year_month=ym_disp,
-                        pay_date=pstate.get("pay_date", ""),
-                        start_index=free_start_idx,
-                        max_count=FREE_ZIP_MAX,
-                    ),
-                    file_name=f"{c_safe}_사업소득명세서_{yymm_short}.zip",
-                    mime="application/zip",
+
+            free_kw = dict(
+                freelancers=frees,
+                corp_name=pstate.get("corp_name", ""),
+                year_month=ym_disp,
+                pay_date=pstate.get("pay_date", ""),
+                start_index=free_start_idx,
+                max_count=FREE_ZIP_MAX,
+            )
+            with fp_btn:
+                # [사업소득명세서 일괄 다운(PDF), 개별] = 근로자명_사업소득명세서_YYMM.pdf 를 압축 없이 각각 한 번에
+                if st.button(
+                    "사업소득명세서 일괄 다운(PDF), 개별",
                     width="stretch",
                     disabled=(len(frees) == 0),
-                    key="btn_dl_free_jpg_zip",
-                )
-            with fd4:
-                # [사업소득대장 다운로드 (PDF)] = 거래처명_사업소득대장_년월(4자리).pdf
+                    key="btn_dl_free_pdf_each",
+                    help=f"{f_inc_cnt}명의 사업소득명세서 PDF를 압축 없이 각각 한 번에 내려받습니다.",
+                ):
+                    with st.spinner("사업소득명세서 PDF를 만드는 중..."):
+                        files = _zip_bytes_to_files(export_freelancer_statements_pdf_zip(**free_kw))
+                    _trigger_multi_download(files, "application/pdf", "free_pdf")
+            with fp_mag:
+                _free_mag()
+            with fi_btn:
+                # [사업소득명세서 일괄 다운(이미지), 개별] = 근로자명_사업소득명세서_YYMM.jpg 를 압축 없이 각각 한 번에
+                if st.button(
+                    "사업소득명세서 일괄 다운(이미지), 개별",
+                    width="stretch",
+                    disabled=(len(frees) == 0),
+                    key="btn_dl_free_jpg_each",
+                    help=f"{f_inc_cnt}명의 사업소득명세서 이미지(JPG)를 압축 없이 각각 한 번에 내려받습니다.",
+                ):
+                    with st.spinner("사업소득명세서 이미지를 만드는 중..."):
+                        files = _zip_bytes_to_files(export_freelancer_statements_jpg_zip(**free_kw))
+                    _trigger_multi_download(files, "image/jpeg", "free_jpg")
+            with fi_mag:
+                _free_mag()
+            with f_led:
+                # [사업소득대장 다운(PDF)] = 거래처명_사업소득대장_YYMM.pdf
                 st.download_button(
-                    label="사업소득대장 다운로드 (PDF)",
+                    label="사업소득대장 다운(PDF)",
                     data=_lazy_bytes(
                         export_freelancer_ledger_pdf,
                         enabled=bool(frees),
@@ -2419,6 +2427,22 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
                     width="stretch",
                     disabled=(len(frees) == 0),
                     key="btn_dl_free_ledger_pdf",
+                )
+            with f_xls:
+                # [위하고 사업소득 업로드 양식(.xlsx)] = 거래처명_위하고 업로드양식_YYMM.xlsx
+                st.download_button(
+                    label="위하고 사업소득 업로드 양식(.xlsx)",
+                    data=_lazy_bytes(
+                        export_wehago_freelancer_excel,
+                        freelancers=frees,
+                        default_year_month=ym_disp,
+                        default_pay_date=pstate.get("pay_date", ""),
+                    ),
+                    file_name=f"{c_safe}_위하고 업로드양식_{yymm_short}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    width="stretch",
+                    disabled=(len(frees) == 0),
+                    key="btn_dl_wehago_free_xlsx",
                 )
 
     if pstate.get("chat_logs"):
