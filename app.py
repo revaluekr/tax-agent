@@ -2148,12 +2148,12 @@ def _render_official_reason_viewer_body(
 
     c_v1, c_v2 = st.columns(2)
     with c_v1:
-        if st.button("🔄 법제처 최신 공포정보 새로고침", use_container_width=True):
+        if st.button("🔄 법제처 최신 공포정보 새로고침", width="stretch"):
             fetch_latest_tax_law_promulgations.clear()
             fetch_official_revision_reason_zero_token.clear()
             st.rerun()
     with c_v2:
-        if st.button(f"⚡ 상단 배너에 「{chosen_item['law_name']}」 신·구법 비교 열기", use_container_width=True):
+        if st.button(f"⚡ 상단 배너에 「{chosen_item['law_name']}」 신·구법 비교 열기", width="stretch"):
             curr_msgs = st.session_state.chat_rooms.get(selected_room, [])
             diff_md = generate_banner_law_diff_table(
                 curr_msgs, [chosen_item], room_key=f"{effective_ws_id}::{selected_room}"
@@ -2331,7 +2331,7 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
             submitted_reg = st.form_submit_button(
                 "✅ 관리자 등록 및 3단 자동 패스 활성화",
                 type="primary",
-                use_container_width=True
+                width="stretch"
             )
             if submitted_reg:
                 clean_reg_em = (reg_email or "").strip().lower()
@@ -2382,12 +2382,12 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
                 submitted_pin = st.form_submit_button(
                     "🔓 보안 PIN 교차검증 및 API키 즉시 확인",
                     type="primary",
-                    use_container_width=True
+                    width="stretch"
                 )
             with c_u2:
                 oauth_try = st.form_submit_button(
                     "🌐 Google OAuth 재확인",
-                    use_container_width=True
+                    width="stretch"
                 )
 
             if submitted_pin:
@@ -2422,7 +2422,7 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
         with c_top2:
             show_full_code = st.toggle("👁️ API코드 전체 보기", value=False, key="toggle_show_full_api_code")
         with c_top3:
-            if st.button("🔒 잠금", use_container_width=True, key="btn_lock_api_modal"):
+            if st.button("🔒 잠금", width="stretch", key="btn_lock_api_modal"):
                 st.session_state.manager_google_authed_email = ""
                 st.session_state.manager_manual_locked = True
                 st.rerun()
@@ -2522,7 +2522,7 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
                     key=f"modal_exp_input_{code}"
                 )
                 updated_expiry_map[code] = val_str.strip()
-        if st.button("💾 수정한 API 만료일 저장", use_container_width=True):
+        if st.button("💾 수정한 API 만료일 저장", width="stretch"):
             save_api_expiry_dates(updated_expiry_map)
             st.success("✅ API 만료일이 저장되었습니다!")
             st.rerun()
@@ -2604,7 +2604,7 @@ with st.sidebar:
             "자율 에이전트AI",
             key="btn_top_mode_agent",
             type=("primary" if st.session_state.app_top_mode == "AGENT" else "secondary"),
-            use_container_width=True,
+            width="stretch",
         ):
             st.session_state.app_top_mode = "AGENT"
             st.rerun()
@@ -2613,7 +2613,7 @@ with st.sidebar:
             "통합고용세액공제",
             key="btn_top_mode_credit",
             type=("primary" if st.session_state.app_top_mode == "CREDIT_CALC" else "secondary"),
-            use_container_width=True,
+            width="stretch",
         ):
             st.session_state.app_top_mode = "CREDIT_CALC"
             st.rerun()
@@ -2699,7 +2699,7 @@ with st.sidebar:
             sync_all_rooms_state(effective_ws_id)
 
             if workspace_input.strip():
-                if st.button("🔒 작업공간 잠금 (나가기)", use_container_width=True):
+                if st.button("🔒 작업공간 잠금 (나가기)", width="stretch"):
                     st.session_state.active_workspace_id = ""
                     st.session_state.loaded_workspace_id = None
                     st.session_state.manager_google_authed_email = ""
@@ -2761,7 +2761,7 @@ with st.sidebar:
                         matched_rooms.append((r_id, r_title, hit_cnt))
                 if matched_rooms:
                     for m_rid, m_title, m_cnt in matched_rooms:
-                        if st.button(f"👉 {m_rid} [{m_title}] ({m_cnt}건 일치)", key=f"jump_{m_rid}", use_container_width=True):
+                        if st.button(f"👉 {m_rid} [{m_title}] ({m_cnt}건 일치)", key=f"jump_{m_rid}", width="stretch"):
                             st.session_state.current_room = m_rid
                             st.rerun()
                 else:
@@ -2789,7 +2789,7 @@ with st.sidebar:
                 save_workspace_to_disk(effective_ws_id)
                 st.rerun()
 
-            if st.button(f"🗑️ [{selected_room}] 현재 방 비우기", key="btn_clear_current_room", use_container_width=True):
+            if st.button(f"🗑️ [{selected_room}] 현재 방 비우기", key="btn_clear_current_room", width="stretch"):
                 with task_mgr["lock"]:
                     task_mgr["tasks"].pop(active_room_key, None)
                 st.session_state.chat_rooms[selected_room] = []
@@ -2822,7 +2822,7 @@ with st.sidebar:
                 extra_badges = (" 📎" if f_cnt else "") + (" 🔄" if rev_alerts else "") + (" (작성중)" if is_run else "")
                 btn_label = f"{idx_r}. {short_title} ({q_cnt}건){extra_badges}"
 
-                if st.button(btn_label, key=btn_key, use_container_width=True):
+                if st.button(btn_label, key=btn_key, width="stretch"):
                     if r_id != selected_room:
                         st.session_state.current_room = r_id
                         st.rerun()
@@ -2831,9 +2831,9 @@ with st.sidebar:
     with st.container(border=True):
         col_b1, col_b2 = st.columns(2)
         with col_b1:
-            st.link_button("💳 결제", "https://console.cloud.google.com/billing", use_container_width=True)
+            st.link_button("💳 결제", "https://console.cloud.google.com/billing", width="stretch")
         with col_b2:
-            if st.button("🔑 API키", use_container_width=True, help="연동된 전체 API 리스트 및 갱신 링크 열기"):
+            if st.button("🔑 API키", width="stretch", help="연동된 전체 API 리스트 및 갱신 링크 열기"):
                 if _dialog_decorator:
                     open_api_key_manager_modal(expiry_all_status, law_prom_map)
                 else:
@@ -2895,7 +2895,7 @@ if expiry_alerts:
             else:
                 st.warning(alert_item["msg"])
         with c_al2:
-            st.link_button("🔗 연장·재발급", alert_item["url"], use_container_width=True)
+            st.link_button("🔗 연장·재발급", alert_item["url"], width="stretch")
 
 # 🔄 2) [개정세법 안내 배너]
 current_room_rev_alerts, is_post_revision = get_room_revision_alerts(
@@ -2920,7 +2920,7 @@ if current_room_rev_alerts:
                 f"📜 **[최근 공포·시행예정 법령 인용 안내]** 이 방에서 인용된 {rev_names_str}의 공식 입법이유서 및 신·구 비교표를 바로 열람할 수 있습니다."
             )
     with c_rv2:
-        if st.button("📜 개정이유서", key=f"rsn_{selected_room}", use_container_width=True):
+        if st.button("📜 개정이유서", key=f"rsn_{selected_room}", width="stretch"):
             if _dialog_decorator:
                 open_official_reason_modal(law_prom_map, effective_ws_id, selected_room, pro_toggle_on, False, first_clean)
             else:
@@ -2928,7 +2928,7 @@ if current_room_rev_alerts:
                 st.rerun()
     with c_rv3:
         diff_btn_lbl = "🔼 신·구법 비교 닫기" if (saved_diff_md and is_diff_open) else "⚡ 신·구법 비교"
-        if st.button(diff_btn_lbl, key=f"rerev_{selected_room}", use_container_width=True):
+        if st.button(diff_btn_lbl, key=f"rerev_{selected_room}", width="stretch"):
             if saved_diff_md:
                 st.session_state[f"diff_banner_open_{effective_ws_id}_{selected_room}"] = not is_diff_open
                 st.rerun()
@@ -2942,7 +2942,7 @@ if current_room_rev_alerts:
                     save_workspace_to_disk(effective_ws_id)
                 st.rerun()
     with c_rv4:
-        if st.button("✅ 확인", key=f"ack_{selected_room}", use_container_width=True, help="이 대화방의 법령 알림을 확인 처리하여 숨깁니다."):
+        if st.button("✅ 확인", key=f"ack_{selected_room}", width="stretch", help="이 대화방의 법령 알림을 확인 처리하여 숨깁니다."):
             acknowledge_room_laws(effective_ws_id, selected_room, current_room_rev_alerts)
             st.rerun()
 
@@ -2981,7 +2981,6 @@ if st.session_state.get("show_inline_api_manager"):
 # ---------------------------------------------------------
 # 4. 대화방 메시지 목록 렌더링 (방 전환 시 잔상 차단 + 2·3번째 답변 완료 시 해당 결론 시작점으로 자동 스크롤)
 # ---------------------------------------------------------
-import streamlit.components.v1 as components
 
 with st.container(key=f"room_main_view_{effective_ws_id}_{selected_room}"):
     if not current_messages and not is_current_room_running:
@@ -3019,7 +3018,7 @@ with st.container(key=f"room_main_view_{effective_ws_id}_{selected_room}"):
                         file_name=f"검토보고서_{selected_room}_{current_room_title}_{idx}.pdf",
                         mime="application/pdf",
                         key=f"pdf_{effective_ws_id}_{selected_room}_{idx}",
-                        use_container_width=True
+                        width="stretch"
                     )
                 with col2:
                     st.download_button(
@@ -3028,7 +3027,7 @@ with st.container(key=f"room_main_view_{effective_ws_id}_{selected_room}"):
                         file_name=f"검토보고서_{selected_room}_{current_room_title}_{idx}.docx",
                         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                         key=f"docx_{effective_ws_id}_{selected_room}_{idx}",
-                        use_container_width=True
+                        width="stretch"
                     )
                 with col3:
                     if excel_bytes:
@@ -3038,10 +3037,10 @@ with st.container(key=f"room_main_view_{effective_ws_id}_{selected_room}"):
                             file_name=f"검토표_{selected_room}_{current_room_title}_{idx}.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             key=f"xlsx_{effective_ws_id}_{selected_room}_{idx}",
-                            use_container_width=True
+                            width="stretch"
                         )
                     else:
-                        st.button("📊 표 없음 (.xlsx)", disabled=True, key=f"no_xlsx_{effective_ws_id}_{selected_room}_{idx}", use_container_width=True)
+                        st.button("📊 표 없음 (.xlsx)", disabled=True, key=f"no_xlsx_{effective_ws_id}_{selected_room}_{idx}", width="stretch")
                 with col4:
                     st.download_button(
                         label="📝 마크다운 (.md)",
@@ -3049,7 +3048,7 @@ with st.container(key=f"room_main_view_{effective_ws_id}_{selected_room}"):
                         file_name=f"검토보고서_{selected_room}_{current_room_title}_{idx}.md",
                         mime="text/markdown",
                         key=f"md_{effective_ws_id}_{selected_room}_{idx}",
-                        use_container_width=True
+                        width="stretch"
                     )
 
                 act1, act2, act3 = st.columns(3)
@@ -3058,7 +3057,7 @@ with st.container(key=f"room_main_view_{effective_ws_id}_{selected_room}"):
                         "💬 카톡 안내문 변환 (Flash)",
                         key=f"kakao_{effective_ws_id}_{selected_room}_{idx}",
                         disabled=is_current_room_running,
-                        use_container_width=True
+                        width="stretch"
                     ):
                         _trigger_agent_task(
                             effective_ws_id, selected_room,
@@ -3076,7 +3075,7 @@ with st.container(key=f"room_main_view_{effective_ws_id}_{selected_room}"):
                         "📧 이메일 회신 초안 (Flash)",
                         key=f"email_{effective_ws_id}_{selected_room}_{idx}",
                         disabled=is_current_room_running,
-                        use_container_width=True
+                        width="stretch"
                     ):
                         _trigger_agent_task(
                             effective_ws_id, selected_room,
@@ -3088,7 +3087,7 @@ with st.container(key=f"room_main_view_{effective_ws_id}_{selected_room}"):
                         "👑 [프로/Argon] 3배 개방 재검토",
                         key=f"repro_{effective_ws_id}_{selected_room}_{idx}",
                         disabled=is_current_room_running,
-                        use_container_width=True
+                        width="stretch"
                     ):
                         _trigger_agent_task(
                             effective_ws_id, selected_room,
@@ -3117,7 +3116,7 @@ with st.container(key=f"room_main_view_{effective_ws_id}_{selected_room}"):
             else:
                 _last_role = current_messages[-1].get("role", "")
                 _target_anchor_id = f"chat-msg-anchor-{_msg_cnt - 1}" if _last_role == "assistant" else f"chat-msg-anchor-{max(0, _msg_cnt - 1)}"
-            components.html(
+            st.iframe(
                 f"""
                 <script>
                 (function() {{
@@ -3136,7 +3135,7 @@ with st.container(key=f"room_main_view_{effective_ws_id}_{selected_room}"):
                 }})();
                 </script>
                 """,
-                height=0,
+                height=1,  # st.iframe는 0을 허용하지 않음 (스크롤 스크립트 실행용 1px 숨김 프레임)
             )
 
 # ---------------------------------------------------------
@@ -3159,7 +3158,7 @@ if saved_items:
                 unsafe_allow_html=True
             )
         with c_head2:
-            if st.button("🗑️ 첨부 비우기", key=f"clear_all_f_{selected_room}", use_container_width=True):
+            if st.button("🗑️ 첨부 비우기", key=f"clear_all_f_{selected_room}", width="stretch"):
                 st.session_state.room_files[selected_room] = {"name": None, "text": "", "items": []}
                 st.session_state[f"reset_cnt_{selected_room}"] = reset_cnt + 1
                 save_workspace_to_disk(effective_ws_id)
