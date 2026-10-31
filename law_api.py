@@ -39,6 +39,12 @@ def _get_api_key(key_name: str, fallback_keys: list[str] = None) -> str:
             return val
     return ""
 
+def _get_app_domain() -> str:
+    """브이월드 등 도메인 등록형 API에 전달할 앱 주소(APP_DOMAIN)를 st.secrets/환경변수에서 읽습니다."""
+    dom = _get_api_key("APP_DOMAIN") or "https://ailaw-j.streamlit.app"
+    dom = dom.rstrip("/")
+    return dom if dom.startswith("http") else f"https://{dom}"
+
 LAW_OPEN_API_KEY = _get_api_key("LAW_OPEN_API_KEY", ["LAW_API_OC", "OC", "LAW_OC", "LAW_API_KEY", "MOLEG_OC", "DRF_OC"])
 BOK_API_KEY = _get_api_key("BOK_API_KEY", ["ECOS_API_KEY"])
 DART_API_KEY = _get_api_key("DART_API_KEY", ["OPENDART_API_KEY"])
@@ -1261,7 +1267,7 @@ def _address_to_pnu(address: str, vworld_key: str) -> tuple[str, str]:
                 "service": "search", "request": "search", "version": "2.0",
                 "query": raw, "type": "address", "category": cat,
                 "format": "json", "key": vworld_key,
-                "domain": "https://ailaw-j.streamlit.app"
+                "domain": _get_app_domain()
             }, timeout=10).json()
             items = s_res.get("response", {}).get("result", {}).get("items", [])
             if items:
@@ -1285,7 +1291,7 @@ def _address_to_pnu(address: str, vworld_key: str) -> tuple[str, str]:
                 "crs": "epsg:4326", "address": raw,
                 "refine": "true", "simple": "false", "format": "json",
                 "type": addr_type, "key": vworld_key,
-                "domain": "https://ailaw-j.streamlit.app"
+                "domain": _get_app_domain()
             }, timeout=10).json()
             if g_res.get("response", {}).get("status") == "OK":
                 refined = g_res["response"].get("refined", {}) or {}
@@ -1343,7 +1349,7 @@ def get_vworld_official_price(address_or_pnu: str, stdr_year: str = "") -> str:
     def _fetch_json_with_bypass(target_url: str, params: dict) -> tuple[dict, str]:
         """직접 호출(한국 IP/로컬) 시도 후 해외 IP 차단(HTTP 502) 발생 시 5종 우회 게이트웨이를 순차 시도합니다."""
         last_err = ""
-        params_with_dom = {**params, "domain": "https://ailaw-j.streamlit.app"}
+        params_with_dom = {**params, "domain": _get_app_domain()}
         url_dom = f"{target_url}?{urllib.parse.urlencode(params_with_dom)}"
         url_nodom = f"{target_url}?{urllib.parse.urlencode(params)}"
 
@@ -1359,7 +1365,11 @@ def get_vworld_official_price(address_or_pnu: str, stdr_year: str = "") -> str:
             except Exception as e:
                 last_err = str(e)
 
-        # 2차: Streamlit Cloud(해외 IP) 502 차단 우회용 5종 게이트웨이
+        # 2차: Streamlit Cloud(해외 IP) 502 차단 우회용 공개 게이트웨이
+        # 보안: 공개 우회 서버로 보내는 주소에는 브이월드 인증키(key=)가 그대로 들어가 제3자 서버에 노출되므로
+        #       기본값은 사용 안 함. Secrets에 VWORLD_USE_PUBLIC_PROXY = "on" 을 넣은 경우에만 사용합니다.
+        if _get_api_key("VWORLD_USE_PUBLIC_PROXY").lower() not in ("on", "true", "1", "yes"):
+            return {}, last_err
         enc_u = urllib.parse.quote(url_nodom, safe="")
         proxy_candidates = [
             f"https://api.allorigins.win/get?url={enc_u}",
