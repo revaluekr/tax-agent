@@ -1533,6 +1533,69 @@ def _parse_payroll_ledger_or_slip_pdf_text(
     }
 
 
+def _parse_nhis_amount_line(tail: str) -> Dict[str, Any]:
+    """건강/요양 한 줄의 금액 해석: 산출보험료 [사유] [적용기간] 정산금액 [감면] 연말정산 고지금액 환급이자 고지+이자 ...
+    산출 + 정산 + 연말정산 = 고지금액 이 맞는지 확인합니다."""
+    period = re.search(r"(20\d{2}/\d{2})\s*~\s*(20\d{2}/\d{2})", tail)
+    cleaned = re.sub(r"20\d{2}/\d{2}\s*~\s*20\d{2}/\d{2}", " ", tail)
+    reason = " ".join(re.findall(r"[가-힣]{2,}", cleaned))
+    nums = [parse_number(t) for t in re.findall(r"-?\d[\d,]*", cleaned)]
+    out = {"calculated": 0, "settlement": 0, "year_end": 0, "billed": 0, "reason": reason,
+           "retro_period": f"{period.group(1)}~{period.group(2)}" if period else "", "ok": False}
+    if len(nums) >= 4:
+        calc, settle, ye, billed = nums[0], nums[1], nums[2], nums[3]
+        out.update(calculated=calc, settlement=settle, year_end=ye, billed=billed, ok=(calc + settle + ye == billed))
+    elif nums:
+        out.update(calculated=nums[0], billed=nums[0], ok=True)
+    return out
+
+
+def _parse_nhis_multiline_text(text: str) -> Dict[str, Dict[str, Any]]:
+    """국민건강보험공단 '사업장 가입자별 고지내역'(성명·증번호·보수월액이 각 줄로 나뉘는 형식) 해석.
+    - 건강보험/장기요양 = 산출보험료, 정산 칸 = 정산금액(정산분할고지·당월경감 등)
+    - 적용기간이 있는 소급 정산(예: 취득지연추가)은 당월 공제에서 제외하고 '확인필요_소급정산'에 금액을 남깁니다.
+    - PDF 글자 추출에서 한 사람의 내용이 여러 줄로 쪼개져도 사람 단위로 합쳐서 읽습니다.
+    """
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    starts = [i for i in range(1, len(lines) - 1)
+              if re.fullmatch(r"\d{11}", lines[i]) and re.fullmatch(r"[가-힣A-Za-z()\s]{2,30}", lines[i - 1])]
+    records: Dict[str, Dict[str, Any]] = {}
+    for k, i in enumerate(starts):
+        end = starts[k + 1] - 1 if k + 1 < len(starts) else len(lines)
+        block_lines = lines[i + 1:end]
+        stop = next((j for j, ln in enumerate(block_lines) if ln in ("페이지", "소 계", "소계") or ln.startswith("Page")), None)
+        if stop is not None:
+            block_lines = block_lines[:stop]
+        name = normalize_korean_name(lines[i - 1])
+        bosu = parse_number(block_lines[0]) if block_lines and re.fullmatch(r"[\d,]+", block_lines[0]) else 0
+        blk = " ".join(block_lines[1:])
+        blk = re.sub(r"(20\d{2}/)\s+(\d{2})", r"\1\2", blk)          # "2026/ 09" → "2026/09"
+        blk = re.sub(r"(20\d{2}/\d{2})\s*~\s*(20\d{2}/\d{2})", r"\1~\2", blk)
+        m_rrn = re.search(r"(\d{6}-[1-8*][0-9*]{6})", blk)
+        m_h = re.search(r"건강\s+(.*?)\s+[\d,]+\s+0{3}\s", blk + " ")
+        m_y = re.search(r"요양\s+(.*)$", blk)
+        if not m_h and not m_y:
+            continue
+        rec = {"성명": name, "보수월액": bosu, "건강보험": 0, "장기요양보험료": 0, "건강보험료정산": 0, "장기요양보험료정산": 0,
+               "주민등록번호_마스킹": m_rrn.group(1) if m_rrn else "", "확인필요_소급정산": 0, "사유": ""}
+        for kind, m in (("건강", m_h), ("요양", m_y)):
+            if not m:
+                continue
+            tail = re.sub(r"(\s+0{2}){1,3}\s*$", "", m.group(1))       # 요양 줄 끝 회계/직종 코드 "00 00" 제거
+            amt = _parse_nhis_amount_line(tail)
+            main_k, settle_k = ("건강보험", "건강보험료정산") if kind == "건강" else ("장기요양보험료", "장기요양보험료정산")
+            rec[main_k] = amt["calculated"]
+            if amt["retro_period"]:
+                rec["확인필요_소급정산"] += amt["settlement"]
+            else:
+                rec[settle_k] = amt["settlement"] + amt["year_end"]
+            if amt["reason"]:
+                rec["사유"] = (rec["사유"] + " " + amt["reason"]).strip()
+        if rec["건강보험"] or rec["장기요양보험료"]:
+            records[name] = rec
+    return records
+
+
 def _parse_nhis_pdf_text(text: str, filename: str = "") -> Dict[str, Any]:
     corp_name = ""
     m_corp = re.search(r"사업장명칭\s+([^\n]+?)\s+단위사업장", text)
@@ -1583,12 +1646,21 @@ def _parse_nhis_pdf_text(text: str, filename: str = "") -> Dict[str, Any]:
             records[current_name]["장기요양보험료정산"] += parsed_nums["settlement"]
             current_name = None
 
+    if not records:
+        records = _parse_nhis_multiline_text(text)
+    if not year_month:
+        m_ym2 = re.search(r"통\s*보\s*년\s*월\s*(20\d{2})년\s*(\d{1,2})월", text)
+        if m_ym2:
+            year_month = f"{int(m_ym2.group(1)):04d}-{int(m_ym2.group(2)):02d}"
+    retro = [f"{n} {r['확인필요_소급정산']:,}원" for n, r in records.items() if r.get("확인필요_소급정산")]
     return {
         "notice_type": "건강보험",
         "corp_name": corp_name,
         "year_month": year_month,
         "records": records,
-        "message": f"건강보험·장기요양 고지내역 {len(records)}명 추출 완료",
+        "notice_names": sorted(records.keys()),
+        "message": f"건강보험·장기요양 고지내역 {len(records)}명 추출 완료"
+        + (f" · 소급 정산(당월 공제 제외, 확인 필요): {', '.join(retro)}" if retro else ""),
     }
 
 
@@ -1749,6 +1821,17 @@ def apply_insurance_notices_to_employees(
 
         if ntype and recs:
             logs.append(f"[{ntype} 고지내역] 총 {len(recs)}명 중 급여대장 {matched_cnt}명 자동 매칭 완료")
+        if ntype == "건강보험" and recs:
+            # 건강보험 고지서가 있는데 고지 명단에 없는 직원 = 당월 건강·장기요양 고지 없음 → 0원 (요율 계산으로 채우지 않음)
+            notice_names = {normalize_korean_name(n) for n in recs.keys()}
+            absent = [nm for nm, emp in by_name.items() if nm and nm not in notice_names]
+            for nm in absent:
+                by_name[nm]["_nhis_absent"] = True
+            if absent:
+                logs.append(f"[건강보험 고지내역] 고지 명단에 없는 {len(absent)}명({', '.join(absent)})은 건강·장기요양 0원 처리 — 취득 누락 여부 확인")
+            retro = [f"{normalize_korean_name(n)} {int(r.get('확인필요_소급정산') or 0):,}원" for n, r in recs.items() if r.get("확인필요_소급정산")]
+            if retro:
+                logs.append(f"[건강보험 고지내역] 소급 정산(적용기간 있음)은 당월 공제에서 제외: {', '.join(retro)} — 공제 여부 확인")
 
     updated_employees: List[Dict[str, Any]] = []
     for emp in employees:
@@ -1798,6 +1881,12 @@ def apply_insurance_notices_to_employees(
             is_ceo=ceo_flag,
         )
         emp.update(recalc)
+        if emp.get("_nhis_absent"):
+            removed = sum(int(emp.get(k, 0) or 0) for k in ("건강보험", "장기요양보험료", "건강보험료정산", "장기요양보험료정산"))
+            for k in ("건강보험", "장기요양보험료", "건강보험료정산", "장기요양보험료정산"):
+                emp[k] = 0
+            emp["공제액계"] = int(emp.get("공제액계", 0) or 0) - removed
+            emp["차인지급액"] = int(emp.get("차인지급액", 0) or 0) + removed
         updated_employees.append(emp)
 
     return updated_employees, logs
@@ -2055,7 +2144,11 @@ def parse_kakao_text_instructions(
             base_e = existing_emp_map.get(person_name, {})
             deps = base_e.get("부양가족수", 1)
             children = base_e.get("자녀수", 0)
-            meal = meal_val if m_meal else base_e.get("식대", 200_000 if amount >= 2_000_000 else 0)
+            # 식대 기본값: 기존 사원이면 그 사원의 식대, 신규면 (금액 200만 원 이상) 또는 (같은 거래처 다수 사원이 식대 20만 원)일 때 20만 원
+            _peers = [e for e in (existing_employees or []) if str(e.get("성명", "")).strip()]
+            _peer_meal = bool(_peers) and sum(1 for e in _peers if int(e.get("식대", 0) or 0) >= 200_000) * 2 > len(_peers)
+            _default_meal = 200_000 if (amount >= 2_000_000 or (_peer_meal and amount > 200_000)) else 0
+            meal = meal_val if m_meal else base_e.get("식대", _default_meal)
 
             if is_net:
                 solved = solve_gross_from_net_employee(
