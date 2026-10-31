@@ -1403,47 +1403,42 @@ def render_payroll_automated_sidebar() -> None:
             pstate["ei_stability_tier_manual"] = sel_tier if sel_tier != auto_tier else None
             pstate["ei_stability_tier"] = sel_tier
 
-        if st.button("당월 검토보고", width="stretch", key="btn_pay_monthly_report"):
-            if is_emp_mode:
+        # [당월 검토보고]·[통합고용세액공제 계산 연동]은 급여명세서(근로소득) 화면에서만 표시 — 사업소득 화면에서는 숨김
+        if is_emp_mode:
+            if st.button("당월 검토보고", width="stretch", key="btn_pay_monthly_report"):
                 _dlg_monthly_review_report_emp()
-            else:
-                _dlg_monthly_review_report_free()
-        _ai_kind = st.session_state.pop("pa_ai_saving_open", None)
-        if _ai_kind:
-            st.session_state["pa_ai_saving_kind"] = _ai_kind
-            _dlg_ai_tax_review()
+            _ai_kind = st.session_state.pop("pa_ai_saving_open", None)
+            if _ai_kind:
+                st.session_state["pa_ai_saving_kind"] = _ai_kind
+                _dlg_ai_tax_review()
 
-        if st.button(
-            "통합고용세액공제 계산 연동",
-            width="stretch",
-            disabled=(not is_emp_mode),
-            key="btn_pay_bridge_credit",
-        ):
-            pstate["client_db"] = upsert_monthly_data_into_db(
-                client_db=pstate.get("client_db", {}),
-                corp_name=pstate.get("corp_name", ""),
-                year_month=pstate.get("year_month", ""),
-                pay_date=pstate.get("pay_date", ""),
-                employees=pstate.get("employees", []),
-                freelancers=pstate.get("freelancers", []),
-                is_5_or_more=pstate.get("is_5_or_more", True),
-                workplace_mode=pstate.get("workplace_mode", "본점"),
-                workplace_custom=pstate.get("workplace_custom", ""),
-            )
-            bridge_payload, msg = build_employment_credit_bridge_payload(
-                client_db=pstate["client_db"],
-                current_corp_name=pstate.get("corp_name", ""),
-                current_year_month=pstate.get("year_month", ""),
-                current_employees=pstate.get("employees", []),
-                workplace_label=_current_workplace_label(pstate),
-            )
-            st.session_state["payroll_to_ec_bridge"] = bridge_payload
-            st.session_state["payroll_bridge_notice"] = msg
-            st.session_state.app_top_mode = "CREDIT_CALC"
-            st.rerun()
-        if not is_emp_mode:
-            st.caption("사업소득 화면에서는 통합고용세액공제 계산 연동이 비활성화됩니다.")
-        else:
+            if st.button(
+                "통합고용세액공제 계산 연동",
+                width="stretch",
+                key="btn_pay_bridge_credit",
+            ):
+                pstate["client_db"] = upsert_monthly_data_into_db(
+                    client_db=pstate.get("client_db", {}),
+                    corp_name=pstate.get("corp_name", ""),
+                    year_month=pstate.get("year_month", ""),
+                    pay_date=pstate.get("pay_date", ""),
+                    employees=pstate.get("employees", []),
+                    freelancers=pstate.get("freelancers", []),
+                    is_5_or_more=pstate.get("is_5_or_more", True),
+                    workplace_mode=pstate.get("workplace_mode", "본점"),
+                    workplace_custom=pstate.get("workplace_custom", ""),
+                )
+                bridge_payload, msg = build_employment_credit_bridge_payload(
+                    client_db=pstate["client_db"],
+                    current_corp_name=pstate.get("corp_name", ""),
+                    current_year_month=pstate.get("year_month", ""),
+                    current_employees=pstate.get("employees", []),
+                    workplace_label=_current_workplace_label(pstate),
+                )
+                st.session_state["payroll_to_ec_bridge"] = bridge_payload
+                st.session_state["payroll_bridge_notice"] = msg
+                st.session_state.app_top_mode = "CREDIT_CALC"
+                st.rerun()
             # 버튼 위 말풍선 대신 버튼 아래 안내 (위쪽 [당월 검토보고] 버튼을 가리지 않도록)
             st.caption("현재 사업장 급여내역을 통합고용세액공제 1단계 원천징수부 자료로 즉시 연동합니다.")
 
