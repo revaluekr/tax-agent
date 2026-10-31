@@ -935,57 +935,39 @@ def _dlg_industry_code_selector():
             st.rerun()
 
 
-@st.dialog("당월 인건비 종합 검토보고서", width="large")
-def _dlg_monthly_review_report():
-    """
-    자율 에이전트AI의 보고서 양식과 동일한 형태(### 1. 결론 / ### 2. 내용 / ### 3. 관련법령),
-    동일한 색상(#1e3a8a 좌측 보더 그라데이션 헤더, #1e40af 소제목), 동일한 폰트(Pretendard),
-    동일한 간격으로 렌더링하며, '주요 점검 사항'은 항상 나오지 않게 제외합니다.
-    """
-    pstate = _get_payroll_state()
-    emps = pstate.get("employees", [])
-    frees = pstate.get("freelancers", [])
+def _report_html(parts: List[str]) -> str:
+    """보고서 HTML을 들여쓰기 없이 이어 붙입니다 (들여쓰기가 있으면 Streamlit 마크다운이 코드 블록으로 표시해 HTML이 깨져 보임)."""
+    return "\n".join(line.strip() for part in parts for line in str(part).splitlines() if line.strip())
+
+
+def _report_header_common(pstate: Dict[str, Any]) -> Tuple[str, str, str]:
     corp = pstate.get("corp_name") or "미입력"
     wp_lbl = _current_workplace_label(pstate)
     corp_disp = f"{corp} ({wp_lbl})" if wp_lbl and wp_lbl != corp else corp
     ym = pstate.get("year_month") or datetime.now().strftime("%Y-%m")
     pay_dt = pstate.get("pay_date") or ""
+    return corp_disp, ym, pay_dt
 
+
+@st.dialog("당월 급여 검토보고 (4대보험 근로소득자)", width="large")
+def _dlg_monthly_review_report_emp():
+    """급여명세서 화면 전용 검토보고 — 이전 구성(검토 요약표 → 사업주 부담 추정 → 인원 변동)을 유지하고,
+    디자인·폰트·간격만 자율 에이전트AI 보고서 스타일(pa-agent-report-box)을 따릅니다. 사업소득자는 포함하지 않습니다."""
+    pstate = _get_payroll_state()
+    emps = pstate.get("employees", [])
+    corp_disp, ym, pay_dt = _report_header_common(pstate)
     diag = analyze_payroll_warnings(
         employees=emps,
-        freelancers=frees,
+        freelancers=[],
         prev_employees=pstate.get("prev_employees", []),
-        prev_freelancers=pstate.get("prev_freelancers", []),
+        prev_freelancers=[],
     )
+    sm = lambda k: sum(int(e.get(k, 0) or 0) for e in emps)
+    tot_gross, tot_nontax, tot_taxable = sm("지급액계"), sm("비과세합계"), sm("과세급여")
+    tot_ins = sm("국민연금") + sm("건강보험") + sm("장기요양보험료") + sm("고용보험")
+    tot_settle = sm("건강보험료정산") + sm("장기요양보험료정산") + sm("국민연금정산")
+    tot_itax, tot_ltax, tot_ded, tot_net = sm("소득세"), sm("지방소득세"), sm("공제액계"), sm("차인지급액")
 
-    tot_emp_gross = sum(int(e.get("지급액계", 0) or 0) for e in emps)
-    tot_emp_net = sum(int(e.get("차인지급액", 0) or 0) for e in emps)
-    tot_emp_itax = sum(int(e.get("소득세", 0) or 0) for e in emps)
-    tot_emp_ltax = sum(int(e.get("지방소득세", 0) or 0) for e in emps)
-    tot_emp_ins = sum(
-        int(e.get("국민연금", 0) or 0)
-        + int(e.get("건강보험", 0) or 0)
-        + int(e.get("장기요양보험료", 0) or 0)
-        + int(e.get("고용보험", 0) or 0)
-        + int(e.get("건강보험료정산", 0) or 0)
-        + int(e.get("장기요양보험료정산", 0) or 0)
-        + int(e.get("국민연금정산", 0) or 0)
-        for e in emps
-    )
-
-    tot_free_gross = sum(int(f.get("지급총액", 0) or 0) for f in frees)
-    tot_free_itax = sum(int(f.get("소득세", 0) or 0) for f in frees)
-    tot_free_ltax = sum(int(f.get("지방소득세", 0) or 0) for f in frees)
-    tot_free_tax = sum(int(f.get("공제액계", 0) or 0) for f in frees)
-    tot_free_net = sum(int(f.get("차인지급액", 0) or 0) for f in frees)
-
-    total_gross_all = tot_emp_gross + tot_free_gross
-    total_itax_all = tot_emp_itax + tot_free_itax
-    total_ltax_all = tot_emp_ltax + tot_free_ltax
-    total_tax_all = total_itax_all + total_ltax_all
-    total_net_all = tot_emp_net + tot_free_net
-
-    # 사업주 부담 4대보험 추정
     tier_map = dict(EI_STABILITY_TIERS)
     tier_lbl = pstate.get("ei_stability_tier") or EI_STABILITY_TIERS[0][0]
     tier_rate = tier_map.get(tier_lbl, EI_STABILITY_TIERS[0][1])
@@ -996,124 +978,79 @@ def _dlg_monthly_review_report():
             int(e.get("과세급여", 0) or 0),
             worker_ins={k: int(e.get(k, 0) or 0) for k in ("국민연금", "건강보험", "장기요양보험료", "고용보험")},
             year=yr_i,
+            is_ceo=is_ceo_position(e.get("직급", "")),
             ei_stability_rate=tier_rate,
         )
         for k in own:
             own[k] += int(r_own.get(k, 0) or 0)
 
     mv = diag["movement_summary"]
-    new_hires_str = ", ".join(mv["new_hires"]) if mv["new_hires"] else "해당 없음"
-    retirees_str = ", ".join(mv["retirees"]) if mv["retirees"] else "해당 없음"
-    pay_changes_str = ", ".join(mv["pay_changes"]) if mv["pay_changes"] else "해당 없음"
+    j = lambda xs: ", ".join(xs) if xs else "해당 없음"
+    html = _report_html([
+        "<div class='pay-modal-scroll-box'><div class='pa-agent-report-box'>",
+        f"<h3>[{corp_disp}] {ym} 귀속 급여 및 원천징수 검토 요약</h3>",
+        f"<p>지급일: <b>{pay_dt or '미입력'}</b> · 근로소득자 <b>{len(emps)}명</b></p>",
+        "<table><thead><tr><th>지급액계</th><th>비과세</th><th>과세급여</th><th>4대보험 공제</th><th>소득세</th><th>지방소득세</th><th>공제액계</th><th>차인지급액(실지급)</th></tr></thead>",
+        f"<tbody><tr><td style='text-align:right;'>{tot_gross:,}원</td><td style='text-align:right;'>{tot_nontax:,}원</td>"
+        f"<td style='text-align:right;'>{tot_taxable:,}원</td><td style='text-align:right;'>{tot_ins + tot_settle:,}원</td>"
+        f"<td style='text-align:right;'>{tot_itax:,}원</td><td style='text-align:right;'>{tot_ltax:,}원</td>"
+        f"<td style='text-align:right;'>{tot_ded:,}원</td><td style='text-align:right; font-weight:800; color:#1e3a8a;'>{tot_net:,}원</td></tr></tbody></table>",
+        (f"<p style='font-size:0.92rem; color:#475569;'>* 4대보험 공제에는 정산분 {tot_settle:,}원이 포함되어 있습니다.</p>" if tot_settle else ""),
+        "<h3>사업주 부담 4대보험 추정 (산재보험 제외)</h3>",
+        "<table><thead><tr><th>국민연금</th><th>건강보험</th><th>장기요양</th><th>고용보험</th><th>사업주 부담 합계</th></tr></thead>",
+        f"<tbody><tr><td style='text-align:right;'>{own['국민연금_사업주']:,}원</td><td style='text-align:right;'>{own['건강보험_사업주']:,}원</td>"
+        f"<td style='text-align:right;'>{own['장기요양_사업주']:,}원</td><td style='text-align:right;'>{own['고용보험_사업주']:,}원</td>"
+        f"<td style='text-align:right; font-weight:800; color:#1e3a8a;'>{own['합계_사업주']:,}원</td></tr></tbody></table>",
+        f"<p style='font-size:0.92rem; color:#475569;'>* 국민연금·건강·장기요양은 근로자 부담분(고지 반영 시 고지 금액)과 같은 금액이며, "
+        f"고용보험은 과세급여 × (실업급여 0.9% + 고용안정·직능 {tier_lbl.split('·')[-1].strip()})로 추정했습니다 (대표이사·고용보험 0원 대상자 제외, 정산분 미포함).</p>",
+        "<h3>전월 대비 인원 변동 및 4대보험 신고 대상</h3>",
+        f"<ul><li><b>신규 입사 (자격취득신고 대상):</b> {j(mv.get('new_hires'))}</li>"
+        f"<li><b>퇴사·제외 (자격상실신고 대상):</b> {j(mv.get('retirees'))}</li>"
+        f"<li><b>전월 대비 급여 20% 이상 변동자:</b> {j(mv.get('pay_changes'))}</li></ul>",
+        "</div></div>",
+    ])
+    st.markdown(html, unsafe_allow_html=True)
+    if st.button("닫기", type="primary", width="stretch", key="btn_close_monthly_rep_emp"):
+        st.rerun()
 
-    law_li_html = "".join(
-        f"<li><b>{ref['title']}:</b> {ref['content']}</li>"
-        for ref in MONTHLY_REPORT_LEGAL_REFERENCES
+
+@st.dialog("당월 사업소득 검토보고 (3.3% 사업소득자)", width="large")
+def _dlg_monthly_review_report_free():
+    """사업소득 화면 전용 검토보고 — 근로소득자 내용은 포함하지 않습니다."""
+    pstate = _get_payroll_state()
+    frees = pstate.get("freelancers", [])
+    prev = pstate.get("prev_freelancers", []) or []
+    corp_disp, ym, pay_dt = _report_header_common(pstate)
+    sm = lambda k: sum(int(f.get(k, 0) or 0) for f in frees)
+    tot_gross, tot_itax, tot_ltax, tot_ded, tot_net = sm("지급총액"), sm("소득세"), sm("지방소득세"), sm("공제액계"), sm("차인지급액")
+    by_code: Dict[str, List[str]] = {}
+    for f in frees:
+        by_code.setdefault(str(f.get("소득구분") or "940909"), []).append(str(f.get("성명") or ""))
+    code_rows = "".join(
+        f"<tr><td style='text-align:center;'>{c}</td><td style='text-align:center;'>{len(ns)}명</td>"
+        f"<td style='text-align:right;'>{sum(int(f.get('지급총액', 0) or 0) for f in frees if str(f.get('소득구분') or '940909') == c):,}원</td></tr>"
+        for c, ns in sorted(by_code.items())
     )
-
-    report_html = f"""
-    <div class='pay-modal-scroll-box'>
-        <div class='pa-agent-report-box'>
-            <h3>1. 결론</h3>
-            <p>
-                <b>{corp_disp}</b>의 <b>{ym} 귀속</b>(지급일: {pay_dt}) 당월 인건비 지급총액(세전)은
-                총 <b>{len(emps) + len(frees)}명</b> 기준 <b>{total_gross_all:,}원</b>(4대보험 근로소득자 {len(emps)}명
-                <b>{tot_emp_gross:,}원</b>, 3.3% 사업소득자 {len(frees)}명 <b>{tot_free_gross:,}원</b>)이며,
-                4대보험 근로자 공제액 합계는 <b>{tot_emp_ins:,}원</b>, 원천징수 세액 합계(소득세+지방소득세)는
-                <b>{total_tax_all:,}원</b>(소득세 <b>{total_itax_all:,}원</b> · 지방소득세 <b>{total_ltax_all:,}원</b>),
-                최종 차인지급액(실지급액) 합계는 <b>{total_net_all:,}원</b>으로 산출되었습니다.
-            </p>
-
-            <h3>2. 내용</h3>
-            <h4>(1) 당월 인건비 및 원천징수 세액 총괄표</h4>
-            <table>
-                <thead>
-                    <tr>
-                        <th>구분</th>
-                        <th>대상 인원</th>
-                        <th>세전 지급총액</th>
-                        <th>4대보험 공제계</th>
-                        <th>소득세</th>
-                        <th>지방소득세</th>
-                        <th>차인지급액(실지급액)</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr>
-                        <td style="text-align:center; font-weight:700;">4대보험 근로소득자</td>
-                        <td style="text-align:center;">{len(emps)}명</td>
-                        <td style="text-align:right;">{tot_emp_gross:,}원</td>
-                        <td style="text-align:right;">{tot_emp_ins:,}원</td>
-                        <td style="text-align:right;">{tot_emp_itax:,}원</td>
-                        <td style="text-align:right;">{tot_emp_ltax:,}원</td>
-                        <td style="text-align:right; font-weight:700; color:#1e3a8a;">{tot_emp_net:,}원</td>
-                    </tr>
-                    <tr>
-                        <td style="text-align:center; font-weight:700;">3.3% 사업소득자</td>
-                        <td style="text-align:center;">{len(frees)}명</td>
-                        <td style="text-align:right;">{tot_free_gross:,}원</td>
-                        <td style="text-align:center; color:#64748b;">해당없음</td>
-                        <td style="text-align:right;">{tot_free_itax:,}원</td>
-                        <td style="text-align:right;">{tot_free_ltax:,}원</td>
-                        <td style="text-align:right; font-weight:700; color:#4c1d95;">{tot_free_net:,}원</td>
-                    </tr>
-                    <tr style="background-color:#f8fafc;">
-                        <td style="text-align:center; font-weight:800;">당월 인건비 총계</td>
-                        <td style="text-align:center; font-weight:800;">{len(emps) + len(frees)}명</td>
-                        <td style="text-align:right; font-weight:800;">{total_gross_all:,}원</td>
-                        <td style="text-align:right; font-weight:800;">{tot_emp_ins:,}원</td>
-                        <td style="text-align:right; font-weight:800; color:#b91c1c;">{total_itax_all:,}원</td>
-                        <td style="text-align:right; font-weight:800; color:#b91c1c;">{total_ltax_all:,}원</td>
-                        <td style="text-align:right; font-weight:800; color:#15803d;">{total_net_all:,}원</td>
-                    </tr>
-                </tbody>
-            </table>
-
-            <h4>(2) 사업주 부담 4대보험료 추정 (산재보험 제외)</h4>
-            <table>
-                <thead>
-                    <tr>
-                        <th>국민연금 (사업주)</th>
-                        <th>건강보험 (사업주)</th>
-                        <th>장기요양 (사업주)</th>
-                        <th>고용보험 (사업주)</th>
-                        <th>사업주 부담 합계</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr>
-                        <td style="text-align:right;">{own['국민연금_사업주']:,}원</td>
-                        <td style="text-align:right;">{own['건강보험_사업주']:,}원</td>
-                        <td style="text-align:right;">{own['장기요양_사업주']:,}원</td>
-                        <td style="text-align:right;">{own['고용보험_사업주']:,}원</td>
-                        <td style="text-align:right; font-weight:800; color:#1e3a8a;">{own['합계_사업주']:,}원</td>
-                    </tr>
-                </tbody>
-            </table>
-            <p style="font-size:0.92rem; color:#475569;">
-                * 국민연금·건강보험·장기요양보험은 근로자 부담분(고지 반영 시 고지 금액)과 동일하며,
-                사업주 고용보험은 과세급여 × (실업급여 0.9% + 고용안정·직능개발 {tier_lbl.split('·')[-1].strip()}) 기준으로 산출하였습니다.
-            </p>
-
-            <h4>(3) 전월 대비 인원 변동 및 4대보험 신고 대상</h4>
-            <ul>
-                <li><b>신규 입사 (4대보험 자격취득신고 대상):</b> {new_hires_str}</li>
-                <li><b>퇴사·제외 (4대보험 자격상실신고 대상):</b> {retirees_str}</li>
-                <li><b>전월 대비 급여 20% 이상 변동자:</b> {pay_changes_str}</li>
-            </ul>
-
-            <h3>3. 관련법령</h3>
-            <div class='related-laws-compact-box'>
-                <ul style="margin:0; padding-left:18px;">
-                    {law_li_html}
-                </ul>
-            </div>
-        </div>
-    </div>
-    """
-    st.markdown(report_html, unsafe_allow_html=True)
-
-    if st.button("닫기", type="primary", width="stretch", key="btn_close_monthly_rep_dlg"):
+    cur_names = {str(f.get("성명") or "").strip() for f in frees if str(f.get("성명") or "").strip()}
+    prev_names = {str(f.get("성명") or "").strip() for f in prev if str(f.get("성명") or "").strip()}
+    j = lambda xs: ", ".join(sorted(xs)) if xs else "해당 없음"
+    html = _report_html([
+        "<div class='pay-modal-scroll-box'><div class='pa-agent-report-box'>",
+        f"<h3>[{corp_disp}] {ym} 귀속 사업소득 지급 및 원천징수 검토 요약</h3>",
+        f"<p>지급일: <b>{pay_dt or '미입력'}</b> · 사업소득자 <b>{len(frees)}명</b></p>",
+        "<table><thead><tr><th>지급총액(세전)</th><th>소득세(3%)</th><th>지방소득세(0.3%)</th><th>원천징수 합계</th><th>차인지급액(실지급)</th></tr></thead>",
+        f"<tbody><tr><td style='text-align:right;'>{tot_gross:,}원</td><td style='text-align:right;'>{tot_itax:,}원</td>"
+        f"<td style='text-align:right;'>{tot_ltax:,}원</td><td style='text-align:right;'>{tot_ded:,}원</td>"
+        f"<td style='text-align:right; font-weight:800; color:#4c1d95;'>{tot_net:,}원</td></tr></tbody></table>",
+        "<h3>업종코드별 지급 현황</h3>",
+        f"<table><thead><tr><th>업종코드</th><th>인원</th><th>지급총액</th></tr></thead><tbody>{code_rows}</tbody></table>",
+        "<h3>전월 대비 지급 대상 변동</h3>",
+        (f"<ul><li><b>신규 지급 대상:</b> {j(cur_names - prev_names)}</li><li><b>전월 지급, 당월 미지급:</b> {j(prev_names - cur_names)}</li></ul>"
+         if prev_names else "<p>전월 누적 자료가 없어 비교하지 않았습니다.</p>"),
+        "</div></div>",
+    ])
+    st.markdown(html, unsafe_allow_html=True)
+    if st.button("닫기", type="primary", width="stretch", key="btn_close_monthly_rep_free"):
         st.rerun()
 
 
@@ -1328,7 +1265,10 @@ def render_payroll_automated_sidebar() -> None:
             pstate["ei_stability_tier"] = sel_tier
 
         if st.button("당월 검토보고", width="stretch", key="btn_pay_monthly_report"):
-            _dlg_monthly_review_report()
+            if is_emp_mode:
+                _dlg_monthly_review_report_emp()
+            else:
+                _dlg_monthly_review_report_free()
 
         if st.button(
             "통합고용세액공제 계산 연동",
@@ -1444,17 +1384,17 @@ def render_payroll_automated_sidebar() -> None:
 # 급여대장 편집기 컬럼:
 # 맨 앞 '사업장' 열 추가 + 한 화면 우측 끝이 '지급액계(세전)'까지 잘림 없이 보이도록 열 폭 배분
 EMP_GRID_COLUMNS: List[Tuple[str, str, int, bool, str]] = [
-    ("사업장", "사업장", 86, True, "text"),
-    ("사원코드", "사원코드", 68, True, "text"),
-    ("성명", "성명", 76, True, "text"),
-    ("주민등록번호", "주민등록번호", 118, True, "text"),
-    ("입사일", "입사일", 88, True, "text"),
-    ("퇴사일", "퇴사일", 88, True, "text"),
-    ("직급", "직급", 68, True, "text"),
-    ("부양가족수", "부양", 54, True, "numeric"),
-    ("자녀수", "자녀", 54, True, "numeric"),
-    ("입력기준", "기준", 68, True, "select_mode"),
-    ("목표실수령액", "목표실수령", 88, True, "numeric"),
+    ("사업장", "사업장", 82, True, "text"),
+    ("사원코드", "코드", 46, True, "text"),
+    ("성명", "성명", 62, True, "text"),
+    ("주민등록번호", "주민등록번호", 108, True, "text"),
+    ("입사일", "입사일", 80, True, "text"),
+    ("퇴사일", "퇴사일", 80, True, "text"),
+    ("직급", "직급", 50, True, "text"),
+    ("부양가족수", "부양", 48, True, "numeric"),
+    ("자녀수", "자녀", 48, True, "numeric"),
+    ("입력기준", "기준", 50, True, "select_mode"),
+    ("목표실수령액", "목표실수령", 80, True, "numeric"),
     ("기본급", "기본급", 92, True, "numeric"),
     ("식대", "식대", 78, True, "numeric"),
     ("자가운전보조금", "차량", 78, True, "numeric"),
@@ -1713,7 +1653,7 @@ def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
         sortable=True,
         filter=False,
         suppressMenu=True,
-        minWidth=52,
+        minWidth=30,
     )
     gb.configure_selection(
         selection_mode="multiple",
@@ -1722,7 +1662,16 @@ def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
     )
     gb.configure_column("_row_idx", hide=True)
 
+    # 모든 사원이 0원인 금액 열(상여·차량 등)은 자동으로 좁혀 오른쪽 열(지급액계 등)이 한 화면에 더 보이게 합니다.
+    zero_cols = set()
+    if emps:
+        for field, _, _, _, ctype in EMP_GRID_COLUMNS:
+            if ctype == "numeric" and field not in ("부양가족수", "자녀수") and all(int(e.get(field, 0) or 0) == 0 for e in emps):
+                zero_cols.add(field)
+
     for field, header_name, width, editable, ctype in EMP_GRID_COLUMNS:
+        if field in zero_cols:
+            width = 42
         pinned = "left" if field in ("사업장", "사원코드", "성명") else None
         is_first_col = (field == "사업장")
         if ctype == "select_mode":
@@ -1794,11 +1743,21 @@ def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
     grid_opts = gb.build()
     grid_opts["suppressSizeToFit"] = True
     grid_opts["ensureDomOrder"] = True
+    # 최소화한 열: 머리글을 두 줄로 접어 말줄임(…) 없이 표시
+    for cdef in grid_opts.get("columnDefs", []):
+        if cdef.get("field") in zero_cols:
+            cdef["wrapHeaderText"] = True
+            cdef["autoHeaderHeight"] = True
+            cdef["headerTooltip"] = f"{cdef.get('headerName', '')} (전원 0원 — 자동 축소)"
+            cdef["headerClass"] = "pay-col-min"
+            cdef["minWidth"] = 30
     grid_height = min(520, max(230, 58 + len(df) * 36))
 
     custom_css = {
         ".ag-header-cell-label": {"justify-content": "center", "font-weight": "700", "font-size": "12.2px"},
         ".ag-cell": {"font-size": "12.5px"},
+        ".pay-col-min": {"padding-left": "2px !important", "padding-right": "2px !important"},
+        ".pay-col-min .ag-header-cell-text": {"white-space": "normal !important", "line-height": "1.15", "text-align": "center"},
     }
 
     grid_resp = AgGrid(
@@ -1971,52 +1930,40 @@ def _render_freelancer_aggrid(pstate: Dict[str, Any]) -> None:
             st.rerun()
 
 
-def _render_employee_template_selector(pstate: Dict[str, Any]) -> None:
-    """급여명세서 6종 양식 선택 바 (기본: 근로기준1) + 각 양식 우측 끝 돋보기 마우스 오버(:hover) 미리보기"""
+def _payslip_tpl_label(tpl_name: str) -> str:
+    return f"급여명세서({tpl_name})"
+
+
+def _render_employee_template_selector(pstate: Dict[str, Any], col_sel=None, col_mag=None) -> str:
+    """급여명세서 양식 선택: [급여명세서(근로기준1) ▼] 드롭다운 + 오른쪽 돋보기(마우스 오버 시 선택한 양식 미리보기)."""
     cur_tpl = str(pstate.get("payslip_template") or "근로기준1")
     if cur_tpl not in PAYSLIP_TEMPLATE_OPTIONS:
         cur_tpl = "근로기준1"
-        pstate["payslip_template"] = cur_tpl
-
-    st.markdown(
-        "<div style='font-size:0.84rem; font-weight:800; color:#1e293b; margin-bottom:6px;'>"
-        "급여명세서 양식 선택 (기본: 근로기준1 · 각 양식 우측 돋보기에 마우스를 가져다 대면 클릭 없이 미리보기가 표시됩니다)"
-        "</div>",
-        unsafe_allow_html=True,
-    )
-    cols = st.columns(6, gap="small")
-    for idx, tpl_name in enumerate(PAYSLIP_TEMPLATE_OPTIONS):
-        with cols[idx]:
-            is_sel = (cur_tpl == tpl_name)
-            c_btn, c_mag = st.columns([3.3, 1.0], gap="small", vertical_alignment="center")
-            with c_btn:
-                btn_lbl = f"{tpl_name} (선택)" if is_sel else tpl_name
-                if st.button(
-                    btn_lbl,
-                    key=f"btn_pay_tpl_{tpl_name}",
-                    type="primary" if is_sel else "secondary",
-                    width="stretch",
-                ):
-                    pstate["payslip_template"] = tpl_name
-                    st.rerun()
-            with c_mag:
-                b64_png = get_payslip_template_preview_b64(tpl_name)
-                if b64_png:
-                    st.markdown(
-                        f"""
-                        <div class="pay-tpl-hover-wrap" title="마우스를 가져다 대면 {tpl_name} 양식 미리보기가 표시됩니다">
-                            {MAGNIFIER_SVG}
-                            <div class="pay-tpl-hover-popup">
-                                <div class="pay-tpl-hover-title">
-                                    <span>급여명세서 양식 미리보기 — [{tpl_name}]</span>
-                                    <span style="color:#2563eb;">샘플</span>
-                                </div>
-                                <img src="data:image/png;base64,{b64_png}" alt="{tpl_name}" />
-                            </div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
+    labels = [_payslip_tpl_label(t) for t in PAYSLIP_TEMPLATE_OPTIONS]
+    with (col_sel or st.container()):
+        sel_lbl = st.selectbox(
+            "급여명세서 양식",
+            options=labels,
+            index=PAYSLIP_TEMPLATE_OPTIONS.index(cur_tpl),
+            key="sel_pay_payslip_template",
+            label_visibility="collapsed",
+            help="기본: 급여명세서(근로기준1). 오른쪽 돋보기에 마우스를 올리면 선택한 양식 미리보기가 표시됩니다.",
+        )
+    tpl_name = PAYSLIP_TEMPLATE_OPTIONS[labels.index(sel_lbl)]
+    pstate["payslip_template"] = tpl_name
+    with (col_mag or st.container()):
+        b64_png = get_payslip_template_preview_b64(tpl_name)
+        if b64_png:
+            st.markdown(
+                f"<div class=\"pay-tpl-hover-wrap\" title=\"마우스를 올리면 {_payslip_tpl_label(tpl_name)} 미리보기가 표시됩니다\">"
+                f"{MAGNIFIER_SVG}"
+                f"<div class=\"pay-tpl-hover-popup\">"
+                f"<div class=\"pay-tpl-hover-title\"><span>양식 미리보기 — {_payslip_tpl_label(tpl_name)}</span><span style=\"color:#2563eb;\">샘플</span></div>"
+                f"<img src=\"data:image/png;base64,{b64_png}\" alt=\"{tpl_name}\" />"
+                f"</div></div>",
+                unsafe_allow_html=True,
+            )
+    return tpl_name
 
 
 def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
@@ -2206,8 +2153,6 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
 
         # 3-A. 급여명세서 양식 선택 + 다운로드 바 (사용자 지정 파일명 규칙 적용)
         with st.container(border=True):
-            _render_employee_template_selector(pstate)
-            selected_tpl = str(pstate.get("payslip_template") or "근로기준1")
 
             emp_start_idx = 0
             if len(emps) > EMP_ZIP_MAX:
@@ -2224,7 +2169,10 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
                     sel_batch_lbl = st.selectbox("급여명세서 ZIP 다운로드 구간", options=batch_options, key="emp_zip_batch_sel")
                     emp_start_idx = batch_options.index(sel_batch_lbl) * EMP_ZIP_MAX
 
-            dl1, dl2, dl3, dl4, dl5 = st.columns([1.5, 1.65, 1.65, 1.05, 1.35], gap="small", vertical_alignment="center")
+            c_tpl, c_mag, dl1, dl2, dl3, dl4, dl5 = st.columns(
+                [1.55, 0.28, 1.35, 1.45, 1.5, 1.0, 1.2], gap="small", vertical_alignment="center"
+            )
+            selected_tpl = _render_employee_template_selector(pstate, c_tpl, c_mag)
             inc_cnt = min(EMP_ZIP_MAX, max(0, len(emps) - emp_start_idx))
 
             with dl1:
