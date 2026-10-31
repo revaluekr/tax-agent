@@ -34,7 +34,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
-from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
 
 from .backup import (
     build_employment_credit_bridge_payload,
@@ -990,14 +990,16 @@ def _dlg_monthly_review_report_emp():
         "<div class='pay-modal-scroll-box'><div class='pa-agent-report-box'>",
         f"<h3>[{corp_disp}] {ym} 귀속 급여 및 원천징수 검토 요약</h3>",
         f"<p>지급일: <b>{pay_dt or '미입력'}</b> · 근로소득자 <b>{len(emps)}명</b></p>",
-        "<table><thead><tr><th>지급액계</th><th>비과세</th><th>과세급여</th><th>4대보험 공제</th><th>소득세</th><th>지방소득세</th><th>공제액계</th><th>차인지급액(실지급)</th></tr></thead>",
+        "<table style='table-layout:fixed;'><colgroup>" + "<col style='width:11.9%'>" * 7 + "<col style='width:16.7%'></colgroup>"
+        "<thead><tr><th>지급액계</th><th>비과세</th><th>과세급여</th><th>4대보험 공제</th><th>소득세</th><th>지방소득세</th><th>공제액계</th><th>차인지급액(실지급)</th></tr></thead>",
         f"<tbody><tr><td style='text-align:right;'>{tot_gross:,}원</td><td style='text-align:right;'>{tot_nontax:,}원</td>"
         f"<td style='text-align:right;'>{tot_taxable:,}원</td><td style='text-align:right;'>{tot_ins + tot_settle:,}원</td>"
         f"<td style='text-align:right;'>{tot_itax:,}원</td><td style='text-align:right;'>{tot_ltax:,}원</td>"
         f"<td style='text-align:right;'>{tot_ded:,}원</td><td style='text-align:right; font-weight:800; color:#1e3a8a;'>{tot_net:,}원</td></tr></tbody></table>",
         (f"<p style='font-size:0.92rem; color:#475569;'>* 4대보험 공제에는 정산분 {tot_settle:,}원이 포함되어 있습니다.</p>" if tot_settle else ""),
         "<h3>사업주 부담 4대보험 추정 (산재보험 제외)</h3>",
-        "<table><thead><tr><th>국민연금</th><th>건강보험</th><th>장기요양</th><th>고용보험</th><th>사업주 부담 합계</th></tr></thead>",
+        "<table style='table-layout:fixed;'><colgroup>" + "<col style='width:18.5%'>" * 4 + "<col style='width:26%'></colgroup>"
+        "<thead><tr><th>국민연금</th><th>건강보험</th><th>장기요양</th><th>고용보험</th><th>사업주 부담 합계</th></tr></thead>",
         f"<tbody><tr><td style='text-align:right;'>{own['국민연금_사업주']:,}원</td><td style='text-align:right;'>{own['건강보험_사업주']:,}원</td>"
         f"<td style='text-align:right;'>{own['장기요양_사업주']:,}원</td><td style='text-align:right;'>{own['고용보험_사업주']:,}원</td>"
         f"<td style='text-align:right; font-weight:800; color:#1e3a8a;'>{own['합계_사업주']:,}원</td></tr></tbody></table>",
@@ -1027,7 +1029,7 @@ def _dlg_monthly_review_report_free():
     for f in frees:
         by_code.setdefault(str(f.get("소득구분") or "940909"), []).append(str(f.get("성명") or ""))
     code_rows = "".join(
-        f"<tr><td style='text-align:center;'>{c}</td><td style='text-align:center;'>{len(ns)}명</td>"
+        f"<tr><td style='text-align:center;'>{_ind_label(c)}</td><td style='text-align:center;'>{len(ns)}명</td>"
         f"<td style='text-align:right;'>{sum(int(f.get('지급총액', 0) or 0) for f in frees if str(f.get('소득구분') or '940909') == c):,}원</td></tr>"
         for c, ns in sorted(by_code.items())
     )
@@ -1043,7 +1045,7 @@ def _dlg_monthly_review_report_free():
         f"<td style='text-align:right;'>{tot_ltax:,}원</td><td style='text-align:right;'>{tot_ded:,}원</td>"
         f"<td style='text-align:right; font-weight:800; color:#4c1d95;'>{tot_net:,}원</td></tr></tbody></table>",
         "<h3>업종코드별 지급 현황</h3>",
-        f"<table><thead><tr><th>업종코드</th><th>인원</th><th>지급총액</th></tr></thead><tbody>{code_rows}</tbody></table>",
+        f"<table><thead><tr><th>업종코드(내용)</th><th>인원</th><th>지급총액</th></tr></thead><tbody>{code_rows}</tbody></table>",
         "<h3>전월 대비 지급 대상 변동</h3>",
         (f"<ul><li><b>신규 지급 대상:</b> {j(cur_names - prev_names)}</li><li><b>전월 지급, 당월 미지급:</b> {j(prev_names - cur_names)}</li></ul>"
          if prev_names else "<p>전월 누적 자료가 없어 비교하지 않았습니다.</p>"),
@@ -1275,9 +1277,7 @@ def render_payroll_automated_sidebar() -> None:
             width="stretch",
             disabled=(not is_emp_mode),
             key="btn_pay_bridge_credit",
-            help="사업소득(3.3%) 화면에서는 통합고용세액공제 연동이 비활성화됩니다."
-            if not is_emp_mode
-            else "현재 사업장 급여내역을 통합고용세액공제 1단계 원천징수부 자료로 즉시 연동합니다.",
+            help=None if not is_emp_mode else "현재 사업장 급여내역을 통합고용세액공제 1단계 원천징수부 자료로 즉시 연동합니다.",
         ):
             pstate["client_db"] = upsert_monthly_data_into_db(
                 client_db=pstate.get("client_db", {}),
@@ -1427,7 +1427,7 @@ FREE_GRID_COLUMNS: List[Tuple[str, str, int, bool, str]] = [
     ("코드", "코드", 92, True, "text"),
     ("성명", "소득자명(성명)", 110, True, "text"),
     ("주민등록번호", "주민등록번호", 145, True, "text"),
-    ("소득구분", "업종코드(선택)", 135, True, "select_ind"),
+    ("소득구분", "업종코드(내용)", 190, True, "select_ind"),
     ("귀속년월", "귀속년월", 100, True, "text"),
     ("지급년월일", "지급년월일", 110, True, "text"),
     ("입력기준", "입력기준", 95, True, "select_mode"),
@@ -1800,10 +1800,29 @@ def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
             st.rerun()
 
 
+def _ind_short_name(code: str) -> str:
+    for item in FREELANCER_INDUSTRY_CODES:
+        if item["code"] == code:
+            return re.split(r"\s*[·(]\s*", item["name"])[0].strip()
+    return ""
+
+
+def _ind_code_only(val: Any) -> str:
+    m = re.search(r"(\d{6})", str(val or ""))
+    return m.group(1) if m else "940909"
+
+
+def _ind_label(code_or_label: Any) -> str:
+    """업종코드를 화면 표시용 "940909 (기타자영업)" 형태로 바꿉니다."""
+    code = _ind_code_only(code_or_label)
+    nm = _ind_short_name(code)
+    return f"{code} ({nm})" if nm else code
+
+
 def _render_freelancer_aggrid(pstate: Dict[str, Any]) -> None:
     frees = pstate.get("freelancers", [])
     col_keys = [c[0] for c in FREE_GRID_COLUMNS]
-    ind_codes = [c["code"] for c in FREELANCER_INDUSTRY_CODES]
+    ind_codes = [_ind_label(c["code"]) for c in FREELANCER_INDUSTRY_CODES]
 
     if not frees:
         df = pd.DataFrame(columns=col_keys + ["_row_idx"])
@@ -1815,7 +1834,7 @@ def _render_freelancer_aggrid(pstate: Dict[str, Any]) -> None:
                 if k == "코드":
                     r[k] = str(f.get(k) or f"{idx:04d}")
                 elif k == "소득구분":
-                    r[k] = str(f.get(k) or "940909")
+                    r[k] = _ind_label(f.get(k) or "940909")
                 elif ctype.startswith("numeric"):
                     r[k] = int(f.get(k, 0) or 0)
                 else:
@@ -1860,6 +1879,11 @@ def _render_freelancer_aggrid(pstate: Dict[str, Any]) -> None:
                 suppressMenu=True,
                 cellEditor="agSelectCellEditor",
                 cellEditorParams={"values": ind_codes},
+                cellRenderer=JsCode(
+                    "function(p){var v=(p.value==null)?'':String(p.value);"
+                    "return v+'<span style=\"float:right;color:#64748b;\">▾</span>';}"
+                ),
+                tooltipField="소득구분",
             )
         elif ctype.startswith("numeric"):
             cell_style = {"textAlign": "right"}
@@ -1919,6 +1943,8 @@ def _render_freelancer_aggrid(pstate: Dict[str, Any]) -> None:
                     merged[k] = num_v
                 else:
                     str_v = "" if pd.isna(val) else str(val).strip()
+                    if k == "소득구분":
+                        str_v = _ind_code_only(str_v)  # 화면 표시는 "940909 (기타자영업)", 저장은 코드 6자리
                     if str(orig.get(k, "") or "") != str_v:
                         changed = True
                     merged[k] = str_v
