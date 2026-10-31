@@ -585,16 +585,26 @@ def calc_legacy_post_management(
         else:
             case_code = "Case 2 (전체 감소·그 밖의 경우)"
             case_title = "전체 상시근로자 감소 > 청년등 감소 (연속공제 중단 + 청년감소분·일반감소분 각각 추징)"
-            yth_lost = round(min(init_yth_inc, yth_dec), 2)
-            gen_lost_raw = round(max(0.0, capped_reg_dec - yth_lost), 2)
-            gen_lost = round(min(init_gen_inc, gen_lost_raw), 2)
+            # 구 조특령 제26조의8 제4항 제1호 가목2)·제2호 가목2) (법 부칙 제34조로 2024·2025년분 적용):
+            #   [청년등 감소 인원(전체 감소 인원 한도) × 청년 단가] + [청년등 외 감소 인원(전체 감소 인원 한도) × 청년외 단가]
+            #   감소 인원에 '최초 증가인원' 한도는 없으며, 총액은 공제받은 세액 한도(아래 claimed_cap / full_man)로만 제한.
+            gen_dec = round(max(0.0, (init_reg - init_yth) - (cur_pm_reg - cur_pm_yth)), 2)
+            yth_lost = round(min(reg_dec, yth_dec), 2)
+            gen_lost = round(min(reg_dec, gen_dec), 2)
             total_yth_lost = yth_lost
 
             raw_claw_man = ((total_yth_lost * yth_rate) + (gen_lost * gen_rate)) * prior_years_claimed_count
+            credited_cap_man = full_man * prior_years_claimed_count
+            case2_cap_note = ""
+            case2_formula_man = raw_claw_man
+            if raw_claw_man > credited_cap_man + 1e-9:
+                raw_claw_man = credited_cap_man
+                case2_cap_note = f" → 공제받은 세액 추정 한도({credited_cap_man:,.1f}만원) 적용"
             formula_note = (
-                f"[{cohort_year}년분 {elapsed+1}차년도 · Case 2] 전체 상시 {capped_reg_dec:.2f}명 감소 > 청년등 {yth_dec:.2f}명 감소 → "
+                f"[{cohort_year}년분 {elapsed+1}차년도 · Case 2] 전체 상시 {reg_dec:.2f}명 감소 > 청년등 {yth_dec:.2f}명 감소 → "
                 f"연속공제 중단(0원) / 추징: [청년감소 {total_yth_lost:.2f}명×{yth_rate:,}만 + "
-                f"일반감소 {gen_lost:.2f}명×{gen_rate:,}만] × {prior_years_claimed_count}년 = {raw_claw_man:,.1f}만원"
+                f"청년외 감소 {gen_lost:.2f}명×{gen_rate:,}만] × {prior_years_claimed_count}년 = {case2_formula_man:,.1f}만원"
+                + case2_cap_note
             )
 
     continued_credit_won = int(round(cont_man * 10_000))
