@@ -10,3 +10,5 @@ python-docx
 reportlab
 streamlit-aggrid
 cryptography
+pypdfium2
+Pillow

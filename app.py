@@ -159,7 +159,8 @@ section[data-testid="stSidebar"] div[data-testid="stMarkdownContainer"] {
 
 /* 🟢 사이드바 최상단 모드 전환 버튼 (자율 에이전트AI / 통합고용세액공제) */
 .st-key-btn_top_mode_agent button,
-.st-key-btn_top_mode_credit button {
+.st-key-btn_top_mode_credit button,
+.st-key-btn_top_mode_payroll button {
     border-radius: 10px !important;
     min-height: 40px !important;
     height: 40px !important;
@@ -175,7 +176,8 @@ div.stButton > button[data-testid="stBaseButton-primary"],
 div.stfFormSubmitButton > button[kind="primary"],
 div[data-testid="stFormSubmitButton"] > button[kind="primary"],
 .st-key-btn_top_mode_agent button[kind="primary"],
-.st-key-btn_top_mode_credit button[kind="primary"] {
+.st-key-btn_top_mode_credit button[kind="primary"],
+.st-key-btn_top_mode_payroll button[kind="primary"] {
     background-color: #16a34a !important;
     border: 1.5px solid #15803d !important;
     color: #ffffff !important;
@@ -2625,7 +2627,7 @@ def _detect_any_room_button_click() -> None:
 _detect_any_room_button_click()
 
 with st.sidebar:
-    # 🔀 [최상단 고정: "자율 에이전트AI" / "통합고용세액공제" 2열 전환 버튼]
+    # 🔀 [최상단 고정: 상단 2열 + 하단 2열(1열+예비1열) 동일 크기 배치]
     sb_m1, sb_m2 = st.columns(2, gap="small")
     with sb_m1:
         if st.button(
@@ -2645,8 +2647,20 @@ with st.sidebar:
         ):
             st.session_state.app_top_mode = "CREDIT_CALC"
             st.rerun()
+    sb_m3, sb_m4 = st.columns(2, gap="small")
+    with sb_m3:
+        if st.button(
+            "인건비 자동화",
+            key="btn_top_mode_payroll",
+            type=("primary" if st.session_state.app_top_mode == "PAYROLL_AUTO" else "secondary"),
+            width="stretch",
+        ):
+            st.session_state.app_top_mode = "PAYROLL_AUTO"
+            st.rerun()
+    with sb_m4:
+        st.empty()
 
-    if st.session_state.app_top_mode != "CREDIT_CALC":
+    if st.session_state.app_top_mode == "AGENT":
         st.markdown(
             "<div style='font-size:1.00rem; font-weight:800; color:#0f172a; line-height:1.4; margin-top:10px; margin-bottom:6px; padding-left:2px; letter-spacing:-0.3px;'>"
             "⚙️ 에이전트 제어판</div>",
@@ -2684,7 +2698,7 @@ with st.sidebar:
         pro_toggle_on = bool(st.session_state.get("pro_toggle_state", False))
 
     # 📦 [카드 2] 내 작업공간 (자율 에이전트AI 모드에서만 노출; 통합고용세액공제 모드에서는 [🔄 자료 초기화] 카드로 대체)
-    if st.session_state.app_top_mode != "CREDIT_CALC":
+    if st.session_state.app_top_mode == "AGENT":
         with st.container(border=True):
             ws_widget_ver = st.session_state.get("ws_widget_ver", 0)
             saved_ws_val = st.session_state.get("active_workspace_id", "")
@@ -2743,6 +2757,9 @@ with st.sidebar:
     if st.session_state.app_top_mode == "CREDIT_CALC":
         import employment_credit
         employment_credit.render_credit_sidebar()
+    elif st.session_state.app_top_mode == "PAYROLL_AUTO":
+        import payroll_automated
+        payroll_automated.render_payroll_automated_sidebar()
 
     # 📦 [카드 3] 멀티 대화방 (입체 비우기 버튼 + 1~10번 좌측 정렬 리스트 + 옵션 C 제미나이 오로라 로딩 LED)
     # 방 선택값은 다른 화면에서도 쓰므로 카드 밖에서 먼저 정함
@@ -2752,7 +2769,7 @@ with st.sidebar:
     active_room_key = f"{effective_ws_id}::{selected_room}"
 
     # 통합고용세액공제 모드에서는 멀티 대화방 카드를 숨김
-    if st.session_state.app_top_mode != "CREDIT_CALC":
+    if st.session_state.app_top_mode == "AGENT":
         with st.container(border=True):
             if "current_room" not in st.session_state or st.session_state.current_room not in ROOM_IDS:
                 st.session_state.current_room = ROOM_IDS[0]
@@ -2888,12 +2905,32 @@ if st.session_state.app_top_mode == "CREDIT_CALC":
             if st.button("✖️ API 관리창 닫기"):
                 st.session_state.show_inline_api_manager = False
                 st.rerun()
+    if st.session_state.get("payroll_bridge_notice"):
+        st.success(st.session_state.pop("payroll_bridge_notice"))
     import employment_credit
+    if st.session_state.get("payroll_to_ec_bridge"):
+        bridge_info = st.session_state.pop("payroll_to_ec_bridge")
+        ec_state = employment_credit._S()
+        if bridge_info.get("corp_name"):
+            ec_state.setdefault("biz", {})["상호"] = bridge_info["corp_name"]
     employment_credit.render_credit_wizard(
         extract_file_fn=extract_file_content,
         log_tokens_fn=_log_custom_tokens,
         active_room_key=current_task_key,
     )
+    st.stop()
+
+if st.session_state.app_top_mode == "PAYROLL_AUTO":
+    if st.session_state.get("show_inline_api_manager"):
+        with st.container(border=True):
+            st.subheader("연동 API 현황 및 보안키·만료일 통합 관리")
+            _render_api_key_manager_body(expiry_all_status, law_prom_map)
+            if st.button("API 관리창 닫기"):
+                st.session_state.show_inline_api_manager = False
+                st.rerun()
+    import payroll_automated
+    gemini_key = _get_first_env_or_secret(["GEMINI_PAID_KEY", "GEMINI_API_KEY"])
+    payroll_automated.render_payroll_automated_main(gemini_api_key=gemini_key)
     st.stop()
 
 # 상단 미니 상태바
