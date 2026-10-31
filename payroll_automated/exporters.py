@@ -537,6 +537,7 @@ def export_payroll_ledger_pdf(
         cmds.append(("LINEABOVE", (0, b_start), (-1, b_start), 0.8, colors.HexColor("#475569")))
         cmds.append(("SPAN", (11, b_start + 1), (12, b_start + 1)))
         cmds.append(("SPAN", (11, b_start + 2), (12, b_start + 2)))
+        cmds.append(("NOSPLIT", (0, b_start), (-1, min(total_rows - 1, b_start + 2))))
 
     cmds.append(("BACKGROUND", (0, total_rows - 3), (-1, total_rows - 1), colors.HexColor("#F1F5F9")))
     cmds.append(("FONTNAME", (0, total_rows - 3), (-1, total_rows - 1), font_bold))

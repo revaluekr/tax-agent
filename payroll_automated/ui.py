@@ -38,6 +38,7 @@ from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 
 from .backup import (
     build_employment_credit_bridge_payload,
+    build_year_month_coverage_notice,
     create_empty_client_db,
     decrypt_paybak_to_client_db,
     encrypt_client_db_to_paybak,
@@ -1373,7 +1374,8 @@ def render_payroll_automated_sidebar() -> None:
         )
         st.markdown(f"<div class='sb-card-title'><span>작업 백업 (월별 누적 DB)</span>{m_badge}</div>", unsafe_allow_html=True)
         if saved_months:
-            st.caption(f"누적 귀속월: {', '.join(saved_months)}")
+            cov_txt = build_year_month_coverage_notice(pstate.get("client_db", {}))
+            st.caption(f"누적 귀속월: {', '.join(saved_months)} ({cov_txt})")
         else:
             st.caption("본점·지점별 백업 파일(.paybak)을 생성해 두면 통합고용세액공제 1단계에 드래그앤드롭하여 복수 사업장으로 합산할 수 있습니다.")
 

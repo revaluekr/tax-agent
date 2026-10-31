@@ -215,6 +215,42 @@ def get_previous_month_data(
 # 통합고용세액공제 원클릭 & 드래그앤드롭 연동 변환기
 # ─────────────────────────────────────────────────────────────
 
+def build_year_month_coverage_notice(client_db: Dict[str, Any]) -> str:
+    """
+    연도별로 누적 저장된 귀속월 수를 점검하여 안내 문구를 생성합니다.
+    예: "2026년: 10개월 중 1개월(10월)만 저장됨 — 공제 계산에는 해당 연도 전체 월 누적 또는 원천징수부 업로드가 필요합니다."
+    """
+    monthly_map = (client_db or {}).get("monthly_payroll", {})
+    by_yr_mos: Dict[int, List[int]] = {}
+    for ym in sorted(monthly_map.keys()):
+        m_match = re.match(r"^(\d{4})\D*(\d{1,2})", str(ym))
+        if not m_match:
+            continue
+        yr = int(m_match.group(1))
+        mo = int(m_match.group(2))
+        if 1 <= mo <= 12:
+            by_yr_mos.setdefault(yr, []).append(mo)
+
+    if not by_yr_mos:
+        return "저장된 급여 누적 월이 없습니다 — 공제 계산에는 해당 연도 전체 월 누적 또는 원천징수부 업로드가 필요합니다."
+
+    notices: List[str] = []
+    for yr, mos_raw in sorted(by_yr_mos.items()):
+        mos = sorted(set(mos_raw))
+        cnt = len(mos)
+        if cnt >= 12:
+            notices.append(f"{yr}년: 12개월(1월~12월) 전체 저장됨")
+        else:
+            max_mo = max(mos)
+            denom = max_mo if cnt < max_mo else 12
+            mos_str = ", ".join(f"{m}월" for m in mos)
+            notices.append(
+                f"{yr}년: {denom}개월 중 {cnt}개월({mos_str})만 저장됨 — "
+                f"공제 계산에는 해당 연도 전체 월 누적 또는 원천징수부 업로드가 필요합니다."
+            )
+    return " / ".join(notices)
+
+
 def client_db_to_wht_markdown_by_year(
     client_db: Dict[str, Any],
     default_workplace: str = "본점",
@@ -289,6 +325,15 @@ def client_db_to_wht_markdown_by_year(
             )
         out_md_by_year[yr] = "\n".join(lines)
 
+    cov_notice = build_year_month_coverage_notice(client_db)
+    if "만 저장됨" in cov_notice:
+        try:
+            import streamlit as st
+            if hasattr(st, "session_state"):
+                st.session_state["payroll_bridge_notice"] = f"[누적 월 안내] {cov_notice}"
+        except Exception:
+            pass
+
     return out_md_by_year
 
 
@@ -330,10 +375,13 @@ def build_employment_credit_bridge_payload(
     }
 
     wp_disp = workplace_label or "본점"
+    cov_notice = build_year_month_coverage_notice(client_db)
     summary_msg = (
         f"거래처 [{current_corp_name or '미입력'} · {wp_disp}]의 누적 급여데이터 "
         f"(총 {len(monthly_map)}개월분, 근로자 {len(emp_names)}명)를 "
-        f"통합고용세액공제 원천징수부 자료로 연동했습니다. (다른 지점/사업장이 있으면 이어서 연동하거나 .paybak 파일을 드래그앤드롭하여 합산할 수 있습니다)"
+        f"통합고용세액공제 원천징수부 자료로 연동했습니다. "
+        f"[{cov_notice}] "
+        f"(다른 지점/사업장이 있으면 이어서 연동하거나 .paybak 파일을 드래그앤드롭하여 합산할 수 있습니다)"
     )
 
     bridge_data = {
@@ -341,6 +389,7 @@ def build_employment_credit_bridge_payload(
         "workplace_label": wp_disp,
         "md_by_year": md_by_yr,
         "months_loaded": sorted(monthly_map.keys()),
+        "coverage_notice": cov_notice,
         "people_count": len(emp_names),
         "transferred_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }

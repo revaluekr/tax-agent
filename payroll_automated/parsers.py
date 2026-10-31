@@ -270,7 +270,9 @@ def is_valid_person_name(name: str) -> bool:
     for pat in SIMULATION_MARKER_PATTERNS:
         if re.search(pat, name):
             return False
-    if re.search(r"[\d:/%\[\]=+]", name):
+    if re.search(r"[:/%\[\]=+]", name):
+        return False
+    if re.match(r"^\d", name) or not re.search(r"[가-힣A-Za-z]", name):
         return False
     if any(k in name for k in ("합계", "총계", "소계", "근무시", "급여계산", "근로계약", "단위", "산출식")):
         return False
@@ -792,6 +794,73 @@ def _extract_pdf_full_text(file_bytes: bytes) -> str:
     return "\n".join((page.extract_text() or "") for page in reader.pages)
 
 
+_LEDGER_PDF_HEADER_MAP: Dict[str, str] = {
+    "사번": "사원코드", "사원코드": "사원코드", "코드": "사원코드", "사원번호": "사원코드",
+    "부서": "부서", "부서명": "부서",
+    "사원명": "성명", "성명": "성명", "근로자명": "성명",
+    "직급": "직급", "직위": "직급", "직책": "직급",
+    "입사일": "입사일", "입사일자": "입사일",
+    "퇴사일": "퇴사일", "퇴사일자": "퇴사일",
+    "기본급": "기본급", "기본급여": "기본급",
+    "상여": "상여", "상여금": "상여",
+    "식대": "식대", "식사대": "식대", "비과세식대": "식대",
+    "자가운전보조금": "자가운전보조금", "자가운전": "자가운전보조금", "차량유지비": "자가운전보조금",
+    "약정연장근로수당": "약정연장근로수당", "약정연장수당": "약정연장근로수당", "고정연장수당": "약정연장근로수당", "약정추가근로수당": "약정연장근로수당",
+    "미사용연차수당": "미사용연차수당", "연차수당": "미사용연차수당", "월차수당": "미사용연차수당",
+    "건강보험료정산": "건강보험료정산", "건강정산": "건강보험료정산", "건보정산": "건강보험료정산",
+    "장기요양보험료정산": "장기요양보험료정산", "요양정산": "장기요양보험료정산", "장기요양정산": "장기요양보험료정산",
+    "약정휴일근로수당": "약정휴일근로수당", "약정휴일수당": "약정휴일근로수당", "고정휴일수당": "약정휴일근로수당",
+    "연장근로수당": "연장근로수당", "연장수당": "연장근로수당", "시간외수당": "연장근로수당",
+    "휴일근로수당": "휴일근로수당", "휴일수당": "휴일근로수당",
+    "결근공제": "결근공제",
+    "조정금액": "조정금액", "조정수당": "조정금액", "기타수당": "조정금액",
+    "소득세": "소득세", "근로소득세": "소득세",
+    "지방소득세": "지방소득세", "주민세": "지방소득세",
+    "학자금상환액": "학자금상환액", "학자금상환": "학자금상환액", "학자금": "학자금상환액",
+    "국민연금정산": "국민연금정산", "연금정산": "국민연금정산",
+    "공제액계": "공제액계", "공제합계": "공제액계", "총공제액": "공제액계",
+    "지급액계": "지급액계", "지급합계": "지급액계", "총지급액": "지급액계",
+    "국민연금": "국민연금", "연금보험료": "국민연금",
+    "건강보험": "건강보험", "건강보험료": "건강보험",
+    "장기요양보험료": "장기요양보험료", "장기요양": "장기요양보험료", "장기요양보험": "장기요양보험료",
+    "고용보험": "고용보험", "고용보험료": "고용보험",
+    "차인지급액": "차인지급액", "실지급액": "차인지급액", "실수령액": "차인지급액",
+}
+
+
+def _extract_page_coord_rows(page: Any, y_tol: float = 4.2) -> List[Tuple[float, List[Tuple[float, str]]]]:
+    """pypdf page.extract_text(visitor_text=...)를 이용해 페이지 내 모든 텍스트 조각을 (py, [(px, text), ...]) 행 리스트로 반환"""
+    frags: List[Tuple[float, float, str]] = []
+
+    def _visitor(text: str, cm: Any, tm: Any, fontDict: Any, fontSize: float) -> None:
+        t = (text or "").strip()
+        if not t:
+            return
+        try:
+            px = float(cm[0]) * float(tm[4]) + float(cm[2]) * float(tm[5]) + float(cm[4])
+            py = float(cm[1]) * float(tm[4]) + float(cm[3]) * float(tm[5]) + float(cm[5])
+        except Exception:
+            px = float(tm[4]) if tm and len(tm) > 4 else 0.0
+            py = float(tm[5]) if tm and len(tm) > 5 else 0.0
+        frags.append((px, py, t))
+
+    page.extract_text(visitor_text=_visitor)
+    if not frags:
+        return []
+
+    frags.sort(key=lambda it: (-it[1], it[0]))
+    rows: List[Tuple[float, List[Tuple[float, str]]]] = []
+    for px, py, t in frags:
+        if not rows or abs(rows[-1][0] - py) > y_tol:
+            rows.append((py, [(px, t)]))
+        else:
+            rows[-1][1].append((px, t))
+
+    for _, items in rows:
+        items.sort(key=lambda x: x[0])
+    return rows
+
+
 def parse_insurance_notice_pdf(file_bytes: bytes, filename: str = "") -> Dict[str, Any]:
     """
     업로드된 PDF를 자동 판별하여 처리:
@@ -804,10 +873,10 @@ def parse_insurance_notice_pdf(file_bytes: bytes, filename: str = "") -> Dict[st
     full_text = _extract_pdf_full_text(file_bytes)
 
     if "사업소득지급대장" in full_text or ("사업소득" in full_text and "차인지급액" in full_text):
-        return _parse_freelancer_ledger_pdf_text(full_text, filename)
+        return _parse_freelancer_ledger_pdf_text(full_text, filename, file_bytes=file_bytes)
 
-    if ("급여대장" in full_text or "급여명세서" in full_text) and ("기본급" in full_text or "지급액계" in full_text):
-        return _parse_payroll_ledger_or_slip_pdf_text(full_text, filename)
+    if ("급여대장" in full_text or "급여명세서" in full_text) and ("기본급" in full_text or "지급액계" in full_text or "차인지급액" in full_text or "실지급액" in full_text):
+        return _parse_payroll_ledger_or_slip_pdf_text(full_text, filename, file_bytes=file_bytes)
 
     if "건강보험" in full_text and ("보수월액" in full_text or "장기요양" in full_text or "증번호" in full_text):
         return _parse_nhis_pdf_text(full_text, filename)
@@ -825,12 +894,142 @@ def parse_insurance_notice_pdf(file_bytes: bytes, filename: str = "") -> Dict[st
     }
 
 
-def _parse_freelancer_ledger_pdf_text(text: str, filename: str = "") -> Dict[str, Any]:
+def _parse_freelancer_ledger_pdf_coords(file_bytes: bytes, default_ym: str = "") -> List[Dict[str, Any]]:
     """
-    사업소득지급대장(합계) PDF 파싱 (샘플 '사업소득지급대장(양식).pdf' 완벽 대응):
-    - 예:
-      1 000031 정다은 2026.08 2,056,670 61,700
-      2026.09 6,170 1,988,800
+    좌표 기반(visitor_text) 사업소득지급대장 PDF 파서:
+    - 앱이 생성한 사업소득지급대장 PDF(세로 병합 셀 포함) 및 위하고 출력 양식 모두에서
+      머리글(코드, 성명, 귀속년월, 지급년월, 지급액, 소득세, 지방소득세, 차인지급액)의 x 좌표를 기준으로
+      정확한 열 값을 매칭합니다. '총 계'/'합 계' 행은 제외합니다.
+    """
+    try:
+        reader = PdfReader(io.BytesIO(file_bytes))
+    except Exception:
+        return []
+
+    freelancers: List[Dict[str, Any]] = []
+    for page in reader.pages:
+        rows = _extract_page_coord_rows(page, y_tol=3.5)
+        if not rows:
+            continue
+
+        # 머리글 x 좌표 탐지
+        hx_map: Dict[str, float] = {}
+        header_bottom_y: Optional[float] = None
+        for py, items in rows:
+            joined = "".join(re.sub(r"\s+", "", t) for _, t in items)
+            if any(k in joined for k in ("귀속년월", "지급년월", "차인지급액", "지방소득세")):
+                for px, t in items:
+                    tc = re.sub(r"\s+", "", t)
+                    for key_cand in ("NO", "코드", "성명", "귀속년월", "지급년월", "지급액", "소득세", "지방소득세", "차인지급액"):
+                        if key_cand in tc and key_cand not in hx_map:
+                            hx_map[key_cand] = px
+                header_bottom_y = py if header_bottom_y is None else min(header_bottom_y, py)
+
+        if header_bottom_y is None or "지급액" not in hx_map:
+            continue
+
+        x_code = hx_map.get("코드", 42.0)
+        x_name = hx_map.get("성명", 96.0)
+        x_ym = hx_map.get("귀속년월", 147.0)
+        x_gross = hx_map.get("지급액", 216.0)
+        x_tax = min(hx_map.get("소득세", 280.0), hx_map.get("지방소득세", 280.0))
+        x_net = hx_map.get("차인지급액", 460.0)
+
+        data_rows = [(py, items) for py, items in rows if py < header_bottom_y - 3.0]
+        if not data_rows:
+            continue
+
+        # 성명이 등장하는 기준 행(anchor row)을 찾고, 그 위·아래 인접 y 행(±12pt)의 귀속년월·지급년월·소득세·지방소득세를 묶음
+        anchors: List[int] = []
+        for idx_r, (py, items) in enumerate(data_rows):
+            has_total = any(re.sub(r"\s+", "", t) in ("총계", "합계", "소계") for _, t in items)
+            if has_total:
+                continue
+            for px, t in items:
+                if (x_name - 25.0) <= px < (x_ym - 10.0):
+                    nm_cand = normalize_korean_name(t)
+                    if is_valid_person_name(nm_cand):
+                        anchors.append(idx_r)
+                        break
+
+        for a_pos, r_idx in enumerate(anchors):
+            anchor_py, _ = data_rows[r_idx]
+            prev_anchor_py = data_rows[anchors[a_pos - 1]][0] if a_pos > 0 else (header_bottom_y - 1.0)
+            next_anchor_py = data_rows[anchors[a_pos + 1]][0] if a_pos + 1 < len(anchors) else -9999.0
+
+            upper_y = (anchor_py + prev_anchor_py) / 2.0 if a_pos > 0 else header_bottom_y
+            lower_y = (anchor_py + next_anchor_py) / 2.0 if a_pos + 1 < len(anchors) else (anchor_py - 14.0)
+
+            block_rows = [
+                (py, items)
+                for py, items in data_rows
+                if lower_y < py <= upper_y
+                and not any(re.sub(r"\s+", "", t) in ("총계", "합계", "소계") for _, t in items)
+            ]
+
+            code_str = ""
+            name_str = ""
+            yms_found: List[Tuple[float, str]] = []
+            taxes_found: List[Tuple[float, int]] = []
+            gross_val = 0
+            net_val = 0
+
+            for py, items in block_rows:
+                for px, t in items:
+                    tc = t.strip()
+                    if (x_code - 15.0) <= px < (x_name - 15.0) and re.match(r"^\d{2,8}$", tc):
+                        code_str = tc
+                    elif (x_name - 15.0) <= px < (x_ym - 10.0) and is_valid_person_name(normalize_korean_name(tc)):
+                        name_str = normalize_korean_name(tc)
+                    elif (x_ym - 15.0) <= px < (x_gross - 15.0) and re.match(r"^20\d{2}[./-]\d{1,2}$", tc):
+                        yms_found.append((py, tc.replace(".", "-").replace("/", "-")))
+                    elif (x_gross - 15.0) <= px < (x_tax - 12.0) and re.match(r"^[\d,]+$", tc):
+                        gross_val = parse_number(tc)
+                    elif (x_tax - 12.0) <= px < (x_net - 30.0) and re.match(r"^[\d,]+$", tc):
+                        taxes_found.append((py, parse_number(tc)))
+                    elif px >= (x_net - 30.0) and re.match(r"^[\d,]+$", tc):
+                        net_val = parse_number(tc)
+
+            if not name_str or gross_val <= 0:
+                continue
+
+            yms_found.sort(key=lambda x: -x[0])
+            ym_attr = yms_found[0][1] if yms_found else default_ym
+            ym_pay = yms_found[1][1] if len(yms_found) >= 2 else ym_attr
+
+            taxes_found.sort(key=lambda x: -x[0])
+            itax_val = taxes_found[0][1] if taxes_found else 0
+            ltax_val = taxes_found[1][1] if len(taxes_found) >= 2 else 0
+
+            freelancers.append({
+                "코드": code_str or f"{len(freelancers) + 1:04d}",
+                "성명": name_str,
+                "주민등록번호": "",
+                "소득구분": "940909",
+                "귀속년월": ym_attr,
+                "지급년월일": f"{ym_pay}-25" if len(ym_pay) == 7 else ym_pay,
+                "입력기준": "세전",
+                "지급총액": gross_val,
+                "세율": 3,
+                "소득세": itax_val,
+                "지방소득세": ltax_val,
+                "공제액계": itax_val + ltax_val,
+                "차인지급액": net_val if net_val > 0 else (gross_val - itax_val - ltax_val),
+            })
+
+    return freelancers
+
+
+def _parse_freelancer_ledger_pdf_text(
+    text: str,
+    filename: str = "",
+    file_bytes: Optional[bytes] = None,
+) -> Dict[str, Any]:
+    """
+    사업소득지급대장(합계) PDF 파싱:
+    1) 위하고 출력 형식 ('1 000031 정다은 2026.08 2,056,670 61,700 / 2026.09 6,170 1,988,800')
+    2) 앱 생성 형식 (`export_freelancer_ledger_pdf` — '1 0001 강사001 / 2026.10 / 1,000,000 / 30,000 / 967,000 / 2026.10 3,000')
+    두 가지 형식을 좌표 기반(file_bytes) 및 정규식 기반(text)으로 모두 지원하며 '총 계' 행은 제외합니다.
     """
     corp_name = ""
     m_corp = re.search(r"회사명\s*[:：]\s*([^\n\r]+)", text)
@@ -843,38 +1042,53 @@ def _parse_freelancer_ledger_pdf_text(text: str, filename: str = "") -> Dict[str
         year_month = f"{int(m_ym.group(1)):04d}-{int(m_ym.group(2)):02d}"
 
     freelancers: List[Dict[str, Any]] = []
-    # 줄바꿈이 유동적일 수 있으므로 전체 텍스트에서 패턴(순번 + 코드 + 성명 + 귀속년월 + 지급액 + 소득세 + 지급년월 + 지방소득세 + 차인지급액) 탐색
-    pattern = re.compile(
-        r"(?:^|\s)(\d{1,3})\s+(\d{3,8})\s+([가-힣]{2,5})\s+"
-        r"(20\d{2}[./-]\d{1,2})\s+([\d,]+)\s+([\d,]+)\s+"
-        r"(20\d{2}[./-]\d{1,2})\s+([\d,]+)\s+([\d,]+)",
-        re.MULTILINE,
-    )
-    for m in pattern.finditer(text):
-        code_str = m.group(2).strip()
-        name_str = normalize_korean_name(m.group(3))
-        ym_attr = m.group(4).replace(".", "-").replace("/", "-")
-        gross = parse_number(m.group(5))
-        itax = parse_number(m.group(6))
-        ym_pay = m.group(7).replace(".", "-").replace("/", "-")
-        ltax = parse_number(m.group(8))
-        net = parse_number(m.group(9))
+    if file_bytes:
+        freelancers = _parse_freelancer_ledger_pdf_coords(file_bytes, default_ym=year_month)
 
-        freelancers.append({
-            "코드": code_str,
-            "성명": name_str,
-            "주민등록번호": "",
-            "소득구분": "940909",
-            "귀속년월": ym_attr,
-            "지급년월일": f"{ym_pay}-25" if len(ym_pay) == 7 else ym_pay,
-            "입력기준": "세전",
-            "지급총액": gross,
-            "세율": 3,
-            "소득세": itax,
-            "지방소득세": ltax,
-            "공제액계": itax + ltax,
-            "차인지급액": net,
-        })
+    if not freelancers:
+        # 정규식 폴백:
+        # - 분기 A (앱 생성 형식): 귀속년월 뒤 숫자 3개(지급액, 소득세, 차인지급액) + 지급년월 + 숫자 1개(지방소득세)
+        # - 분기 B (위하고 출력 형식): 귀속년월 뒤 숫자 2개(지급액, 소득세) + 지급년월 + 숫자 2개(지방소득세, 차인지급액)
+        pattern = re.compile(
+            r"(?:^|\s)(\d{1,3})\s+(\d{3,8})\s+([가-힣A-Za-z][가-힣A-Za-z0-9_]{1,12})\s+"
+            r"(20\d{2}[./-]\d{1,2})\s+([\d,]+)\s+([\d,]+)\s+"
+            r"(?:([\d,]+)\s+(20\d{2}[./-]\d{1,2})\s+([\d,]+)|(20\d{2}[./-]\d{1,2})\s+([\d,]+)\s+([\d,]+))",
+            re.MULTILINE,
+        )
+        for m in pattern.finditer(text):
+            code_str = m.group(2).strip()
+            name_str = normalize_korean_name(m.group(3))
+            if not is_valid_person_name(name_str):
+                continue
+            ym_attr = m.group(4).replace(".", "-").replace("/", "-")
+            gross = parse_number(m.group(5))
+            itax = parse_number(m.group(6))
+            if m.group(7) is not None:
+                # 분기 A: 앱 생성 형식 (차인지급액 -> 지급년월 -> 지방소득세)
+                net = parse_number(m.group(7))
+                ym_pay = m.group(8).replace(".", "-").replace("/", "-")
+                ltax = parse_number(m.group(9))
+            else:
+                # 분기 B: 위하고 출력 형식 (지급년월 -> 지방소득세 -> 차인지급액)
+                ym_pay = m.group(10).replace(".", "-").replace("/", "-")
+                ltax = parse_number(m.group(11))
+                net = parse_number(m.group(12))
+
+            freelancers.append({
+                "코드": code_str,
+                "성명": name_str,
+                "주민등록번호": "",
+                "소득구분": "940909",
+                "귀속년월": ym_attr,
+                "지급년월일": f"{ym_pay}-25" if len(ym_pay) == 7 else ym_pay,
+                "입력기준": "세전",
+                "지급총액": gross,
+                "세율": 3,
+                "소득세": itax,
+                "지방소득세": ltax,
+                "공제액계": itax + ltax,
+                "차인지급액": net,
+            })
 
     return {
         "notice_type": "사업소득대장_PDF",
@@ -886,14 +1100,386 @@ def _parse_freelancer_ledger_pdf_text(text: str, filename: str = "") -> Dict[str
     }
 
 
-def _parse_payroll_ledger_or_slip_pdf_text(text: str, filename: str = "", effective_table: str = "2026.03") -> Dict[str, Any]:
+def _build_employee_from_ledger_record(
+    rec: Dict[str, Any],
+    idx_fallback: int,
+    effective_table: str = "2026.03",
+) -> Optional[Dict[str, Any]]:
+    """급여대장 PDF에서 추출한 원시 필드 dict로 calculate_employee_payroll_row를 실행하고 4대보험·세액 원단위를 보존"""
+    raw_name = str(rec.get("성명", "")).strip()
+    if not raw_name or raw_name in ("합 계", "합계", "총 계", "총계") or re.match(r"^\(\d+명\)$", raw_name):
+        return None
+    norm_name = normalize_korean_name(raw_name)
+    if not is_valid_person_name(norm_name):
+        return None
+
+    nps_v = parse_number(rec.get("국민연금", 0))
+    nhis_v = parse_number(rec.get("건강보험", 0))
+    ltc_v = parse_number(rec.get("장기요양보험료", 0))
+    ei_v = parse_number(rec.get("고용보험", 0))
+    nhis_settle = parse_number(rec.get("건강보험료정산", 0))
+    ltc_settle = parse_number(rec.get("장기요양보험료정산", 0))
+    nps_settle = parse_number(rec.get("국민연금정산", 0))
+
+    notice_ins = {
+        "국민연금": nps_v,
+        "건강보험": nhis_v,
+        "장기요양보험료": ltc_v,
+        "고용보험": ei_v,
+        "건강보험료정산": nhis_settle,
+        "장기요양보험료정산": ltc_settle,
+        "국민연금정산": nps_settle,
+    }
+
+    pos_str = str(rec.get("직급", "")).strip()
+    row_calc = calculate_employee_payroll_row(
+        base_pay=parse_number(rec.get("기본급", 0)),
+        bonus=parse_number(rec.get("상여", 0)),
+        meal_allowance=parse_number(rec.get("식대", 0)),
+        car_allowance=parse_number(rec.get("자가운전보조금", 0)),
+        fixed_overtime_pay=parse_number(rec.get("약정연장근로수당", 0)),
+        fixed_holiday_pay=parse_number(rec.get("약정휴일근로수당", 0)),
+        overtime_pay=parse_number(rec.get("연장근로수당", 0)),
+        holiday_pay=parse_number(rec.get("휴일근로수당", 0)),
+        unused_leave_pay=parse_number(rec.get("미사용연차수당", 0)),
+        absence_deduction=parse_number(rec.get("결근공제", 0)),
+        adjustment_pay=parse_number(rec.get("조정금액", 0)),
+        notice_insurance=notice_ins,
+        student_loan_repayment=parse_number(rec.get("학자금상환액", 0)),
+        effective_table=effective_table,
+        is_ceo=is_ceo_position(pos_str),
+    )
+
+    if "공제액계" in rec or "차인지급액" in rec:
+        pdf_itax = parse_number(rec.get("소득세", row_calc["소득세"]))
+        pdf_ltax = parse_number(rec.get("지방소득세", row_calc["지방소득세"]))
+        pdf_ded = parse_number(rec.get("공제액계", row_calc["공제액계"]))
+        pdf_net = parse_number(rec.get("차인지급액", row_calc["차인지급액"]))
+        if pdf_ded != row_calc["공제액계"] or pdf_net != row_calc["차인지급액"]:
+            row_calc["소득세"] = pdf_itax
+            row_calc["지방소득세"] = pdf_ltax
+            row_calc["공제액계"] = pdf_ded
+            row_calc["차인지급액"] = pdf_net
+
+    return {
+        "사업장": "본점",
+        "사원코드": str(rec.get("사원코드") or f"{idx_fallback:03d}"),
+        "성명": norm_name,
+        "주민등록번호": "",
+        "입사일": str(rec.get("입사일", "")).replace(".", "-"),
+        "퇴사일": str(rec.get("퇴사일", "")).replace(".", "-"),
+        "부서": str(rec.get("부서", "")),
+        "직급": pos_str,
+        "부양가족수": 1,
+        "자녀수": 0,
+        "입력기준": "세전",
+        "목표실수령액": 0,
+        **row_calc,
+    }
+
+
+def _parse_payroll_ledger_pdf_coords(file_bytes: bytes, effective_table: str = "2026.03") -> List[Dict[str, Any]]:
     """
-    급여대장 PDF 또는 급여명세서 PDF를 업로드했을 때 사원별 급여 내역을 추출하여 급여대장 편집기에 복원
+    pypdf visitor_text 좌표 기반 급여대장 PDF(다중 인원·다중 페이지) 파서:
+    - 머리글 3행(사번·기본급... / 사원명·소득세·공제액계... / 입사일·지급액계·차인지급액...)의 x 위치를 기준으로
+      0원 빈칸으로 인해 생략된 열이 있더라도 정확한 항목에 숫자를 배정합니다.
+    - 합계 행('합 계', '(N명)')은 제외합니다.
+    """
+    try:
+        reader = PdfReader(io.BytesIO(file_bytes))
+    except Exception:
+        return []
+
+    all_body_rows: List[Tuple[float, List[Tuple[float, str]]]] = []
+    global_header_bounds: Optional[List[List[Tuple[float, float, str]]]] = None
+
+    for page in reader.pages:
+        rows = _extract_page_coord_rows(page, y_tol=4.2)
+        if not rows:
+            continue
+
+        h_idx: Optional[int] = None
+        for r_i in range(len(rows) - 2):
+            r0_labels = {_LEDGER_PDF_HEADER_MAP.get(re.sub(r"\s+", "", t)) for _, t in rows[r_i][1]}
+            r1_labels = {_LEDGER_PDF_HEADER_MAP.get(re.sub(r"\s+", "", t)) for _, t in rows[r_i + 1][1]}
+            r2_labels = {_LEDGER_PDF_HEADER_MAP.get(re.sub(r"\s+", "", t)) for _, t in rows[r_i + 2][1]}
+            if ("사원코드" in r0_labels and "기본급" in r0_labels) and ("성명" in r1_labels) and ("지급액계" in r2_labels):
+                h_idx = r_i
+                break
+
+        if h_idx is None:
+            continue
+
+        header_bounds: List[List[Tuple[float, float, str]]] = []
+        for offset in range(3):
+            h_items: List[Tuple[float, str]] = []
+            for px, t in rows[h_idx + offset][1]:
+                canon = _LEDGER_PDF_HEADER_MAP.get(re.sub(r"\s+", "", t))
+                if canon:
+                    h_items.append((px, canon))
+            h_items.sort(key=lambda x: x[0])
+            bounds: List[Tuple[float, float, str]] = []
+            for idx_c, (hx, canon) in enumerate(h_items):
+                left_b = 0.0 if idx_c == 0 else (hx - 16.0)
+                right_b = (h_items[idx_c + 1][0] - 16.0) if idx_c + 1 < len(h_items) else 9999.0
+                bounds.append((left_b, right_b, canon))
+            header_bounds.append(bounds)
+
+        if global_header_bounds is None:
+            global_header_bounds = header_bounds
+
+        all_body_rows.extend(rows[h_idx + 3:])
+
+    if not global_header_bounds or not all_body_rows:
+        return []
+
+    employees: List[Dict[str, Any]] = []
+    b_i = 0
+    while b_i + 2 < len(all_body_rows):
+        rec: Dict[str, Any] = {}
+        skip_block = False
+        for r_mod in range(3):
+            _, r_items = all_body_rows[b_i + r_mod]
+            bounds = global_header_bounds[r_mod]
+            for px, tok in r_items:
+                tok_clean = tok.strip()
+                if tok_clean in ("합 계", "합계", "총 계", "총계") or re.match(r"^\(\d+명\)$", tok_clean):
+                    skip_block = True
+                    break
+                for left_b, right_b, field_nm in bounds:
+                    if left_b <= px < right_b:
+                        rec[field_nm] = tok_clean
+                        break
+            if skip_block:
+                break
+        b_i += 3
+        if skip_block:
+            continue
+
+        emp_obj = _build_employee_from_ledger_record(rec, len(employees) + 1, effective_table=effective_table)
+        if emp_obj:
+            employees.append(emp_obj)
+
+    return employees
+
+
+def _parse_payroll_ledger_plain_text_fallback(text: str, effective_table: str = "2026.03") -> List[Dict[str, Any]]:
+    """file_bytes 없이 텍스트만 전달된 경우(또는 위하고 텍스트 추출본)의 3행 블록 급여대장 파서"""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    start_idx = 0
+    for idx, ln in enumerate(lines):
+        if "지급액계" in ln and ("국민연금" in ln or "차인지급액" in ln):
+            start_idx = idx + 1
+
+    body = lines[start_idx:]
+    employees: List[Dict[str, Any]] = []
+    i = 0
+    while i + 2 < len(body):
+        ln0, ln1, ln2 = body[i], body[i + 1], body[i + 2]
+        if any(
+            k in ln0 or k in ln1
+            for k in ("합 계", "합계", "총 계", "총계", "사번", "사원명", "입사일")
+        ) or re.search(r"\(\d+명\)", ln0 + " " + ln1):
+            i += 1
+            continue
+
+        m0 = re.match(r"^(\d{2,6})\s+(?:([가-힣A-Za-z]+)\s+)?(.+)$", ln0)
+        m1 = re.match(r"^([가-힣A-Za-z][가-힣A-Za-z0-9_]{1,12})\s+(?:([가-힣A-Za-z]+)\s+)?(.+)$", ln1)
+        if not m0 or not m1:
+            i += 1
+            continue
+
+        code_str = m0.group(1)
+        dept_str = m0.group(2) or ""
+        nums0 = [parse_number(x) for x in re.findall(r"[+-]?[\d,]+", m0.group(3))]
+
+        name_str = m1.group(1)
+        pos_str = m1.group(2) or ""
+        nums1 = [parse_number(x) for x in re.findall(r"[+-]?[\d,]+", m1.group(3))]
+
+        dates2 = re.findall(r"20\d{2}[.-]\d{2}[.-]\d{2}", ln2)
+        ln2_wo_dates = re.sub(r"20\d{2}[.-]\d{2}[.-]\d{2}", " ", ln2)
+        nums2 = [parse_number(x) for x in re.findall(r"[+-]?[\d,]+", ln2_wo_dates)]
+
+        if not nums0 or not nums1 or len(nums2) < 2:
+            i += 1
+            continue
+
+        gross_val = nums2[0]
+        net_val = nums2[-1]
+        ins_vals = nums2[1:-1]
+        nps_v = ins_vals[0] if len(ins_vals) >= 1 else 0
+        nhis_v = ins_vals[1] if len(ins_vals) >= 2 else 0
+        ltc_v = ins_vals[2] if len(ins_vals) >= 3 else 0
+        ei_v = ins_vals[3] if len(ins_vals) >= 4 else 0
+
+        ded_val = nums1[-1]
+        itax_v, ltax_v = 0, 0
+        allow_row1 = nums1[:-1]
+        if len(allow_row1) >= 2:
+            itax_v = allow_row1[-2]
+            ltax_v = allow_row1[-1]
+            allow_row1 = allow_row1[:-2]
+        elif len(allow_row1) == 1:
+            itax_v = allow_row1[0]
+            allow_row1 = []
+
+        base_v = nums0[0]
+        meal_v = 0
+        bonus_v = 0
+        for extra_v in nums0[1:]:
+            if extra_v == 200_000 and meal_v == 0:
+                meal_v = extra_v
+            else:
+                bonus_v += extra_v
+
+        ot_v = sum(allow_row1)
+        rec = {
+            "사원코드": code_str,
+            "성명": name_str,
+            "부서": dept_str,
+            "직급": pos_str,
+            "입사일": dates2[0] if dates2 else "",
+            "퇴사일": dates2[1] if len(dates2) >= 2 else "",
+            "기본급": base_v,
+            "상여": bonus_v,
+            "식대": meal_v,
+            "연장근로수당": ot_v,
+            "지급액계": gross_val,
+            "국민연금": nps_v,
+            "건강보험": nhis_v,
+            "장기요양보험료": ltc_v,
+            "고용보험": ei_v,
+            "소득세": itax_v,
+            "지방소득세": ltax_v,
+            "공제액계": ded_val,
+            "차인지급액": net_val,
+        }
+        emp_obj = _build_employee_from_ledger_record(rec, len(employees) + 1, effective_table=effective_table)
+        if emp_obj:
+            employees.append(emp_obj)
+        i += 3
+
+    return employees
+
+
+def _parse_single_payslip_page_text(
+    page_txt: str,
+    idx_fallback: int = 1,
+    effective_table: str = "2026.03",
+) -> Optional[Dict[str, Any]]:
+    """
+    단일 페이지 급여명세서 텍스트 파서 (6종 양식: 근로기준1~5 및 '구' 양식 모두 지원):
+    - '사 원 명: 직원001' ('구' 양식 띄어쓰기), '사원명 : 직원001' (근로기준1), '성명 직원001' (근로기준2~5) 모두 인식
+    - 하단 '계산방법' 표 이전의 본문 세부내역 영역만 분리하여 중복 매칭을 방지하고 모든 지급·공제 항목을 추출합니다.
+    """
+    if "급여명세서" not in page_txt:
+        return None
+
+    m_name = re.search(
+        r"(?:사\s*원\s*명|성\s*명)\s*[:：]?\s*([가-힣A-Za-z][가-힣A-Za-z0-9_]{1,12})",
+        page_txt,
+    )
+    if not m_name:
+        return None
+    nm = normalize_korean_name(m_name.group(1))
+    if not is_valid_person_name(nm):
+        return None
+
+    code = f"{idx_fallback:03d}"
+    m_code1 = re.search(r"사\s*원\s*코\s*드\s*[:：]?\s*([A-Za-z0-9_-]+)", page_txt)
+    m_code2 = re.search(r"생년월일\s*\(\s*사\s*번\s*\)[^\n]*?\(\s*([A-Za-z0-9_-]+)\s*\)", page_txt)
+    m_code3 = re.search(r"(?<!\()\b사\s*번\s*[:：]?\s*([A-Za-z0-9_-]+)", page_txt)
+    if m_code1:
+        code = m_code1.group(1).strip()
+    elif m_code2:
+        code = m_code2.group(1).strip()
+    elif m_code3:
+        code = m_code3.group(1).strip()
+
+    dept = ""
+    m_dept = re.search(r"부\s*서\s*[:：]?\s*([가-힣A-Za-z0-9_]+)", page_txt)
+    if m_dept and m_dept.group(1) not in ("직급", "직", "호봉"):
+        dept = m_dept.group(1).strip()
+
+    pos = ""
+    m_pos = re.search(r"직\s*급\s*[:：]?\s*([가-힣A-Za-z0-9_]+)", page_txt)
+    if m_pos and m_pos.group(1) not in ("호봉", "호", "연장근로시간", "세부내역"):
+        pos = m_pos.group(1).strip()
+
+    hire_dt = ""
+    m_hire = re.search(r"입\s*사\s*일\s*[:：]?\s*(20\d{2}[./-]\d{2}[./-]\d{2})", page_txt)
+    if m_hire:
+        hire_dt = m_hire.group(1).replace(".", "-").replace("/", "-")
+
+    # 하단 '계산방법' 표에 있는 식대·연장수당과 중복 매칭되지 않도록 본문 영역만 분리
+    main_sec = page_txt.split("계산방법")[0]
+
+    def _find_item_amt(label: str) -> int:
+        spaced_pat = r"\s*".join(re.escape(ch) for ch in label)
+        m_it = re.search(rf"(?:^|\s){spaced_pat}(?!\s*정산)\s+([+-]?[\d,]+)", main_sec)
+        return parse_number(m_it.group(1)) if m_it else 0
+
+    rec: Dict[str, Any] = {
+        "사원코드": code,
+        "성명": nm,
+        "부서": dept,
+        "직급": pos,
+        "입사일": hire_dt,
+        "기본급": _find_item_amt("기본급"),
+        "상여": _find_item_amt("상여"),
+        "식대": _find_item_amt("식대"),
+        "자가운전보조금": _find_item_amt("자가운전보조금"),
+        "약정연장근로수당": _find_item_amt("약정연장근로수당"),
+        "약정휴일근로수당": _find_item_amt("약정휴일근로수당"),
+        "연장근로수당": _find_item_amt("연장근로수당"),
+        "휴일근로수당": _find_item_amt("휴일근로수당"),
+        "미사용연차수당": _find_item_amt("미사용연차수당"),
+        "결근공제": _find_item_amt("결근공제"),
+        "조정금액": _find_item_amt("조정금액"),
+        "국민연금": _find_item_amt("국민연금"),
+        "건강보험": _find_item_amt("건강보험"),
+        "장기요양보험료": _find_item_amt("장기요양보험료"),
+        "고용보험": _find_item_amt("고용보험"),
+        "건강보험료정산": _find_item_amt("건강보험료정산"),
+        "장기요양보험료정산": _find_item_amt("장기요양보험료정산"),
+        "국민연금정산": _find_item_amt("국민연금정산"),
+        "학자금상환액": _find_item_amt("학자금상환액"),
+        "소득세": _find_item_amt("소득세"),
+        "지방소득세": _find_item_amt("지방소득세"),
+    }
+
+    gross_tot = _find_item_amt("지급액계")
+    ded_tot = _find_item_amt("공제액계")
+    net_tot = _find_item_amt("차인지급액") or _find_item_amt("실지급액")
+    if gross_tot > 0:
+        rec["지급액계"] = gross_tot
+    if ded_tot > 0 or "공 제 액 계" in main_sec or "공제액계" in main_sec:
+        rec["공제액계"] = ded_tot
+    if net_tot > 0:
+        rec["차인지급액"] = net_tot
+
+    return _build_employee_from_ledger_record(rec, idx_fallback, effective_table=effective_table)
+
+
+def _parse_payroll_ledger_or_slip_pdf_text(
+    text: str,
+    filename: str = "",
+    effective_table: str = "2026.03",
+    file_bytes: Optional[bytes] = None,
+) -> Dict[str, Any]:
+    """
+    급여대장 PDF(다중 인원·다중 페이지) 또는 급여명세서 PDF(6종 양식 단일/다중 페이지)를 업로드했을 때
+    사원별 급여 내역을 추출하여 급여대장 편집기에 복원합니다.
     """
     corp_name = ""
     m_corp = re.search(r"회사명\s*[:：]\s*([^\s\n\r]+)", text)
-    if m_corp:
+    if m_corp and m_corp.group(1).strip() not in ("지급일", "정렬"):
         corp_name = m_corp.group(1).strip()
+    else:
+        m_corp_gu = re.search(r"귀하의\s*노고에\s*감사드립니다\.?\s*([^\n\r]+)", text)
+        if m_corp_gu:
+            corp_name = m_corp_gu.group(1).strip()
 
     year_month = ""
     m_ym = re.search(r"(\d{4})년\s*(\d{1,2})월분", text)
@@ -902,55 +1488,40 @@ def _parse_payroll_ledger_or_slip_pdf_text(text: str, filename: str = "", effect
 
     employees: List[Dict[str, Any]] = []
 
-    # 단일 급여명세서 PDF인 경우
-    if "급여명세서" in text:
-        m_name = re.search(r"(?:사원명|성\s*명)\s*[:：]?\s*([가-힣]{2,5})", text)
-        m_code = re.search(r"(?:사원코드|사\s*번)\s*[:：]?\s*(\d{2,6})", text)
-        if m_name:
-            nm = normalize_korean_name(m_name.group(1))
-            code = m_code.group(1) if m_code else "001"
-            def _find_item_amt(label: str) -> int:
-                m_it = re.search(rf"{label}\s+([\d,]+)", text)
-                return parse_number(m_it.group(1)) if m_it else 0
+    # 1) 급여대장 PDF (여러 명) 처리
+    if "급여대장" in text and "급여명세서" not in text:
+        if file_bytes:
+            employees = _parse_payroll_ledger_pdf_coords(file_bytes, effective_table=effective_table)
+        if not employees:
+            employees = _parse_payroll_ledger_plain_text_fallback(text, effective_table=effective_table)
 
-            base_p = _find_item_amt("기본급")
-            meal_p = _find_item_amt("식대")
-            ot_p = _find_item_amt("연장근로수당")
-            hol_p = _find_item_amt("휴일근로수당")
-            bon_p = _find_item_amt("상여")
-            nps_p = _find_item_amt("국민연금")
-            nhis_p = _find_item_amt("건강보험")
-            ltc_p = _find_item_amt("장기요양보험료")
-            ei_p = _find_item_amt("고용보험")
+    # 2) 급여명세서 PDF (근로기준1~5 및 '구' 양식, 단일 또는 다중 페이지) 처리
+    elif "급여명세서" in text:
+        page_texts: List[str] = []
+        if file_bytes:
+            try:
+                import pypdfium2 as pdfium
+                doc = pdfium.PdfDocument(file_bytes)
+                for i in range(len(doc)):
+                    tp = doc[i].get_textpage()
+                    page_texts.append(tp.get_text_range() or "")
+                    tp.close()
+                doc.close()
+            except Exception:
+                try:
+                    reader = PdfReader(io.BytesIO(file_bytes))
+                    page_texts = [(p.extract_text() or "") for p in reader.pages]
+                except Exception:
+                    page_texts = []
 
-            notice_ins = None
-            if any(x > 0 for x in (nps_p, nhis_p, ltc_p, ei_p)):
-                notice_ins = {"국민연금": nps_p, "건강보험": nhis_p, "장기요양보험료": ltc_p, "고용보험": ei_p}
+        if not page_texts:
+            parts = re.split(r"(?=\d{4}년\s*\d{1,2}월분\s*급여명세서)", text)
+            page_texts = [p for p in parts if "급여명세서" in p] or [text]
 
-            row_calc = calculate_employee_payroll_row(
-                base_pay=base_p,
-                bonus=bon_p,
-                meal_allowance=meal_p,
-                overtime_pay=ot_p,
-                holiday_pay=hol_p,
-                notice_insurance=notice_ins,
-                effective_table=effective_table,
-            )
-            employees.append({
-                "사업장": "본점",
-                "사원코드": code,
-                "성명": nm,
-                "주민등록번호": "",
-                "입사일": "",
-                "퇴사일": "",
-                "부서": "",
-                "직급": "",
-                "부양가족수": 1,
-                "자녀수": 0,
-                "입력기준": "세전",
-                "목표실수령액": 0,
-                **row_calc,
-            })
+        for idx_p, p_txt in enumerate(page_texts, start=1):
+            emp_obj = _parse_single_payslip_page_text(p_txt, idx_fallback=idx_p, effective_table=effective_table)
+            if emp_obj:
+                employees.append(emp_obj)
 
     return {
         "notice_type": "급여대장_PDF",
