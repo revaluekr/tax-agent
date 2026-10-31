@@ -145,6 +145,29 @@ def get_live_gemini_key_pool() -> list[tuple[str, str]]:
             seen.add(k)
     return pool
 
+def _ai_studio_key_pool() -> list[tuple[str, str]]:
+    """Vertex 설정과 관계없이 AI Studio 유료 키만 모읍니다."""
+    pool, seen = [], set()
+    for env_name, lbl in [("GEMINI_PAID_KEY", "💳 유료키"), ("GEMINI_API_KEY", "💳 유료키(예비)"), ("GOOGLE_API_KEY", "💳 유료키(GOOGLE)")]:
+        k = _get_secret_or_env(env_name)
+        if k and k not in seen:
+            pool.append((lbl if pool or env_name == "GEMINI_PAID_KEY" else "💳 유료키", k))
+            seen.add(k)
+    return pool
+
+def get_pro_key_pool() -> list[tuple[str, str]]:
+    """
+    Pro 심층 모드용 키 풀.
+    - Secrets에 PRO_USE_PAID_KEY = "on" 이면 Vertex 모드여도 Pro는 AI Studio 유료 키(카드 결제)로 호출합니다.
+      (Vertex에서 응답 지연·미제공인 Argon 등 Pro 모델을 쓰기 위함. Flash는 계속 Vertex 크레딧 사용)
+    - 유료 키가 없으면 기존 키 풀을 그대로 씁니다.
+    """
+    if is_vertex_enabled() and _secret_on("PRO_USE_PAID_KEY"):
+        paid = _ai_studio_key_pool()
+        if paid:
+            return paid
+    return get_live_gemini_key_pool()
+
 import law_api
 
 def get_law_oc_auto() -> str:
@@ -3319,6 +3342,8 @@ def run_general_agent(user_input: str, raw_query: str = "", has_file: bool = Fal
     try:
         tier_mode, _, notice = select_optimal_model(user_query=clean_query, has_file=has_file, full_input_len=len(clean_input))
         is_pro = (tier_mode == "PRO")
+        if is_pro:
+            live_pool = get_pro_key_pool()
         flash_candidates = _skip_slow_models(list(dict.fromkeys([FLASH_MODEL_ID, FLASH_BACKUP_ID, FLASH_LITE_ID, FLASH_FALLBACK_ID])))
         models = (_skip_slow_models(list(dict.fromkeys(PAID_PRO_MODEL_IDS))) + flash_candidates) if is_pro else flash_candidates
         prompt_text = clean_input.replace("[현재 사용자 질문]: [프로]", "[현재 사용자 질문]:", 1)
@@ -3386,6 +3411,8 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False, room
             full_input_len=len(user_input)
         )
         unleash_mode = (tier_mode == "PRO")
+        if unleash_mode:
+            live_pool = get_pro_key_pool()
 
         today_str = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y년 %m월 %d일")
         unleash_guide = (
