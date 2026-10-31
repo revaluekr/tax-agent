@@ -1564,8 +1564,9 @@ def export_review_report_pdf(report: Dict[str, Any]) -> bytes:
         if sec.get("headers"):
             widths = [avail * float(w) / 100.0 for w in sec.get("widths") or [100.0 / len(sec["headers"])] * len(sec["headers"])]
             data = [[Paragraph(_esc(str(h)), st_head) for h in sec["headers"]]]
+            st_left = ParagraphStyle("rcl", parent=st_cell, alignment=0)
             for r in sec.get("rows", []):
-                data.append([Paragraph(_esc(str(v)), st_cell if str(v).endswith("원") else st_cell_c) for v in r])
+                data.append([Paragraph(_esc(str(v)), st_left if sec.get("align") == "left" else (st_cell if str(v).endswith("원") else st_cell_c)) for v in r])
             t = Table(data, colWidths=widths, repeatRows=1)
             t.setStyle(TableStyle([
                 ("GRID", (0, 0), (-1, -1), 0.6, colors.HexColor("#cbd5e1")),
