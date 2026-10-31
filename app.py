@@ -1985,7 +1985,8 @@ def _trigger_agent_task(
     raw_prompt: str,
     pro_toggle_on: bool,
     budget_exceeded: bool = False,
-    force_flash: bool = False
+    force_flash: bool = False,
+    target_idx: int | None = None
 ) -> None:
     task_mgr = get_background_task_manager()
     sync_all_rooms_state(effective_ws_id)
@@ -2022,12 +2023,22 @@ def _trigger_agent_task(
 
     history_context = ""
     if current_messages:
-        recent_msgs = (current_messages[:2] + current_messages[-6:]) if len(current_messages) > 6 else current_messages
+        all_idx = list(range(len(current_messages)))
+        recent_idx = (all_idx[:2] + all_idx[-6:]) if len(current_messages) > 6 else all_idx
+        q_no_map, a_no_map, q_cnt, a_cnt = {}, {}, 0, 0
+        for i_m, m_m in enumerate(current_messages):
+            if m_m.get("role") == "user":
+                q_cnt += 1
+                q_no_map[i_m] = q_cnt
+            else:
+                a_cnt += 1
+                a_no_map[i_m] = a_cnt
         history_lines = [
             "[이 대화방의 이전 대화 맥락 — 사용자가 별도 수식어 없이 후속 질문이나 조건 변경, 카톡/이메일 초안 변환, 또는 '[프로] 다시 검토해 줘'라고 말하더라도 반드시 아래 직전 질문·답변의 사례 금액, 자산 정보, 계산 내역을 그대로 이어받아 답변할 것]"
         ]
-        for m in recent_msgs:
-            role_label = "사용자" if m["role"] == "user" else "에이전트"
+        for i_m in recent_idx:
+            m = current_messages[i_m]
+            role_label = f"사용자 [{q_no_map[i_m]}번째 질문]" if m["role"] == "user" else f"에이전트 [{a_no_map[i_m]}번째 답변]"
             raw_c = m.get("content", "") or ""
             if len(raw_c) > msg_char_cap:
                 head_n = int(msg_char_cap * 0.6)
@@ -2038,12 +2049,30 @@ def _trigger_agent_task(
             history_lines.append(f"- {role_label}: {clipped_c}")
         history_context = "\n".join(history_lines) + "\n\n"
 
+    target_block = ""
+    if target_idx is not None and 0 <= target_idx < len(current_messages) and current_messages[target_idx].get("role") == "assistant":
+        t_ans = current_messages[target_idx].get("content", "") or ""
+        t_q = ""
+        for j in range(target_idx - 1, -1, -1):
+            if current_messages[j].get("role") == "user":
+                t_q = current_messages[j].get("content", "") or ""
+                break
+        t_no = sum(1 for m_t in current_messages[: target_idx + 1] if m_t.get("role") == "assistant")
+        if len(t_ans) > msg_char_cap:
+            t_ans = t_ans[: int(msg_char_cap * 0.6)] + "\n...(중간 생략)...\n" + t_ans[-(msg_char_cap - int(msg_char_cap * 0.6)):]
+        target_block = (
+            f"[작업 대상 지정 — 이 대화방의 {t_no}번째 답변] 아래 요청의 '방금 작성한 검토 결과', '직전 질문 사안'은 "
+            f"가장 최근 답변이 아니라 반드시 이 {t_no}번째 답변과 그 질문을 가리킵니다. 다른 답변의 사례·금액을 섞지 마세요.\n"
+            f"[대상 질문]\n{t_q[:3000]}\n[대상 답변]\n{t_ans}\n\n"
+        )
+        display_prompt = f"↪️ **[{t_no}번째 답변 대상]** {display_prompt}"
+
     current_messages.append({"role": "user", "content": display_prompt})
 
     if has_attached_file and not force_flash:
         doc_cap = MAX_DOC_CHARS_PRO if is_pro_request else MAX_DOC_CHARS_STANDARD
         full_input_for_agent = (
-            f"{history_context}"
+            f"{history_context}{target_block}"
             f"[현재 사용자 질문]: {effective_prompt}\n\n"
             f"아래는 사용자가 현재 대화방에 업로드한 첨부파일({current_file_info['name']})의 데이터입니다. "
             f"직전 대화 맥락과 이 파일 데이터를 바탕으로 관련 법령·예규·판례·환율을 정밀 대조하여 답변하세요:\n"
@@ -2052,7 +2081,7 @@ def _trigger_agent_task(
             f"========================================"
         )
     else:
-        full_input_for_agent = f"{history_context}[현재 사용자 질문]: {effective_prompt}" if history_context else effective_prompt
+        full_input_for_agent = f"{history_context}{target_block}[현재 사용자 질문]: {effective_prompt}" if (history_context or target_block) else effective_prompt
 
     if general_mode_on:
         # 일반(웹 검색) 모드: agent.run_agent가 "[일반]" 표시를 보고 법령 도구 없이 Gemini + Google 검색 경로로 처리
@@ -3068,7 +3097,7 @@ with st.container(key=f"room_main_view_{effective_ws_id}_{selected_room}"):
                                 "2) 법령명이나 조문번호(제몇조 등), 판례번호는 아예 넣지 말 것. "
                                 "3) 어려운 세무 용어를 쓰지 말고 대표님이 스마트폰으로 5초 만에 이해할 수 있게 아주 쉽고 단순한 일상 표현으로 [한줄 결론] -> [핵심 금액/내용] -> [꼭 챙기실 점] 3단 구성(전체 10줄 내외)으로 짧고 친절하게 작성할 것."
                             ),
-                            pro_toggle_on, False, force_flash=True
+                            pro_toggle_on, False, force_flash=True, target_idx=idx
                         )
                 with act2:
                     if st.button(
@@ -3080,7 +3109,7 @@ with st.container(key=f"room_main_view_{effective_ws_id}_{selected_room}"):
                         _trigger_agent_task(
                             effective_ws_id, selected_room,
                             "방금 작성한 검토 결과를 바탕으로, 거래처에 발송할 정식 비즈니스 이메일 회신 초안(제목, 인사말, 핵심 검토 결과 요약, 실무 유의사항, 맺음말 포함)을 깔끔하게 작성해 줘.",
-                            pro_toggle_on, False, force_flash=True
+                            pro_toggle_on, False, force_flash=True, target_idx=idx
                         )
                 with act3:
                     if st.button(
@@ -3092,7 +3121,7 @@ with st.container(key=f"room_main_view_{effective_ws_id}_{selected_room}"):
                         _trigger_agent_task(
                             effective_ws_id, selected_room,
                             "[프로] 직전 질문 사안에 대해 관련 법령·시행령·판례·심판례·예규와 예외 요건까지 데이터·도구 한도를 3배 개방하여 심층 재검토해 줘.",
-                            pro_toggle_on, False, force_flash=False
+                            pro_toggle_on, False, force_flash=False, target_idx=idx
                         )
 
                 with st.expander("📋 카톡·이메일 전송용 텍스트 원클릭 복사 (우측 상단 복사 아이콘 클릭)"):
