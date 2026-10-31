@@ -389,8 +389,7 @@ def calc_freelancer_33_tax(gross_amount: int | float, rate_pct: float = 3.0) -> 
     gross = max(0, int(round(float(gross_amount or 0))))
     r = _to_decimal(rate_pct or 3.0) / Decimal(100)
     inc_tax = floor_10won(Decimal(gross) * r)
-    if inc_tax < 1000:
-        inc_tax = 0
+    # 소액부징수 적용 안 함: 2024.7.1. 이후 지급하는 인적용역 사업소득(계속·반복 활동)은 소득세법 제86조 소액부징수 대상에서 제외
     loc_tax = floor_10won(Decimal(inc_tax) * Decimal("0.10"))
     tot_ded = inc_tax + loc_tax
     net_pay = gross - tot_ded

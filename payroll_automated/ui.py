@@ -1173,7 +1173,7 @@ def _build_free_review_report(pstate: Dict[str, Any]) -> Dict[str, Any]:
          "intro": "" if prev_names else "전월 누적 자료가 없어 비교하지 않았습니다."},
         {"heading": "절세·점검 검토",
          "bullets": [
-             ("소액부징수(원천징수세액 1천 원 미만은 징수하지 않음)", j({str(f.get("성명")) for f in frees if int(f.get("지급총액", 0) or 0) > 0 and int(f.get("소득세", 0) or 0) == 0})),
+             ("원천징수 누락 점검(소액부징수 적용 안 됨 — 2024.7.1. 이후 인적용역 사업소득)", j({str(f.get("성명")) for f in frees if int(f.get("지급총액", 0) or 0) >= 340 and int(f.get("소득세", 0) or 0) == 0})),
              ("업종코드 기본값(940909 기타자영업) 사용", j({str(f.get("성명")) for f in frees if _ind_code_only(f.get("소득구분")) == "940909"})
               + " — 실제 용역 내용에 맞는 업종코드인지 확인"),
              ("근로자성 점검", "매월 같은 금액·정해진 근무시간·회사 지휘감독을 받는 경우 근로자로 볼 위험이 있어 4대보험·근로소득 처리 여부를 검토"),

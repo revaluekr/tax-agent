@@ -1334,7 +1334,7 @@ def render_single_freelancer_statement_pdf(
     elements.append(Paragraph("지급 및 원천징수 공제 내역", sec_style))
     elements.append(Spacer(1, 2 * mm))
 
-    itax_note = "소액부징수 (소득세 1,000원 미만 면제)" if (0 < gross < 33_340 and itax == 0) else "세전금액 × 3.0% (10원 미만 절사)"
+    itax_note = "세전금액 × 3.0% (10원 미만 절사)"
     amt_data = [
         ["구 분", "산출 기준", "금 액 (원)"],
         ["세전금액 (지급총액)", "약정 사업소득 지급총액", f"{gross:,} 원"],
