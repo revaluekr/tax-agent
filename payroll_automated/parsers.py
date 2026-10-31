@@ -1361,7 +1361,7 @@ def parse_kakao_text_instructions(
         normalize_korean_name(f.get("성명", "")): f for f in (existing_freelancers or [])
     }
 
-    text_norm = re.sub(r"(?<=\d),(?=\d{3}\b)", "", raw_text)
+    text_norm = re.sub(r"(?<=\d),(?=\d{3}(?!\d))", "", raw_text)  # "3,000,000원"처럼 뒤에 한글이 붙어도 쉼표 제거
 
     # 줄바꿈이 있으면 줄 단위로 먼저 나누고, 한 줄 안에 쉼표로 구분된 항목이 '이름+주민번호+금액' 단일 인원인지 복수 인원인지 판별
     raw_lines = [ln.strip() for ln in re.split(r"[\n;/]+", text_norm) if ln.strip()]

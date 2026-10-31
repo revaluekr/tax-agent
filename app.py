@@ -2910,7 +2910,8 @@ if st.session_state.app_top_mode == "CREDIT_CALC":
     import employment_credit
     if st.session_state.get("payroll_to_ec_bridge"):
         bridge_info = st.session_state.pop("payroll_to_ec_bridge")
-        ec_state = employment_credit._S()
+        from employment_credit import ui_common as _ec_ui_common
+        ec_state = _ec_ui_common._S()
         if bridge_info.get("corp_name"):
             ec_state.setdefault("biz", {})["상호"] = bridge_info["corp_name"]
         wp_lbl = bridge_info.get("workplace_label") or "본점"
