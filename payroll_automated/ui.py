@@ -1773,7 +1773,7 @@ def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
     col_keys = [c[0] for c in EMP_GRID_COLUMNS]
 
     if not emps:
-        df = pd.DataFrame(columns=col_keys + ["_row_idx"])
+        df = pd.DataFrame(columns=col_keys + ["_row_idx", "_manual"])
     else:
         rows_norm = []
         for idx, e in enumerate(emps, start=1):
@@ -1790,8 +1790,9 @@ def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
                 else:
                     r[k] = str(e.get(k, "") or "")
             r["_row_idx"] = idx - 1
+            r["_manual"] = str(e.get("_수기") or "")
             rows_norm.append(r)
-        df = pd.DataFrame(rows_norm, columns=col_keys + ["_row_idx"])
+        df = pd.DataFrame(rows_norm, columns=col_keys + ["_row_idx", "_manual"])
 
     gb = GridOptionsBuilder.from_dataframe(df)
     gb.configure_default_column(
@@ -1801,6 +1802,7 @@ def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
         suppressMenu=True,
         minWidth=30,
     )
+    gb.configure_column("_manual", hide=True)
     gb.configure_selection(
         selection_mode="multiple",
         use_checkbox=False,
@@ -1815,9 +1817,15 @@ def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
             if ctype == "numeric" and field not in ("부양가족수", "자녀수") and all(int(e.get(field, 0) or 0) == 0 for e in emps):
                 zero_cols.add(field)
 
+    # 잘리면 안 되는 열: 사업장·코드·성명·주민등록번호·소득세감면·입사일·퇴사일·기준·금액 → 내용 길이에 맞춰 폭 자동 확대
+    keep_text = {"사업장": 30, "사원코드": 0, "성명": 0, "주민등록번호": 0, "소득세감면율": 16, "입사일": 0, "퇴사일": 0, "입력기준": 0}
     for field, header_name, width, editable, ctype in EMP_GRID_COLUMNS:
         if field in zero_cols:
             width = 42
+        elif emps and field in keep_text:
+            width = _fit_width(header_name, df[field].tolist(), width, extra=keep_text[field])
+        elif emps and ctype.startswith("numeric") and field not in ("부양가족수", "자녀수"):
+            width = _fit_width("", df[field].tolist(), width, numeric=True)
         pinned = "left" if field in ("사업장", "사원코드", "성명") else None
         is_first_col = (field == "사업장")
         if ctype == "select_red":
@@ -1830,12 +1838,9 @@ def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
                 suppressMenu=True,
                 cellEditor="agSelectCellEditor",
                 cellEditorParams={"values": REDUCTION_OPTIONS},
-                cellRenderer=JsCode(
-                    "function(p){var v=(p.value==null)?'':String(p.value);"
-                    "return v+'<span style=\"float:right;color:#64748b;\">▾</span>';}"
-                ),
+                cellRenderer=_DROPDOWN_RENDERER,
                 headerTooltip="중소기업 취업자 소득세 감면(조특법 제30조): 청년 90% / 60세 이상·장애인·경력단절 근로자 70% — 근로자 감면신청 후 적용",
-                cellStyle={"textAlign": "center"},
+                cellStyle=_manual_style(),
             )
             continue
         if ctype == "select_mode":
@@ -1848,6 +1853,7 @@ def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
                 suppressMenu=True,
                 cellEditor="agSelectCellEditor",
                 cellEditorParams={"values": ["세전", "세후역산"]},
+                cellStyle=_manual_style(),
             )
         elif ctype == "select_ins":
             gb.configure_column(
@@ -1859,6 +1865,7 @@ def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
                 suppressMenu=True,
                 cellEditor="agSelectCellEditor",
                 cellEditorParams={"values": ["고지(1순위)", "요율(2순위)"]},
+                cellStyle=_manual_style(),
             )
         elif ctype.startswith("numeric"):
             cell_style = {"textAlign": "right", "paddingLeft": "4px", "paddingRight": "6px"}
@@ -1889,7 +1896,7 @@ def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
                 suppressMenu=True,
                 type=["numericColumn"],
                 valueFormatter="x != null ? Number(x).toLocaleString() : '0'",
-                cellStyle=cell_style,
+                cellStyle=_manual_style(cell_style),
             )
         else:
             gb.configure_column(
@@ -1902,6 +1909,7 @@ def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
                 checkboxSelection=is_first_col,
                 headerCheckboxSelection=is_first_col,
                 suppressMenu=True,
+                cellStyle=_manual_style(),
             )
 
     grid_opts = gb.build()
@@ -1944,6 +1952,12 @@ def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
         for idx, row in updated_df.iterrows():
             orig = emps[idx] if idx < len(emps) else {}
             merged = dict(orig)
+            shown = df.iloc[idx].to_dict() if idx < len(df) else {}
+            hand = [k for k, _, _, editable, _ct in EMP_GRID_COLUMNS
+                    if editable and k in shown and not _same_cell(shown.get(k), row.get(k))]
+            _add_manual_marks(orig, merged, hand)
+            if hand:
+                changed = True
             for k, _, _, _, ctype in EMP_GRID_COLUMNS:
                 val = row.get(k)
                 if ctype == "select_red":
@@ -1967,6 +1981,70 @@ def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
             _recalculate_all_employee_rows(pstate)
             pstate["grid_version"] += 1
             st.rerun()
+
+
+# 선택 칸 표시: 글자 + 오른쪽 ▾ (HTML 문자열을 돌려주면 그리드가 글자 그대로 보여 주므로 화면 요소를 직접 만듭니다)
+_DROPDOWN_RENDERER = JsCode(
+    "class PayDropRenderer {"
+    " init(p){ this.e=document.createElement('div');"
+    " this.e.style.cssText='display:flex;justify-content:space-between;align-items:center;width:100%;gap:4px;';"
+    " var t=document.createElement('span'); t.textContent=(p.value==null)?'':String(p.value);"
+    " t.style.cssText='overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';"
+    " var a=document.createElement('span'); a.textContent='\u25BE'; a.style.cssText='color:#64748b;flex:none;';"
+    " this.e.appendChild(t); this.e.appendChild(a); }"
+    " getGui(){ return this.e; }"
+    " refresh(){ return false; } }"
+)
+
+MANUAL_BG = "#fef9c3"  # 편집기에서 직접 고친 칸(수기입력) 바탕: 연노랑
+
+
+def _manual_style(base: Optional[Dict[str, Any]] = None) -> JsCode:
+    """기본 칸 모양 + 수기입력 칸이면 연노랑 바탕."""
+    import json as _json
+    return JsCode(
+        "function(p){var s=Object.assign({}, " + _json.dumps(base or {}, ensure_ascii=False) + ");"
+        "var m=(p.data&&p.data._manual)?(','+p.data._manual+','):'';"
+        "if(m.indexOf(','+p.colDef.field+',')>=0){s.backgroundColor='" + MANUAL_BG + "';}return s;}"
+    )
+
+
+def _text_px(s: Any) -> float:
+    """글자 폭 대략값(px): 한글·전각 12.6, 그 외 7.4."""
+    return sum(12.6 if ord(ch) >= 0x1100 else 7.4 for ch in str(s))
+
+
+def _fit_width(header: str, values: List[Any], base: int, extra: int = 0, numeric: bool = False) -> int:
+    """머리글과 값이 잘리지(…) 않는 폭."""
+    if numeric:
+        vals = [f"{int(v or 0):,}" for v in values]
+    else:
+        vals = [str(v or "") for v in values]
+    need_v = max([_text_px(v) for v in vals] or [0]) + 24 + extra
+    need_h = _text_px(header) * 0.98 + 30
+    return int(max(base, need_v, need_h))
+
+
+def _same_cell(a: Any, b: Any) -> bool:
+    """화면에 보여 준 값과 그리드에서 돌아온 값이 같은지 (숫자 1 / "1" / 1.0 같은 차이는 같게)."""
+    na = a is None or (isinstance(a, float) and pd.isna(a))
+    nb = b is None or (isinstance(b, float) and pd.isna(b))
+    if na or nb:
+        return (na or str(a).strip() == "") and (nb or str(b).strip() == "")
+    try:
+        return float(str(a).replace(",", "")) == float(str(b).replace(",", ""))
+    except Exception:
+        return str(a).strip() == str(b).strip()
+
+
+def _add_manual_marks(orig: Dict[str, Any], merged: Dict[str, Any], fields: List[str]) -> None:
+    if not fields:
+        return
+    cur = [f for f in str(orig.get("_수기") or "").split(",") if f]
+    for f in fields:
+        if f not in cur:
+            cur.append(f)
+    merged["_수기"] = ",".join(cur)
 
 
 REDUCTION_OPTIONS = ["", "90%", "70%"]  # 중소기업 취업자 소득세 감면율 (조특법 제30조: 청년 90%, 그 외 대상 70%)
@@ -2010,7 +2088,7 @@ def _render_freelancer_aggrid(pstate: Dict[str, Any]) -> None:
     ind_codes = [_ind_label(c["code"]) for c in FREELANCER_INDUSTRY_CODES]
 
     if not frees:
-        df = pd.DataFrame(columns=col_keys + ["_row_idx"])
+        df = pd.DataFrame(columns=col_keys + ["_row_idx", "_manual"])
     else:
         rows_norm = []
         for idx, f in enumerate(frees, start=1):
@@ -2025,8 +2103,9 @@ def _render_freelancer_aggrid(pstate: Dict[str, Any]) -> None:
                 else:
                     r[k] = str(f.get(k, "") or "")
             r["_row_idx"] = idx - 1
+            r["_manual"] = str(f.get("_수기") or "")
             rows_norm.append(r)
-        df = pd.DataFrame(rows_norm, columns=col_keys + ["_row_idx"])
+        df = pd.DataFrame(rows_norm, columns=col_keys + ["_row_idx", "_manual"])
 
     gb = GridOptionsBuilder.from_dataframe(df)
     gb.configure_default_column(
@@ -2035,6 +2114,7 @@ def _render_freelancer_aggrid(pstate: Dict[str, Any]) -> None:
         filter=False,
         suppressMenu=True,
     )
+    gb.configure_column("_manual", hide=True)
     gb.configure_selection(
         selection_mode="multiple",
         use_checkbox=False,
@@ -2043,6 +2123,10 @@ def _render_freelancer_aggrid(pstate: Dict[str, Any]) -> None:
     gb.configure_column("_row_idx", hide=True)
 
     for field, header_name, width, editable, ctype in FREE_GRID_COLUMNS:
+        if frees and field != "세율":
+            width = _fit_width(header_name, df[field].tolist(), width,
+                               extra=(30 if field == "코드" else 16 if ctype == "select_ind" else 0),
+                               numeric=ctype.startswith("numeric"))
         pinned = "left" if field in ("코드", "성명") else None
         is_first_col = (field == "코드")
         if ctype == "select_mode":
@@ -2054,6 +2138,7 @@ def _render_freelancer_aggrid(pstate: Dict[str, Any]) -> None:
                 suppressMenu=True,
                 cellEditor="agSelectCellEditor",
                 cellEditorParams={"values": ["세전", "세후역산"]},
+                cellStyle=_manual_style(),
             )
         elif ctype == "select_ind":
             gb.configure_column(
@@ -2064,11 +2149,9 @@ def _render_freelancer_aggrid(pstate: Dict[str, Any]) -> None:
                 suppressMenu=True,
                 cellEditor="agSelectCellEditor",
                 cellEditorParams={"values": ind_codes},
-                cellRenderer=JsCode(
-                    "function(p){var v=(p.value==null)?'':String(p.value);"
-                    "return v+'<span style=\"float:right;color:#64748b;\">▾</span>';}"
-                ),
+                cellRenderer=_DROPDOWN_RENDERER,
                 tooltipField="소득구분",
+                cellStyle=_manual_style(),
             )
         elif ctype.startswith("numeric"):
             cell_style = {"textAlign": "right"}
@@ -2084,7 +2167,7 @@ def _render_freelancer_aggrid(pstate: Dict[str, Any]) -> None:
                 suppressMenu=True,
                 type=["numericColumn"],
                 valueFormatter="x != null ? Number(x).toLocaleString() : '0'",
-                cellStyle=cell_style,
+                cellStyle=_manual_style(cell_style),
             )
         else:
             gb.configure_column(
@@ -2096,6 +2179,7 @@ def _render_freelancer_aggrid(pstate: Dict[str, Any]) -> None:
                 checkboxSelection=is_first_col,
                 headerCheckboxSelection=is_first_col,
                 suppressMenu=True,
+                cellStyle=_manual_style(),
             )
 
     grid_opts = gb.build()
@@ -2119,6 +2203,12 @@ def _render_freelancer_aggrid(pstate: Dict[str, Any]) -> None:
         for idx, row in updated_df.iterrows():
             orig = frees[idx] if idx < len(frees) else {}
             merged = dict(orig)
+            shown = df.iloc[idx].to_dict() if idx < len(df) else {}
+            hand = [k for k, _, _, editable, _ct in FREE_GRID_COLUMNS
+                    if editable and k in shown and not _same_cell(shown.get(k), row.get(k))]
+            _add_manual_marks(orig, merged, hand)
+            if hand:
+                changed = True
             for k, _, _, _, ctype in FREE_GRID_COLUMNS:
                 val = row.get(k)
                 if ctype.startswith("numeric"):
@@ -2210,14 +2300,14 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
             if prev_pack:
                 if is_emp_mode and prev_pack.get("employees"):
                     pstate["prev_employees"] = list(prev_pack["employees"])
-                    pstate["employees"] = [dict(e) for e in prev_pack["employees"]]
+                    pstate["employees"] = [{k: v for k, v in e.items() if k != "_수기"} for e in prev_pack["employees"]]
                     _recalculate_all_employee_rows(pstate)
                     pstate["grid_version"] += 1
                     st.toast(f"직전 귀속월({prev_pack.get('year_month')}) 급여대장 {len(pstate['employees'])}명을 불러왔습니다.")
                     st.rerun()
                 elif not is_emp_mode and prev_pack.get("freelancers"):
                     pstate["prev_freelancers"] = list(prev_pack["freelancers"])
-                    pstate["freelancers"] = [dict(f) for f in prev_pack["freelancers"]]
+                    pstate["freelancers"] = [{k: v for k, v in f.items() if k != "_수기"} for f in prev_pack["freelancers"]]
                     _recalculate_all_freelancer_rows(pstate)
                     pstate["grid_version"] += 1
                     st.toast(f"직전 귀속월({prev_pack.get('year_month')}) 사업소득자 {len(pstate['freelancers'])}명을 불러왔습니다.")
