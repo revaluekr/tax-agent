@@ -2913,6 +2913,18 @@ if st.session_state.app_top_mode == "CREDIT_CALC":
         ec_state = employment_credit._S()
         if bridge_info.get("corp_name"):
             ec_state.setdefault("biz", {})["상호"] = bridge_info["corp_name"]
+        wp_lbl = bridge_info.get("workplace_label") or "본점"
+        md_by_year = bridge_info.get("md_by_year") or {}
+        for yr_int, md_text in md_by_year.items():
+            yr_key = f"wht_{yr_int}"
+            fname = f"[인건비연동] {bridge_info.get('corp_name') or '거래처'}_{wp_lbl}_{yr_int}년_급여대장.paybak"
+            ec_state.setdefault("files", {})[fname] = {
+                "key": yr_key,
+                "text": md_text,
+                "wp": wp_lbl,
+            }
+        ec_state["built_sig"] = None
+        ec_state["ext_sig"] = None
     employment_credit.render_credit_wizard(
         extract_file_fn=extract_file_content,
         log_tokens_fn=_log_custom_tokens,

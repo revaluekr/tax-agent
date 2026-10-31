@@ -1,23 +1,33 @@
 # -*- coding: utf-8 -*-
 """
 인건비 자동화 UI 모듈 (payroll_automated/ui.py)
-- 좌측 사이드바:
-  1) 개정사항 모니터링 카드 (근로기준법, 소득세법 근로소득/비과세, 소득세법 시행령 별표2 간이세액표, 2026년 4대보험 요율 — 실시간 법제처 API 연동)
-  2) 작업 초기화 3D 버튼 카드
-  3) 좌·우 3D 모드 전환 버튼 ([급여명세서] 파스텔 블루 / [사업소득] 파스텔 퍼플)
-  4) 사업자정보 카드 (거래처명, 귀속연월, 지급일자, 상시근로자 수 통합 입력 및 5인 이상/미만 자동 연동, 사업주 고용보험 요율 선택, [당월 검토보고], [통합고용세액공제 계산])
+- 좌측 사이드바 (사용자 지정 순서):
+  1) 업무 화면 선택 카드 ([급여명세서] 파스텔 블루 3D / [사업소득] 파스텔 퍼플 3D — 개정사항 모니터링보다 상단 배치)
+  2) 개정사항 모니터링 카드 (근로기준법·소득세법 정상 초록불 / 시행령 별표2·4대보험 요율 반영 노란불 분리)
+  3) 작업 자료 관리 ([작업 초기화 (내용 비우기)] 3D 버튼)
+  4) 사업자정보 카드 (거래처명, 사업장 구분[본점/지점/직접입력/선택안함], 귀속연월, 지급일자,
+     상시근로자 수·사업주 고용보험 요율[근로소득 전용], [당월 검토보고], [통합고용세액공제 계산 연동 — 사업소득 시 비활성화])
   5) 거래처별 월별 누적 암호화 백업 카드 (.paybak)
 - 우측 메인 화면:
-  1) 최상단 툴바: 좌측([전월 급여 불러오기], [행 추가], [마지막 행 삭제]) /
-     우측([경고·주의사항] 상태점 표시 버튼, [연장·야간·휴일근로수당 계산기], [주휴수당 계산기])
-  2) AG Grid 편집 대장 (급여대장 / 사업소득대장 실시간 편집 및 자동 재계산)
-  3) 서식 일괄 다운로드 바 (근로자 200명 / 사업소득 100명 한 번에 압축, 초과 시 구간 선택 · 버튼 클릭 시 지연 생성)
-  4) 하단 드래그앤드롭 파일 업로드 영역 및 올인원 채팅·파일 입력창 (st.chat_input)
-- 이모티콘 미사용 원칙 준수 (순수 텍스트 및 CSS 원형 인디케이터만 사용)
+  1) 최상단 툴바:
+     - [급여명세서] 모드: [전월 급여 불러오기], [행 추가], [선택한 행 삭제], [경고·주의사항], [연장·야간·휴일근로수당 계산기], [주휴수당 계산기]
+     - [사업소득] 모드: [전월 사업소득 불러오기], [행 추가], [선택한 행 삭제], [경고·주의사항], [업종코드 조회·선택] (근로기준법 수당 계산기 2종 미노출)
+  2) AG Grid 편집 대장:
+     - [급여대장 편집기]: 맨 앞 열 '사업장'(본점/지점/직접입력/거래처명/공란 우선순위 반영, 위하고 엑셀 업로드양식에서는 자동 제외) +
+       좌측 체크박스 다중 행 선택 + 한 화면 우측 끝이 '지급액계(세전)'까지 잘림(...) 없이 보이도록 열 폭 최적화 및 ☰ 필터 아이콘 제거
+     - [사업소득대장 편집기]: 업종코드 기본 940909 + 드롭다운 및 [업종코드 조회·선택] 모달 연동 + 좌측 체크박스 다중 행 선택
+  3) 서식 일괄 다운로드 바:
+     - 급여명세서 6종 양식 선택(기본: 근로기준1) + 각 양식 우측 끝 돋보기 마우스 오버(:hover) 미리보기
+     - [급여명세서 일괄 다운 (이미지)] 추가 및 [사업소득명세서 PDF 압축] 우측 돋보기 마우스 오버 미리보기
+     - 사용자 지정 저장 파일명 규칙(`거래처명_..._YYMM`) 완벽 적용
+  4) 최하단 올인원 입력창 (`st.chat_input` — 중간 중복 드래그앤드롭 박스 제거 후 파일 드래그앤드롭과 카톡 텍스트 입력을 최하단 창으로 일원화)
+- [당월 검토보고]: 자율 에이전트AI의 보고서 양식과 동일한 형태(1. 결론 / 2. 내용 / 3. 관련법령), 색상, 폰트, 간격 적용 및 '주요 점검 사항' 영구 제외
+- 이모티콘 미사용 원칙 준수 (순수 텍스트, SVG 돋보기 아이콘 및 CSS 원형 인디케이터만 사용)
 """
 
 from __future__ import annotations
 
+import inspect
 import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -32,6 +42,7 @@ from .backup import (
     decrypt_paybak_to_client_db,
     encrypt_client_db_to_paybak,
     get_previous_month_data,
+    resolve_workplace_label,
     upsert_monthly_data_into_db,
 )
 from .calculators import (
@@ -43,6 +54,8 @@ from .calculators import (
     check_payroll_law_revisions,
 )
 from .exporters import (
+    PAYSLIP_TEMPLATE_OPTIONS,
+    export_employee_payslips_jpg_zip,
     export_employee_payslips_zip,
     export_freelancer_ledger_pdf,
     export_freelancer_statements_jpg_zip,
@@ -50,8 +63,11 @@ from .exporters import (
     export_payroll_ledger_pdf,
     export_wehago_freelancer_excel,
     export_wehago_payroll_excel,
+    get_freelancer_statement_preview_b64,
+    get_payslip_template_preview_b64,
 )
 from .parsers import (
+    FREELANCER_INDUSTRY_CODES,
     apply_insurance_notices_to_employees,
     parse_client_payroll_excel,
     parse_freelancer_excel,
@@ -70,8 +86,19 @@ from .tax_tables import (
 )
 
 
+# 돋보기 SVG 아이콘 (이모티콘 없이 순수 벡터 그래픽 사용)
+MAGNIFIER_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" '
+    'fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" '
+    'style="vertical-align:middle;">'
+    '<circle cx="11" cy="11" r="8"></circle>'
+    '<line x1="21" y1="21" x2="16.65" y2="16.65"></line>'
+    '</svg>'
+)
+
+
 # ─────────────────────────────────────────────────────────────
-# 전용 CSS (3D 파스텔 블루/퍼플 버튼, 모니터 내 모달 스크롤 보호, CSS 상태 원형 점)
+# 전용 CSS (3D 파스텔 블루/퍼플 버튼, 자율 에이전트AI 동일 보고서 서식, 돋보기 호버 미리보기)
 # ─────────────────────────────────────────────────────────────
 
 PAYROLL_CSS = """
@@ -153,11 +180,18 @@ PAYROLL_CSS = """
     color: #1e293b !important;
     box-shadow: 0 2px 4px rgba(15, 23, 42, 0.08) !important;
 }
-.st-key-btn_pay_bridge_credit button {
+.st-key-btn_pay_bridge_credit button:not(:disabled) {
     background: linear-gradient(180deg, #f0fdf4 0%, #dcfce7 100%) !important;
     border: 1px solid #4ade80 !important;
     border-bottom: 2.5px solid #16a34a !important;
     color: #14532d !important;
+}
+.st-key-btn_pay_bridge_credit button:disabled {
+    background: linear-gradient(180deg, #f8fafc 0%, #e2e8f0 100%) !important;
+    border: 1px solid #cbd5e1 !important;
+    border-bottom: 2.5px solid #94a3b8 !important;
+    color: #94a3b8 !important;
+    opacity: 0.72 !important;
 }
 
 /* 상태 원형 점 (이모티콘 없이 순수 CSS 원형 도트) */
@@ -243,12 +277,139 @@ div[data-testid="stDialog"] div[role="dialog"] {
     font-size: 0.86rem;
     color: #334155;
 }
+
+/* 자율 에이전트AI 보고서와 100% 동일한 형태·색상·폰트·간격 전용 스타일 */
+.pa-agent-report-box {
+    font-family: 'Pretendard', 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif !important;
+    font-size: 1.12rem !important;
+    line-height: 1.78 !important;
+    color: #1e293b !important;
+    letter-spacing: -0.2px !important;
+}
+.pa-agent-report-box h3 {
+    font-size: 1.20rem !important;
+    font-weight: 800 !important;
+    color: #0f172a !important;
+    background: linear-gradient(90deg, #f1f5f9 0%, #ffffff 100%);
+    border-left: 4px solid #1e3a8a;
+    padding: 6px 12px !important;
+    margin-top: 1.4rem !important;
+    margin-bottom: 0.75rem !important;
+    border-radius: 0 6px 6px 0;
+    line-height: 1.4 !important;
+}
+.pa-agent-report-box h4 {
+    font-size: 1.08rem !important;
+    font-weight: 700 !important;
+    color: #1e40af !important;
+    margin-top: 1.1rem !important;
+    margin-bottom: 0.45rem !important;
+    line-height: 1.45 !important;
+}
+.pa-agent-report-box p,
+.pa-agent-report-box li {
+    font-size: 1.06rem !important;
+    line-height: 1.78 !important;
+    color: #1e293b !important;
+    margin-bottom: 0.45rem !important;
+}
+.pa-agent-report-box table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 10px 0 14px 0;
+    font-size: 0.95rem !important;
+}
+.pa-agent-report-box th {
+    background-color: #f1f5f9 !important;
+    color: #0f172a !important;
+    font-weight: 700 !important;
+    padding: 8px 10px !important;
+    border: 1px solid #cbd5e1 !important;
+    text-align: center !important;
+}
+.pa-agent-report-box td {
+    padding: 7px 10px !important;
+    border: 1px solid #cbd5e1 !important;
+    color: #1e293b !important;
+}
+.pa-agent-report-box .related-laws-compact-box {
+    font-size: 0.90rem !important;
+    line-height: 1.56 !important;
+    background-color: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 10px 14px;
+    margin-top: 6px;
+    color: #334155 !important;
+}
+
+/* 급여명세서 6종 및 사업소득명세서 우측 돋보기 마우스 오버(:hover) 미리보기 */
+.pay-tpl-hover-wrap {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    color: #1e40af;
+    background: #eff6ff;
+    border: 1px solid #93c5fd;
+    border-radius: 7px;
+    padding: 5px 8px;
+    min-height: 36px;
+    font-size: 0.78rem;
+    font-weight: 700;
+    user-select: none;
+    transition: all 0.12s ease;
+}
+.pay-tpl-hover-wrap:hover {
+    background: #dbeafe;
+    border-color: #2563eb;
+    color: #1e3a8a;
+}
+.pay-tpl-hover-popup {
+    visibility: hidden;
+    opacity: 0;
+    position: fixed;
+    right: 38px;
+    bottom: 85px;
+    z-index: 999999;
+    width: 460px;
+    max-width: 90vw;
+    background: #ffffff;
+    border: 2px solid #1e3a8a;
+    border-radius: 12px;
+    padding: 10px;
+    box-shadow: 0 18px 38px rgba(15, 23, 42, 0.32);
+    transition: opacity 0.14s ease, visibility 0.14s ease;
+    pointer-events: none;
+}
+.pay-tpl-hover-wrap:hover .pay-tpl-hover-popup {
+    visibility: visible;
+    opacity: 1;
+}
+.pay-tpl-hover-title {
+    font-size: 0.85rem;
+    font-weight: 800;
+    color: #0f172a;
+    margin-bottom: 6px;
+    padding-bottom: 5px;
+    border-bottom: 1px solid #e2e8f0;
+    display: flex;
+    justify-content: space-between;
+}
+.pay-tpl-hover-popup img {
+    width: 100%;
+    height: auto;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    display: block;
+}
 </style>
 """
 
 
 # ─────────────────────────────────────────────────────────────
-# 세션 상태 초기화 및 헬퍼 (급여명세서 200명 / 사업소득명세서 100명 기준)
+# 세션 상태 초기화 및 헬퍼
 # ─────────────────────────────────────────────────────────────
 
 EMP_ZIP_MAX = 200
@@ -256,15 +417,28 @@ FREE_ZIP_MAX = 100
 
 
 def _lazy_bytes(fn, *args, enabled: bool = True, **kwargs):
-    """
-    다운로드 버튼을 실제로 클릭할 때만 PDF/ZIP/XLSX 파일을 생성하도록 호출 가능한 함수(Callable)를 반환합니다.
-    매 화면 리런마다 무거운 deepcopy를 수행하지 않고 얕은 스냅샷 참조만 전달하여 메모리와 속도를 최적화합니다.
-    """
+    """다운로드 버튼을 누를 때만 파일을 만들도록 호출 가능한 객체를 돌려줍니다."""
+    import copy as _copy
     if not enabled:
         return b""
-    captured_args = tuple(list(a) if isinstance(a, list) else a for a in args)
-    captured_kwargs = {k: (list(v) if isinstance(v, list) else v) for k, v in kwargs.items()}
-    return lambda: fn(*captured_args, **captured_kwargs)
+    a = _copy.deepcopy(args)
+    kw = _copy.deepcopy(kwargs)
+    return lambda: fn(*a, **kw)
+
+
+def _sanitize_file_token(val: str, fallback: str = "거래처미입력") -> str:
+    cleaned = re.sub(r'[\\/:*?"<>|]+', "_", str(val or "").strip())
+    return cleaned if cleaned else fallback
+
+
+def _format_yymm_4digit(ym_str: str) -> str:
+    digits = re.sub(r"[^0-9]", "", str(ym_str or ""))
+    if len(digits) >= 6:
+        return digits[2:6]
+    if len(digits) == 4:
+        return digits
+    now = datetime.now()
+    return f"{now.year % 100:02d}{now.month:02d}"
 
 
 def _get_payroll_state() -> Dict[str, Any]:
@@ -275,54 +449,69 @@ def _get_payroll_state() -> Dict[str, Any]:
         st.session_state.payroll_auto_state = {
             "sub_mode": "EMP",  # "EMP" (급여명세서) | "FREE" (사업소득)
             "corp_name": "",
+            "workplace_mode": "본점",  # "본점" | "지점" | "직접입력" | "선택안함(거래처명 표시)"
+            "workplace_custom": "",
             "year_month": default_ym,
             "pay_date": default_pay_dt,
             "is_5_or_more": True,
-            "ei_emp_count": 0,
-            "ei_emp_count_manual": None,
-            "ei_stability_tier": EI_STABILITY_TIERS[0][0],
-            "ei_stability_tier_manual": None,
             "withholding_rate_pct": 100,
             "effective_table": "2026.03",
+            "payslip_template": "근로기준1",
             "encrypt_payslip_zip": False,
             "employees": [],
             "freelancers": [],
             "prev_employees": [],
             "prev_freelancers": [],
+            "selected_emp_indices": [],
+            "selected_free_indices": [],
             "notice_logs": [],
             "chat_logs": [],
             "client_db": create_empty_client_db(""),
             "grid_version": 0,
         }
-    return st.session_state.payroll_auto_state
+    pstate = st.session_state.payroll_auto_state
+    pstate.setdefault("workplace_mode", "본점")
+    pstate.setdefault("workplace_custom", "")
+    pstate.setdefault("payslip_template", "근로기준1")
+    pstate.setdefault("selected_emp_indices", [])
+    pstate.setdefault("selected_free_indices", [])
+    return pstate
+
+
+def _current_workplace_label(pstate: Dict[str, Any]) -> str:
+    return resolve_workplace_label(
+        workplace_mode=pstate.get("workplace_mode", "본점"),
+        workplace_custom=pstate.get("workplace_custom", ""),
+        corp_name=pstate.get("corp_name", ""),
+    )
+
+
+def _sync_workplace_to_employees(pstate: Dict[str, Any], force_all: bool = False) -> None:
+    wp_lbl = _current_workplace_label(pstate)
+    for emp in pstate.get("employees", []):
+        if force_all or "사업장" not in emp:
+            emp["사업장"] = wp_lbl
 
 
 def _reset_payroll_current_work() -> None:
-    """
-    [작업 초기화 (내용 비우기)] 실행 시 대장 목록뿐만 아니라
-    수기 입력했던 상시근로자 수 및 고용보험 요율 선택값도 초기 상태로 함께 리셋합니다.
-    """
     pstate = _get_payroll_state()
     pstate["employees"] = []
     pstate["freelancers"] = []
+    pstate["selected_emp_indices"] = []
+    pstate["selected_free_indices"] = []
     pstate["notice_logs"] = []
     pstate["chat_logs"] = []
-    pstate["ei_emp_count"] = 0
-    pstate["ei_emp_count_manual"] = None
-    pstate["ei_stability_tier"] = EI_STABILITY_TIERS[0][0]
-    pstate["ei_stability_tier_manual"] = None
-    pstate["is_5_or_more"] = False
     pstate["grid_version"] = int(pstate.get("grid_version", 0)) + 1
 
 
 def _recalculate_all_employee_rows(pstate: Dict[str, Any]) -> None:
     eff_tbl = pstate.get("effective_table", "2026.03")
     pct = int(pstate.get("withholding_rate_pct", 100))
+    wp_lbl = _current_workplace_label(pstate)
     new_list: List[Dict[str, Any]] = []
     for idx, emp in enumerate(pstate.get("employees", []), start=1):
         in_mode = str(emp.get("입력기준", "세전")).strip()
         ins_mode = str(emp.get("보험적용구분", "요율(2순위)")).strip()
-        ceo_flag = is_ceo_position(emp.get("직급", ""))
         notice_ins = None
         if ins_mode.startswith("고지") or any(
             emp.get(flag) for flag in ("_nhis_notice_applied", "_nps_notice_applied", "_ei_notice_applied")
@@ -341,6 +530,7 @@ def _recalculate_all_employee_rows(pstate: Dict[str, Any]) -> None:
         children = max(0, int(emp.get("자녀수", 0) or 0))
         meal = int(emp.get("식대", 0) or 0)
         car = int(emp.get("자가운전보조금", 0) or 0)
+        ceo_flag = is_ceo_position(str(emp.get("직급", "")))
 
         if in_mode == "세후역산" and int(emp.get("목표실수령액", 0) or 0) > 0:
             solved = solve_gross_from_net_employee(
@@ -377,6 +567,8 @@ def _recalculate_all_employee_rows(pstate: Dict[str, Any]) -> None:
             is_ceo=ceo_flag,
         )
         emp.update(calc)
+        if "사업장" not in emp:
+            emp["사업장"] = wp_lbl
         if not emp.get("사원코드"):
             emp["사원코드"] = f"{idx:03d}"
         new_list.append(emp)
@@ -399,12 +591,14 @@ def _recalculate_all_freelancer_rows(pstate: Dict[str, Any]) -> None:
         fr["차인지급액"] = calc["net_pay"]
         if not fr.get("코드"):
             fr["코드"] = f"{idx:04d}"
+        if not fr.get("소득구분"):
+            fr["소득구분"] = "940909"
         new_list.append(fr)
     pstate["freelancers"] = new_list
 
 
 # ─────────────────────────────────────────────────────────────
-# 별도 웹 팝업 모달 (@st.dialog) 5종 — 상하단 잘림 방지 설계
+# 별도 웹 팝업 모달 (@st.dialog) — 상하단 잘림 방지 설계
 # ─────────────────────────────────────────────────────────────
 
 @st.dialog("급여·원천세·근로기준법 개정사항 및 간이세액표 안내", width="large")
@@ -495,8 +689,8 @@ def _dlg_payroll_warnings():
             )
         st.markdown("\n".join(rows_md))
 
-    st.markdown("##### 관련 법령 및 점검 기준 주석")
-    for ref in diag.get("legal_references", WARNING_MODAL_LEGAL_REFERENCES):
+    st.markdown("#### 관련 법령 및 신고 기준 안내")
+    for ref in WARNING_MODAL_LEGAL_REFERENCES:
         ref_content = ref["content"].replace("\n", "<br>")
         st.markdown(
             f"<div class='pay-law-ref-box'><b>[{ref['title']}]</b><br>{ref_content}</div>",
@@ -519,7 +713,7 @@ def _dlg_overtime_calculator():
         selected_emp_name = st.selectbox("적용 대상 근로자 선택", options=emp_names, key="ot_calc_emp_sel")
     with col_scale:
         is_5_plus = st.radio(
-            "상시근로자 수 기준 (사이드바 상시근로자 수와 자동 연동)",
+            "상시근로자 수 기준 (가산율 자동 분기)",
             options=["5인 이상 (연장·휴일 1.5배 / 야간 0.5배)", "5인 미만 (가산율 미적용 · 1.0배)"],
             index=0 if pstate.get("is_5_or_more", True) else 1,
             horizontal=True,
@@ -665,12 +859,94 @@ def _dlg_weekly_holiday_calculator():
             st.rerun()
 
 
+@st.dialog("사업소득(3.3%) 업종코드 조회 및 선택 반영", width="large")
+def _dlg_industry_code_selector():
+    pstate = _get_payroll_state()
+    frees = pstate.get("freelancers", [])
+    sel_indices: List[int] = pstate.get("selected_free_indices") or []
+
+    st.markdown("<div class='pay-modal-scroll-box'>", unsafe_allow_html=True)
+    kw = st.text_input(
+        "업종코드 또는 업종내용 검색",
+        placeholder="예: 940909, 강사, IT, 프로그래머, 디자이너, 모델, 배달...",
+        key="pay_ind_search_kw",
+    ).strip().lower()
+
+    filtered = [
+        item for item in FREELANCER_INDUSTRY_CODES
+        if not kw
+        or kw in item["code"].lower()
+        or kw in item["name"].lower()
+        or kw in item["category"].lower()
+    ]
+    if not filtered:
+        filtered = FREELANCER_INDUSTRY_CODES
+
+    st.caption("표 왼쪽 앞의 선택 칸(○)으로 적용할 업종코드를 선택한 뒤 하단 [반영] 버튼을 누르세요. (기본값: 940909)")
+    code_list = [item["code"] for item in filtered]
+    label_map = {
+        item["code"]: f"{item['code']}  |  {item['name']}  ({item['category']})"
+        for item in filtered
+    }
+    def_idx = code_list.index("940909") if "940909" in code_list else 0
+    chosen_code = st.radio(
+        "업종코드 / 내용 선택 (○)",
+        options=code_list,
+        index=def_idx,
+        format_func=lambda c: label_map.get(c, c),
+        key="pay_ind_radio_choice",
+    )
+
+    valid_sel = [i for i in sel_indices if 0 <= i < len(frees)]
+    if valid_sel:
+        sel_names = [str(frees[i].get("성명", "")) for i in valid_sel]
+        st.info(f"현재 체크박스로 선택된 대상자 ({len(valid_sel)}명): {', '.join(sel_names)}")
+    else:
+        st.caption("표 왼쪽 체크박스로 특정 대상자를 먼저 체크하시면 [선택한 행에 반영]으로 개별 적용할 수 있습니다.")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    c_b1, c_b2, c_b3 = st.columns([1.8, 1.8, 1.0])
+    with c_b1:
+        if st.button(
+            f"선택한 행에 반영 ({chosen_code})",
+            type="primary",
+            width="stretch",
+            disabled=(len(valid_sel) == 0),
+            key="btn_ind_apply_selected",
+        ):
+            for i in valid_sel:
+                frees[i]["소득구분"] = chosen_code
+            pstate["grid_version"] += 1
+            st.rerun()
+    with c_b2:
+        if st.button(
+            f"전체 행에 일괄 반영 ({chosen_code})",
+            width="stretch",
+            disabled=(len(frees) == 0),
+            key="btn_ind_apply_all",
+        ):
+            for fr in frees:
+                fr["소득구분"] = chosen_code
+            pstate["grid_version"] += 1
+            st.rerun()
+    with c_b3:
+        if st.button("닫기", width="stretch", key="btn_ind_close"):
+            st.rerun()
+
+
 @st.dialog("당월 인건비 종합 검토보고서", width="large")
 def _dlg_monthly_review_report():
+    """
+    자율 에이전트AI의 보고서 양식과 동일한 형태(### 1. 결론 / ### 2. 내용 / ### 3. 관련법령),
+    동일한 색상(#1e3a8a 좌측 보더 그라데이션 헤더, #1e40af 소제목), 동일한 폰트(Pretendard),
+    동일한 간격으로 렌더링하며, '주요 점검 사항'은 항상 나오지 않게 제외합니다.
+    """
     pstate = _get_payroll_state()
     emps = pstate.get("employees", [])
     frees = pstate.get("freelancers", [])
     corp = pstate.get("corp_name") or "미입력"
+    wp_lbl = _current_workplace_label(pstate)
+    corp_disp = f"{corp} ({wp_lbl})" if wp_lbl and wp_lbl != corp else corp
     ym = pstate.get("year_month") or datetime.now().strftime("%Y-%m")
     pay_dt = pstate.get("pay_date") or ""
 
@@ -697,71 +973,144 @@ def _dlg_monthly_review_report():
     )
 
     tot_free_gross = sum(int(f.get("지급총액", 0) or 0) for f in frees)
+    tot_free_itax = sum(int(f.get("소득세", 0) or 0) for f in frees)
+    tot_free_ltax = sum(int(f.get("지방소득세", 0) or 0) for f in frees)
     tot_free_tax = sum(int(f.get("공제액계", 0) or 0) for f in frees)
     tot_free_net = sum(int(f.get("차인지급액", 0) or 0) for f in frees)
 
-    st.markdown("<div class='pay-modal-scroll-box'>", unsafe_allow_html=True)
-    st.markdown(f"#### [{corp}] {ym} 귀속 인건비 및 원천징수 검토 요약 (지급일: {pay_dt})")
+    total_gross_all = tot_emp_gross + tot_free_gross
+    total_itax_all = tot_emp_itax + tot_free_itax
+    total_ltax_all = tot_emp_ltax + tot_free_ltax
+    total_tax_all = total_itax_all + total_ltax_all
+    total_net_all = tot_emp_net + tot_free_net
 
-    summary_md = "\n".join([
-        "| 구분 | 대상 인원 | 세전 지급총액 | 4대보험 공제계 | 소득세+지방소득세 | 차인지급액(실지급액) |",
-        "| :--- | :---: | ---: | ---: | ---: | ---: |",
-        f"| **4대보험 근로소득자** | {len(emps)}명 | {tot_emp_gross:,}원 | {tot_emp_ins:,}원 | {tot_emp_itax + tot_emp_ltax:,}원 | **{tot_emp_net:,}원** |",
-        f"| **3.3% 사업소득자** | {len(frees)}명 | {tot_free_gross:,}원 | 해당없음 | {tot_free_tax:,}원 | **{tot_free_net:,}원** |",
-        f"| **당월 인건비 총계** | **{len(emps) + len(frees)}명** | **{tot_emp_gross + tot_free_gross:,}원** | **{tot_emp_ins:,}원** | **{tot_emp_itax + tot_emp_ltax + tot_free_tax:,}원** | **{tot_emp_net + tot_free_net:,}원** |",
-    ])
-    st.markdown(summary_md)
-
-    # 사업주 부담 4대보험 추정 (산재보험 제외)
-    if emps:
-        tier_map = dict(EI_STABILITY_TIERS)
-        tier_lbl = pstate.get("ei_stability_tier") or EI_STABILITY_TIERS[0][0]
-        tier_rate = tier_map.get(tier_lbl, EI_STABILITY_TIERS[0][1])
-        yr_i = int(str(ym)[:4]) if str(ym)[:4].isdigit() else 2026
-        own = {"국민연금_사업주": 0, "건강보험_사업주": 0, "장기요양_사업주": 0, "고용보험_사업주": 0, "합계_사업주": 0}
-        for e in emps:
-            r_own = calc_4ins_employer_share(
-                int(e.get("과세급여", 0) or 0),
-                worker_ins={k: int(e.get(k, 0) or 0) for k in ("국민연금", "건강보험", "장기요양보험료", "고용보험")},
-                year=yr_i,
-                is_ceo=is_ceo_position(e.get("직급", "")),
-                ei_stability_rate=tier_rate,
-            )
-            for k in own:
-                own[k] += int(r_own.get(k, 0) or 0)
-        st.markdown("#### 사업주 부담 4대보험 추정 (산재보험 제외)")
-        st.markdown("\n".join([
-            "| 국민연금(사업주) | 건강보험(사업주) | 장기요양(사업주) | 고용보험(사업주) | 사업주 부담 합계 |",
-            "| ---: | ---: | ---: | ---: | ---: |",
-            f"| {own['국민연금_사업주']:,}원 | {own['건강보험_사업주']:,}원 | {own['장기요양_사업주']:,}원 | {own['고용보험_사업주']:,}원 | **{own['합계_사업주']:,}원** |",
-        ]))
-        st.caption(
-            f"국민연금·건강·장기요양은 근로자 부담분(고지 금액이 있으면 고지 금액)과 같은 금액입니다. "
-            f"고용보험은 과세급여 × (실업급여 0.9% + 고용안정·직능 {tier_lbl.split('·')[-1].strip()})로 추정했습니다 (대표이사 및 근로자 고용보험 0원 대상자는 제외). "
-            f"정산분은 포함하지 않았습니다."
+    # 사업주 부담 4대보험 추정
+    tier_map = dict(EI_STABILITY_TIERS)
+    tier_lbl = pstate.get("ei_stability_tier") or EI_STABILITY_TIERS[0][0]
+    tier_rate = tier_map.get(tier_lbl, EI_STABILITY_TIERS[0][1])
+    yr_i = int(str(ym)[:4]) if str(ym)[:4].isdigit() else 2026
+    own = {"국민연금_사업주": 0, "건강보험_사업주": 0, "장기요양_사업주": 0, "고용보험_사업주": 0, "합계_사업주": 0}
+    for e in emps:
+        r_own = calc_4ins_employer_share(
+            int(e.get("과세급여", 0) or 0),
+            worker_ins={k: int(e.get(k, 0) or 0) for k in ("국민연금", "건강보험", "장기요양보험료", "고용보험")},
+            year=yr_i,
+            ei_stability_rate=tier_rate,
         )
+        for k in own:
+            own[k] += int(r_own.get(k, 0) or 0)
 
     mv = diag["movement_summary"]
-    st.markdown("#### 전월 대비 인원 변동 및 4대보험 신고 대상")
-    st.markdown(
-        f"- **신규 입사 (4대보험 취득신고 대상)**: {', '.join(mv['new_hires']) if mv['new_hires'] else '해당 없음'}\n"
-        f"- **퇴사·제외 (4대보험 상실신고 대상)**: {', '.join(mv['retirees']) if mv['retirees'] else '해당 없음'}\n"
-        f"- **급여 20% 이상 변동자**: {', '.join(mv['pay_changes']) if mv['pay_changes'] else '해당 없음'}"
+    new_hires_str = ", ".join(mv["new_hires"]) if mv["new_hires"] else "해당 없음"
+    retirees_str = ", ".join(mv["retirees"]) if mv["retirees"] else "해당 없음"
+    pay_changes_str = ", ".join(mv["pay_changes"]) if mv["pay_changes"] else "해당 없음"
+
+    law_li_html = "".join(
+        f"<li><b>{ref['title']}:</b> {ref['content']}</li>"
+        for ref in MONTHLY_REPORT_LEGAL_REFERENCES
     )
 
-    if diag["items"]:
-        st.markdown("#### 주요 점검 사항")
-        for it in diag["items"]:
-            st.markdown(f"- **[{it['level']} · {it['category']}] {it['target']}**: {it['message']}")
+    report_html = f"""
+    <div class='pay-modal-scroll-box'>
+        <div class='pa-agent-report-box'>
+            <h3>1. 결론</h3>
+            <p>
+                <b>{corp_disp}</b>의 <b>{ym} 귀속</b>(지급일: {pay_dt}) 당월 인건비 지급총액(세전)은
+                총 <b>{len(emps) + len(frees)}명</b> 기준 <b>{total_gross_all:,}원</b>(4대보험 근로소득자 {len(emps)}명
+                <b>{tot_emp_gross:,}원</b>, 3.3% 사업소득자 {len(frees)}명 <b>{tot_free_gross:,}원</b>)이며,
+                4대보험 근로자 공제액 합계는 <b>{tot_emp_ins:,}원</b>, 원천징수 세액 합계(소득세+지방소득세)는
+                <b>{total_tax_all:,}원</b>(소득세 <b>{total_itax_all:,}원</b> · 지방소득세 <b>{total_ltax_all:,}원</b>),
+                최종 차인지급액(실지급액) 합계는 <b>{total_net_all:,}원</b>으로 산출되었습니다.
+            </p>
 
-    st.markdown("#### 관련 법령 및 원천징수·4대보험 산출 기준 주석")
-    for ref in MONTHLY_REPORT_LEGAL_REFERENCES:
-        ref_content = ref["content"].replace("\n", "<br>")
-        st.markdown(
-            f"<div class='pay-law-ref-box'><b>[{ref['title']}]</b><br>{ref_content}</div>",
-            unsafe_allow_html=True,
-        )
-    st.markdown("</div>", unsafe_allow_html=True)
+            <h3>2. 내용</h3>
+            <h4>(1) 당월 인건비 및 원천징수 세액 총괄표</h4>
+            <table>
+                <thead>
+                    <tr>
+                        <th>구분</th>
+                        <th>대상 인원</th>
+                        <th>세전 지급총액</th>
+                        <th>4대보험 공제계</th>
+                        <th>소득세</th>
+                        <th>지방소득세</th>
+                        <th>차인지급액(실지급액)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td style="text-align:center; font-weight:700;">4대보험 근로소득자</td>
+                        <td style="text-align:center;">{len(emps)}명</td>
+                        <td style="text-align:right;">{tot_emp_gross:,}원</td>
+                        <td style="text-align:right;">{tot_emp_ins:,}원</td>
+                        <td style="text-align:right;">{tot_emp_itax:,}원</td>
+                        <td style="text-align:right;">{tot_emp_ltax:,}원</td>
+                        <td style="text-align:right; font-weight:700; color:#1e3a8a;">{tot_emp_net:,}원</td>
+                    </tr>
+                    <tr>
+                        <td style="text-align:center; font-weight:700;">3.3% 사업소득자</td>
+                        <td style="text-align:center;">{len(frees)}명</td>
+                        <td style="text-align:right;">{tot_free_gross:,}원</td>
+                        <td style="text-align:center; color:#64748b;">해당없음</td>
+                        <td style="text-align:right;">{tot_free_itax:,}원</td>
+                        <td style="text-align:right;">{tot_free_ltax:,}원</td>
+                        <td style="text-align:right; font-weight:700; color:#4c1d95;">{tot_free_net:,}원</td>
+                    </tr>
+                    <tr style="background-color:#f8fafc;">
+                        <td style="text-align:center; font-weight:800;">당월 인건비 총계</td>
+                        <td style="text-align:center; font-weight:800;">{len(emps) + len(frees)}명</td>
+                        <td style="text-align:right; font-weight:800;">{total_gross_all:,}원</td>
+                        <td style="text-align:right; font-weight:800;">{tot_emp_ins:,}원</td>
+                        <td style="text-align:right; font-weight:800; color:#b91c1c;">{total_itax_all:,}원</td>
+                        <td style="text-align:right; font-weight:800; color:#b91c1c;">{total_ltax_all:,}원</td>
+                        <td style="text-align:right; font-weight:800; color:#15803d;">{total_net_all:,}원</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h4>(2) 사업주 부담 4대보험료 추정 (산재보험 제외)</h4>
+            <table>
+                <thead>
+                    <tr>
+                        <th>국민연금 (사업주)</th>
+                        <th>건강보험 (사업주)</th>
+                        <th>장기요양 (사업주)</th>
+                        <th>고용보험 (사업주)</th>
+                        <th>사업주 부담 합계</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td style="text-align:right;">{own['국민연금_사업주']:,}원</td>
+                        <td style="text-align:right;">{own['건강보험_사업주']:,}원</td>
+                        <td style="text-align:right;">{own['장기요양_사업주']:,}원</td>
+                        <td style="text-align:right;">{own['고용보험_사업주']:,}원</td>
+                        <td style="text-align:right; font-weight:800; color:#1e3a8a;">{own['합계_사업주']:,}원</td>
+                    </tr>
+                </tbody>
+            </table>
+            <p style="font-size:0.92rem; color:#475569;">
+                * 국민연금·건강보험·장기요양보험은 근로자 부담분(고지 반영 시 고지 금액)과 동일하며,
+                사업주 고용보험은 과세급여 × (실업급여 0.9% + 고용안정·직능개발 {tier_lbl.split('·')[-1].strip()}) 기준으로 산출하였습니다.
+            </p>
+
+            <h4>(3) 전월 대비 인원 변동 및 4대보험 신고 대상</h4>
+            <ul>
+                <li><b>신규 입사 (4대보험 자격취득신고 대상):</b> {new_hires_str}</li>
+                <li><b>퇴사·제외 (4대보험 자격상실신고 대상):</b> {retirees_str}</li>
+                <li><b>전월 대비 급여 20% 이상 변동자:</b> {pay_changes_str}</li>
+            </ul>
+
+            <h3>3. 관련법령</h3>
+            <div class='related-laws-compact-box'>
+                <ul style="margin:0; padding-left:18px;">
+                    {law_li_html}
+                </ul>
+            </div>
+        </div>
+    </div>
+    """
+    st.markdown(report_html, unsafe_allow_html=True)
 
     if st.button("닫기", type="primary", width="stretch", key="btn_close_monthly_rep_dlg"):
         st.rerun()
@@ -774,52 +1123,64 @@ def _dlg_monthly_review_report():
 def render_payroll_automated_sidebar() -> None:
     st.markdown(PAYROLL_CSS, unsafe_allow_html=True)
     pstate = _get_payroll_state()
+    is_emp_mode = pstate.get("sub_mode", "EMP") == "EMP"
 
-    # (1) 최상단: 개정사항 모니터링 카드 (통합고용세액공제와 동일한 스타일 + 법제처 API 연동)
+    # (1) 최상단 카드: 업무 화면 선택 ([급여명세서] 파스텔 블루 / [사업소득] 파스텔 퍼플 — 개정사항 모니터링보다 위에 배치)
+    with st.container(border=True):
+        st.markdown("<div class='sb-card-title'><span>업무 화면 선택</span></div>", unsafe_allow_html=True)
+        col_emp, col_free = st.columns(2, gap="small")
+        with col_emp:
+            emp_key = "btn_pay_submode_emp_active" if is_emp_mode else "btn_pay_submode_emp"
+            if st.button("급여명세서", key=emp_key, width="stretch"):
+                pstate["sub_mode"] = "EMP"
+                st.rerun()
+        with col_free:
+            free_key = "btn_pay_submode_free_active" if not is_emp_mode else "btn_pay_submode_free"
+            if st.button("사업소득", key=free_key, width="stretch"):
+                pstate["sub_mode"] = "FREE"
+                st.rerun()
+
+    # (2) 개정사항 모니터링 카드 (Row 1: 근로기준법·소득세법 초록불 / Row 2: 시행령 별표2·4대보험 요율 노란불 분리)
     alerts = check_payroll_law_revisions(force_refresh=False)
-    has_new_rev = any(a.get("status") == "new_revision" for a in alerts)
-    has_updated = any(a.get("status") in ("updated", "new_revision") for a in alerts)
-    led_cls = "pay-dot-red" if has_new_rev else ("pay-dot-yellow" if has_updated else "pay-dot-green")
-    badge_html = (
+    row1_laws = [a for a in alerts if "별표" not in a.get("law", "") and "보험" not in a.get("law", "")]
+    row2_laws = [a for a in alerts if "별표" in a.get("law", "") or "보험" in a.get("law", "")]
+    row1_new = any(a.get("status") == "new_revision" for a in row1_laws)
+    row2_new = any(a.get("status") == "new_revision" for a in row2_laws)
+    row2_upd = any(a.get("status") in ("updated", "new_revision") for a in row2_laws) or True
+
+    led_row1 = "pay-dot-red" if row1_new else "pay-dot-green"
+    led_row2 = "pay-dot-red" if row2_new else ("pay-dot-yellow" if row2_upd else "pay-dot-green")
+    badge_row2 = (
         "<span class='pay-law-badge-amber'>신규 개정 감지</span>"
-        if has_new_rev
-        else (
-            "<span class='pay-law-badge-amber'>2026.03 별표2·요율 반영</span>"
-            if has_updated
-            else "<span class='pay-law-badge-green'>현행 일치</span>"
-        )
+        if row2_new
+        else "<span class='pay-law-badge-amber'>2026.03 별표2·요율 반영</span>"
     )
 
     with st.container(border=True):
         st.markdown(
             "<div class='sb-card-title'><span>개정사항 모니터링</span></div>"
             f"<div class='pay-law-row'>"
-            f"<span><span class='pay-dot {led_cls}'></span>근로기준법 · 소득세법</span>"
+            f"<span><span class='pay-dot {led_row1}'></span>근로기준법 · 소득세법</span>"
             f"<span class='pay-law-badge-green'>정상</span>"
             f"</div>"
             f"<div class='pay-law-row' style='margin-bottom:8px;'>"
-            f"<span><span class='pay-dot {led_cls}'></span>시행령 별표2 · 4대보험 요율</span>"
-            f"{badge_html}"
+            f"<span><span class='pay-dot {led_row2}'></span>시행령 별표2 · 4대보험 요율</span>"
+            f"{badge_row2}"
             f"</div>",
             unsafe_allow_html=True,
         )
         if st.button("상세 보기", width="stretch", key="btn_pay_law_detail"):
             _dlg_payroll_law_revisions()
 
-    # (2) 작업 초기화 버튼 카드 (통합고용세액공제 UI와 동일)
+    # (3) 작업 초기화 버튼 카드
     emp_cnt = len(pstate.get("employees", []))
     free_cnt = len(pstate.get("freelancers", []))
-    has_data = (
-        (emp_cnt + free_cnt) > 0
-        or bool(pstate.get("corp_name"))
-        or pstate.get("ei_emp_count_manual") is not None
-        or pstate.get("ei_stability_tier_manual") is not None
-    )
+    has_data = (emp_cnt + free_cnt) > 0 or bool(pstate.get("corp_name"))
 
     with st.container(border=True):
         status_pill = (
             f"<span class='sb-badge-green'>근로 {emp_cnt}명 · 사업 {free_cnt}명</span>"
-            if (emp_cnt + free_cnt) > 0
+            if has_data
             else "<span class='sb-badge-amber'>초기 상태</span>"
         )
         st.markdown(
@@ -846,25 +1207,11 @@ def render_payroll_automated_sidebar() -> None:
                 st.session_state["pay_confirm_reset"] = False
                 st.rerun()
 
-    # (3) 좌·우 3D 버튼: [급여명세서] (파스텔 블루) / [사업소득] (파스텔 퍼플)
-    with st.container(border=True):
-        st.markdown("<div class='sb-card-title'><span>업무 화면 선택</span></div>", unsafe_allow_html=True)
-        col_emp, col_free = st.columns(2, gap="small")
-        is_emp_mode = pstate.get("sub_mode", "EMP") == "EMP"
-        with col_emp:
-            emp_key = "btn_pay_submode_emp_active" if is_emp_mode else "btn_pay_submode_emp"
-            if st.button("급여명세서", key=emp_key, width="stretch"):
-                pstate["sub_mode"] = "EMP"
-                st.rerun()
-        with col_free:
-            free_key = "btn_pay_submode_free_active" if not is_emp_mode else "btn_pay_submode_free"
-            if st.button("사업소득", key=free_key, width="stretch"):
-                pstate["sub_mode"] = "FREE"
-                st.rerun()
-
-    # (4) 사업자정보 카드 (거래처명, 귀속연월, 지급일자, 상시근로자 수 통합 입력, 사업주 고용보험 요율, [당월 검토보고], [통합고용세액공제 계산])
+    # (4) 사업자정보 카드 (거래처명 + 사업장 구분[본점/지점/직접입력/선택안함] + 귀속연월 + 지급일자 + [당월 검토보고] + [통합고용세액공제 계산 연동])
     with st.container(border=True):
         st.markdown("<div class='sb-card-title'><span>사업자정보</span></div>", unsafe_allow_html=True)
+        prev_wp_label = _current_workplace_label(pstate)
+
         corp_val = st.text_input(
             "거래처명",
             value=pstate.get("corp_name", ""),
@@ -872,6 +1219,35 @@ def render_payroll_automated_sidebar() -> None:
             key="pay_sb_corp_name",
         )
         pstate["corp_name"] = corp_val.strip()
+
+        wp_options = ["본점", "지점", "직접입력", "선택안함(거래처명 표시)"]
+        cur_wp_mode = pstate.get("workplace_mode", "본점")
+        if cur_wp_mode not in wp_options:
+            cur_wp_mode = "본점"
+        sel_wp_mode = st.selectbox(
+            "사업장 구분 (본·지점 / 사업장명)",
+            options=wp_options,
+            index=wp_options.index(cur_wp_mode),
+            key="pay_sb_wp_mode",
+            help="급여대장 편집기 맨 앞 '사업장' 열에 표시되며, 본점·지점 백업파일(.paybak)을 통합고용세액공제에 드래그앤드롭하여 합산할 때 구분 기준으로 사용됩니다.",
+        )
+        pstate["workplace_mode"] = sel_wp_mode
+
+        if sel_wp_mode in ("지점", "직접입력"):
+            wp_custom_val = st.text_input(
+                "지점·사업장 명칭",
+                value=pstate.get("workplace_custom", ""),
+                placeholder="예: 강남지점 / B사업장",
+                key="pay_sb_wp_custom",
+            )
+            pstate["workplace_custom"] = wp_custom_val.strip()
+
+        new_wp_label = _current_workplace_label(pstate)
+        if new_wp_label != prev_wp_label:
+            for emp in pstate.get("employees", []):
+                if not emp.get("사업장") or emp.get("사업장") == prev_wp_label:
+                    emp["사업장"] = new_wp_label
+            pstate["grid_version"] = int(pstate.get("grid_version", 0)) + 1
 
         ym_options = [
             f"{yr:04d}-{mo:02d}"
@@ -910,63 +1286,58 @@ def render_payroll_automated_sidebar() -> None:
             if str(e.get("성명", "")).strip() and not str(e.get("퇴사일", "")).strip()
         )
         total_workers = len(pstate.get("employees", []))
+        scale_label = "5인 이상 (가산수당 1.5배)" if total_workers >= 5 else "5인 미만 (가산수당 특례)"
+        pstate["is_5_or_more"] = total_workers >= 5
 
-        # 상시근로자 수 통합 입력칸 (기본값은 급여대장 인원을 따라가며, 직접 수정 시 5인 이상/미만 가산수당 및 고용보험 구간에 동시 반영)
-        manual_cnt = pstate.get("ei_emp_count_manual")
-        default_cnt_val = int(manual_cnt) if manual_cnt is not None else int(total_workers)
-        ei_cnt = int(
-            st.number_input(
-                "상시근로자 수 (전 사업장 합산 · 수정 가능)",
-                min_value=0,
-                value=default_cnt_val,
-                step=1,
-                key=f"pay_sb_ei_emp_count_{total_workers}_{pstate.get('grid_version', 0)}",
-                help="기본값은 급여대장 인원입니다. 타 지점 합산 등으로 직접 숫자를 수정하면 연장·야간·휴일 가산수당(5인 이상 1.5배) 및 고용보험 요율 구간에 즉시 반영됩니다.",
+        if is_emp_mode:
+            st.markdown(
+                f"<div style='background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; padding:6px 10px; margin-bottom:8px; font-size:0.83rem; color:#1e293b;'>"
+                f"<b>상시근로자 수:</b> {total_workers}명 (재직 {active_workers}명)<br>"
+                f"<span style='font-size:0.76rem; color:#475569;'>적용 기준: {scale_label}</span>"
+                f"</div>",
+                unsafe_allow_html=True,
             )
-        )
-        pstate["ei_emp_count_manual"] = ei_cnt if ei_cnt != int(total_workers) else None
-        pstate["ei_emp_count"] = ei_cnt
 
-        # 수정사항 ① 반영: 사용자가 사이드바에서 입력/수정한 상시근로자 수(ei_cnt)를 기준으로 5인 이상/미만 가산수당 판정 연동
-        pstate["is_5_or_more"] = ei_cnt >= 5
-        scale_label = "5인 이상 (가산수당 1.5배)" if pstate["is_5_or_more"] else "5인 미만 (가산수당 1.0배 특례)"
-
-        st.markdown(
-            f"<div style='background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; padding:5px 9px; margin-top:-4px; margin-bottom:6px; font-size:0.78rem; color:#334155;'>"
-            f"대장 인원: <b>{total_workers}명</b>(재직 {active_workers}명) · 수당 기준: <b>{scale_label}</b>"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
-
-        # 사업주 고용보험 (고용안정·직능) 요율 선택
-        tier_labels = [t[0] for t in EI_STABILITY_TIERS]
-        auto_tier = tier_labels[0] if ei_cnt < 150 else tier_labels[1]
-        manual_tier = pstate.get("ei_stability_tier_manual")
-        cur_tier = manual_tier if manual_tier in tier_labels else auto_tier
-        sel_tier = st.selectbox(
-            "사업주 고용보험 (고용안정·직능) 요율",
-            options=tier_labels,
-            index=tier_labels.index(cur_tier),
-            key=f"pay_sb_ei_tier_{'150up' if ei_cnt >= 150 else 'under150'}_{pstate.get('grid_version', 0)}",
-            help=(
-                "150명 미만은 0.25%입니다. 150명 이상이면 우선지원대상기업 여부에 따라 0.45% / 0.65% / 0.85% 중 선택하세요. "
-                "인원 증가로 요율이 오른 경우 3년간 종전 요율을 적용합니다 (시행령 제12조 제4항)."
-            ),
-        )
-        pstate["ei_stability_tier_manual"] = sel_tier if sel_tier != auto_tier else None
-        pstate["ei_stability_tier"] = sel_tier
-
-        if ei_cnt >= 150 and sel_tier == tier_labels[1] and manual_tier is None:
-            st.caption("[안내] 150명 이상이므로 우선지원대상기업(0.45%)이 기본 선택되었습니다. 우선지원대상이 아니면 0.65% 또는 0.85%로 변경하세요.")
-        if ei_cnt >= 150 and sel_tier == tier_labels[0]:
-            st.caption("[확인] 상시근로자 150명 이상인데 0.25% 구간이 선택되어 있습니다. 3년 종전 요율 유지 특례 대상인지 확인하세요.")
-        elif ei_cnt < 150 and sel_tier != tier_labels[0]:
-            st.caption("[확인] 상시근로자 150명 미만은 원칙적으로 0.25% 구간입니다. 선택한 구간을 확인하세요.")
+            manual_cnt = pstate.get("ei_emp_count_manual")
+            ei_cnt = st.number_input(
+                "상시근로자 수 (전 사업장 합산)",
+                min_value=0,
+                value=int(manual_cnt) if manual_cnt is not None else int(total_workers),
+                step=1,
+                key=f"pay_sb_ei_emp_count_{total_workers}",
+                help="기본값은 급여대장 인원입니다. 다른 사업장이 있으면 합산한 인원으로 고치세요 (시행령 제12조 제2항).",
+            )
+            ei_cnt = int(ei_cnt)
+            pstate["ei_emp_count_manual"] = ei_cnt if ei_cnt != int(total_workers) else None
+            pstate["ei_emp_count"] = ei_cnt
+            tier_labels = [t[0] for t in EI_STABILITY_TIERS]
+            auto_tier = tier_labels[0] if ei_cnt < 150 else tier_labels[1]
+            manual_tier = pstate.get("ei_stability_tier_manual")
+            cur_tier = manual_tier if manual_tier in tier_labels else auto_tier
+            sel_tier = st.selectbox(
+                "사업주 고용보험 (고용안정·직능) 요율",
+                options=tier_labels,
+                index=tier_labels.index(cur_tier),
+                key=f"pay_sb_ei_tier_{'150up' if ei_cnt >= 150 else 'under150'}",
+                help=(
+                    "150명 미만은 0.25%입니다. 150명 이상이면 우선지원대상기업 여부에 따라 0.45% / 0.65% / 0.85% 중 직접 고르세요."
+                ),
+            )
+            pstate["ei_stability_tier_manual"] = sel_tier if sel_tier != auto_tier else None
+            pstate["ei_stability_tier"] = sel_tier
 
         if st.button("당월 검토보고", width="stretch", key="btn_pay_monthly_report"):
             _dlg_monthly_review_report()
 
-        if st.button("통합고용세액공제 계산 연동", width="stretch", key="btn_pay_bridge_credit"):
+        if st.button(
+            "통합고용세액공제 계산 연동",
+            width="stretch",
+            disabled=(not is_emp_mode),
+            key="btn_pay_bridge_credit",
+            help="사업소득(3.3%) 화면에서는 통합고용세액공제 연동이 비활성화됩니다."
+            if not is_emp_mode
+            else "현재 사업장 급여내역을 통합고용세액공제 1단계 원천징수부 자료로 즉시 연동합니다.",
+        ):
             pstate["client_db"] = upsert_monthly_data_into_db(
                 client_db=pstate.get("client_db", {}),
                 corp_name=pstate.get("corp_name", ""),
@@ -975,19 +1346,22 @@ def render_payroll_automated_sidebar() -> None:
                 employees=pstate.get("employees", []),
                 freelancers=pstate.get("freelancers", []),
                 is_5_or_more=pstate.get("is_5_or_more", True),
-                ei_emp_count_manual=pstate.get("ei_emp_count_manual"),
-                ei_stability_tier_manual=pstate.get("ei_stability_tier_manual"),
+                workplace_mode=pstate.get("workplace_mode", "본점"),
+                workplace_custom=pstate.get("workplace_custom", ""),
             )
             bridge_payload, msg = build_employment_credit_bridge_payload(
                 client_db=pstate["client_db"],
                 current_corp_name=pstate.get("corp_name", ""),
                 current_year_month=pstate.get("year_month", ""),
                 current_employees=pstate.get("employees", []),
+                workplace_label=_current_workplace_label(pstate),
             )
             st.session_state["payroll_to_ec_bridge"] = bridge_payload
             st.session_state["payroll_bridge_notice"] = msg
             st.session_state.app_top_mode = "CREDIT_CALC"
             st.rerun()
+        if not is_emp_mode:
+            st.caption("사업소득 화면에서는 통합고용세액공제 계산 연동이 비활성화됩니다.")
 
     # (5) 거래처별 월별 누적 작업 백업 (.paybak) 카드
     with st.container(border=True):
@@ -1001,7 +1375,7 @@ def render_payroll_automated_sidebar() -> None:
         if saved_months:
             st.caption(f"누적 귀속월: {', '.join(saved_months)}")
         else:
-            st.caption("하나의 백업 파일(.paybak)에 매월 급여·사업소득 내역을 누적 저장하고 다음 달에 이어서 작업합니다.")
+            st.caption("본점·지점별 백업 파일(.paybak)을 생성해 두면 통합고용세액공제 1단계에 드래그앤드롭하여 복수 사업장으로 합산할 수 있습니다.")
 
         tab_save, tab_load = st.tabs(["내려받기", "불러오기"])
         with tab_save:
@@ -1015,12 +1389,13 @@ def render_payroll_automated_sidebar() -> None:
                     employees=pstate.get("employees", []),
                     freelancers=pstate.get("freelancers", []),
                     is_5_or_more=pstate.get("is_5_or_more", True),
-                    ei_emp_count_manual=pstate.get("ei_emp_count_manual"),
-                    ei_stability_tier_manual=pstate.get("ei_stability_tier_manual"),
+                    workplace_mode=pstate.get("workplace_mode", "본점"),
+                    workplace_custom=pstate.get("workplace_custom", ""),
                 )
                 bak_bytes = encrypt_client_db_to_paybak(pstate["client_db"], password=bk_pw)
-                c_nm = pstate.get("corp_name") or "거래처"
-                st.session_state["pay_bak_ready"] = (bak_bytes, f"{c_nm}_인건비누적DB.paybak")
+                c_nm = _sanitize_file_token(pstate.get("corp_name") or "거래처", "거래처")
+                wp_tag = _sanitize_file_token(_current_workplace_label(pstate) or "본점", "본점")
+                st.session_state["pay_bak_ready"] = (bak_bytes, f"{c_nm}_{wp_tag}_인건비누적DB.paybak")
             ready_bak = st.session_state.get("pay_bak_ready")
             if ready_bak:
                 st.download_button(
@@ -1041,8 +1416,10 @@ def render_payroll_automated_sidebar() -> None:
                     c_info = loaded_db.get("corp_info", {})
                     if c_info.get("corp_name"):
                         pstate["corp_name"] = c_info["corp_name"]
-                    pstate["ei_emp_count_manual"] = c_info.get("ei_emp_count_manual")
-                    pstate["ei_stability_tier_manual"] = c_info.get("ei_stability_tier_manual")
+                    if c_info.get("workplace_mode"):
+                        pstate["workplace_mode"] = c_info["workplace_mode"]
+                    if c_info.get("workplace_custom") is not None:
+                        pstate["workplace_custom"] = c_info.get("workplace_custom", "")
                     m_map = loaded_db.get("monthly_payroll", {})
                     if m_map:
                         latest_ym = sorted(m_map.keys())[-1]
@@ -1062,59 +1439,83 @@ def render_payroll_automated_sidebar() -> None:
 # 우측 메인 화면 렌더링
 # ─────────────────────────────────────────────────────────────
 
+# 급여대장 편집기 컬럼:
+# 맨 앞 '사업장' 열 추가 + 한 화면 우측 끝이 '지급액계(세전)'까지 잘림 없이 보이도록 열 폭 배분
 EMP_GRID_COLUMNS: List[Tuple[str, str, int, bool, str]] = [
-    ("사원코드", "사원코드", 82, True, "text"),
-    ("성명", "성명", 95, True, "text"),
-    ("주민등록번호", "주민등록번호", 138, True, "text"),
-    ("입사일", "입사일", 105, True, "text"),
-    ("퇴사일", "퇴사일", 105, True, "text"),
-    ("직급", "직급", 90, True, "text"),
-    ("부양가족수", "부양가족", 82, True, "numeric"),
-    ("자녀수", "8~20세자녀", 92, True, "numeric"),
-    ("입력기준", "입력기준", 92, True, "select_mode"),
-    ("목표실수령액", "목표실수령(역산용)", 135, True, "numeric"),
-    ("기본급", "기본급", 115, True, "numeric"),
-    ("식대", "식대(비과세)", 110, True, "numeric"),
-    ("자가운전보조금", "자가운전", 100, True, "numeric"),
-    ("상여", "상여", 100, True, "numeric"),
-    ("약정연장근로수당", "약정연장수당", 115, True, "numeric"),
-    ("약정휴일근로수당", "약정휴일수당", 115, True, "numeric"),
-    ("연장근로수당", "연장근로수당", 115, True, "numeric"),
-    ("휴일근로수당", "휴일근로수당", 115, True, "numeric"),
-    ("미사용연차수당", "미사용연차", 105, True, "numeric"),
-    ("결근공제", "결근공제", 100, True, "numeric"),
-    ("조정금액", "조정금액", 100, True, "numeric"),
-    ("지급액계", "지급액계(세전)", 125, False, "numeric_total"),
-    ("보험적용구분", "4대보험기준", 108, True, "select_ins"),
-    ("국민연금", "국민연금", 105, True, "numeric"),
-    ("건강보험", "건강보험", 105, True, "numeric"),
-    ("장기요양보험료", "장기요양", 100, True, "numeric"),
-    ("고용보험", "고용보험", 100, True, "numeric"),
-    ("건강보험료정산", "건강정산", 100, True, "numeric"),
-    ("장기요양보험료정산", "요양정산", 100, True, "numeric"),
-    ("국민연금정산", "연금정산", 100, True, "numeric"),
-    ("학자금상환액", "학자금상환", 100, True, "numeric"),
-    ("소득세", "소득세", 100, True, "numeric"),
-    ("지방소득세", "지방소득세", 100, True, "numeric"),
-    ("공제액계", "공제액계", 115, False, "numeric_total"),
-    ("차인지급액", "차인지급액(실지급)", 135, False, "numeric_net"),
+    ("사업장", "사업장", 86, True, "text"),
+    ("사원코드", "사원코드", 68, True, "text"),
+    ("성명", "성명", 76, True, "text"),
+    ("주민등록번호", "주민등록번호", 118, True, "text"),
+    ("입사일", "입사일", 88, True, "text"),
+    ("퇴사일", "퇴사일", 88, True, "text"),
+    ("직급", "직급", 68, True, "text"),
+    ("부양가족수", "부양", 54, True, "numeric"),
+    ("자녀수", "자녀", 54, True, "numeric"),
+    ("입력기준", "기준", 68, True, "select_mode"),
+    ("목표실수령액", "목표실수령", 88, True, "numeric"),
+    ("기본급", "기본급", 92, True, "numeric"),
+    ("식대", "식대", 78, True, "numeric"),
+    ("자가운전보조금", "차량", 78, True, "numeric"),
+    ("상여", "상여", 78, True, "numeric"),
+    ("약정연장근로수당", "약정연장", 82, True, "numeric"),
+    ("약정휴일근로수당", "약정휴일", 82, True, "numeric"),
+    ("연장근로수당", "연장수당", 82, True, "numeric"),
+    ("휴일근로수당", "휴일수당", 82, True, "numeric"),
+    ("미사용연차수당", "연차수당", 80, True, "numeric"),
+    ("결근공제", "결근공제", 80, True, "numeric"),
+    ("조정금액", "조정금액", 78, True, "numeric"),
+    ("지급액계", "지급액계(세전)", 106, False, "numeric_total"),
+    # ── 아래부터는 가로 스크롤 우측 영역 (4대보험 및 공제·차인지급액) ──
+    ("보험적용구분", "4대보험기준", 104, True, "select_ins"),
+    ("국민연금", "국민연금", 98, True, "numeric"),
+    ("건강보험", "건강보험", 98, True, "numeric"),
+    ("장기요양보험료", "장기요양", 92, True, "numeric"),
+    ("고용보험", "고용보험", 92, True, "numeric"),
+    ("건강보험료정산", "건강정산", 92, True, "numeric"),
+    ("장기요양보험료정산", "요양정산", 92, True, "numeric"),
+    ("국민연금정산", "연금정산", 92, True, "numeric"),
+    ("학자금상환액", "학자금상환", 92, True, "numeric"),
+    ("소득세", "소득세", 92, True, "numeric"),
+    ("지방소득세", "지방소득세", 92, True, "numeric"),
+    ("공제액계", "공제액계", 106, False, "numeric_total"),
+    ("차인지급액", "차인지급액(실지급)", 126, False, "numeric_net"),
 ]
 
 FREE_GRID_COLUMNS: List[Tuple[str, str, int, bool, str]] = [
-    ("코드", "코드", 85, True, "text"),
+    ("코드", "코드", 92, True, "text"),
     ("성명", "소득자명(성명)", 110, True, "text"),
     ("주민등록번호", "주민등록번호", 145, True, "text"),
-    ("소득구분", "업종코드", 100, True, "text"),
-    ("귀속년월", "귀속년월", 105, True, "text"),
-    ("지급년월일", "지급년월일", 115, True, "text"),
-    ("입력기준", "입력기준", 98, True, "select_mode"),
-    ("지급총액", "지급총액(세전)", 135, True, "numeric"),
-    ("세율", "세율(%)", 85, False, "numeric"),
-    ("소득세", "소득세(3%)", 120, False, "numeric"),
-    ("지방소득세", "지방소득세(0.3%)", 125, False, "numeric"),
-    ("공제액계", "공제액계(3.3%)", 125, False, "numeric_total"),
-    ("차인지급액", "차인지급액(실지급)", 140, True, "numeric_net"),
+    ("소득구분", "업종코드(선택)", 135, True, "select_ind"),
+    ("귀속년월", "귀속년월", 100, True, "text"),
+    ("지급년월일", "지급년월일", 110, True, "text"),
+    ("입력기준", "입력기준", 95, True, "select_mode"),
+    ("지급총액", "지급총액(세전)", 130, True, "numeric"),
+    ("세율", "세율(%)", 78, False, "numeric"),
+    ("소득세", "소득세(3%)", 115, False, "numeric"),
+    ("지방소득세", "지방소득세(0.3%)", 120, False, "numeric"),
+    ("공제액계", "공제액계(3.3%)", 120, False, "numeric_total"),
+    ("차인지급액", "차인지급액(실지급)", 138, True, "numeric_net"),
 ]
+
+
+def _extract_selected_row_indices(grid_resp: Dict[str, Any]) -> List[int]:
+    sel = grid_resp.get("selected_rows")
+    if sel is None:
+        return []
+    if isinstance(sel, pd.DataFrame):
+        if sel.empty or "_row_idx" not in sel.columns:
+            return []
+        return [int(v) for v in sel["_row_idx"].dropna().tolist()]
+    if isinstance(sel, list):
+        out: List[int] = []
+        for item in sel:
+            if isinstance(item, dict) and "_row_idx" in item:
+                try:
+                    out.append(int(item["_row_idx"]))
+                except Exception:
+                    pass
+        return out
+    return []
 
 
 def _process_uploaded_files_and_text(
@@ -1124,6 +1525,7 @@ def _process_uploaded_files_and_text(
     gemini_api_key: Optional[str] = None,
 ) -> None:
     eff_tbl = pstate.get("effective_table", "2026.03")
+    wp_lbl = _current_workplace_label(pstate)
     notice_list: List[Dict[str, Any]] = []
 
     for f_obj in uploaded_files or []:
@@ -1150,13 +1552,13 @@ def _process_uploaded_files_and_text(
                 filename=fname,
                 effective_table=eff_tbl,
                 gemini_api_key=gemini_api_key,
+                default_workplace=wp_lbl,
             )
             if res_ex["employees"]:
                 if pstate.get("employees") and not pstate.get("prev_employees"):
                     pstate["prev_employees"] = list(pstate["employees"])
                 pstate["employees"] = res_ex["employees"]
-                # 새 급여 엑셀이 업로드되면 상시근로자 수 입력칸이 새 인원수를 자동 추적하도록 수기 고정값 해제
-                pstate["ei_emp_count_manual"] = None
+                pstate["sub_mode"] = "EMP"
                 if res_ex["meta"].get("year_month"):
                     pstate["year_month"] = res_ex["meta"]["year_month"]
                     pstate["pay_date"] = f"{res_ex['meta']['year_month']}-25"
@@ -1168,7 +1570,29 @@ def _process_uploaded_files_and_text(
 
         elif lower_nm.endswith(".pdf"):
             notice_res = parse_insurance_notice_pdf(fbytes, filename=fname)
-            if notice_res.get("notice_type") != "unknown":
+            ntype = notice_res.get("notice_type")
+            if ntype in ("사업소득대장", "사업소득대장_PDF") and notice_res.get("freelancers"):
+                pstate["freelancers"] = notice_res["freelancers"]
+                pstate["sub_mode"] = "FREE"
+                if notice_res.get("corp_name") and not pstate.get("corp_name"):
+                    pstate["corp_name"] = notice_res["corp_name"]
+                if notice_res.get("year_month"):
+                    pstate["year_month"] = notice_res["year_month"]
+                pstate["chat_logs"].append(f"[사업소득대장 PDF 로드] {notice_res.get('message')}")
+            elif ntype in ("급여대장", "급여대장_PDF") and notice_res.get("employees"):
+                emps_loaded = notice_res["employees"]
+                for e in emps_loaded:
+                    if not e.get("사업장"):
+                        e["사업장"] = wp_lbl
+                pstate["employees"] = emps_loaded
+                _recalculate_all_employee_rows(pstate)
+                pstate["sub_mode"] = "EMP"
+                if notice_res.get("corp_name") and not pstate.get("corp_name"):
+                    pstate["corp_name"] = notice_res["corp_name"]
+                if notice_res.get("year_month"):
+                    pstate["year_month"] = notice_res["year_month"]
+                pstate["chat_logs"].append(f"[급여대장·명세서 PDF 로드] {notice_res.get('message')}")
+            elif ntype != "unknown":
                 notice_list.append(notice_res)
                 if notice_res.get("corp_name") and not pstate.get("corp_name"):
                     pstate["corp_name"] = notice_res["corp_name"]
@@ -1194,8 +1618,20 @@ def _process_uploaded_files_and_text(
                 loaded_db = decrypt_paybak_to_client_db(fbytes)
                 pstate["client_db"] = loaded_db
                 c_info = loaded_db.get("corp_info", {})
-                pstate["ei_emp_count_manual"] = c_info.get("ei_emp_count_manual")
-                pstate["ei_stability_tier_manual"] = c_info.get("ei_stability_tier_manual")
+                if c_info.get("corp_name"):
+                    pstate["corp_name"] = c_info["corp_name"]
+                if c_info.get("workplace_mode"):
+                    pstate["workplace_mode"] = c_info["workplace_mode"]
+                if c_info.get("workplace_custom") is not None:
+                    pstate["workplace_custom"] = c_info.get("workplace_custom", "")
+                m_map = loaded_db.get("monthly_payroll", {})
+                if m_map:
+                    latest_ym = sorted(m_map.keys())[-1]
+                    latest_pack = m_map[latest_ym]
+                    pstate["year_month"] = latest_ym
+                    pstate["pay_date"] = latest_pack.get("pay_date", f"{latest_ym}-25")
+                    pstate["employees"] = list(latest_pack.get("employees", []))
+                    pstate["freelancers"] = list(latest_pack.get("freelancers", []))
                 pstate["chat_logs"].append(f"[백업 로드] '{fname}' 누적 백업 DB를 복원했습니다.")
             except Exception as e:
                 pstate["chat_logs"].append(f"[백업 오류] {e}")
@@ -1218,6 +1654,8 @@ def _process_uploaded_files_and_text(
             default_year_month=pstate.get("year_month", ""),
             default_pay_date=pstate.get("pay_date", ""),
             effective_table=eff_tbl,
+            default_is_freelancer=(pstate.get("sub_mode") == "FREE"),
+            default_workplace=wp_lbl,
         )
         if kakao_res["employees"]:
             by_nm = {e["성명"]: idx for idx, e in enumerate(pstate["employees"])}
@@ -1243,36 +1681,56 @@ def _process_uploaded_files_and_text(
 
 
 def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
+    _sync_workplace_to_employees(pstate, force_all=False)
     emps = pstate.get("employees", [])
+    wp_default = _current_workplace_label(pstate)
     col_keys = [c[0] for c in EMP_GRID_COLUMNS]
 
     if not emps:
-        df = pd.DataFrame(columns=col_keys)
+        df = pd.DataFrame(columns=col_keys + ["_row_idx"])
     else:
         rows_norm = []
         for idx, e in enumerate(emps, start=1):
             r = {}
             for k, _, _, _, ctype in EMP_GRID_COLUMNS:
-                if k == "사원코드":
+                if k == "사업장":
+                    r[k] = str(e.get(k) if e.get(k) is not None else wp_default)
+                elif k == "사원코드":
                     r[k] = str(e.get(k) or f"{idx:03d}")
                 elif ctype.startswith("numeric"):
                     r[k] = int(e.get(k, 0) or 0)
                 else:
                     r[k] = str(e.get(k, "") or "")
+            r["_row_idx"] = idx - 1
             rows_norm.append(r)
-        df = pd.DataFrame(rows_norm, columns=col_keys)
+        df = pd.DataFrame(rows_norm, columns=col_keys + ["_row_idx"])
 
     gb = GridOptionsBuilder.from_dataframe(df)
-    gb.configure_default_column(resizable=True, sortable=True, filter=False)
+    gb.configure_default_column(
+        resizable=True,
+        sortable=True,
+        filter=False,
+        suppressMenu=True,
+        minWidth=52,
+    )
+    gb.configure_selection(
+        selection_mode="multiple",
+        use_checkbox=False,
+        suppressRowClickSelection=True,
+    )
+    gb.configure_column("_row_idx", hide=True)
 
     for field, header_name, width, editable, ctype in EMP_GRID_COLUMNS:
-        pinned = "left" if field in ("사원코드", "성명") else None
+        pinned = "left" if field in ("사업장", "사원코드", "성명") else None
+        is_first_col = (field == "사업장")
         if ctype == "select_mode":
             gb.configure_column(
                 field,
                 header_name=header_name,
                 width=width,
+                minWidth=width - 4,
                 editable=editable,
+                suppressMenu=True,
                 cellEditor="agSelectCellEditor",
                 cellEditorParams={"values": ["세전", "세후역산"]},
             )
@@ -1281,22 +1739,40 @@ def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
                 field,
                 header_name=header_name,
                 width=width,
+                minWidth=width - 4,
                 editable=editable,
+                suppressMenu=True,
                 cellEditor="agSelectCellEditor",
                 cellEditorParams={"values": ["고지(1순위)", "요율(2순위)"]},
             )
         elif ctype.startswith("numeric"):
-            cell_style = {"textAlign": "right"}
+            cell_style = {"textAlign": "right", "paddingLeft": "4px", "paddingRight": "6px"}
             if ctype == "numeric_total":
-                cell_style = {"textAlign": "right", "fontWeight": "bold", "backgroundColor": "#f8fafc"}
+                cell_style = {
+                    "textAlign": "right",
+                    "fontWeight": "bold",
+                    "backgroundColor": "#eff6ff" if field == "지급액계" else "#f8fafc",
+                    "color": "#1e3a8a" if field == "지급액계" else "#0f172a",
+                    "paddingLeft": "4px",
+                    "paddingRight": "6px",
+                }
             elif ctype == "numeric_net":
-                cell_style = {"textAlign": "right", "fontWeight": "bold", "backgroundColor": "#eff6ff", "color": "#1e3a8a"}
+                cell_style = {
+                    "textAlign": "right",
+                    "fontWeight": "bold",
+                    "backgroundColor": "#f0fdf4",
+                    "color": "#15803d",
+                    "paddingLeft": "4px",
+                    "paddingRight": "6px",
+                }
             gb.configure_column(
                 field,
                 header_name=header_name,
                 width=width,
+                minWidth=width - 4,
                 editable=editable,
-                type=["numericColumn", "numberColumnFilter"],
+                suppressMenu=True,
+                type=["numericColumn"],
                 valueFormatter="x != null ? Number(x).toLocaleString() : '0'",
                 cellStyle=cell_style,
             )
@@ -1305,23 +1781,37 @@ def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
                 field,
                 header_name=header_name,
                 width=width,
+                minWidth=width - 4,
                 editable=editable,
                 pinned=pinned,
+                checkboxSelection=is_first_col,
+                headerCheckboxSelection=is_first_col,
+                suppressMenu=True,
             )
 
     grid_opts = gb.build()
-    grid_height = min(520, max(220, 56 + len(df) * 36))
+    grid_opts["suppressSizeToFit"] = True
+    grid_opts["ensureDomOrder"] = True
+    grid_height = min(520, max(230, 58 + len(df) * 36))
+
+    custom_css = {
+        ".ag-header-cell-label": {"justify-content": "center", "font-weight": "700", "font-size": "12.2px"},
+        ".ag-cell": {"font-size": "12.5px"},
+    }
 
     grid_resp = AgGrid(
         df,
         gridOptions=grid_opts,
         height=grid_height,
-        update_mode=GridUpdateMode.VALUE_CHANGED,
+        update_mode=GridUpdateMode.VALUE_CHANGED | GridUpdateMode.SELECTION_CHANGED,
+        fit_columns_on_grid_load=False,
         allow_unsafe_jscode=True,
+        custom_css=custom_css,
         theme="streamlit",
         key=f"pay_emp_aggrid_{pstate.get('grid_version', 0)}",
     )
 
+    pstate["selected_emp_indices"] = _extract_selected_row_indices(grid_resp)
     updated_df = grid_resp.get("data")
     if updated_df is not None and isinstance(updated_df, pd.DataFrame) and not updated_df.empty:
         new_emps: List[Dict[str, Any]] = []
@@ -1352,9 +1842,10 @@ def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
 def _render_freelancer_aggrid(pstate: Dict[str, Any]) -> None:
     frees = pstate.get("freelancers", [])
     col_keys = [c[0] for c in FREE_GRID_COLUMNS]
+    ind_codes = [c["code"] for c in FREELANCER_INDUSTRY_CODES]
 
     if not frees:
-        df = pd.DataFrame(columns=col_keys)
+        df = pd.DataFrame(columns=col_keys + ["_row_idx"])
     else:
         rows_norm = []
         for idx, f in enumerate(frees, start=1):
@@ -1362,26 +1853,52 @@ def _render_freelancer_aggrid(pstate: Dict[str, Any]) -> None:
             for k, _, _, _, ctype in FREE_GRID_COLUMNS:
                 if k == "코드":
                     r[k] = str(f.get(k) or f"{idx:04d}")
+                elif k == "소득구분":
+                    r[k] = str(f.get(k) or "940909")
                 elif ctype.startswith("numeric"):
                     r[k] = int(f.get(k, 0) or 0)
                 else:
                     r[k] = str(f.get(k, "") or "")
+            r["_row_idx"] = idx - 1
             rows_norm.append(r)
-        df = pd.DataFrame(rows_norm, columns=col_keys)
+        df = pd.DataFrame(rows_norm, columns=col_keys + ["_row_idx"])
 
     gb = GridOptionsBuilder.from_dataframe(df)
-    gb.configure_default_column(resizable=True, sortable=True, filter=False)
+    gb.configure_default_column(
+        resizable=True,
+        sortable=True,
+        filter=False,
+        suppressMenu=True,
+    )
+    gb.configure_selection(
+        selection_mode="multiple",
+        use_checkbox=False,
+        suppressRowClickSelection=True,
+    )
+    gb.configure_column("_row_idx", hide=True)
 
     for field, header_name, width, editable, ctype in FREE_GRID_COLUMNS:
         pinned = "left" if field in ("코드", "성명") else None
+        is_first_col = (field == "코드")
         if ctype == "select_mode":
             gb.configure_column(
                 field,
                 header_name=header_name,
                 width=width,
                 editable=editable,
+                suppressMenu=True,
                 cellEditor="agSelectCellEditor",
                 cellEditorParams={"values": ["세전", "세후역산"]},
+            )
+        elif ctype == "select_ind":
+            gb.configure_column(
+                field,
+                header_name=header_name,
+                width=width,
+                editable=editable,
+                suppressMenu=True,
+                cellEditor="agSelectCellEditor",
+                cellEditorParams={"values": ind_codes},
             )
         elif ctype.startswith("numeric"):
             cell_style = {"textAlign": "right"}
@@ -1394,7 +1911,8 @@ def _render_freelancer_aggrid(pstate: Dict[str, Any]) -> None:
                 header_name=header_name,
                 width=width,
                 editable=editable,
-                type=["numericColumn", "numberColumnFilter"],
+                suppressMenu=True,
+                type=["numericColumn"],
                 valueFormatter="x != null ? Number(x).toLocaleString() : '0'",
                 cellStyle=cell_style,
             )
@@ -1405,21 +1923,25 @@ def _render_freelancer_aggrid(pstate: Dict[str, Any]) -> None:
                 width=width,
                 editable=editable,
                 pinned=pinned,
+                checkboxSelection=is_first_col,
+                headerCheckboxSelection=is_first_col,
+                suppressMenu=True,
             )
 
     grid_opts = gb.build()
-    grid_height = min(480, max(220, 56 + len(df) * 36))
+    grid_height = min(480, max(230, 58 + len(df) * 36))
 
     grid_resp = AgGrid(
         df,
         gridOptions=grid_opts,
         height=grid_height,
-        update_mode=GridUpdateMode.VALUE_CHANGED,
+        update_mode=GridUpdateMode.VALUE_CHANGED | GridUpdateMode.SELECTION_CHANGED,
         allow_unsafe_jscode=True,
         theme="streamlit",
         key=f"pay_free_aggrid_{pstate.get('grid_version', 0)}",
     )
 
+    pstate["selected_free_indices"] = _extract_selected_row_indices(grid_resp)
     updated_df = grid_resp.get("data")
     if updated_df is not None and isinstance(updated_df, pd.DataFrame) and not updated_df.empty:
         new_frees: List[Dict[str, Any]] = []
@@ -1447,6 +1969,54 @@ def _render_freelancer_aggrid(pstate: Dict[str, Any]) -> None:
             st.rerun()
 
 
+def _render_employee_template_selector(pstate: Dict[str, Any]) -> None:
+    """급여명세서 6종 양식 선택 바 (기본: 근로기준1) + 각 양식 우측 끝 돋보기 마우스 오버(:hover) 미리보기"""
+    cur_tpl = str(pstate.get("payslip_template") or "근로기준1")
+    if cur_tpl not in PAYSLIP_TEMPLATE_OPTIONS:
+        cur_tpl = "근로기준1"
+        pstate["payslip_template"] = cur_tpl
+
+    st.markdown(
+        "<div style='font-size:0.84rem; font-weight:800; color:#1e293b; margin-bottom:6px;'>"
+        "급여명세서 양식 선택 (기본: 근로기준1 · 각 양식 우측 돋보기에 마우스를 가져다 대면 클릭 없이 미리보기가 표시됩니다)"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    cols = st.columns(6, gap="small")
+    for idx, tpl_name in enumerate(PAYSLIP_TEMPLATE_OPTIONS):
+        with cols[idx]:
+            is_sel = (cur_tpl == tpl_name)
+            c_btn, c_mag = st.columns([3.3, 1.0], gap="small", vertical_alignment="center")
+            with c_btn:
+                btn_lbl = f"{tpl_name} (선택)" if is_sel else tpl_name
+                if st.button(
+                    btn_lbl,
+                    key=f"btn_pay_tpl_{tpl_name}",
+                    type="primary" if is_sel else "secondary",
+                    width="stretch",
+                ):
+                    pstate["payslip_template"] = tpl_name
+                    st.rerun()
+            with c_mag:
+                b64_png = get_payslip_template_preview_b64(tpl_name)
+                if b64_png:
+                    st.markdown(
+                        f"""
+                        <div class="pay-tpl-hover-wrap" title="마우스를 가져다 대면 {tpl_name} 양식 미리보기가 표시됩니다">
+                            {MAGNIFIER_SVG}
+                            <div class="pay-tpl-hover-popup">
+                                <div class="pay-tpl-hover-title">
+                                    <span>급여명세서 양식 미리보기 — [{tpl_name}]</span>
+                                    <span style="color:#2563eb;">샘플</span>
+                                </div>
+                                <img src="data:image/png;base64,{b64_png}" alt="{tpl_name}" />
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+
 def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
     st.markdown(PAYROLL_CSS, unsafe_allow_html=True)
     pstate = _get_payroll_state()
@@ -1463,8 +2033,11 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
     status_label_map = {"gray": "이상없음", "yellow": "주의", "red": "경고"}
     status_word = status_label_map.get(diag["status_color"], "이상없음")
 
-    # 1. 최상단 컨트롤 바
-    top_c1, top_c2, top_c3, top_c4, top_c5, top_c6 = st.columns([1.45, 0.85, 0.85, 1.55, 1.55, 1.25], gap="small")
+    # 1. 최상단 컨트롤 바 (사업소득 모드에서는 수당 계산기 2종 숨김 + 업종코드 조회·선택 버튼 노출)
+    if is_emp_mode:
+        top_c1, top_c2, top_c3, top_c4, top_c5, top_c6 = st.columns([1.40, 0.80, 1.05, 1.50, 1.50, 1.20], gap="small")
+    else:
+        top_c1, top_c2, top_c3, top_c4, top_c5 = st.columns([1.50, 0.90, 1.15, 1.60, 1.60], gap="small")
 
     with top_c1:
         prev_btn_label = "전월 급여 불러오기" if is_emp_mode else "전월 사업소득 불러오기"
@@ -1505,6 +2078,7 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
                     effective_table=pstate.get("effective_table", "2026.03"),
                 )
                 pstate["employees"].append({
+                    "사업장": _current_workplace_label(pstate),
                     "사원코드": f"{next_idx:03d}",
                     "성명": f"신규사원{next_idx}",
                     "주민등록번호": "",
@@ -1540,15 +2114,31 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
             st.rerun()
 
     with top_c3:
-        if st.button("마지막 행 삭제", width="stretch", key="btn_pay_del_row"):
-            if is_emp_mode and pstate["employees"]:
-                pstate["employees"].pop()
-                pstate["grid_version"] += 1
-                st.rerun()
-            elif not is_emp_mode and pstate["freelancers"]:
-                pstate["freelancers"].pop()
-                pstate["grid_version"] += 1
-                st.rerun()
+        sel_indices = pstate.get("selected_emp_indices", []) if is_emp_mode else pstate.get("selected_free_indices", [])
+        del_btn_lbl = f"선택한 행 삭제 ({len(sel_indices)}건)" if sel_indices else "선택한 행 삭제"
+        if st.button(del_btn_lbl, width="stretch", key="btn_pay_del_row"):
+            if is_emp_mode:
+                if sel_indices:
+                    drop_set = set(sel_indices)
+                    pstate["employees"] = [
+                        e for i, e in enumerate(pstate.get("employees", [])) if i not in drop_set
+                    ]
+                    pstate["selected_emp_indices"] = []
+                    pstate["grid_version"] += 1
+                    st.rerun()
+                else:
+                    st.warning("삭제할 행의 맨 왼쪽 체크박스를 먼저 선택해 주세요.")
+            else:
+                if sel_indices:
+                    drop_set = set(sel_indices)
+                    pstate["freelancers"] = [
+                        f for i, f in enumerate(pstate.get("freelancers", [])) if i not in drop_set
+                    ]
+                    pstate["selected_free_indices"] = []
+                    pstate["grid_version"] += 1
+                    st.rerun()
+                else:
+                    st.warning("삭제할 대상자의 맨 왼쪽 체크박스를 먼저 선택해 주세요.")
 
     with top_c4:
         if st.button(
@@ -1565,23 +2155,31 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
             unsafe_allow_html=True,
         )
 
-    with top_c5:
-        if st.button("연장·야간·휴일근로수당 계산기", width="stretch", key="btn_pay_open_ot_calc"):
-            _dlg_overtime_calculator()
-
-    with top_c6:
-        if st.button("주휴수당 계산기", width="stretch", key="btn_pay_open_wh_calc"):
-            _dlg_weekly_holiday_calculator()
+    if is_emp_mode:
+        with top_c5:
+            if st.button("연장·야간·휴일근로수당 계산기", width="stretch", key="btn_pay_open_ot_calc"):
+                _dlg_overtime_calculator()
+        with top_c6:
+            if st.button("주휴수당 계산기", width="stretch", key="btn_pay_open_wh_calc"):
+                _dlg_weekly_holiday_calculator()
+    else:
+        with top_c5:
+            if st.button("업종코드 조회·선택 (기본 940909)", width="stretch", key="btn_pay_open_ind_code"):
+                _dlg_industry_code_selector()
 
     # 2. 메인 편집 표 (AG Grid 급여대장 / 사업소득대장)
-    corp_disp = pstate.get("corp_name") or "거래처 미입력"
+    corp_disp = pstate.get("corp_name") or "거래처미입력"
+    wp_disp = _current_workplace_label(pstate)
     ym_disp = pstate.get("year_month") or ""
+    yymm_short = _format_yymm_4digit(ym_disp)
+    c_safe = _sanitize_file_token(pstate.get("corp_name") or "거래처미입력", "거래처미입력")
 
     if is_emp_mode:
+        wp_tag_str = f" · {wp_disp}" if wp_disp else ""
         st.markdown(
             f"<div style='display:flex; justify-content:space-between; align-items:center; margin-top:4px; margin-bottom:4px;'>"
-            f"<span style='font-size:1.02rem; font-weight:800; color:#1e3a8a;'>급여대장 편집기 (4대보험 근로소득자 · {corp_disp} · {ym_disp})</span>"
-            f"<span style='font-size:0.82rem; color:#475569;'>셀을 더블클릭하여 수정하면 2026년 4대보험·간이세액·실수령액이 즉시 재계산됩니다 (부양가족 기본 1명)</span>"
+            f"<span style='font-size:1.02rem; font-weight:800; color:#1e3a8a;'>급여대장 편집기 (4대보험 근로소득자 · {corp_disp}{wp_tag_str} · {ym_disp})</span>"
+            f"<span style='font-size:0.82rem; color:#475569;'>좌측 체크박스 선택 후 [선택한 행 삭제] 가능 · 우측 끝 지급액계 이후 공제항목은 가로 스크롤</span>"
             f"</div>",
             unsafe_allow_html=True,
         )
@@ -1589,20 +2187,26 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
 
         emps = pstate.get("employees", [])
         tot_gross = sum(int(e.get("지급액계", 0) or 0) for e in emps)
+        tot_itax = sum(int(e.get("소득세", 0) or 0) for e in emps)
+        tot_ltax = sum(int(e.get("지방소득세", 0) or 0) for e in emps)
         tot_ded = sum(int(e.get("공제액계", 0) or 0) for e in emps)
         tot_net = sum(int(e.get("차인지급액", 0) or 0) for e in emps)
         st.markdown(
-            f"<div style='background:#f8fafc; border:1px solid #cbd5e1; border-radius:8px; padding:8px 14px; margin-bottom:10px; display:flex; justify-content:space-between; font-size:0.90rem; color:#0f172a;'>"
+            f"<div style='background:#f8fafc; border:1px solid #cbd5e1; border-radius:8px; padding:8px 14px; margin-bottom:10px; display:flex; flex-wrap:wrap; gap:12px; justify-content:space-between; font-size:0.90rem; color:#0f172a;'>"
             f"<span><b>총 인원:</b> {len(emps)}명</span>"
             f"<span><b>지급액계 합계:</b> {tot_gross:,}원</span>"
+            f"<span><b>소득세 합계:</b> {tot_itax:,}원 · <b>지방소득세 합계:</b> {tot_ltax:,}원</span>"
             f"<span><b>공제액계 합계:</b> {tot_ded:,}원</span>"
             f"<span style='color:#1e3a8a;'><b>차인지급액(실지급) 합계:</b> {tot_net:,}원</span>"
             f"</div>",
             unsafe_allow_html=True,
         )
 
-        # 3-A. 급여명세서 모드 다운로드 바 (최대 200명 한 번에 · 초과 시 구간 선택 · 클릭 시 지연 생성)
+        # 3-A. 급여명세서 양식 선택 + 다운로드 바 (사용자 지정 파일명 규칙 적용)
         with st.container(border=True):
+            _render_employee_template_selector(pstate)
+            selected_tpl = str(pstate.get("payslip_template") or "근로기준1")
+
             emp_start_idx = 0
             if len(emps) > EMP_ZIP_MAX:
                 batch_options = [
@@ -1612,38 +2216,38 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
                 c_warn_emp, c_sel_emp = st.columns([3.2, 1.8], vertical_alignment="center")
                 with c_warn_emp:
                     st.warning(
-                        f"현재 총 {len(emps)}명으로 1회 급여명세서 ZIP 압축 한도({EMP_ZIP_MAX}명)를 초과합니다. 우측에서 구간을 선택해 {EMP_ZIP_MAX}명씩 분할 다운로드해 주세요. (위하고 엑셀 및 급여대장 PDF는 {len(emps)}명 전체가 포함됩니다)"
+                        f"현재 총 {len(emps)}명으로 1회 급여명세서 ZIP 압축 한도({EMP_ZIP_MAX}명)를 초과합니다. 우측에서 구간을 선택해 분할 다운로드해 주세요."
                     )
                 with c_sel_emp:
                     sel_batch_lbl = st.selectbox("급여명세서 ZIP 다운로드 구간", options=batch_options, key="emp_zip_batch_sel")
                     emp_start_idx = batch_options.index(sel_batch_lbl) * EMP_ZIP_MAX
 
-            dl1, dl2, dl3, dl4 = st.columns([1.6, 1.8, 1.1, 1.5], gap="small", vertical_alignment="center")
-            yymm_short = re.sub(r"[^0-9]", "", ym_disp)[2:6] if len(re.sub(r"[^0-9]", "", ym_disp)) >= 6 else "2610"
-            c_safe = corp_disp.replace(" ", "")
+            dl1, dl2, dl3, dl4, dl5 = st.columns([1.5, 1.65, 1.65, 1.05, 1.35], gap="small", vertical_alignment="center")
+            inc_cnt = min(EMP_ZIP_MAX, max(0, len(emps) - emp_start_idx))
 
             with dl1:
+                # [위하고 급여 업로드양식] = 거래처명_위하고 업로드 양식_년월(4자리).xlsx ('사업장' 열 자동 제외)
                 st.download_button(
                     label="위하고 급여 업로드양식 (.xlsx)",
-                    data=_lazy_bytes(export_wehago_payroll_excel, emps, enabled=bool(emps)),
-                    file_name=f"{yymm_short}_근로소득(업로드양식)_{c_safe}.xlsx",
+                    data=_lazy_bytes(export_wehago_payroll_excel, emps),
+                    file_name=f"{c_safe}_위하고 업로드 양식_{yymm_short}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     width="stretch",
                     disabled=(len(emps) == 0),
                     key="btn_dl_wehago_emp_xlsx",
                 )
-            with dl3:
+            with dl4:
                 enc_chk = st.checkbox(
-                    "생년월일 6자리 암호 설정",
+                    "생년월일 6자리 암호",
                     value=bool(pstate.get("encrypt_payslip_zip", False)),
                     key="chk_pay_enc_birth",
                     help="체크 시 각 인별 급여명세서 PDF에 주민등록번호 앞 6자리(YYMMDD) 비밀번호가 설정되어 압축됩니다.",
                 )
                 pstate["encrypt_payslip_zip"] = enc_chk
             with dl2:
-                inc_cnt = min(EMP_ZIP_MAX, max(0, len(emps) - emp_start_idx))
+                # [급여명세서 일괄 다운 (PDF)] zip = 거래처명_급여명세서_년월(4자리).zip / 내부 = 근로자명_급여명세서_년월(4자리).pdf
                 st.download_button(
-                    label=f"급여명세서 일괄 다운 (.zip / {inc_cnt}명)",
+                    label=f"급여명세서 일괄 다운 (PDF · {inc_cnt}명)",
                     data=_lazy_bytes(
                         export_employee_payslips_zip,
                         enabled=bool(emps),
@@ -1654,16 +2258,39 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
                         encrypt_with_birth=enc_chk,
                         start_index=emp_start_idx,
                         max_count=EMP_ZIP_MAX,
+                        template_type=selected_tpl,
                     ),
-                    file_name=f"{yymm_short}_급여명세서_일괄({emp_start_idx + 1}_{emp_start_idx + inc_cnt}번)_{c_safe}.zip",
+                    file_name=f"{c_safe}_급여명세서_{yymm_short}.zip",
                     mime="application/zip",
                     width="stretch",
                     disabled=(len(emps) == 0),
                     key="btn_dl_payslips_zip",
                 )
-            with dl4:
+            with dl3:
+                # [급여명세서 일괄 다운 (이미지)] zip = 거래처명_급여명세서_년월(4자리).zip / 내부 = 근로자명_급여명세서_년월(4자리).jpg
                 st.download_button(
-                    label="급여대장 다운로드 (.pdf)",
+                    label=f"급여명세서 일괄 다운 (이미지 · {inc_cnt}명)",
+                    data=_lazy_bytes(
+                        export_employee_payslips_jpg_zip,
+                        enabled=bool(emps),
+                        employees=emps,
+                        corp_name=pstate.get("corp_name", ""),
+                        year_month=ym_disp,
+                        pay_date=pstate.get("pay_date", ""),
+                        start_index=emp_start_idx,
+                        max_count=EMP_ZIP_MAX,
+                        template_type=selected_tpl,
+                    ),
+                    file_name=f"{c_safe}_급여명세서_{yymm_short}.zip",
+                    mime="application/zip",
+                    width="stretch",
+                    disabled=(len(emps) == 0),
+                    key="btn_dl_payslips_jpg_zip",
+                )
+            with dl5:
+                # [급여대장 다운로드 (PDF)] = 거래처명_급여대장_년월(4자리).pdf
+                st.download_button(
+                    label="급여대장 다운로드 (PDF)",
                     data=_lazy_bytes(
                         export_payroll_ledger_pdf,
                         enabled=bool(emps),
@@ -1672,7 +2299,7 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
                         year_month=ym_disp,
                         pay_date=pstate.get("pay_date", ""),
                     ),
-                    file_name=f"{yymm_short}_급여대장_{c_safe}.pdf",
+                    file_name=f"{c_safe}_급여대장_{yymm_short}.pdf",
                     mime="application/pdf",
                     width="stretch",
                     disabled=(len(emps) == 0),
@@ -1682,7 +2309,7 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
         st.markdown(
             f"<div style='display:flex; justify-content:space-between; align-items:center; margin-top:4px; margin-bottom:4px;'>"
             f"<span style='font-size:1.02rem; font-weight:800; color:#4c1d95;'>사업소득대장 편집기 (3.3% 프리랜서 · {corp_disp} · {ym_disp})</span>"
-            f"<span style='font-size:0.82rem; color:#475569;'>세전 또는 세후역산 선택 시 소득세(3%)·지방소득세(0.3%)가 10원 미만 절사로 자동 계산됩니다</span>"
+            f"<span style='font-size:0.82rem; color:#475569;'>업종코드 기본값 940909 · 상단 [업종코드 조회·선택] 또는 셀 클릭으로 변경 가능</span>"
             f"</div>",
             unsafe_allow_html=True,
         )
@@ -1690,19 +2317,21 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
 
         frees = pstate.get("freelancers", [])
         tot_fgross = sum(int(f.get("지급총액", 0) or 0) for f in frees)
+        tot_fitax = sum(int(f.get("소득세", 0) or 0) for f in frees)
+        tot_fltax = sum(int(f.get("지방소득세", 0) or 0) for f in frees)
         tot_fded = sum(int(f.get("공제액계", 0) or 0) for f in frees)
         tot_fnet = sum(int(f.get("차인지급액", 0) or 0) for f in frees)
         st.markdown(
-            f"<div style='background:#faf5ff; border:1px solid #d8b4fe; border-radius:8px; padding:8px 14px; margin-bottom:10px; display:flex; justify-content:space-between; font-size:0.90rem; color:#1e1b4b;'>"
+            f"<div style='background:#faf5ff; border:1px solid #d8b4fe; border-radius:8px; padding:8px 14px; margin-bottom:10px; display:flex; flex-wrap:wrap; gap:12px; justify-content:space-between; font-size:0.90rem; color:#1e1b4b;'>"
             f"<span><b>총 인원:</b> {len(frees)}명</span>"
             f"<span><b>지급총액(세전) 합계:</b> {tot_fgross:,}원</span>"
-            f"<span><b>공제세액(3.3%) 합계:</b> {tot_fded:,}원</span>"
+            f"<span><b>소득세(3%) 합계:</b> {tot_fitax:,}원 · <b>지방소득세(0.3%) 합계:</b> {tot_fltax:,}원 (계 {tot_fded:,}원)</span>"
             f"<span style='color:#4c1d95;'><b>차인지급액(실지급) 합계:</b> {tot_fnet:,}원</span>"
             f"</div>",
             unsafe_allow_html=True,
         )
 
-        # 3-B. 사업소득 모드 다운로드 바 (최대 100명 한 번에 · 초과 시 구간 선택 · 클릭 시 지연 생성)
+        # 3-B. 사업소득 모드 다운로드 바 (사용자 지정 파일명 규칙 + [사업소득명세서 PDF 압축] 우측 돋보기 호버 미리보기)
         with st.container(border=True):
             free_start_idx = 0
             if len(frees) > FREE_ZIP_MAX:
@@ -1713,55 +2342,75 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
                 c_warn_fr, c_sel_fr = st.columns([3.2, 1.8], vertical_alignment="center")
                 with c_warn_fr:
                     st.warning(
-                        f"현재 총 {len(frees)}명으로 1회 사업소득명세서(PDF/JPG) ZIP 압축 한도({FREE_ZIP_MAX}명)를 초과합니다. 우측에서 구간을 선택해 {FREE_ZIP_MAX}명씩 분할 다운로드해 주세요. (위하고 엑셀 및 사업소득지급대장 PDF는 {len(frees)}명 전체가 포함됩니다)"
+                        f"현재 총 {len(frees)}명으로 1회 사업소득명세서(PDF/JPG) ZIP 압축 한도({FREE_ZIP_MAX}명)를 초과합니다. 우측에서 구간을 선택해 분할 다운로드해 주세요."
                     )
                 with c_sel_fr:
                     sel_fbatch_lbl = st.selectbox("사업소득명세서 ZIP 다운로드 구간", options=f_batch_options, key="free_zip_batch_sel")
                     free_start_idx = f_batch_options.index(sel_fbatch_lbl) * FREE_ZIP_MAX
 
-            fd1, fd2, fd3, fd4 = st.columns(4, gap="small", vertical_alignment="center")
-            yymm_short = re.sub(r"[^0-9]", "", ym_disp)[2:6] if len(re.sub(r"[^0-9]", "", ym_disp)) >= 6 else "2610"
-            c_safe = corp_disp.replace(" ", "")
+            fd1, fd2, fd3, fd4 = st.columns([1.55, 1.95, 1.65, 1.45], gap="small", vertical_alignment="center")
             f_inc_cnt = min(FREE_ZIP_MAX, max(0, len(frees) - free_start_idx))
 
             with fd1:
+                # [위하고 사업소득 업로드양식] = 거래처명_위하고 업로드양식_년월(4자리).xlsx
                 st.download_button(
                     label="위하고 사업소득 업로드양식 (.xlsx)",
                     data=_lazy_bytes(
                         export_wehago_freelancer_excel,
-                        enabled=bool(frees),
                         freelancers=frees,
                         default_year_month=ym_disp,
                         default_pay_date=pstate.get("pay_date", ""),
                     ),
-                    file_name=f"{yymm_short}_사업소득(업로드양식)_{c_safe}.xlsx",
+                    file_name=f"{c_safe}_위하고 업로드양식_{yymm_short}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     width="stretch",
                     disabled=(len(frees) == 0),
                     key="btn_dl_wehago_free_xlsx",
                 )
             with fd2:
-                st.download_button(
-                    label=f"사업소득명세서 PDF 압축 (.zip / {f_inc_cnt}명)",
-                    data=_lazy_bytes(
-                        export_freelancer_statements_pdf_zip,
-                        enabled=bool(frees),
-                        freelancers=frees,
-                        corp_name=pstate.get("corp_name", ""),
-                        year_month=ym_disp,
-                        pay_date=pstate.get("pay_date", ""),
-                        start_index=free_start_idx,
-                        max_count=FREE_ZIP_MAX,
-                    ),
-                    file_name=f"{yymm_short}_사업소득명세서_PDF({free_start_idx + 1}_{free_start_idx + f_inc_cnt}번)_{c_safe}.zip",
-                    mime="application/zip",
-                    width="stretch",
-                    disabled=(len(frees) == 0),
-                    key="btn_dl_free_pdf_zip",
-                )
+                # [사업소득명세서 PDF 압축] + 오른쪽 옆 돋보기 마우스 오버(:hover) 양식 샘플 미리보기
+                c_fpdf_btn, c_fpdf_mag = st.columns([4.3, 1.0], gap="small", vertical_alignment="center")
+                with c_fpdf_btn:
+                    st.download_button(
+                        label=f"사업소득명세서 PDF 압축 ({f_inc_cnt}명)",
+                        data=_lazy_bytes(
+                            export_freelancer_statements_pdf_zip,
+                            enabled=bool(frees),
+                            freelancers=frees,
+                            corp_name=pstate.get("corp_name", ""),
+                            year_month=ym_disp,
+                            pay_date=pstate.get("pay_date", ""),
+                            start_index=free_start_idx,
+                            max_count=FREE_ZIP_MAX,
+                        ),
+                        file_name=f"{c_safe}_사업소득명세서_{yymm_short}.zip",
+                        mime="application/zip",
+                        width="stretch",
+                        disabled=(len(frees) == 0),
+                        key="btn_dl_free_pdf_zip",
+                    )
+                with c_fpdf_mag:
+                    free_b64 = get_freelancer_statement_preview_b64()
+                    if free_b64:
+                        st.markdown(
+                            f"""
+                            <div class="pay-tpl-hover-wrap" title="마우스를 가져다 대면 사업소득명세서 양식 샘플이 표시됩니다">
+                                {MAGNIFIER_SVG}
+                                <div class="pay-tpl-hover-popup">
+                                    <div class="pay-tpl-hover-title">
+                                        <span>사업소득명세서 양식 미리보기</span>
+                                        <span style="color:#7c3aed;">샘플</span>
+                                    </div>
+                                    <img src="data:image/png;base64,{free_b64}" alt="사업소득명세서 미리보기" />
+                                </div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
             with fd3:
+                # [사업소득명세서 이미지 압축] = 거래처명_사업소득명세서_년월(4자리).zip
                 st.download_button(
-                    label=f"사업소득명세서 이미지 압축 (.zip / JPG {f_inc_cnt}명)",
+                    label=f"사업소득명세서 이미지 압축 ({f_inc_cnt}명)",
                     data=_lazy_bytes(
                         export_freelancer_statements_jpg_zip,
                         enabled=bool(frees),
@@ -1772,15 +2421,16 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
                         start_index=free_start_idx,
                         max_count=FREE_ZIP_MAX,
                     ),
-                    file_name=f"{yymm_short}_사업소득명세서_JPG({free_start_idx + 1}_{free_start_idx + f_inc_cnt}번)_{c_safe}.zip",
+                    file_name=f"{c_safe}_사업소득명세서_{yymm_short}.zip",
                     mime="application/zip",
                     width="stretch",
                     disabled=(len(frees) == 0),
                     key="btn_dl_free_jpg_zip",
                 )
             with fd4:
+                # [사업소득대장 다운로드 (PDF)] = 거래처명_사업소득대장_년월(4자리).pdf
                 st.download_button(
-                    label="사업소득지급대장 다운로드 (.pdf)",
+                    label="사업소득대장 다운로드 (PDF)",
                     data=_lazy_bytes(
                         export_freelancer_ledger_pdf,
                         enabled=bool(frees),
@@ -1788,57 +2438,44 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
                         corp_name=pstate.get("corp_name", ""),
                         year_month=ym_disp,
                     ),
-                    file_name=f"{yymm_short}_사업소득지급대장_{c_safe}.pdf",
+                    file_name=f"{c_safe}_사업소득대장_{yymm_short}.pdf",
                     mime="application/pdf",
                     width="stretch",
                     disabled=(len(frees) == 0),
                     key="btn_dl_free_ledger_pdf",
                 )
 
-    # 4. 하단 드래그앤드롭 자료 업로드 영역
-    with st.container(border=True):
-        st.markdown(
-            "<div style='font-size:0.92rem; font-weight:800; color:#0f172a; margin-bottom:4px;'>"
-            "자료 드래그앤드롭 업로드 (거래처 급여 엑셀 · 4대보험 고지내역 PDF · 카카오톡 캡처 이미지)"
-            "</div>",
-            unsafe_allow_html=True,
-        )
-        up_files = st.file_uploader(
-            "급여 엑셀(.xlsx), 건강·연금·고용보험 고지내역(.pdf/.png), 카톡 캡처(.jpg/.png)를 드래그하여 올려주세요.",
-            type=["xlsx", "xls", "pdf", "png", "jpg", "jpeg", "paybak"],
-            accept_multiple_files=True,
-            key=f"pay_drag_uploader_{pstate.get('grid_version', 0)}",
-        )
-        if up_files:
-            if st.button("업로드한 파일 대장에 즉시 반영", type="primary", width="stretch", key="btn_pay_apply_drag_files"):
-                _process_uploaded_files_and_text(
-                    pstate=pstate,
-                    uploaded_files=up_files,
-                    chat_text="",
-                    gemini_api_key=gemini_api_key,
-                )
-                st.rerun()
-
     if pstate.get("chat_logs"):
-        with st.expander("최근 자동 반영 내역 로그", expanded=False):
+        with st.expander(f"최근 자동 반영 내역 로그 ({len(pstate['chat_logs'])}건)", expanded=False):
             for lg in reversed(pstate["chat_logs"][-12:]):
                 st.markdown(f"- {lg}")
 
-    with st.expander("관련 법령 및 원천징수·4대보험·수당 산출 근거 주석 (업로드 전·후 상시 열람)", expanded=False):
-        for ref in MONTHLY_REPORT_LEGAL_REFERENCES + WARNING_MODAL_LEGAL_REFERENCES[:2]:
-            ref_content = ref["content"].replace("\n", "<br>")
-            st.markdown(
-                f"<div class='pay-law-ref-box'><b>[{ref['title']}]</b><br>{ref_content}</div>",
-                unsafe_allow_html=True,
-            )
-
-    # 5. 최하단 올인원 입력창
-    chat_val = st.chat_input(
-        "카카오톡 급여 내역 텍스트 붙여넣기 (예: 홍길동 실수령 280만원, 김영희 세전 350, 박민수 프리랜서 150만원) 또는 파일 첨부",
-        accept_file="multiple",
-        file_type=["xlsx", "xls", "pdf", "png", "jpg", "jpeg", "paybak"],
-        key="pay_bottom_all_in_one_input",
+    # 4. 최하단 올인원 입력창 (파일 드래그앤드롭과 내용 입력을 최하단 한 곳으로 일원화)
+    bottom_placeholder = (
+        "급여대장·4대보험 고지서(엑셀·PDF·사진·.paybak)를 이 칸에 끌어다 놓거나 카톡 급여 내역(예: 홍길동 실수령 280만원)을 입력하세요"
+        if is_emp_mode
+        else "사업소득대장(엑셀·PDF·사진·.paybak)을 이 칸에 끌어다 놓거나 내역(예: 김미모, 830411-*******, 세후 300만원)을 입력하세요"
     )
+    _chat_sig = inspect.signature(st.chat_input).parameters
+    try:
+        if "accept_file" in _chat_sig:
+            chat_val = st.chat_input(
+                bottom_placeholder,
+                accept_file="multiple",
+                file_type=["xlsx", "xls", "pdf", "png", "jpg", "jpeg", "paybak"],
+                key="pay_bottom_all_in_one_input",
+            )
+        else:
+            chat_val = st.chat_input(
+                bottom_placeholder,
+                key="pay_bottom_all_in_one_input",
+            )
+    except Exception:
+        chat_val = st.chat_input(
+            bottom_placeholder,
+            key="pay_bottom_all_in_one_input",
+        )
+
     if chat_val:
         in_text = ""
         in_files: List[Any] = []

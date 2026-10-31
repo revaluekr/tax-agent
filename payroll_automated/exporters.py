@@ -1,18 +1,22 @@
 # -*- coding: utf-8 -*-
 """
-인건비 자동화 - 위하고 업로드 엑셀 및 PDF/JPG 명세서·대장 일괄 생성 엔진 (exporters.py)
+인건비 자동화 - 위하고 업로드 엑셀 및 6종 급여명세서·사업소득명세서·대장 PDF/JPG 일괄 생성 엔진 (exporters.py)
 1) 위하고(WEHAGO / SmartA) 업로드 엑셀:
-   - 근로소득 급여 업로드 양식 (.xlsx, 29개 열 2단 병합 헤더 + 합계행)
+   - 근로소득 급여 업로드 양식 (.xlsx, '사업장' 열 자동 제외 후 정식 29개 열 2단 병합 헤더 + 합계행)
    - 사업소득(3.3%) 자료입력 업로드 양식 (.xlsx, 15개 열 표준 서식)
 2) 급여대장 PDF (A4 가로, 사원별 3단 행 블록 + 하단 합계 블록)
-3) 인별 급여명세서 PDF 일괄 압축 (.zip, 1회 최대 200명, 세부내역 + 산출식 테이블 + 생년월일 6자리 암호 옵션)
+3) 인별 급여명세서 6종 양식 지원 (`근로기준1`[기본], `근로기준2`, `근로기준3`, `근로기준4`, `근로기준5`, `구`):
+   - PDF 일괄 압축 (.zip, 최대 200명, 생년월일 6자리 암호 옵션, 내부 파일명: `근로자명_급여명세서_YYMM.pdf`)
+   - 이미지(JPG) 일괄 압축 (.zip, 최대 200명, 내부 파일명: `근로자명_급여명세서_YYMM.jpg`)
 4) 사업소득지급대장 PDF (A4 세로, 2단 헤더 + 하단 총계)
-5) 인별 사업소득명세서 PDF 일괄 압축 (.zip, 1회 최대 100명) 및 이미지(JPG) 일괄 압축 (.zip, 1회 최대 100명)
-6) 한글 글꼴 자동 보장: 시스템 폰트 없을 시 통합고용세액공제와 동일하게 NanumGothic TTF를 `.workspace_storage`에 자동 다운로드·캐싱하여 Streamlit Cloud JPG/PDF 한글 깨짐 원천 차단
+5) 인별 사업소득명세서 PDF 일괄 압축 (.zip, 최대 100명, 내부 파일명: `근로자명_사업소득명세서_YYMM.pdf`) 및
+   이미지(JPG) 일괄 압축 (.zip, 최대 100명, 내부 파일명: `근로자명_사업소득명세서_YYMM.jpg`)
+6) 마우스 오버(Hover) 돋보기 미리보기용 Base64 이미지 캐시 생성기
 """
 
 from __future__ import annotations
 
+import base64
 import io
 import os
 import re
@@ -34,30 +38,29 @@ from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import HRFlowable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-from .parsers import extract_birth_6digits
+from .parsers import extract_birth_6digits, rrn_to_birth_dot
 
 
-# ─────────────────────────────────────────────────────────────
-# 한글 폰트 자동 등록 (NanumGothic 자동 다운로드 캐시 포함 — PDF 및 pypdfium2 JPG 완벽 호환)
-# ─────────────────────────────────────────────────────────────
+PAYSLIP_TEMPLATE_OPTIONS: List[str] = [
+    "근로기준1",
+    "근로기준2",
+    "근로기준3",
+    "근로기준4",
+    "근로기준5",
+    "구",
+]
 
 _STORAGE_DIR = ".workspace_storage"
 _REGISTERED_FONT_REGULAR = "Helvetica"
 _REGISTERED_FONT_BOLD = "Helvetica-Bold"
 _FONT_INIT_DONE = False
 _FONT_DOWNLOAD_ATTEMPTED = False
+_PREVIEW_B64_CACHE: Dict[str, str] = {}
 
 
 def get_korean_font_names() -> Tuple[str, str]:
-    """
-    1순위: Windows 맑은 고딕 / `.workspace_storage/NanumGothic.ttf` 캐시 / Linux 시스템 나눔고딕 TTF
-    2순위: Streamlit Cloud 등 한글 TTF가 없는 환경에서는 GitHub Google Fonts에서 `NanumGothic.ttf` 및
-          `NanumGothicBold.ttf`를 `.workspace_storage/`에 자동 다운로드·캐싱 후 TTFont로 등록
-          (통합고용세액공제 `ui_common._ensure_korean_pdf_font`와 동일한 메커니즘으로 JPG 변환 시에도 글자 깨짐 0건 보장)
-    3순위: 오프라인 비상 폴백(DroidSansFallbackFull.ttf -> HYGothic-Medium)
-    """
     global _REGISTERED_FONT_REGULAR, _REGISTERED_FONT_BOLD, _FONT_INIT_DONE, _FONT_DOWNLOAD_ATTEMPTED
     if _FONT_INIT_DONE:
         return _REGISTERED_FONT_REGULAR, _REGISTERED_FONT_BOLD
@@ -90,7 +93,6 @@ def get_korean_font_names() -> Tuple[str, str]:
             chosen_bold = bp if os.path.exists(bp) else rp
             break
 
-    # 시스템에 나눔고딕/맑은고딕이 없으면 통합고용세액공제 모듈과 동일하게 NanumGothic 자동 다운로드
     if chosen_reg is None and not _FONT_DOWNLOAD_ATTEMPTED:
         _FONT_DOWNLOAD_ATTEMPTED = True
         try:
@@ -111,8 +113,6 @@ def get_korean_font_names() -> Tuple[str, str]:
                 chosen_bold = cached_bold if os.path.exists(cached_bold) else cached_reg
         except Exception:
             pass
-
-
 
     if chosen_reg and os.path.exists(chosen_reg):
         try:
@@ -168,7 +168,7 @@ def _parse_ym_parts(year_month: str) -> Tuple[int, int]:
 
 
 # ─────────────────────────────────────────────────────────────
-# 1. 위하고(WEHAGO) 근로소득 급여 업로드 엑셀 (.xlsx)
+# 1. 위하고(WEHAGO) 근로소득 급여 업로드 엑셀 (.xlsx - 정식 29열, '사업장' 열 자동 제외)
 # ─────────────────────────────────────────────────────────────
 
 WEHAGO_PAYROLL_ROW1 = [
@@ -197,7 +197,7 @@ WEHAGO_PAYROLL_FIELD_KEYS = [
 
 def export_wehago_payroll_excel(employees: List[Dict[str, Any]]) -> bytes:
     """
-    위하고 근로소득 급여자료 업로드용 표준 엑셀 생성 (29컬럼 2단 병합 헤더 + 합계행)
+    위하고 근로소득 급여자료 업로드용 정식 엑셀 생성 (29컬럼 2단 병합 헤더 + 합계행, '사업장' 열 제외)
     """
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -294,9 +294,6 @@ def export_wehago_freelancer_excel(
     default_year_month: str = "",
     default_pay_date: str = "",
 ) -> bytes:
-    """
-    위하고 / SmartA 사업소득자료입력 엑셀 변환 서식 생성 (15개 열 표준 서식)
-    """
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Sheet1"
@@ -354,6 +351,11 @@ def export_wehago_freelancer_excel(
         itax = int(fr.get("소득세", 0) or 0)
         ltax = int(fr.get("지방소득세", 0) or 0)
 
+        # 업종코드 6자리만 추출 (예: '940909 (기타자영업)' -> '940909')
+        raw_ind = str(fr.get("소득구분") or "940909")
+        m_ind = re.search(r"\b(\d{6})\b", raw_ind)
+        clean_ind = m_ind.group(1) if m_ind else "940909"
+
         row_vals = [
             "",
             ym6,
@@ -362,7 +364,7 @@ def export_wehago_freelancer_excel(
             rrn_digits,
             str(fr.get("기본주소", "")),
             str(fr.get("상세주소", "")),
-            str(fr.get("소득구분") or "940909"),
+            clean_ind,
             pay8,
             gross,
             int(fr.get("세율", 3) or 3),
@@ -402,9 +404,6 @@ def export_payroll_ledger_pdf(
     year_month: str = "",
     pay_date: str = "",
 ) -> bytes:
-    """
-    표준 급여대장 PDF (A4 Landscape, 사원별 3행 블록 구조 + 하단 합계 블록)
-    """
     font_reg, font_bold = get_korean_font_names()
     yyyy, mm_num = _parse_ym_parts(year_month)
     pay_dt_fmt = pay_date.replace("-", "년 ", 1).replace("-", "월 ") + "일" if "-" in str(pay_date) else f"{yyyy}년{mm_num:02d}월25일"
@@ -419,27 +418,9 @@ def export_payroll_ledger_pdf(
         bottomMargin=10 * mm,
     )
 
-    title_style = ParagraphStyle(
-        "LedgerTitle",
-        fontName=font_bold,
-        fontSize=16,
-        leading=20,
-        alignment=1,
-    )
-    meta_style = ParagraphStyle(
-        "LedgerMeta",
-        fontName=font_reg,
-        fontSize=9,
-        leading=12,
-        alignment=0,
-    )
-    meta_right_style = ParagraphStyle(
-        "LedgerMetaRight",
-        fontName=font_reg,
-        fontSize=9,
-        leading=12,
-        alignment=2,
-    )
+    title_style = ParagraphStyle("LedgerTitle", fontName=font_bold, fontSize=16, leading=20, alignment=1)
+    meta_style = ParagraphStyle("LedgerMeta", fontName=font_reg, fontSize=9, leading=12, alignment=0)
+    meta_right_style = ParagraphStyle("LedgerMetaRight", fontName=font_reg, fontSize=9, leading=12, alignment=2)
 
     elements: List[Any] = []
     elements.append(Paragraph(f"{yyyy}년 {mm_num:02d}월분 급여대장", title_style))
@@ -481,90 +462,53 @@ def export_payroll_ledger_pdf(
         c_pos = str(emp.get("직급", ""))
 
         r1 = [
-            c_code,
-            c_dept,
-            _fmt_won(emp.get("기본급")),
-            _fmt_won(emp.get("상여")),
-            _fmt_won(emp.get("식대")),
-            _fmt_won(emp.get("자가운전보조금")),
-            _fmt_won(emp.get("약정연장근로수당")),
-            _fmt_won(emp.get("미사용연차수당")),
-            "",
-            "",
-            _fmt_won(emp.get("건강보험료정산")),
-            _fmt_won(emp.get("장기요양보험료정산")),
-            "",
+            c_code, c_dept,
+            _fmt_won(emp.get("기본급")), _fmt_won(emp.get("상여")),
+            _fmt_won(emp.get("식대")), _fmt_won(emp.get("자가운전보조금")),
+            _fmt_won(emp.get("약정연장근로수당")), _fmt_won(emp.get("미사용연차수당")),
+            "", "",
+            _fmt_won(emp.get("건강보험료정산")), _fmt_won(emp.get("장기요양보험료정산")), "",
         ]
         r2 = [
-            c_name,
-            c_pos,
-            _fmt_won(emp.get("약정휴일근로수당")),
-            _fmt_won(emp.get("연장근로수당")),
-            _fmt_won(emp.get("휴일근로수당")),
-            _fmt_won(emp.get("결근공제")),
-            _fmt_won(emp.get("조정금액")),
-            _fmt_won(emp.get("소득세")),
-            _fmt_won(emp.get("지방소득세")),
-            _fmt_won(emp.get("학자금상환액")),
-            _fmt_won(emp.get("국민연금정산")),
-            _fmt_won_zero(emp.get("공제액계")),
-            "",
+            c_name, c_pos,
+            _fmt_won(emp.get("약정휴일근로수당")), _fmt_won(emp.get("연장근로수당")),
+            _fmt_won(emp.get("휴일근로수당")), _fmt_won(emp.get("결근공제")),
+            _fmt_won(emp.get("조정금액")), _fmt_won(emp.get("소득세")),
+            _fmt_won(emp.get("지방소득세")), _fmt_won(emp.get("학자금상환액")),
+            _fmt_won(emp.get("국민연금정산")), _fmt_won_zero(emp.get("공제액계")), "",
         ]
         r3 = [
-            c_hire,
-            c_retire,
-            _fmt_won_zero(emp.get("지급액계")),
-            _fmt_won(emp.get("국민연금")),
-            _fmt_won(emp.get("건강보험")),
-            _fmt_won(emp.get("장기요양보험료")),
-            _fmt_won(emp.get("고용보험")),
-            "",
-            "",
-            "",
-            "",
-            _fmt_won_zero(emp.get("차인지급액")),
-            "",
+            c_hire, c_retire,
+            _fmt_won_zero(emp.get("지급액계")), _fmt_won(emp.get("국민연금")),
+            _fmt_won(emp.get("건강보험")), _fmt_won(emp.get("장기요양보험료")),
+            _fmt_won(emp.get("고용보험")), "", "", "", "",
+            _fmt_won_zero(emp.get("차인지급액")), "",
         ]
         table_data.extend([r1, r2, r3])
 
     emp_cnt = len(employees or [])
     s1 = [
         "합 계", "",
-        _fmt_won_zero(totals["기본급"]),
-        _fmt_won(totals["상여"]),
-        _fmt_won(totals["식대"]),
-        _fmt_won(totals["자가운전보조금"]),
-        _fmt_won(totals["약정연장근로수당"]),
-        _fmt_won(totals["미사용연차수당"]),
+        _fmt_won_zero(totals["기본급"]), _fmt_won(totals["상여"]),
+        _fmt_won(totals["식대"]), _fmt_won(totals["자가운전보조금"]),
+        _fmt_won(totals["약정연장근로수당"]), _fmt_won(totals["미사용연차수당"]),
         "", "",
-        _fmt_won(totals["건강보험료정산"]),
-        _fmt_won(totals["장기요양보험료정산"]),
-        "",
+        _fmt_won(totals["건강보험료정산"]), _fmt_won(totals["장기요양보험료정산"]), "",
     ]
     s2 = [
         f"({emp_cnt}명)", "",
-        _fmt_won(totals["약정휴일근로수당"]),
-        _fmt_won(totals["연장근로수당"]),
-        _fmt_won(totals["휴일근로수당"]),
-        _fmt_won(totals["결근공제"]),
-        _fmt_won(totals["조정금액"]),
-        _fmt_won_zero(totals["소득세"]),
-        _fmt_won_zero(totals["지방소득세"]),
-        _fmt_won(totals["학자금상환액"]),
-        _fmt_won(totals["국민연금정산"]),
-        _fmt_won_zero(totals["공제액계"]),
-        "",
+        _fmt_won(totals["약정휴일근로수당"]), _fmt_won(totals["연장근로수당"]),
+        _fmt_won(totals["휴일근로수당"]), _fmt_won(totals["결근공제"]),
+        _fmt_won(totals["조정금액"]), _fmt_won_zero(totals["소득세"]),
+        _fmt_won_zero(totals["지방소득세"]), _fmt_won(totals["학자금상환액"]),
+        _fmt_won(totals["국민연금정산"]), _fmt_won_zero(totals["공제액계"]), "",
     ]
     s3 = [
         "", "",
-        _fmt_won_zero(totals["지급액계"]),
-        _fmt_won_zero(totals["국민연금"]),
-        _fmt_won_zero(totals["건강보험"]),
-        _fmt_won_zero(totals["장기요양보험료"]),
-        _fmt_won_zero(totals["고용보험"]),
-        "", "", "", "",
-        _fmt_won_zero(totals["차인지급액"]),
-        "",
+        _fmt_won_zero(totals["지급액계"]), _fmt_won_zero(totals["국민연금"]),
+        _fmt_won_zero(totals["건강보험"]), _fmt_won_zero(totals["장기요양보험료"]),
+        _fmt_won_zero(totals["고용보험"]), "", "", "", "",
+        _fmt_won_zero(totals["차인지급액"]), "",
     ]
     table_data.extend([s1, s2, s3])
 
@@ -605,8 +549,94 @@ def export_payroll_ledger_pdf(
 
 
 # ─────────────────────────────────────────────────────────────
-# 4. 인별 급여명세서 PDF 생성 및 ZIP 일괄 압축 (1회 최대 200명 + 생년월일 6자리 암호 옵션)
+# 4. 인별 급여명세서 6종 양식 렌더링 (`근로기준1`~`5`, `구`) + PDF/JPG ZIP 압축
 # ─────────────────────────────────────────────────────────────
+
+def _extract_nonzero_pay_and_ded_items(emp: Dict[str, Any]) -> Tuple[List[Tuple[str, int]], List[Tuple[str, int]]]:
+    """실제 금액이 0원이 아닌 지급 항목과 공제 항목만 순서대로 추출 (업로드된 샘플 6종과 동일하게 빈 줄 생략)"""
+    pay_candidates = [
+        ("기본급", int(emp.get("기본급", 0) or 0)),
+        ("상여", int(emp.get("상여", 0) or 0)),
+        ("식대", int(emp.get("식대", 0) or 0)),
+        ("자가운전보조금", int(emp.get("자가운전보조금", 0) or 0)),
+        ("약정연장근로수당", int(emp.get("약정연장근로수당", 0) or 0)),
+        ("약정휴일근로수당", int(emp.get("약정휴일근로수당", 0) or 0)),
+        ("연장근로수당", int(emp.get("연장근로수당", 0) or 0)),
+        ("휴일근로수당", int(emp.get("휴일근로수당", 0) or 0)),
+        ("미사용연차수당", int(emp.get("미사용연차수당", 0) or 0)),
+        ("결근공제", int(emp.get("결근공제", 0) or 0)),
+        ("조정금액", int(emp.get("조정금액", 0) or 0)),
+    ]
+    ded_candidates = [
+        ("국민연금", int(emp.get("국민연금", 0) or 0)),
+        ("건강보험", int(emp.get("건강보험", 0) or 0)),
+        ("고용보험", int(emp.get("고용보험", 0) or 0)),
+        ("장기요양보험료", int(emp.get("장기요양보험료", 0) or 0)),
+        ("소득세", int(emp.get("소득세", 0) or 0)),
+        ("지방소득세", int(emp.get("지방소득세", 0) or 0)),
+        ("학자금상환액", int(emp.get("학자금상환액", 0) or 0)),
+        ("건강보험료정산", int(emp.get("건강보험료정산", 0) or 0)),
+        ("장기요양보험료정산", int(emp.get("장기요양보험료정산", 0) or 0)),
+        ("국민연금정산", int(emp.get("국민연금정산", 0) or 0)),
+    ]
+    pay_items = [(k, v) for k, v in pay_candidates if v != 0]
+    ded_items = [(k, v) for k, v in ded_candidates if v != 0]
+    if not pay_items:
+        pay_items = [("기본급", 0)]
+    return pay_items, ded_items
+
+
+def _build_calc_method_table(emp: Dict[str, Any], font_reg: str, font_bold: str, total_w_mm: float = 174.0) -> Table:
+    """하단 '계산방법' 표 생성 (`근로기준1` ~ `근로기준5` 공통)"""
+    calc_rows: List[List[str]] = [
+        ["계산방법", "", ""],
+        ["구분", "산출식 또는 산출방법", "지급액"],
+    ]
+    meal_pay = int(emp.get("식대", 0) or 0)
+    fixed_ot = int(emp.get("약정연장근로수당", 0) or 0)
+    ot_pay = int(emp.get("연장근로수당", 0) or 0)
+    hol_pay = int(emp.get("휴일근로수당", 0) or 0)
+    abs_ded = int(emp.get("결근공제", 0) or 0)
+
+    if meal_pay > 0:
+        calc_rows.append(["식대", "비과세식대", _fmt_won_zero(meal_pay)])
+    if fixed_ot > 0:
+        calc_rows.append(["약정연장근로수당", "약정 고정연장수당", _fmt_won_zero(fixed_ot)])
+    if ot_pay > 0:
+        ot_h = float(emp.get("연장근무시간", 0) or 0)
+        hr_txt = f"{ot_h:.1f}시간" if ot_h > 0 else "연장근로시간 × 통상시급 × 1.5"
+        calc_rows.append(["연장근로수당", hr_txt, _fmt_won_zero(ot_pay)])
+    if hol_pay > 0:
+        hol_h = float(emp.get("휴일근무시간", 0) or 0)
+        hol_txt = f"{hol_h:.1f}시간" if hol_h > 0 else "휴일근로시간 × 통상시급 × 1.5"
+        calc_rows.append(["휴일근로수당", hol_txt, _fmt_won_zero(hol_pay)])
+    if abs_ded != 0:
+        calc_rows.append(["결근공제", "결근시간 × 약정시급 차감", _fmt_won_zero(abs_ded)])
+
+    if len(calc_rows) == 2:
+        calc_rows.append(["기본급", "월 소정근로 기본급", _fmt_won_zero(emp.get("기본급", 0))])
+
+    w1 = 42 * mm
+    w3 = 42 * mm
+    w2 = (total_w_mm * mm) - w1 - w3
+    tbl = Table(calc_rows, colWidths=[w1, w2, w3], rowHeights=[6.8 * mm] * len(calc_rows))
+    tbl.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), font_reg),
+        ("FONTNAME", (0, 0), (-1, 1), font_bold),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("SPAN", (0, 0), (2, 0)),
+        ("BACKGROUND", (0, 0), (-1, 1), colors.HexColor("#D9D9D9")),
+        ("ALIGN", (0, 0), (-1, 1), "CENTER"),
+        ("ALIGN", (0, 2), (1, -1), "LEFT"),
+        ("ALIGN", (2, 2), (2, -1), "RIGHT"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("BOX", (0, 0), (-1, -1), 0.7, colors.black),
+        ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.black),
+        ("LEFTPADDING", (0, 2), (1, -1), 5),
+        ("RIGHTPADDING", (2, 2), (2, -1), 5),
+    ]))
+    return tbl
+
 
 def render_single_employee_payslip_pdf(
     emp: Dict[str, Any],
@@ -614,13 +644,15 @@ def render_single_employee_payslip_pdf(
     year_month: str = "",
     pay_date: str = "",
     password: Optional[str] = None,
+    template_type: str = "근로기준1",
 ) -> bytes:
     """
-    단일 근로자 급여명세서 PDF 생성
+    단일 근로자 급여명세서 PDF 생성 — 사용자 업로드 6종 양식(`근로기준1`[기본] ~ `근로기준5`, `구`) 완벽 구현
     """
     font_reg, font_bold = get_korean_font_names()
     yyyy, mm_num = _parse_ym_parts(year_month)
     pay_dt_dot = str(pay_date or f"{yyyy}.{mm_num:02d}.25").replace("-", ".")
+    tpl = template_type if template_type in PAYSLIP_TEMPLATE_OPTIONS else "근로기준1"
 
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -628,185 +660,350 @@ def render_single_employee_payslip_pdf(
         pagesize=A4,
         leftMargin=18 * mm,
         rightMargin=18 * mm,
-        topMargin=18 * mm,
-        bottomMargin=18 * mm,
+        topMargin=16 * mm,
+        bottomMargin=15 * mm,
     )
 
-    title_style = ParagraphStyle("SlipTitle", fontName=font_bold, fontSize=18, leading=22, alignment=1)
-    sec_style = ParagraphStyle("SlipSec", fontName=font_bold, fontSize=11, leading=15, alignment=1)
-    meta_left = ParagraphStyle("SlipMetaL", fontName=font_reg, fontSize=10, leading=14, alignment=0)
-    meta_right = ParagraphStyle("SlipMetaR", fontName=font_reg, fontSize=10, leading=14, alignment=2)
-    footer_style = ParagraphStyle("SlipFooter", fontName=font_bold, fontSize=11, leading=16, alignment=1)
+    title_style = ParagraphStyle("SlipTitle", fontName=font_bold, fontSize=17, leading=22, alignment=1)
+    meta_left = ParagraphStyle("SlipMetaL", fontName=font_reg, fontSize=9.5, leading=13, alignment=0)
+    meta_right = ParagraphStyle("SlipMetaR", fontName=font_reg, fontSize=9.5, leading=13, alignment=2)
+    unit_style = ParagraphStyle("SlipUnit", fontName=font_reg, fontSize=8.5, leading=11, alignment=2)
+    footer_style = ParagraphStyle("SlipFooter", fontName=font_reg, fontSize=9.5, leading=14, alignment=1)
+
+    emp_code = str(emp.get("사원코드") or "001")
+    emp_name = str(emp.get("성명") or "")
+    emp_dept = str(emp.get("부서") or "")
+    emp_pos = str(emp.get("직급") or "")
+    emp_birth = rrn_to_birth_dot(str(emp.get("주민등록번호") or ""))
+    emp_hire = str(emp.get("입사일") or "").replace("-", ".")
+    ot_h = float(emp.get("연장근무시간", 0) or 0)
+    hol_h = float(emp.get("휴일근무시간", 0) or 0)
+    hourly_w = int(emp.get("약정시급", 0) or 0)
+    if hourly_w <= 0 and int(emp.get("기본급", 0) or 0) > 0:
+        hourly_w = int(round(int(emp.get("기본급", 0)) / 209.0))
+
+    pay_items, ded_items = _extract_nonzero_pay_and_ded_items(emp)
+    gross_tot_str = _fmt_won_zero(emp.get("지급액계"))
+    ded_tot_str = _fmt_won_zero(emp.get("공제액계"))
+    net_tot_str = _fmt_won_zero(emp.get("차인지급액"))
 
     elements: List[Any] = []
-    elements.append(Paragraph(f"{yyyy}년 {mm_num:02d}월분 급여명세서", title_style))
-    elements.append(Spacer(1, 6 * mm))
+    elements.append(Paragraph(f"{yyyy}년 {mm_num:02d}월분  급여명세서", title_style))
+    elements.append(Spacer(1, 5 * mm))
 
-    head_tbl = Table(
-        [[
-            Paragraph(f"회사명: {corp_name or '미입력'}", meta_left),
-            Paragraph(f"지급일: {pay_dt_dot}", meta_right),
-        ]],
-        colWidths=[87 * mm, 87 * mm],
-    )
-    head_tbl.setStyle(TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))
-    elements.append(head_tbl)
-    elements.append(Spacer(1, 2 * mm))
+    # ── 양식 6: '구' (구양식 - 상단 반페이지 컴팩트형 + 중앙 절취선) ──
+    if tpl == "구":
+        top_box_data = [
+            [f"사원코드:  {emp_code}", f"사 원 명:  {emp_name}", f"입 사 일:  {emp_hire}"],
+            [f"부      서:  {emp_dept}", f"직      급:  {emp_pos}", "호      봉:"],
+        ]
+        top_tbl = Table(top_box_data, colWidths=[58 * mm, 58 * mm, 58 * mm], rowHeights=[7 * mm, 7 * mm])
+        top_tbl.setStyle(TableStyle([
+            ("FONTNAME", (0, 0), (-1, -1), font_reg),
+            ("FONTSIZE", (0, 0), (-1, -1), 9.5),
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#D9D9D9")),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("BOX", (0, 0), (-1, -1), 0.7, colors.black),
+            ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ]))
+        elements.append(top_tbl)
 
-    info_tbl = Table(
-        [["성명", str(emp.get("성명", "")), "사번", str(emp.get("사원코드", "001"))]],
-        colWidths=[32 * mm, 55 * mm, 32 * mm, 55 * mm],
-        rowHeights=[8 * mm],
-    )
-    info_tbl.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, -1), font_reg),
-        ("FONTNAME", (0, 0), (0, 0), font_bold),
-        ("FONTNAME", (2, 0), (2, 0), font_bold),
-        ("FONTSIZE", (0, 0), (-1, -1), 10),
-        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("BACKGROUND", (0, 0), (0, 0), colors.HexColor("#F1F5F9")),
-        ("BACKGROUND", (2, 0), (2, 0), colors.HexColor("#F1F5F9")),
-        ("BOX", (0, 0), (-1, -1), 0.8, colors.HexColor("#334155")),
-        ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#94A3B8")),
-    ]))
-    elements.append(info_tbl)
-    elements.append(Spacer(1, 6 * mm))
+        body_rows_cnt = max(8, len(pay_items), len(ded_items))
+        gu_data: List[List[str]] = [["지 급 내 역", "지 급 액", "공 제 내 역", "공 제 액"]]
+        for i in range(body_rows_cnt):
+            p_nm, p_v = pay_items[i] if i < len(pay_items) else ("", 0)
+            d_nm, d_v = ded_items[i] if i < len(ded_items) else ("", 0)
+            gu_data.append([p_nm, _fmt_won_zero(p_v) if p_nm else "", d_nm, _fmt_won_zero(d_v) if d_nm else ""])
+        gu_data.append(["", "", "공 제 액 계", ded_tot_str])
+        gu_data.append(["지 급 액 계", gross_tot_str, "차인지급액", net_tot_str])
 
-    elements.append(Paragraph("세 부 내 역", sec_style))
-    elements.append(Spacer(1, 2 * mm))
+        gu_tbl = Table(
+            gu_data,
+            colWidths=[45 * mm, 42 * mm, 45 * mm, 42 * mm],
+            rowHeights=[7.5 * mm] + [6.0 * mm] * body_rows_cnt + [7.5 * mm, 7.5 * mm],
+        )
+        last_r = len(gu_data) - 1
+        gu_tbl.setStyle(TableStyle([
+            ("FONTNAME", (0, 0), (-1, -1), font_reg),
+            ("FONTNAME", (0, 0), (-1, 0), font_bold),
+            ("FONTNAME", (0, last_r - 1), (-1, last_r), font_bold),
+            ("FONTSIZE", (0, 0), (-1, -1), 9.5),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#D9D9D9")),
+            ("BACKGROUND", (2, last_r - 1), (3, last_r - 1), colors.HexColor("#D9D9D9")),
+            ("BACKGROUND", (0, last_r), (3, last_r), colors.HexColor("#D9D9D9")),
+            ("ALIGN", (0, 0), (-1, 0), "CENTER"),
+            ("ALIGN", (0, 1), (0, -1), "CENTER"),
+            ("ALIGN", (2, 1), (2, -1), "CENTER"),
+            ("ALIGN", (1, 1), (1, -1), "RIGHT"),
+            ("ALIGN", (3, 1), (3, -1), "RIGHT"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("BOX", (0, 0), (-1, -1), 0.7, colors.black),
+            ("LINEBELOW", (0, 0), (-1, 0), 0.7, colors.black),
+            ("LINEBEFORE", (1, 0), (1, -1), 0.5, colors.black),
+            ("LINEBEFORE", (2, 0), (2, -1), 0.5, colors.black),
+            ("LINEBEFORE", (3, 0), (3, -1), 0.5, colors.black),
+            ("LINEABOVE", (2, last_r - 1), (3, last_r - 1), 0.5, colors.black),
+            ("LINEABOVE", (0, last_r), (3, last_r), 0.5, colors.black),
+            ("RIGHTPADDING", (1, 1), (1, -1), 6),
+            ("RIGHTPADDING", (3, 1), (3, -1), 6),
+        ]))
+        elements.append(gu_tbl)
+        elements.append(Spacer(1, 2 * mm))
+        foot_tbl = Table(
+            [[Paragraph("귀하의 노고에 감사드립니다.", meta_left), Paragraph(corp_name or "", meta_right)]],
+            colWidths=[87 * mm, 87 * mm],
+        )
+        foot_tbl.setStyle(TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))
+        elements.append(foot_tbl)
+        elements.append(Spacer(1, 12 * mm))
+        elements.append(HRFlowable(width="100%", thickness=0.6, color=colors.HexColor("#64748B"), dash=(2, 2)))
+    else:
+        # ── 양식 1 ~ 5 공통 상단 회사명 / 지급일 ──
+        head_tbl = Table(
+            [[
+                Paragraph(f"회사명 :  {corp_name or ''}", meta_left),
+                Paragraph(f"지급일 :   {pay_dt_dot}", meta_right),
+            ]],
+            colWidths=[87 * mm, 87 * mm],
+        )
+        head_tbl.setStyle(TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 2), ("RIGHTPADDING", (0, 0), (-1, -1), 2)]))
+        elements.append(head_tbl)
+        elements.append(Spacer(1, 1.5 * mm))
 
-    pay_rows = [
-        ("기본급", emp.get("기본급")),
-        ("상여", emp.get("상여")),
-        ("식대", emp.get("식대")),
-        ("자가운전보조금", emp.get("자가운전보조금")),
-        ("약정연장근로수당", emp.get("약정연장근로수당")),
-        ("약정휴일근로수당", emp.get("약정휴일근로수당")),
-        ("연장근로수당", emp.get("연장근로수당")),
-        ("휴일근로수당", emp.get("휴일근로수당")),
-        ("결근공제", emp.get("결근공제")),
-        ("조정금액", emp.get("조정금액")),
-        ("미사용연차수당", emp.get("미사용연차수당")),
-    ]
-    ded_rows = [
-        ("국민연금", emp.get("국민연금")),
-        ("건강보험", emp.get("건강보험")),
-        ("고용보험", emp.get("고용보험")),
-        ("장기요양보험료", emp.get("장기요양보험료")),
-        ("소득세", emp.get("소득세")),
-        ("지방소득세", emp.get("지방소득세")),
-        ("학자금상환액", emp.get("학자금상환액")),
-        ("건강보험료정산", emp.get("건강보험료정산")),
-        ("장기요양보험료정산", emp.get("장기요양보험료정산")),
-        ("국민연금정산", emp.get("국민연금정산")),
-        ("", 0),
-    ]
+        # ── 상단 사원 인적사항 표 (양식별 분기) ──
+        if tpl == "근로기준1":
+            info_data = [
+                [f"사원코드 :    {emp_code}", f"사원명 :    {emp_name}", f"생년월일 :    {emp_birth}"],
+                [f"부  서 :    {emp_dept}", f"직  급 :    {emp_pos}", "호  봉 :"],
+            ]
+            info_tbl = Table(info_data, colWidths=[58 * mm, 58 * mm, 58 * mm], rowHeights=[6.5 * mm, 6.5 * mm])
+            info_tbl.setStyle(TableStyle([
+                ("FONTNAME", (0, 0), (-1, -1), font_reg),
+                ("FONTSIZE", (0, 0), (-1, -1), 9.5),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("BOX", (0, 0), (-1, -1), 0.6, colors.black),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ]))
+            elements.append(info_tbl)
+            elements.append(Spacer(1, 3 * mm))
+        elif tpl == "근로기준4":
+            info_data = [["성명", emp_name, "사번", emp_code]]
+            info_tbl = Table(info_data, colWidths=[22 * mm, 65 * mm, 22 * mm, 65 * mm], rowHeights=[7.5 * mm])
+            info_tbl.setStyle(TableStyle([
+                ("FONTNAME", (0, 0), (-1, -1), font_reg),
+                ("FONTSIZE", (0, 0), (-1, -1), 9.5),
+                ("ALIGN", (0, 0), (0, 0), "CENTER"),
+                ("ALIGN", (2, 0), (2, 0), "CENTER"),
+                ("ALIGN", (1, 0), (1, 0), "LEFT"),
+                ("ALIGN", (3, 0), (3, 0), "LEFT"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("BOX", (0, 0), (-1, -1), 0.6, colors.black),
+                ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.black),
+                ("LEFTPADDING", (1, 0), (1, 0), 6),
+                ("LEFTPADDING", (3, 0), (3, 0), 6),
+            ]))
+            elements.append(info_tbl)
+            elements.append(Spacer(1, 2 * mm))
+        else:
+            # 근로기준2, 근로기준3, 근로기준5 공통 2행×4열 격자표
+            birth_and_code = f"{emp_birth}          ({emp_code})" if emp_birth else f"({emp_code})"
+            info_data = [
+                ["성명", emp_name, "생년월일(사번)", birth_and_code],
+                ["부서", emp_dept, "직급", emp_pos],
+            ]
+            info_tbl = Table(info_data, colWidths=[22 * mm, 58 * mm, 32 * mm, 62 * mm], rowHeights=[7 * mm, 7 * mm])
+            info_tbl.setStyle(TableStyle([
+                ("FONTNAME", (0, 0), (-1, -1), font_reg),
+                ("FONTSIZE", (0, 0), (-1, -1), 9.5),
+                ("ALIGN", (0, 0), (0, -1), "CENTER"),
+                ("ALIGN", (2, 0), (2, -1), "CENTER"),
+                ("ALIGN", (1, 0), (1, -1), "LEFT"),
+                ("ALIGN", (3, 0), (3, -1), "LEFT"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("BOX", (0, 0), (-1, -1), 0.6, colors.black),
+                ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.black),
+                ("LEFTPADDING", (1, 0), (1, -1), 6),
+                ("LEFTPADDING", (3, 0), (3, -1), 6),
+            ]))
+            elements.append(info_tbl)
+            elements.append(Spacer(1, 3 * mm))
 
-    detail_data: List[List[str]] = [
-        ["지 급", "", "공 제", ""],
-        ["지급 항목", "지급 금액", "공제 항목", "공제 금액"],
-    ]
-    for (p_label, p_val), (d_label, d_val) in zip(pay_rows, ded_rows):
-        detail_data.append([
-            p_label,
-            _fmt_won(p_val),
-            d_label,
-            _fmt_won(d_val) if d_label else "",
-        ])
+        # ── 근로시간 · 통상시급 표 (근로기준1, 근로기준2, 근로기준5) ──
+        if tpl in ("근로기준1", "근로기준2"):
+            wh_data = [
+                ["연장근로시간", "야간근로시간", "휴일근로시간", "통상시급(원)"],
+                [
+                    f"{ot_h:g}" if ot_h > 0 else "",
+                    "",
+                    f"{hol_h:g}" if hol_h > 0 else "",
+                    f"{hourly_w:,}" if hourly_w > 0 else "",
+                ],
+            ]
+            wh_tbl = Table(wh_data, colWidths=[43.5 * mm] * 4, rowHeights=[6.8 * mm, 6.8 * mm])
+            wh_tbl.setStyle(TableStyle([
+                ("FONTNAME", (0, 0), (-1, -1), font_reg),
+                ("FONTSIZE", (0, 0), (-1, -1), 9.5),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("ALIGN", (3, 1), (3, 1), "RIGHT"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("BOX", (0, 0), (-1, -1), 0.6, colors.black),
+                ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.black),
+                ("RIGHTPADDING", (3, 1), (3, 1), 6),
+            ]))
+            elements.append(wh_tbl)
+            elements.append(Spacer(1, 1.5 * mm))
+        elif tpl == "근로기준5":
+            work_days = 20
+            tot_hours = int(round(float(emp.get("월근무시간", 160) or 160)))
+            wh_data = [
+                ["근로일수", "총 근무시간", "연장근로시간", "야간근로시간", "휴일근로시간", "통상시급(원)"],
+                [
+                    str(work_days),
+                    str(tot_hours),
+                    f"{ot_h:g}" if ot_h > 0 else "",
+                    "",
+                    f"{hol_h:g}" if hol_h > 0 else "",
+                    f"{hourly_w:,}" if hourly_w > 0 else "",
+                ],
+            ]
+            wh_tbl = Table(wh_data, colWidths=[29 * mm] * 6, rowHeights=[6.8 * mm, 6.8 * mm])
+            wh_tbl.setStyle(TableStyle([
+                ("FONTNAME", (0, 0), (-1, -1), font_reg),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("ALIGN", (5, 1), (5, 1), "RIGHT"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("BOX", (0, 0), (-1, -1), 0.6, colors.black),
+                ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.black),
+                ("RIGHTPADDING", (5, 1), (5, 1), 6),
+            ]))
+            elements.append(wh_tbl)
+            elements.append(Spacer(1, 1.5 * mm))
 
-    detail_data.append([
-        "지급액계",
-        _fmt_won_zero(emp.get("지급액계")),
-        "공제액계",
-        _fmt_won_zero(emp.get("공제액계")),
-    ])
-    detail_data.append([
-        "",
-        "",
-        "실지급액",
-        _fmt_won_zero(emp.get("차인지급액")),
-    ])
+        elements.append(Paragraph("(단위, 원)", unit_style))
+        elements.append(Spacer(1, 1 * mm))
 
-    detail_tbl = Table(
-        detail_data,
-        colWidths=[45 * mm, 42 * mm, 45 * mm, 42 * mm],
-        rowHeights=[7.5 * mm] * len(detail_data),
-    )
-    d_last = len(detail_data) - 1
-    detail_tbl.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, -1), font_reg),
-        ("FONTSIZE", (0, 0), (-1, -1), 9.5),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("SPAN", (0, 0), (1, 0)),
-        ("SPAN", (2, 0), (3, 0)),
-        ("SPAN", (0, d_last - 1), (0, d_last)),
-        ("SPAN", (1, d_last - 1), (1, d_last)),
-        ("BACKGROUND", (0, 0), (-1, 1), colors.HexColor("#F1F5F9")),
-        ("BACKGROUND", (0, d_last - 1), (-1, d_last), colors.HexColor("#F8FAFC")),
-        ("FONTNAME", (0, 0), (-1, 1), font_bold),
-        ("FONTNAME", (0, d_last - 1), (-1, d_last), font_bold),
-        ("ALIGN", (0, 0), (-1, 1), "CENTER"),
-        ("ALIGN", (0, 2), (0, -1), "CENTER"),
-        ("ALIGN", (2, 2), (2, -1), "CENTER"),
-        ("ALIGN", (1, 2), (1, -1), "RIGHT"),
-        ("ALIGN", (3, 2), (3, -1), "RIGHT"),
-        ("BOX", (0, 0), (-1, -1), 0.9, colors.HexColor("#334155")),
-        ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#94A3B8")),
-        ("RIGHTPADDING", (1, 2), (1, -1), 6),
-        ("RIGHTPADDING", (3, 2), (3, -1), 6),
-    ]))
-    elements.append(detail_tbl)
-    elements.append(Spacer(1, 6 * mm))
+        # ── 메인 세부내역 표 (양식별 4열 vs 5열 분기) ──
+        body_rows_cnt = max(12, len(pay_items), len(ded_items))
 
-    elements.append(Paragraph("계 산 방 법", sec_style))
-    elements.append(Spacer(1, 2 * mm))
+        if tpl in ("근로기준1", "근로기준4"):
+            detail_data: List[List[str]] = []
+            if tpl == "근로기준4":
+                detail_data.append(["세부내역", "", "", ""])
+                detail_data.append(["지급 항목", "지급 금액", "공제 항목", "공제 금액"])
+            else:
+                detail_data.append(["지 급 내 역", "지 급 액", "공 제 내 역", "공 제 액"])
 
-    calc_rows: List[List[str]] = [["구분", "산출식 또는 산출방법", "지급액"]]
-    ot_pay = int(emp.get("연장근로수당", 0) or 0)
-    hol_pay = int(emp.get("휴일근로수당", 0) or 0)
-    fixed_ot = int(emp.get("약정연장근로수당", 0) or 0)
-    meal_pay = int(emp.get("식대", 0) or 0)
-    abs_ded = int(emp.get("결근공제", 0) or 0)
+            hdr_rows = len(detail_data)
+            for i in range(body_rows_cnt):
+                p_nm, p_v = pay_items[i] if i < len(pay_items) else ("", 0)
+                d_nm, d_v = ded_items[i] if i < len(ded_items) else ("", 0)
+                detail_data.append([
+                    p_nm,
+                    _fmt_won_zero(p_v) if p_nm else "",
+                    d_nm,
+                    _fmt_won_zero(d_v) if d_nm else "",
+                ])
 
-    if fixed_ot > 0:
-        calc_rows.append(["약정연장근로수당", "근로계약 약정 고정연장수당", _fmt_won_zero(fixed_ot)])
-    if ot_pay > 0:
-        ot_h = emp.get("연장근무시간", 0)
-        hr_w = emp.get("약정시급", 0)
-        formula_txt = f"연장근로시간({ot_h:g}h) X 시급({hr_w:,}원) X 1.5" if (ot_h and hr_w) else "연장근로시간 X 시급 X 1.5"
-        calc_rows.append(["연장근로수당", formula_txt, _fmt_won_zero(ot_pay)])
-    if hol_pay > 0:
-        calc_rows.append(["휴일근로수당", "휴일근로시간 X 시급 X 1.5", _fmt_won_zero(hol_pay)])
-    if abs_ded != 0:
-        calc_rows.append(["결근공제", "결근시간 X 약정시급 차감", _fmt_won_zero(abs_ded)])
-    if meal_pay > 0:
-        calc_rows.append(["식대", "비과세식대 (월 20만원 한도)", _fmt_won_zero(meal_pay)])
+            net_label = "실지급액" if tpl == "근로기준4" else "차인지급액"
+            detail_data.append(["", "", "공 제 액 계", ded_tot_str])
+            detail_data.append(["지 급 액 계", gross_tot_str, net_label, net_tot_str])
 
-    while len(calc_rows) < 4:
-        calc_rows.append(["", "", ""])
+            last_r = len(detail_data) - 1
+            row_h = [7 * mm] * hdr_rows + [5.8 * mm] * body_rows_cnt + [7 * mm, 7 * mm]
+            det_tbl = Table(detail_data, colWidths=[45 * mm, 42 * mm, 45 * mm, 42 * mm], rowHeights=row_h)
 
-    calc_tbl = Table(
-        calc_rows,
-        colWidths=[45 * mm, 87 * mm, 42 * mm],
-        rowHeights=[7.5 * mm] * len(calc_rows),
-    )
-    calc_tbl.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, -1), font_reg),
-        ("FONTNAME", (0, 0), (-1, 0), font_bold),
-        ("FONTSIZE", (0, 0), (-1, -1), 9),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F1F5F9")),
-        ("ALIGN", (0, 0), (1, -1), "CENTER"),
-        ("ALIGN", (2, 1), (2, -1), "RIGHT"),
-        ("ALIGN", (2, 0), (2, 0), "CENTER"),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("BOX", (0, 0), (-1, -1), 0.8, colors.HexColor("#334155")),
-        ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#94A3B8")),
-        ("RIGHTPADDING", (2, 1), (2, -1), 6),
-    ]))
-    elements.append(calc_tbl)
-    elements.append(Spacer(1, 10 * mm))
-    elements.append(Paragraph("귀하의 노고에 감사드립니다.", footer_style))
+            st_cmds: List[Any] = [
+                ("FONTNAME", (0, 0), (-1, -1), font_reg),
+                ("FONTNAME", (0, 0), (-1, hdr_rows - 1), font_bold),
+                ("FONTNAME", (0, last_r - 1), (-1, last_r), font_bold),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+                ("BACKGROUND", (0, 0), (-1, hdr_rows - 1), colors.HexColor("#D9D9D9")),
+                ("BACKGROUND", (2, last_r - 1), (3, last_r - 1), colors.HexColor("#D9D9D9")),
+                ("BACKGROUND", (0, last_r), (3, last_r), colors.HexColor("#D9D9D9")),
+                ("ALIGN", (0, 0), (-1, hdr_rows - 1), "CENTER"),
+                ("ALIGN", (0, hdr_rows), (0, -1), "CENTER"),
+                ("ALIGN", (2, hdr_rows), (2, -1), "CENTER"),
+                ("ALIGN", (1, hdr_rows), (1, -1), "RIGHT"),
+                ("ALIGN", (3, hdr_rows), (3, -1), "RIGHT"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("BOX", (0, 0), (-1, -1), 0.7, colors.black),
+                ("LINEBELOW", (0, hdr_rows - 1), (-1, hdr_rows - 1), 0.6, colors.black),
+                ("LINEBEFORE", (1, 0), (1, -1), 0.5, colors.black),
+                ("LINEBEFORE", (2, 0), (2, -1), 0.5, colors.black),
+                ("LINEBEFORE", (3, 0), (3, -1), 0.5, colors.black),
+                ("LINEABOVE", (2, last_r - 1), (3, last_r - 1), 0.5, colors.black),
+                ("LINEABOVE", (0, last_r), (3, last_r), 0.5, colors.black),
+                ("RIGHTPADDING", (1, hdr_rows), (1, -1), 6),
+                ("RIGHTPADDING", (3, hdr_rows), (3, -1), 6),
+            ]
+            if tpl == "근로기준4":
+                st_cmds.append(("SPAN", (0, 0), (3, 0)))
+                st_cmds.append(("LINEBELOW", (0, 0), (3, 0), 0.5, colors.black))
+            det_tbl.setStyle(TableStyle(st_cmds))
+            elements.append(det_tbl)
+        else:
+            # 근로기준2, 근로기준3, 근로기준5 공통 5열 ('구분[매월] | 지급 항목 | 지급 금액 | 공제 항목 | 공제 금액')
+            detail_data5: List[List[str]] = [
+                ["세부내역", "", "", "", ""],
+                ["구분", "지급 항목", "지급 금액", "공제 항목", "공제 금액"],
+            ]
+            for i in range(body_rows_cnt):
+                p_nm, p_v = pay_items[i] if i < len(pay_items) else ("", 0)
+                d_nm, d_v = ded_items[i] if i < len(ded_items) else ("", 0)
+                detail_data5.append([
+                    "매월" if p_nm else "",
+                    p_nm,
+                    _fmt_won_zero(p_v) if p_nm else "",
+                    d_nm,
+                    _fmt_won_zero(d_v) if d_nm else "",
+                ])
+            detail_data5.append(["", "", "", "공 제 액 계", ded_tot_str])
+            detail_data5.append(["지 급 액 계", "", gross_tot_str, "실지급액", net_tot_str])
+
+            last_r = len(detail_data5) - 1
+            row_h = [6.8 * mm, 6.8 * mm] + [5.6 * mm] * body_rows_cnt + [6.8 * mm, 6.8 * mm]
+            det_tbl = Table(
+                detail_data5,
+                colWidths=[18 * mm, 36 * mm, 36 * mm, 44 * mm, 40 * mm],
+                rowHeights=row_h,
+            )
+            det_tbl.setStyle(TableStyle([
+                ("FONTNAME", (0, 0), (-1, -1), font_reg),
+                ("FONTNAME", (0, 0), (-1, 1), font_bold),
+                ("FONTNAME", (0, last_r - 1), (-1, last_r), font_bold),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+                ("SPAN", (0, 0), (4, 0)),
+                ("SPAN", (0, last_r), (1, last_r)),
+                ("BACKGROUND", (0, 0), (-1, 1), colors.HexColor("#D9D9D9")),
+                ("BACKGROUND", (3, last_r - 1), (4, last_r - 1), colors.HexColor("#D9D9D9")),
+                ("BACKGROUND", (0, last_r), (4, last_r), colors.HexColor("#D9D9D9")),
+                ("ALIGN", (0, 0), (-1, 1), "CENTER"),
+                ("ALIGN", (0, 2), (1, -1), "CENTER"),
+                ("ALIGN", (3, 2), (3, -1), "CENTER"),
+                ("ALIGN", (2, 2), (2, -1), "RIGHT"),
+                ("ALIGN", (4, 2), (4, -1), "RIGHT"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("BOX", (0, 0), (-1, -1), 0.7, colors.black),
+                ("LINEBELOW", (0, 0), (4, 0), 0.5, colors.black),
+                ("LINEBELOW", (0, 1), (4, 1), 0.6, colors.black),
+                ("LINEBEFORE", (1, 1), (1, last_r - 1), 0.5, colors.black),
+                ("LINEBEFORE", (2, 1), (2, -1), 0.5, colors.black),
+                ("LINEBEFORE", (3, 1), (3, -1), 0.5, colors.black),
+                ("LINEBEFORE", (4, 1), (4, -1), 0.5, colors.black),
+                ("LINEABOVE", (3, last_r - 1), (4, last_r - 1), 0.5, colors.black),
+                ("LINEABOVE", (0, last_r), (4, last_r), 0.5, colors.black),
+                ("RIGHTPADDING", (2, 2), (2, -1), 6),
+                ("RIGHTPADDING", (4, 2), (4, -1), 6),
+            ]))
+            elements.append(det_tbl)
+
+        elements.append(Spacer(1, 1.5 * mm))
+        elements.append(Paragraph("(단위, 원)", unit_style))
+        elements.append(Spacer(1, 1 * mm))
+        elements.append(_build_calc_method_table(emp, font_reg, font_bold))
+        elements.append(Spacer(1, 4 * mm))
+        elements.append(Paragraph("귀하의 노고에 감사드립니다.", footer_style))
 
     doc.build(elements)
     raw_pdf = buf.getvalue()
@@ -824,42 +1021,111 @@ def render_single_employee_payslip_pdf(
     return raw_pdf
 
 
+def convert_pdf_bytes_to_jpg_bytes(pdf_bytes: bytes, scale: float = 2.2) -> bytes:
+    """단일 페이지 PDF 바이트를 고해상도 JPG 바이트로 변환 (pypdfium2 + Pillow)"""
+    pdf_doc = pdfium.PdfDocument(pdf_bytes)
+    page = pdf_doc[0]
+    bitmap = page.render(scale=scale)
+    pil_img: Image.Image = bitmap.to_pil()
+    if pil_img.mode != "RGB":
+        pil_img = pil_img.convert("RGB")
+    img_buf = io.BytesIO()
+    pil_img.save(img_buf, format="JPEG", quality=92)
+    return img_buf.getvalue()
+
+
 def export_employee_payslips_zip(
     employees: List[Dict[str, Any]],
     corp_name: str = "",
     year_month: str = "",
     pay_date: str = "",
     encrypt_with_birth: bool = False,
+    template_type: str = "근로기준1",
     start_index: int = 0,
     max_count: int = 200,
 ) -> bytes:
     """
-    인별 급여명세서 PDF 일괄 생성 후 단일 ZIP 파일로 압축 반환 (1회 최대 200명, start_index로 201번 이후 분할 다운로드 지원):
-    - encrypt_with_birth=True 선택 시 주민등록번호/생년월일 앞 6자리(YYMMDD)로 개별 PDF 암호화
+    인별 급여명세서 PDF 일괄 생성 후 단일 ZIP 파일로 압축 반환 (1회 최대 200명):
+    - ZIP 내 개별 파일명 규칙: `근로자명_급여명세서_YYMM.pdf` (동명이인 존재 시 `근로자명(사번)_급여명세서_YYMM.pdf`)
     """
     yyyy, mm_num = _parse_ym_parts(year_month)
     yymm = f"{str(yyyy)[2:]}{mm_num:02d}"
     sliced = (employees or [])[start_index : start_index + max_count]
 
+    seen_names: Dict[str, int] = {}
     zip_buf = io.BytesIO()
     with zipfile.ZipFile(zip_buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
         for offset, emp in enumerate(sliced, start=start_index + 1):
             name = str(emp.get("성명") or f"사원{offset}").strip()
+            safe_name = re.sub(r'[\\/*?:"<>|]', "", name)
+            seen_names[safe_name] = seen_names.get(safe_name, 0) + 1
+            if seen_names[safe_name] > 1:
+                code_sfx = str(emp.get("사원코드") or offset)
+                name_tag = f"{safe_name}({code_sfx})"
+            else:
+                name_tag = safe_name
+
             pwd: Optional[str] = None
             if encrypt_with_birth:
                 birth6 = extract_birth_6digits(str(emp.get("주민등록번호", "")))
                 if len(birth6) == 6:
                     pwd = birth6
+
             pdf_bytes = render_single_employee_payslip_pdf(
                 emp=emp,
                 corp_name=corp_name,
                 year_month=year_month,
                 pay_date=pay_date,
                 password=pwd,
+                template_type=template_type,
             )
-            safe_name = re.sub(r'[\\/*?:"<>|]', "", name)
-            filename = f"{yymm}_급여명세서_{safe_name}님.pdf"
+            filename = f"{name_tag}_급여명세서_{yymm}.pdf"
             zf.writestr(filename, pdf_bytes)
+
+    return zip_buf.getvalue()
+
+
+def export_employee_payslips_jpg_zip(
+    employees: List[Dict[str, Any]],
+    corp_name: str = "",
+    year_month: str = "",
+    pay_date: str = "",
+    template_type: str = "근로기준1",
+    start_index: int = 0,
+    max_count: int = 200,
+) -> bytes:
+    """
+    인별 급여명세서 이미지(JPG) 일괄 생성 후 단일 ZIP 파일로 압축 반환 (1회 최대 200명):
+    - ZIP 내 개별 파일명 규칙: `근로자명_급여명세서_YYMM.jpg`
+    """
+    yyyy, mm_num = _parse_ym_parts(year_month)
+    yymm = f"{str(yyyy)[2:]}{mm_num:02d}"
+    sliced = (employees or [])[start_index : start_index + max_count]
+
+    seen_names: Dict[str, int] = {}
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for offset, emp in enumerate(sliced, start=start_index + 1):
+            name = str(emp.get("성명") or f"사원{offset}").strip()
+            safe_name = re.sub(r'[\\/*?:"<>|]', "", name)
+            seen_names[safe_name] = seen_names.get(safe_name, 0) + 1
+            if seen_names[safe_name] > 1:
+                code_sfx = str(emp.get("사원코드") or offset)
+                name_tag = f"{safe_name}({code_sfx})"
+            else:
+                name_tag = safe_name
+
+            pdf_bytes = render_single_employee_payslip_pdf(
+                emp=emp,
+                corp_name=corp_name,
+                year_month=year_month,
+                pay_date=pay_date,
+                password=None,
+                template_type=template_type,
+            )
+            jpg_bytes = convert_pdf_bytes_to_jpg_bytes(pdf_bytes)
+            filename = f"{name_tag}_급여명세서_{yymm}.jpg"
+            zf.writestr(filename, jpg_bytes)
 
     return zip_buf.getvalue()
 
@@ -873,9 +1139,6 @@ def export_freelancer_ledger_pdf(
     corp_name: str = "",
     year_month: str = "",
 ) -> bytes:
-    """
-    표준 사업소득지급대장 PDF 생성 (A4 Portrait, 2단 헤더 + 총계 블록)
-    """
     font_reg, font_bold = get_korean_font_names()
     yyyy, mm_num = _parse_ym_parts(year_month)
 
@@ -918,8 +1181,8 @@ def export_freelancer_ledger_pdf(
         tot_ltax += ltax
         tot_net += net
 
-        ym_str = str(fr.get("귀속년월") or f"{yyyy}-{mm_num:02d}").replace("-", "/")
-        pay_str = str(fr.get("지급년월일") or f"{yyyy}-{mm_num:02d}")[:7].replace("-", "/")
+        ym_str = str(fr.get("귀속년월") or f"{yyyy}-{mm_num:02d}").replace("-", ".")
+        pay_str = str(fr.get("지급년월일") or f"{yyyy}-{mm_num:02d}")[:7].replace("-", ".")
 
         r1 = [
             str(idx),
@@ -1007,15 +1270,6 @@ def render_single_freelancer_statement_pdf(
     year_month: str = "",
     pay_date: str = "",
 ) -> bytes:
-    """
-    단일 사업소득명세서 PDF 생성 (세로형 심플 레이아웃):
-    1) 상단 타이틀: "사업소득명세서"
-    2) 기본정보 표: "귀속연월, 지급연월(일자), 소득자 성명, 소득구분"
-    3) 지급 및 공제 요약 표:
-       - 세전금액 (지급총액)
-       - 공제가액 (소득세 3% / 지방소득세 0.3% / 공제합계 3.3% — 10원 미만 절사)
-       - 차인지급액 (실지급액)
-    """
     font_reg, font_bold = get_korean_font_names()
     yyyy, mm_num = _parse_ym_parts(fr.get("귀속년월") or year_month)
     ym_kor = f"{yyyy}년 {mm_num:02d}월"
@@ -1026,6 +1280,10 @@ def render_single_freelancer_statement_pdf(
     ltax = int(fr.get("지방소득세", 0) or 0)
     ded_total = int(fr.get("공제액계", itax + ltax) or (itax + ltax))
     net = int(fr.get("차인지급액", gross - ded_total) or (gross - ded_total))
+
+    raw_ind = str(fr.get("소득구분") or "940909")
+    m_ind = re.search(r"\b(\d{6})\b", raw_ind)
+    clean_ind = m_ind.group(1) if m_ind else "940909"
 
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -1048,10 +1306,9 @@ def render_single_freelancer_statement_pdf(
     elements.append(Paragraph(f"원천징수의무자(회사명) : {corp_name or '미입력'}", sub_style))
     elements.append(Spacer(1, 8 * mm))
 
-    # 1. 귀속연월, 지급연월, 소득자 성명 테이블 (칸 넘침 방지 및 정확한 세법 용어 '소득자 성명' 적용)
     info_data = [
         ["귀속연월", ym_kor, "지급연월(일자)", pay_dt_str],
-        ["근로자명(성명)", str(fr.get("성명", "")), "소득구분", f"사업소득 (3.3% / {fr.get('소득구분', '940909')})"],
+        ["근로자명(성명)", str(fr.get("성명", "")), "소득구분", f"사업소득 (3.3% / {clean_ind})"],
     ]
     info_tbl = Table(
         info_data,
@@ -1073,14 +1330,14 @@ def render_single_freelancer_statement_pdf(
     elements.append(info_tbl)
     elements.append(Spacer(1, 8 * mm))
 
-    # 2. 세전금액 -> 공제가액 -> 차인지급액 세로 표 ('10원 미만 절사' 명시)
     elements.append(Paragraph("지급 및 원천징수 공제 내역", sec_style))
     elements.append(Spacer(1, 2 * mm))
 
+    itax_note = "소액부징수 (소득세 1,000원 미만 면제)" if (0 < gross < 33_340 and itax == 0) else "세전금액 × 3.0% (10원 미만 절사)"
     amt_data = [
         ["구 분", "산출 기준", "금 액 (원)"],
         ["세전금액 (지급총액)", "약정 사업소득 지급총액", f"{gross:,} 원"],
-        ["공제가액 - 소득세", "세전금액 × 3.0% (10원 미만 절사)", f"{itax:,} 원"],
+        ["공제가액 - 소득세", itax_note, f"{itax:,} 원"],
         ["공제가액 - 지방소득세", "소득세 × 10% (10원 미만 절사)", f"{ltax:,} 원"],
         ["공제가액 합계", "총 3.3% 원천징수 세액", f"{ded_total:,} 원"],
         ["차인지급액 (실지급액)", "세전금액 - 공제가액 합계", f"{net:,} 원"],
@@ -1116,19 +1373,6 @@ def render_single_freelancer_statement_pdf(
     return buf.getvalue()
 
 
-def convert_pdf_bytes_to_jpg_bytes(pdf_bytes: bytes, scale: float = 2.2) -> bytes:
-    """단일 페이지 PDF 바이트를 고해상도 JPG 바이트로 변환 (pypdfium2 + Pillow)"""
-    pdf_doc = pdfium.PdfDocument(pdf_bytes)
-    page = pdf_doc[0]
-    bitmap = page.render(scale=scale)
-    pil_img: Image.Image = bitmap.to_pil()
-    if pil_img.mode != "RGB":
-        pil_img = pil_img.convert("RGB")
-    img_buf = io.BytesIO()
-    pil_img.save(img_buf, format="JPEG", quality=92)
-    return img_buf.getvalue()
-
-
 def export_freelancer_statements_pdf_zip(
     freelancers: List[Dict[str, Any]],
     corp_name: str = "",
@@ -1137,23 +1381,34 @@ def export_freelancer_statements_pdf_zip(
     start_index: int = 0,
     max_count: int = 100,
 ) -> bytes:
-    """인별 사업소득명세서 PDF 일괄 생성 후 단일 ZIP 파일로 압축 반환 (1회 최대 100명, start_index로 101번 이후 분할 다운로드 지원)"""
+    """
+    인별 사업소득명세서 PDF 일괄 생성 후 단일 ZIP 파일로 압축 반환 (1회 최대 100명):
+    - ZIP 내 개별 파일명 규칙: `근로자명_사업소득명세서_YYMM.pdf`
+    """
     yyyy, mm_num = _parse_ym_parts(year_month)
     yymm = f"{str(yyyy)[2:]}{mm_num:02d}"
     sliced = (freelancers or [])[start_index : start_index + max_count]
 
+    seen_names: Dict[str, int] = {}
     zip_buf = io.BytesIO()
     with zipfile.ZipFile(zip_buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
         for offset, fr in enumerate(sliced, start=start_index + 1):
             name = str(fr.get("성명") or f"소득자{offset}").strip()
+            safe_name = re.sub(r'[\\/*?:"<>|]', "", name)
+            seen_names[safe_name] = seen_names.get(safe_name, 0) + 1
+            if seen_names[safe_name] > 1:
+                code_sfx = str(fr.get("코드") or offset)
+                name_tag = f"{safe_name}({code_sfx})"
+            else:
+                name_tag = safe_name
+
             pdf_bytes = render_single_freelancer_statement_pdf(
                 fr=fr,
                 corp_name=corp_name,
                 year_month=year_month,
                 pay_date=pay_date,
             )
-            safe_name = re.sub(r'[\\/*?:"<>|]', "", name)
-            zf.writestr(f"{yymm}_사업소득명세서_{safe_name}님.pdf", pdf_bytes)
+            zf.writestr(f"{name_tag}_사업소득명세서_{yymm}.pdf", pdf_bytes)
     return zip_buf.getvalue()
 
 
@@ -1165,15 +1420,27 @@ def export_freelancer_statements_jpg_zip(
     start_index: int = 0,
     max_count: int = 100,
 ) -> bytes:
-    """인별 사업소득명세서 이미지(JPG) 일괄 생성 후 단일 ZIP 파일로 압축 반환 (1회 최대 100명, start_index로 101번 이후 분할 다운로드 지원)"""
+    """
+    인별 사업소득명세서 이미지(JPG) 일괄 생성 후 단일 ZIP 파일로 압축 반환 (1회 최대 100명):
+    - ZIP 내 개별 파일명 규칙: `근로자명_사업소득명세서_YYMM.jpg`
+    """
     yyyy, mm_num = _parse_ym_parts(year_month)
     yymm = f"{str(yyyy)[2:]}{mm_num:02d}"
     sliced = (freelancers or [])[start_index : start_index + max_count]
 
+    seen_names: Dict[str, int] = {}
     zip_buf = io.BytesIO()
     with zipfile.ZipFile(zip_buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
         for offset, fr in enumerate(sliced, start=start_index + 1):
             name = str(fr.get("성명") or f"소득자{offset}").strip()
+            safe_name = re.sub(r'[\\/*?:"<>|]', "", name)
+            seen_names[safe_name] = seen_names.get(safe_name, 0) + 1
+            if seen_names[safe_name] > 1:
+                code_sfx = str(fr.get("코드") or offset)
+                name_tag = f"{safe_name}({code_sfx})"
+            else:
+                name_tag = safe_name
+
             pdf_bytes = render_single_freelancer_statement_pdf(
                 fr=fr,
                 corp_name=corp_name,
@@ -1181,6 +1448,86 @@ def export_freelancer_statements_jpg_zip(
                 pay_date=pay_date,
             )
             jpg_bytes = convert_pdf_bytes_to_jpg_bytes(pdf_bytes)
-            safe_name = re.sub(r'[\\/*?:"<>|]', "", name)
-            zf.writestr(f"{yymm}_사업소득명세서_{safe_name}님.jpg", jpg_bytes)
+            zf.writestr(f"{name_tag}_사업소득명세서_{yymm}.jpg", jpg_bytes)
     return zip_buf.getvalue()
+
+
+# ─────────────────────────────────────────────────────────────
+# 7. 마우스 오버(Hover) 돋보기 미리보기용 Base64 이미지 캐시 생성기
+# ─────────────────────────────────────────────────────────────
+
+def get_payslip_template_preview_b64(template_type: str = "근로기준1") -> str:
+    """
+    급여명세서 6종 양식 각각의 샘플 미리보기 JPG 이미지를 생성하여 Base64 문자열로 캐싱 반환
+    (실제 개인정보 없이 가상 샘플 데이터 사용)
+    """
+    cache_key = f"emp_slip_{template_type}"
+    if cache_key in _PREVIEW_B64_CACHE:
+        return _PREVIEW_B64_CACHE[cache_key]
+
+    sample_emp = {
+        "사원코드": "001",
+        "성명": "홍길동",
+        "주민등록번호": "950101-1******",
+        "입사일": "2025-01-01",
+        "부서": "경영지원팀",
+        "직급": "사원",
+        "기본급": 2_620_000,
+        "식대": 200_000,
+        "연장근로수당": 18_000,
+        "지급액계": 2_838_000,
+        "국민연금": 124_450,
+        "건강보험": 94_180,
+        "장기요양보험료": 12_370,
+        "고용보험": 23_740,
+        "소득세": 42_260,
+        "지방소득세": 4_220,
+        "공제액계": 301_220,
+        "차인지급액": 2_536_780,
+        "약정시급": 12_536,
+        "연장근무시간": 1.0,
+        "월근무시간": 160.0,
+    }
+    pdf_b = render_single_employee_payslip_pdf(
+        emp=sample_emp,
+        corp_name="주식회사 샘플기업",
+        year_month="2026-10",
+        pay_date="2026.10.25",
+        template_type=template_type,
+    )
+    jpg_b = convert_pdf_bytes_to_jpg_bytes(pdf_b, scale=1.35)
+    b64_str = base64.b64encode(jpg_b).decode("ascii")
+    _PREVIEW_B64_CACHE[cache_key] = b64_str
+    return b64_str
+
+
+def get_freelancer_statement_preview_b64() -> str:
+    """
+    사업소득명세서 세로형 양식의 샘플 미리보기 JPG 이미지를 생성하여 Base64 문자열로 캐싱 반환
+    """
+    cache_key = "free_slip_default"
+    if cache_key in _PREVIEW_B64_CACHE:
+        return _PREVIEW_B64_CACHE[cache_key]
+
+    sample_fr = {
+        "코드": "0001",
+        "성명": "홍길동",
+        "소득구분": "940909",
+        "귀속년월": "2026-10",
+        "지급년월일": "2026-10-25",
+        "지급총액": 2_000_000,
+        "소득세": 60_000,
+        "지방소득세": 6_000,
+        "공제액계": 66_000,
+        "차인지급액": 1_934_000,
+    }
+    pdf_b = render_single_freelancer_statement_pdf(
+        fr=sample_fr,
+        corp_name="주식회사 샘플기업",
+        year_month="2026-10",
+        pay_date="2026-10-25",
+    )
+    jpg_b = convert_pdf_bytes_to_jpg_bytes(pdf_b, scale=1.35)
+    b64_str = base64.b64encode(jpg_b).decode("ascii")
+    _PREVIEW_B64_CACHE[cache_key] = b64_str
+    return b64_str

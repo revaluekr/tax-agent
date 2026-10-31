@@ -236,9 +236,9 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
     )
     with st.container(key="ec_drop"):
         ups = st.file_uploader(
-            "여기에 파일(PDF·엑셀·CSV·이미지)을 끌어다 놓으세요",
+            "여기에 파일(PDF·엑셀·CSV·이미지·인건비백업 .paybak)을 끌어다 놓으세요",
             accept_multiple_files=True,
-            type=["pdf", "xlsx", "xls", "csv", "png", "jpg", "jpeg"],
+            type=["pdf", "xlsx", "xls", "csv", "png", "jpg", "jpeg", "paybak"],
             key=f"ec_up_{s['uploader_ver']}",
             label_visibility="collapsed",
         )
@@ -254,6 +254,29 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
                     min(99, int((idx_u - 1) * 100 / max(1, total_new))),
                     text=f"📄 파일 안전 판독 중 ({idx_u}/{total_new}): {u.name}",
                 )
+                if str(getattr(u, "name", "")).lower().endswith(".paybak"):
+                    try:
+                        from payroll_automated.backup import decrypt_paybak_to_client_db, client_db_to_wht_markdown_by_year
+                        db_bak = decrypt_paybak_to_client_db(u.getvalue())
+                        c_info_bak = db_bak.get("corp_info", {})
+                        c_nm = str(c_info_bak.get("corp_name") or "").strip()
+                        wp_from_bak = str(c_info_bak.get("workplace_label") or c_nm or "본점").strip()
+                        if c_nm and not (s.get("biz") or {}).get("상호"):
+                            s.setdefault("biz", {})["상호"] = c_nm
+                        clean_wp = _sanitize_workplace_label(wp_from_bak, _default_workplace_label(s))
+                        md_by_yr = client_db_to_wht_markdown_by_year(db_bak, default_workplace=clean_wp)
+                        if md_by_yr:
+                            for yr_int, md_tx in md_by_yr.items():
+                                yr_k = f"wht_{yr_int}"
+                                entry_name = u.name if len(md_by_yr) == 1 else f"{u.name} ({yr_int}년)"
+                                s["files"][entry_name] = {
+                                    "key": yr_k if yr_k in all_labels else P.classify_file(u.name, md_tx),
+                                    "text": md_tx,
+                                    "wp": clean_wp,
+                                }
+                            continue
+                    except Exception:
+                        pass
                 text = _read_upload_text(u, extract_file_fn, room_key)
                 auto_wp = _sanitize_workplace_label(getattr(P, "infer_workplace_name", lambda nm, tx="": "")(u.name, text), _default_workplace_label(s))
                 s["files"][u.name] = {
