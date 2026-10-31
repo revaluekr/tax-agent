@@ -2454,7 +2454,7 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
     bottom_placeholder = (
         "급여대장·4대보험 고지서(엑셀·PDF·사진·.paybak)를 이 칸에 끌어다 놓거나 카톡 급여 내역(예: 홍길동 실수령 280만원)을 입력하세요"
         if is_emp_mode
-        else "사업소득대장(엑셀·PDF·사진·.paybak)을 이 칸에 끌어다 놓거나 내역(예: 김미모, 830411-*******, 세후 300만원)을 입력하세요"
+        else "사업소득대장(엑셀·PDF·사진·.paybak)을 이 칸에 끌어다 놓거나 내역(예: 홍길동, 950101-*******, 세후 300만원)을 입력하세요"
     )
     _chat_sig = inspect.signature(st.chat_input).parameters
     try:

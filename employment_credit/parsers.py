@@ -1881,7 +1881,7 @@ def birth_from_rrn7(rrn7: str) -> tuple[date | None, bool]:
         return None, False
     yy, mm, dd = int(s[0:2]), int(s[2:4]), int(s[4:6])
     if len(s) < 7:
-        # 주민번호 뒷자리가 모두 가려진 경우(예: 001125-*******): 만 15세 이상이 되는 세기로 추정
+        # 주민번호 뒷자리가 모두 가려진 경우(예: 000101-*******): 만 15세 이상이 되는 세기로 추정
         return _infer_birth(s[:6], ""), False
     g = int(s[6])
     century_map = {1: 1900, 2: 1900, 5: 1900, 6: 1900, 3: 2000, 4: 2000, 7: 2000, 8: 2000, 9: 1800, 0: 1800}

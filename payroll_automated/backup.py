@@ -29,8 +29,23 @@ BACKUP_MAGIC_HEADER = b"PAYBAK_V1:"
 PBKDF2_ITERATIONS = 100_000
 
 
+_LEGACY_DEFAULT_KEY = "TAX_AGENT_PAYROLL_DEFAULT_KEY_2026"
+
+
+def _default_backup_key() -> str:
+    """암호 미입력 시 쓰는 기본 키: Streamlit Secrets의 PAYBAK_DEFAULT_KEY가 있으면 그 값, 없으면 기존 기본 키."""
+    try:
+        import streamlit as st
+        v = str(st.secrets.get("PAYBAK_DEFAULT_KEY", "") or "").strip()
+        if v:
+            return v
+    except Exception:
+        pass
+    return (os.environ.get("PAYBAK_DEFAULT_KEY") or "").strip() or _LEGACY_DEFAULT_KEY
+
+
 def _derive_fernet_key(password: str, salt: bytes) -> bytes:
-    pwd_bytes = (password or "TAX_AGENT_PAYROLL_DEFAULT_KEY_2026").encode("utf-8")
+    pwd_bytes = (password or _default_backup_key()).encode("utf-8")
     dk = hashlib.pbkdf2_hmac("sha256", pwd_bytes, salt, PBKDF2_ITERATIONS, dklen=32)
     return base64.urlsafe_b64encode(dk)
 
@@ -184,7 +199,7 @@ def decrypt_paybak_to_client_db(file_bytes: bytes, password: str = "") -> Dict[s
         payload = file_bytes[len(BACKUP_MAGIC_HEADER):]
         salt = payload[:16]
         token = payload[16:]
-        for cand_pw in (password, ""):
+        for cand_pw in (password, "", _LEGACY_DEFAULT_KEY):  # 예전 기본 키로 만든 백업도 열리게 유지
             try:
                 key = _derive_fernet_key(cand_pw, salt)
                 decompressed = zlib.decompress(Fernet(key).decrypt(token))
