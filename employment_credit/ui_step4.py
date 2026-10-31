@@ -7,32 +7,20 @@ PDF 출력 시각 스타일을 자율 에이전트AI `create_pdf_report`와 100%
 """
 from __future__ import annotations
 import io
-import os
 import re
-import csv
 import json
-import uuid
-import copy
 import hashlib
-import time
-import urllib.request
-from datetime import date
 import pandas as pd
 import streamlit as st
-from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
-from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, KeepTogether, HRFlowable
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
 )
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from . import rules as R
 from . import headcount as H
 from . import parsers as P
-from . import backup as B
 
 from .ui_common import (  # noqa: F401
     _REPORT_EMOJI_RE,
@@ -45,7 +33,6 @@ from .ui_common import (  # noqa: F401
     _ensure_built_for_tax_year,
     _ensure_korean_pdf_font,
     _ensure_totals_snapshot,
-    _pdf_text,
     _save_ec_to_disk,
     _trigger_scroll_to_top,
     _years,
@@ -1407,7 +1394,7 @@ def _page_report(room_key: str = "", log_tokens_fn=None):
     pkg_now = s.get("calc_pkg")
     if isinstance(pkg_now, dict):
         try:
-            from .ui_step3 import _build_top_kpi_cards_html, _dlg_filed_vs_recalc_comparison
+            from .ui_step3 import _build_top_kpi_cards_html
             st.markdown(_build_top_kpi_cards_html(pkg_now, tax_yr), unsafe_allow_html=True)
         except Exception:
             pass

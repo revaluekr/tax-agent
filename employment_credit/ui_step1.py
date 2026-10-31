@@ -5,29 +5,11 @@
 """
 from __future__ import annotations
 import io
-import os
-import re
-import csv
 import json
-import uuid
-import copy
-import hashlib
-import time
-import urllib.request
-import pandas as pd
 import streamlit as st
-from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
-from reportlab.lib.pagesizes import A4, landscape
-from reportlab.lib import colors
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from . import rules as R
 from . import headcount as H
 from . import parsers as P
-from . import backup as B
 
 from .ui_common import (  # noqa: F401
     _APP_PDF_CHAR_CAP,
@@ -158,7 +140,6 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
         s["corp_size_default"] = cur_def_sz
         s.setdefault("biz", {})["기업구분"] = cur_def_sz
         by_yr_s1 = s.setdefault("corp_size_by_year", {})
-        user_set_s1 = {str(x).strip() for x in (s.get("corp_size_user_set") or []) if str(x).strip()}
         four_years_s1 = [tax_yr, tax_yr - 1, tax_yr - 2, tax_yr - 3]
         for yy_s1 in four_years_s1:
             if str(yy_s1) not in by_yr_s1:

@@ -10,25 +10,22 @@ import os
 import re
 import csv
 import json
-import uuid
 import copy
 import hashlib
 import time
 import urllib.request
-import pandas as pd
 import streamlit as st
-from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
-from reportlab.lib.pagesizes import A4, landscape
+from st_aggrid import JsCode
+from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from . import rules as R
 from . import headcount as H
 from . import parsers as P
-from . import backup as B
 
 
 
@@ -3191,8 +3188,6 @@ def _compute_historical_matrix_columns(
         c_m1_2_cl = int(pm_m2_in_m1.get("clawback_net_payable_won") or 0)
 
     if info_m3["has"] and s_m1["has_data"] and (info_m3["yth_inc"] + info_m3["gen_inc"] > 0):
-        is_large_m3 = _sz(y_m3) in ("일반기업", "대기업")
-        cap_m3_2yr = info_m3["credit_1st_won"] + (c_m2_2_cr if not is_large_m3 else 0)
         pm_m3_in_m1 = H.calc_legacy_post_management(
             cohort_year=y_m3,
             eval_year=y_m1,

@@ -5,30 +5,17 @@
 """
 from __future__ import annotations
 import io
-import os
 import re
-import csv
-import json
-import uuid
-import copy
-import hashlib
-import time
-import urllib.request
 from typing import Any
 import pandas as pd
 import streamlit as st
-from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
-from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from . import rules as R
 from . import headcount as H
 from . import parsers as P
-from . import backup as B
 
 from .ui_common import (  # noqa: F401
     _S,
@@ -38,7 +25,6 @@ from .ui_common import (  # noqa: F401
     _ensure_built_for_tax_year,
     _ensure_korean_pdf_font,
     _ensure_totals_snapshot,
-    _pdf_text,
     _save_ec_to_disk,
     _trigger_scroll_to_top,
 )
@@ -169,7 +155,7 @@ def _verify_step3_math_integrity(pkg: dict, matrix_cols: dict[int, dict[str, Any
         issues.append("청년등 증가인원이 전체 증가인원 한도(Cap)를 초과함")
 
     if len(yr_list) >= 3:
-        y0, y1, y2 = yr_list[0], yr_list[1], yr_list[2]
+        y0, y1 = yr_list[0], yr_list[1]
         if int((matrix_cols.get(y0) or {}).get("r1_credit") or 0) == 0 and not bool((matrix_cols.get(y0) or {}).get("r1_needs_check")) and int((matrix_cols.get(y1) or {}).get("r2_credit") or 0) > 0:
             issues.append(f"{y0}년 1차 공제액이 0원인데 {y1}년 2차 연속공제액이 존재함")
 
@@ -233,7 +219,7 @@ def _build_compact_bridge_info(
     people = s.get("people") or {}
     recs = s.get("year_recs") or {}
     try:
-        from .ui_common import _build_year_rows, _ctx
+        from .ui_common import _build_year_rows
         _, comp_cur, tot_cur = _build_year_rows(s, cur_yr)
         _, comp_prev_raw, tot_prev = _build_year_rows(s, prev_yr)
     except Exception:
@@ -1026,7 +1012,6 @@ def _build_pm_formula_lines(
     init_g_inc = float(pm.get("init_gen_inc") or 0.0)
     ret_y = float(pm.get("retained_yth_inc") or 0.0)
     ret_g = float(pm.get("retained_gen_inc") or 0.0)
-    reg_dec = float(pm.get("reg_decrease") or 0.0)
     yth_dec = float(pm.get("yth_decrease") or 0.0)
 
     cont_won = int(pm.get("continued_credit_won") or 0)

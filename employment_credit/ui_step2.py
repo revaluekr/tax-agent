@@ -5,29 +5,18 @@
 """
 from __future__ import annotations
 import io
-import os
 import re
-import csv
-import json
 import uuid
-import copy
-import hashlib
-import time
-import urllib.request
 import pandas as pd
 import streamlit as st
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, KeepTogether
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, KeepTogether
 from . import rules as R
 from . import headcount as H
 from . import parsers as P
-from . import backup as B
 
 from .ui_common import (  # noqa: F401
     JS_DATE_FMT,
@@ -859,7 +848,6 @@ def _grid_options(
     go["columnDefs"] = col_defs
 
     n = totals["months_in_year"]
-    trunc_mode = R.calc_method_short_label(year, eval_year=year)
     pinned = [
         {
             "사업장명": "합산합계",
@@ -1067,16 +1055,6 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
     # ── 연도별 상시근로자 명세 헤더 라인 + [기업규모 선택칸 (중소/중견/일반기업)] + 맨 오른쪽 붉은색 [📕 PDF 다운] 버튼 ──
     def_sz_s2 = R.normalize_corp_size(s.get("corp_size_default") or s.get("biz", {}).get("기업구분", "중소기업"))
     cur_yr_sz = _cohort_corp_size(s, year, def_sz_s2)
-    cur_yr_sz_lbl = R.format_corp_size_label(cur_yr_sz, short=True)
-    sz_pill_color = (
-        "background:#dcfce7;color:#166534;border:1px solid #86efac;"
-        if cur_yr_sz == "중소기업"
-        else (
-            "background:#dbeafe;color:#1e40af;border:1px solid #93c5fd;"
-            if cur_yr_sz == "중견기업"
-            else "background:#fef3c7;color:#92400e;border:1px solid #fcd34d;"
-        )
-    )
     diff_pill_html = (
         "<span style='background:#fff7ed;color:#c2410c;border:1px solid #fdba74;padding:1px 6px;"
         "border-radius:999px;font-size:0.74rem;font-weight:800;margin-left:5px;'>기본값과 다름</span>"
