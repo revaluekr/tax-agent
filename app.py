@@ -21,7 +21,6 @@ from pypdf import PdfReader
 from docx import Document
 from docx.shared import Pt
 from docx.oxml.ns import qn
-from google import genai
 from google.genai import types
 
 # PDF 직접 생성을 위한 ReportLab 모듈
