@@ -99,7 +99,7 @@ def _dlg_missing(msgs: list[str]):
     for m in msgs:
         st.markdown(f"- {m}")
     st.caption("확인을 누르면 현재까지 인식된 자료로 다음 단계로 넘어갑니다. 부족한 정보는 사원정보 화면과 사이드바에서 직접 입력·수정할 수 있습니다.")
-    if st.button("✅ 확인 및 2단계(사원정보)로 이동", type="primary", use_container_width=True):
+    if st.button("✅ 확인 및 2단계(사원정보)로 이동", type="primary", width="stretch"):
         s = _S()
         s["go_step2"] = True
         _save_ec_to_disk(s)
@@ -297,7 +297,7 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
                         f"**📎 업로드된 파일 목록 ({len(s['files'])}건)** — *본·지점 또는 1·2번 사업장 합산 시 가운데 칸에서 『사업장명』을 구분해 주시면 2단계 표 맨 앞에 자동 기록됩니다.*"
                     )
                 with c_h2:
-                    if st.button("🗑️ 전체 파일 비우기", use_container_width=True, key="ec_clear_all_files"):
+                    if st.button("🗑️ 전체 파일 비우기", width="stretch", key="ec_clear_all_files"):
                         s["files"] = {}
                         s["ext"] = None
                         s["ext_sig"] = None
@@ -342,7 +342,7 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
                         s["built_sig"] = None
                         _save_ec_to_disk(s)
 
-                    if c3.button("삭제", key=f"ec_del_{name}", use_container_width=True):
+                    if c3.button("삭제", key=f"ec_del_{name}", width="stretch"):
                         s["files"].pop(name, None)
                         s["built_sig"] = None
                         _save_ec_to_disk(s)
@@ -389,7 +389,7 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
 
     st.markdown("<div class='ec-nav-divider'></div>", unsafe_allow_html=True)
     _, right = st.columns([5.8, 1.3])
-    if right.button("다음(2단계)", type="primary", use_container_width=True):
+    if right.button("다음(2단계)", type="primary", width="stretch"):
         classified: dict[str, list[str]] = {}
         for name, f in s["files"].items():
             if f.get("key"):

@@ -399,7 +399,7 @@ def _dlg_review(items: list[tuple[str, str]], audit_payload: dict | None = None,
     c_ai, c_pdf_rev, c_close = st.columns([2.15, 1.15, 0.85])
     with c_ai:
         if audit_payload:
-            if st.button("👑 Pro/Argon AI 심층 세무진단 코멘트 생성 (특수사례·판례 정밀점검)", use_container_width=True, key="btn_run_pro_audit"):
+            if st.button("👑 Pro/Argon AI 심층 세무진단 코멘트 생성 (특수사례·판례 정밀점검)", width="stretch", key="btn_run_pro_audit"):
                 with st.spinner("👑 Pro/Argon 모델이 사원표·특례·사후관리 리스크를 심층 분석하고 있습니다..."):
                     s["pro_audit_comment"] = getattr(P, "call_pro_argon_audit_commentary", lambda *a, **kw: "Pro/Argon 심층 진단 함수를 찾을 수 없습니다. parsers.py를 최신 버전으로 업데이트해 주세요.")(
                         audit_payload, log_tokens_fn=log_tokens_fn, room_key=room_key
@@ -412,12 +412,12 @@ def _dlg_review(items: list[tuple[str, str]], audit_payload: dict | None = None,
                 data=_build_review_pdf_bytes(s, items, pro_comment=""),
                 file_name=f"통합고용_오류검토_{corp_fn}_{tax_yr}귀속.pdf",
                 mime="application/pdf",
-                use_container_width=True,
+                width="stretch",
                 key="btn_dl_review_pdf",
                 help="현재 화면의 법령·심판례·절세누락 12대 정밀 오류 검토 내역을 A4 PDF로 다운로드합니다.",
             )
     with c_close:
-        if st.button("닫기", type="primary", use_container_width=True, key="btn_close_dlg_review"):
+        if st.button("닫기", type="primary", width="stretch", key="btn_close_dlg_review"):
             st.rerun()
 
     if s.get("pro_audit_comment"):
@@ -433,7 +433,7 @@ def _dlg_review(items: list[tuple[str, str]], audit_payload: dict | None = None,
                             data=_build_review_pdf_bytes(s, items, pro_comment=str(s.get("pro_audit_comment") or "")),
                             file_name=f"통합고용_심층진단_{corp_fn}_{tax_yr}귀속.pdf",
                             mime="application/pdf",
-                            use_container_width=True,
+                            width="stretch",
                             key="btn_dl_pro_pdf",
                             help="12대 정밀 오류 검토 내역과 Pro/Argon AI 심층 세무진단 코멘트를 함께 A4 PDF로 다운로드합니다.",
                         )
@@ -593,21 +593,21 @@ def _dlg_add_employee():
     if is_dup:
         c_ok, c_force, c_cancel = st.columns([1.2, 1.4, 1.2])
         with c_ok:
-            st.button("확인", type="primary", use_container_width=True, disabled=True, key="btn_dlg_add_emp_ok")
+            st.button("확인", type="primary", width="stretch", disabled=True, key="btn_dlg_add_emp_ok")
         with c_force:
-            if st.button("그래도 추가", type="primary", use_container_width=True, disabled=cannot_add, key="btn_dlg_add_emp_force"):
+            if st.button("그래도 추가", type="primary", width="stretch", disabled=cannot_add, key="btn_dlg_add_emp_force"):
                 _commit_new_employee()
         with c_cancel:
-            if st.button("취소", use_container_width=True, key="btn_dlg_add_emp_cancel"):
+            if st.button("취소", width="stretch", key="btn_dlg_add_emp_cancel"):
                 _clear_dlg_keys()
                 st.rerun()
     else:
         c_ok, c_cancel = st.columns([1.5, 1.5])
         with c_ok:
-            if st.button("확인", type="primary", use_container_width=True, disabled=cannot_add, key="btn_dlg_add_emp_ok"):
+            if st.button("확인", type="primary", width="stretch", disabled=cannot_add, key="btn_dlg_add_emp_ok"):
                 _commit_new_employee()
         with c_cancel:
-            if st.button("취소", use_container_width=True, key="btn_dlg_add_emp_cancel"):
+            if st.button("취소", width="stretch", key="btn_dlg_add_emp_cancel"):
                 _clear_dlg_keys()
                 st.rerun()
 
@@ -1138,7 +1138,7 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
                 data=_build_schedule_pdf_bytes(s, [year], include_summary=False),
                 file_name=f"{corp_nm}_{year}년귀속_상시근로자명세.pdf",
                 mime="application/pdf",
-                use_container_width=True,
+                width="stretch",
                 key=f"dl_pdf_yr_{year}",
                 help=f"{year}년 귀속 상시근로자 명세 및 사후관리 판정표(A4 가로 PDF)를 다운로드합니다.",
             )
@@ -1437,7 +1437,7 @@ def _render_prev_filing_summary_card(s: dict, shown_years: list[int]):
             y_entry["청년등"] = yth_val
         with c3:
             st.write("")
-            if st.button(f"➕ {t2_year}년 사원정보 표 직접 열어서 계산하기", use_container_width=True, key=f"btn_open_yr_{t2_year}"):
+            if st.button(f"➕ {t2_year}년 사원정보 표 직접 열어서 계산하기", width="stretch", key=f"btn_open_yr_{t2_year}"):
                 extra = s.setdefault("manual_extra_years", [])
                 if t2_year not in extra:
                     extra.append(t2_year)
@@ -1624,14 +1624,14 @@ def _page_employees(room_key: str, log_tokens_fn=None):
         )
 
     c_add, _ = st.columns([1.3, 5.8])
-    if c_add.button("➕ 사원 추가", use_container_width=True):
+    if c_add.button("➕ 사원 추가", width="stretch"):
         _dlg_add_employee()
 
     # ── 하단 네비게이션 바: [< 이전] ... [📕 전체 PDF 다운] [🔍 오류 검토] [다음(3단계)] ──
     corp_nm = (s.get("biz", {}).get("상호") or "상호미입력").strip()
     st.markdown("<div class='ec-nav-divider'></div>", unsafe_allow_html=True)
     c_prev, _, c_all_pdf, c_rev, c_next = st.columns([1.2, 2.3, 1.25, 1.15, 1.3])
-    if c_prev.button("< 이전", use_container_width=True):
+    if c_prev.button("< 이전", width="stretch"):
         s["step"] = 1
         _trigger_scroll_to_top(s)
         _save_ec_to_disk(s)
@@ -1644,12 +1644,12 @@ def _page_employees(room_key: str, log_tokens_fn=None):
                 data=_build_schedule_pdf_bytes(s, shown_years, include_summary=True),
                 file_name=f"{corp_nm}_{tax_yr}년귀속_전체연도_상시근로자명세.pdf",
                 mime="application/pdf",
-                use_container_width=True,
+                width="stretch",
                 key="dl_pdf_all_years",
                 help=f"화면에 표시된 전체 연도({', '.join(str(y)+'년' for y in shown_years)})의 상시근로자 명세 및 고용증가 요약을 한 파일의 PDF로 다운로드합니다.",
             )
 
-    if c_rev.button("🔍 오류 검토", use_container_width=True):
+    if c_rev.button("🔍 오류 검토", width="stretch"):
         prev = ((s.get("ext") or {}).get("prev_filing") or {}).get("연도별")
         review_items = H.review(
             s["people"],
@@ -1677,7 +1677,7 @@ def _page_employees(room_key: str, log_tokens_fn=None):
         }
         _dlg_review(review_items, audit_payload=audit_payload, log_tokens_fn=log_tokens_fn, room_key=room_key)
 
-    if c_next.button("다음(3단계)", type="primary", use_container_width=True):
+    if c_next.button("다음(3단계)", type="primary", width="stretch"):
         s["totals_snapshot"] = totals_all
         s["step"] = 3
         s["max_step_reached"] = max(int(s.get("max_step_reached") or 1), 3)

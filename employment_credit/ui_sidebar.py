@@ -52,7 +52,7 @@ def _dlg_industry(text: str):
         "(`조세특례제한법` 제29조의8 제1항, `같은 법 시행령` 제26조의8 제1항 및 제29조 제3항)"
     )
     st.caption("업종이 잘못 읽혔거나 겸업 중 공제 가능 사업부문이라면 좌측 사이드바에서 업태·종목을 수정한 뒤 진행하세요.")
-    if st.button("확인", type="primary", use_container_width=True):
+    if st.button("확인", type="primary", width="stretch"):
         st.rerun()
 
 
@@ -96,7 +96,7 @@ def _dlg_nts_dart_check():
             placeholder="예: 123-45-67890, 234-56-78901",
             key="ec_nts_status_input",
         )
-        if st.button("🔎 국세청 실시간 상태 조회 실행", type="primary", use_container_width=True, key="btn_run_ec_nts_status"):
+        if st.button("🔎 국세청 실시간 상태 조회 실행", type="primary", width="stretch", key="btn_run_ec_nts_status"):
             with st.spinner("국세청 API로 사업자 상태 및 휴·폐업일자를 조회하고 있습니다..."):
                 st.session_state["ec_nts_status_res"] = _law_api.get_nts_biz_status(bno_input)
         res_txt = st.session_state.get("ec_nts_status_res")
@@ -111,7 +111,7 @@ def _dlg_nts_dart_check():
         cv3, cv4 = st.columns(2)
         v_ceo = cv3.text_input("대표자 성명 (필수)", value=default_ceo, placeholder="예: 홍길동", key="ec_v_ceo")
         v_nm = cv4.text_input("상호(법인명, 선택)", value=str(b.get("상호") or ""), key="ec_v_nm")
-        if st.button("🛡️ 국세청 진위확인 실행", type="primary", use_container_width=True, key="btn_run_ec_nts_verify"):
+        if st.button("🛡️ 국세청 진위확인 실행", type="primary", width="stretch", key="btn_run_ec_nts_verify"):
             with st.spinner("국세청 진위확인 API 호출 중..."):
                 st.session_state["ec_nts_verify_res"] = _law_api.verify_nts_biz_info(v_bno, v_dt, v_ceo, v_nm)
         v_res = st.session_state.get("ec_nts_verify_res")
@@ -123,7 +123,7 @@ def _dlg_nts_dart_check():
         cd1, cd2, cd3 = st.columns([2.5, 1.2, 1.3])
         d_corp = cd1.text_input("DART 조회 법인명", value=str(b.get("상호") or ""), key="ec_dart_corp_nm")
         d_yr = cd2.text_input("사업보고서 연도", value=str(tax_yr - 1), key="ec_dart_yr")
-        if cd3.button("📊 DART 조회", type="primary", use_container_width=True, key="btn_run_ec_dart"):
+        if cd3.button("📊 DART 조회", type="primary", width="stretch", key="btn_run_ec_dart"):
             with st.spinner("Open DART 전자공시 데이터를 조회하고 있습니다..."):
                 dart_txt = _law_api.get_dart_corp_info(d_corp, d_yr)
                 st.session_state["ec_dart_res"] = dart_txt
@@ -150,7 +150,7 @@ def _dlg_nts_dart_check():
             placeholder="예: 소프트웨어, 도소매, 음식점, 호스텔",
             key="ec_ind_kw",
         )
-        if ci2.button("🏢 업종코드 검색", use_container_width=True, key="btn_run_ec_ind"):
+        if ci2.button("🏢 업종코드 검색", width="stretch", key="btn_run_ec_ind"):
             st.session_state["ec_ind_res"] = _law_api.search_industry_code(ind_kw)
         if st.session_state.get("ec_ind_res"):
             st.code(st.session_state["ec_ind_res"], language="text")
@@ -167,7 +167,7 @@ def _dlg_nts_dart_check():
             placeholder="예: 123-45-67890",
             key="ec_comwel_bno",
         )
-        if ci_b.button("👷 고용·산재 조회", type="primary", use_container_width=True, key="btn_run_ec_comwel"):
+        if ci_b.button("👷 고용·산재 조회", type="primary", width="stretch", key="btn_run_ec_comwel"):
             with st.spinner("근로복지공단 고용·산재보험 현황 조회 중..."):
                 st.session_state["ec_comwel_res"] = _law_api.get_comwel_workplace_info(cw_bno)
         if st.session_state.get("ec_comwel_res"):
@@ -183,7 +183,7 @@ def _dlg_nts_dart_check():
             key="ec_nps_bno6",
         )
         nps_yr = cn3.text_input("연도(비우면 전체)", value="", placeholder=str(tax_yr), key="ec_nps_yr")
-        if cn4.button("🏦 4대보험 월·연 고지액", type="primary", use_container_width=True, key="btn_run_ec_nps"):
+        if cn4.button("🏦 4대보험 월·연 고지액", type="primary", width="stretch", key="btn_run_ec_nps"):
             with st.spinner("4대보험(국민연금·건보·장기요양·고용·산재) 월별·연간 고지총액 및 인원 병렬 조회 중..."):
                 st.session_state["ec_nps_res"] = _law_api.get_nps_workplace_info(nps_nm, nps_bno6, target_year=nps_yr)
         if st.session_state.get("ec_nps_res"):
@@ -770,7 +770,7 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
                 f"(마지막 확인: `{law_status.get('last_checked_at', '이력 없음')}`)"
             )
         with c_btn:
-            if st.button("지금 다시 조회", type="primary", use_container_width=True, key="btn_ec_law_retry_top"):
+            if st.button("지금 다시 조회", type="primary", width="stretch", key="btn_ec_law_retry_top"):
                 st.session_state["ec_force_law_refresh"] = True
                 st.rerun()
     elif law_status.get("has_missing_articles") or law_status.get("has_name_mismatch"):
@@ -780,7 +780,7 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
                 "**[일부 감시 조문 원문 확인 필요]** 법제처 응답에서 일부 감시 대상 조문이 누락되었거나 법령명 확인이 필요합니다."
             )
         with c_btn:
-            if st.button("지금 다시 조회", use_container_width=True, key="btn_ec_law_refresh_miss"):
+            if st.button("지금 다시 조회", width="stretch", key="btn_ec_law_refresh_miss"):
                 st.session_state["ec_force_law_refresh"] = True
                 st.rerun()
     elif law_status.get("has_unset_baseline"):
@@ -791,7 +791,7 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
                 "계산 기준 버전이 확정되지 않아 개정 반영 여부를 판정하지 않았습니다."
             )
         with c_btn:
-            if st.button("지금 다시 조회", use_container_width=True, key="btn_ec_law_refresh_unset"):
+            if st.button("지금 다시 조회", width="stretch", key="btn_ec_law_refresh_unset"):
                 st.session_state["ec_force_law_refresh"] = True
                 st.rerun()
     else:
@@ -801,7 +801,7 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
                 f"감시 조문이 계산 기준 버전과 일치합니다 (기준일: `{law_status.get('last_checked_at', '-')}`)"
             )
         with c_btn:
-            if st.button("지금 다시 조회", use_container_width=True, key="btn_ec_law_refresh_ok"):
+            if st.button("지금 다시 조회", width="stretch", key="btn_ec_law_refresh_ok"):
                 st.session_state["ec_force_law_refresh"] = True
                 st.rerun()
 
@@ -847,7 +847,7 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
                     data=_build_law_tab_pdf_bytes("통합고용세액공제 개정세법 핵심 요약 보고서", sum_tab_md),
                     file_name="통합고용세액공제_개정세법_핵심요약보고서.pdf",
                     mime="application/pdf",
-                    use_container_width=True,
+                    width="stretch",
                     key="btn_dl_law_pdf_amend_summary",
                 )
 
@@ -966,7 +966,7 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
                     data=_build_law_tab_pdf_bytes(f"{law_key} 원문 및 기준일자 검토보고서", full_tab_md),
                     file_name=f"통합고용세액공제_{law_key.replace(' ', '_')}_원문보고서.pdf",
                     mime="application/pdf",
-                    use_container_width=True,
+                    width="stretch",
                     key=f"btn_dl_law_pdf_{law_key}",
                 )
 
@@ -1014,7 +1014,7 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
                     data=_build_law_tab_pdf_bytes("국세청 예규·안내문 및 별지서식 원문 보고서", full_ruling_md),
                     file_name="통합고용세액공제_예규_안내문_원문보고서.pdf",
                     mime="application/pdf",
-                    use_container_width=True,
+                    width="stretch",
                     key="btn_dl_law_pdf_rulings",
                 )
 
@@ -1033,7 +1033,7 @@ def _dlg_ec_law_monitoring_detail(tax_yr: int):
         run_ai_interp = st.button(
             "AI 해석 보기",
             type="primary",
-            use_container_width=True,
+            width="stretch",
             key="btn_ec_run_law_ai_interp",
         )
 
@@ -1095,7 +1095,7 @@ def render_credit_sidebar():
         )
         if st.button(
             "상세 보기",
-            use_container_width=True,
+            width="stretch",
             key="btn_ec_law_detail_open",
             help="조세특례제한법·시행령·시행규칙(별지 서식) 및 국세청 예규·안내문의 원문, 부칙, 기준일자 요약표 및 AI 해석을 확인합니다.",
         ):
@@ -1120,7 +1120,7 @@ def render_credit_sidebar():
         if not st.session_state.get("ec_confirm_reset"):
             if st.button(
                 "🔄 자료 초기화 (내용 비우기)",
-                use_container_width=True,
+                width="stretch",
                 disabled=(not has_any_ec_data and int(s.get("step") or 1) == 1),
                 key="btn_ec_sidebar_reset_ask",
                 help="현재 입력·업로드된 서류, 사업자정보, 사원표, 기신고 기초값, 보고서를 모두 지우고 1단계 초기 상태로 되돌립니다.",
@@ -1130,11 +1130,11 @@ def render_credit_sidebar():
         else:
             st.caption("⚠️ 업로드 서류·사원표·기신고 입력값을 모두 비우고 1단계로 초기화할까요?")
             cr1, cr2 = st.columns(2)
-            if cr1.button("✅ 초기화 실행", type="primary", use_container_width=True, key="btn_ec_sidebar_reset_yes"):
+            if cr1.button("✅ 초기화 실행", type="primary", width="stretch", key="btn_ec_sidebar_reset_yes"):
                 st.session_state.pop("ec_confirm_reset", None)
                 reset_credit_all_state()
                 st.rerun()
-            if cr2.button("취소", use_container_width=True, key="btn_ec_sidebar_reset_no"):
+            if cr2.button("취소", width="stretch", key="btn_ec_sidebar_reset_no"):
                 st.session_state.pop("ec_confirm_reset", None)
                 st.rerun()
 
@@ -1277,7 +1277,7 @@ def render_credit_sidebar():
         st.caption("💡 과세연도 월수 상한은 12개월입니다(12일 때 `+` 비활성 · 기중 개업/폐업 시 `-`로 조정).")
 
         if conf:
-            if st.button("🔓 사업자정보 잠금 해제 (직접 수정)", use_container_width=True, key="btn_unlock_biz"):
+            if st.button("🔓 사업자정보 잠금 해제 (직접 수정)", width="stretch", key="btn_unlock_biz"):
                 s["biz_confirmed"] = []
                 _save_ec_to_disk(s)
                 st.rerun()
@@ -1408,7 +1408,7 @@ def render_credit_sidebar():
                             "⚖️ **법인 본·지점 합산 특례**: 본·지점 간 전출입(`본점→지점`) 근로자는 동일인으로 통합하여 월급여를 합산하며 중복 산입을 자동 방지합니다."
                         )
 
-                    if st.button(f"🗑️ 제{idx+2}사업장 삭제", key=f"btn_del_sub_biz_{idx}", use_container_width=True):
+                    if st.button(f"🗑️ 제{idx+2}사업장 삭제", key=f"btn_del_sub_biz_{idx}", width="stretch"):
                         remove_idx = idx
             if remove_idx is not None:
                 sub_list.pop(remove_idx)
@@ -1417,7 +1417,7 @@ def render_credit_sidebar():
 
         if st.button(
             "➕ 합산 사업장 추가 (지점 · 양도/양수)",
-            use_container_width=True,
+            width="stretch",
             key="btn_add_sub_biz",
             help="법인 본·지점 합산 또는 개인사업자 기중 사업 양도·포괄양수 시 두 번째(추가) 사업장 정보를 하단에 추가합니다.",
         ):
@@ -1442,7 +1442,7 @@ def render_credit_sidebar():
 
         if st.button(
             "🔎 국세청 · DART · 4대보험 사업장 대사",
-            use_container_width=True,
+            width="stretch",
             key="btn_open_nts_dart_modal",
             help="국세청 API(사업자 휴·폐업일·과세유형·진위확인) 및 Open DART(최대주주·특수관계인 지분 공시)를 실시간 조회합니다.",
         ):
@@ -1494,7 +1494,7 @@ def _render_backup_card(s: dict) -> None:
             pw1 = st.text_input("백업 비밀번호", type="password", key="ec_bk_pw1",
                                 help=f"{B.MIN_PASSWORD_LEN}자 이상. 잊으면 이 백업은 복구할 수 없습니다.")
             pw2 = st.text_input("비밀번호 확인", type="password", key="ec_bk_pw2")
-            if st.button("백업 파일 만들기", use_container_width=True, key="ec_bk_make"):
+            if st.button("백업 파일 만들기", width="stretch", key="ec_bk_make"):
                 if pw1 != pw2:
                     st.error("두 비밀번호가 다릅니다.")
                 elif not (s.get("people") or s.get("biz", {}).get("상호")):
@@ -1508,14 +1508,14 @@ def _render_backup_card(s: dict) -> None:
             ready = st.session_state.get("ec_bk_ready")
             if ready:
                 st.download_button("📥 백업 파일 내려받기", data=ready[0], file_name=ready[1],
-                                   mime="application/octet-stream", use_container_width=True, key="ec_bk_dl",
+                                   mime="application/octet-stream", width="stretch", key="ec_bk_dl",
                                    on_click=lambda: st.session_state.pop("ec_bk_ready", None))
                 st.caption(f"`{ready[1]}`  \n고객 자료와 같은 보안 폴더에 보관하세요. 비밀번호는 파일과 따로 관리하세요.")
 
         with tab_load:
             up = st.file_uploader("백업 파일 (.ecbak)", type=[B.FILE_EXT], key="ec_bk_up")
             pw = st.text_input("백업 비밀번호", type="password", key="ec_bk_pw_in")
-            if up is not None and st.button("파일 열기", use_container_width=True, key="ec_bk_open"):
+            if up is not None and st.button("파일 열기", width="stretch", key="ec_bk_open"):
                 try:
                     st.session_state["ec_bk_loaded"] = B.read_backup_bytes(up.getvalue(), pw)
                 except B.BackupError as e:
@@ -1527,10 +1527,10 @@ def _render_backup_card(s: dict) -> None:
                         f"저장 시각 {inner.get('saved_at')} · 사원 {inner.get('people_count', 0)}명")
                 st.warning("현재 작업 내용이 이 백업으로 모두 바뀝니다. 필요하면 먼저 지금 작업을 백업해 두세요.")
                 c1, c2 = st.columns(2)
-                if c1.button("이 백업으로 바꾸기", type="primary", use_container_width=True, key="ec_bk_apply"):
+                if c1.button("이 백업으로 바꾸기", type="primary", width="stretch", key="ec_bk_apply"):
                     _restore_from_backup(inner)
                     st.session_state.pop("ec_bk_loaded", None)
                     st.rerun()
-                if c2.button("취소", use_container_width=True, key="ec_bk_cancel"):
+                if c2.button("취소", width="stretch", key="ec_bk_cancel"):
                     st.session_state.pop("ec_bk_loaded", None)
                     st.rerun()

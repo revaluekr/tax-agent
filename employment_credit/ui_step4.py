@@ -1425,7 +1425,7 @@ def _page_report(room_key: str = "", log_tokens_fn=None):
             key=f"ec_edit_audit_area_{tax_yr}",
         )
         ce1, ce2, _ = st.columns([1.4, 1.4, 4.2])
-        if ce1.button("💾 수정 내용 반영", type="primary", use_container_width=True, key="btn_save_edited_audit"):
+        if ce1.button("💾 수정 내용 반영", type="primary", width="stretch", key="btn_save_edited_audit"):
             _, _ed_trace = P._fetch_live_employment_law_context() if hasattr(P, "_fetch_live_employment_law_context") else ("", None)
             _ed_verified, _ed_qdel = (
                 P.verify_and_redact_unmatched_quotes(_sanitize_markdown_tilde(edited_audit), _ed_trace)
@@ -1437,7 +1437,7 @@ def _page_report(room_key: str = "", log_tokens_fn=None):
             s.pop("_report_artifact_cache", None)
             _save_ec_to_disk(s)
             st.rerun()
-        if ce2.button("🔄 AI 의견 다시 생성 (법제처 API 재조회)", use_container_width=True, key="btn_regen_audit"):
+        if ce2.button("🔄 AI 의견 다시 생성 (법제처 API 재조회)", width="stretch", key="btn_regen_audit"):
             s["pro_audit_comment"] = ""
             s["pro_audit_sig"] = ""
             s.pop("_report_artifact_cache", None)
@@ -1447,11 +1447,11 @@ def _page_report(room_key: str = "", log_tokens_fn=None):
     with st.expander("💬 거래처 전송용 카카오톡 안내문 · 이메일 회신 초안 (버튼을 누를 때만 생성)", expanded=False):
         st.caption("평소에는 생성하지 않아 속도와 토큰을 아끼며, 아래 버튼을 누를 때만 즉시 생성합니다.")
         ck1, ck2, _ = st.columns([1.8, 1.8, 3.4])
-        if ck1.button("💬 카카오톡 안내문 생성 (순수 텍스트)", use_container_width=True, key=f"btn_gen_kakao_{tax_yr}"):
+        if ck1.button("💬 카카오톡 안내문 생성 (순수 텍스트)", width="stretch", key=f"btn_gen_kakao_{tax_yr}"):
             if isinstance(pkg_now, dict):
                 k_txt, _ = _build_client_kakao_and_email_drafts(s, pkg_now, tax_yr)
                 s["_client_kakao_draft"] = k_txt
-        if ck2.button("📧 비즈니스 이메일 초안 생성", use_container_width=True, key=f"btn_gen_email_{tax_yr}"):
+        if ck2.button("📧 비즈니스 이메일 초안 생성", width="stretch", key=f"btn_gen_email_{tax_yr}"):
             if isinstance(pkg_now, dict):
                 _, e_txt = _build_client_kakao_and_email_drafts(s, pkg_now, tax_yr)
                 s["_client_email_draft"] = e_txt
@@ -1472,11 +1472,11 @@ def _page_report(room_key: str = "", log_tokens_fn=None):
 
     st.markdown("<div class='ec-nav-divider'></div>", unsafe_allow_html=True)
     c_cmp_bot, _ = st.columns([2.6, 4.8])
-    if c_cmp_bot.button("⚖️ 기신고 vs 세법상 재계산 비교 (경정청구 · 수정신고 진단)", use_container_width=True, key=f"btn_step4_filed_vs_recalc_{tax_yr}"):
+    if c_cmp_bot.button("⚖️ 기신고 vs 세법상 재계산 비교 (경정청구 · 수정신고 진단)", width="stretch", key=f"btn_step4_filed_vs_recalc_{tax_yr}"):
         from .ui_step3 import _dlg_filed_vs_recalc_comparison
         _dlg_filed_vs_recalc_comparison(s, pkg_now if isinstance(pkg_now, dict) else None, tax_yr)
     c_prev, c_pdf_bot, c_docx_bot, c_xlsx_bot, c_md_bot, c_reset = st.columns([1.15, 1.35, 1.25, 1.25, 1.25, 1.15])
-    if c_prev.button("< 이전(3단계)", use_container_width=True):
+    if c_prev.button("< 이전(3단계)", width="stretch"):
         s["step"] = 3
         _trigger_scroll_to_top(s)
         _save_ec_to_disk(s)
@@ -1488,7 +1488,7 @@ def _page_report(room_key: str = "", log_tokens_fn=None):
                 data=pdf_report_bytes,
                 file_name=f"{corp_fn}_{tax_yr}년귀속_통합고용세액공제_검토보고서.pdf",
                 mime="application/pdf",
-                use_container_width=True,
+                width="stretch",
                 key="dl_pdf_report_bot",
                 help="현재 화면의 통합고용세액공제 및 사후관리 검토보고서를 A4 PDF로 다운로드합니다.",
             )
@@ -1498,7 +1498,7 @@ def _page_report(room_key: str = "", log_tokens_fn=None):
             data=docx_report_bytes,
             file_name=f"{corp_fn}_{tax_yr}년귀속_통합고용세액공제_검토보고서.docx",
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            use_container_width=True,
+            width="stretch",
             key="dl_docx_report_bot",
         )
     with c_xlsx_bot:
@@ -1507,7 +1507,7 @@ def _page_report(room_key: str = "", log_tokens_fn=None):
             data=xlsx_report_bytes,
             file_name=f"{corp_fn}_{tax_yr}년귀속_통합고용세액공제_요약표.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
+            width="stretch",
             key="dl_xlsx_report_bot",
         )
     with c_md_bot:
@@ -1516,10 +1516,10 @@ def _page_report(room_key: str = "", log_tokens_fn=None):
             data=md_text.encode("utf-8-sig"),
             file_name=f"{corp_fn}_{tax_yr}년귀속_통합고용세액공제_검토보고서.md",
             mime="text/markdown",
-            use_container_width=True,
+            width="stretch",
             key="dl_md_report_bot",
         )
-    if c_reset.button("처음으로(1단계)", use_container_width=True):
+    if c_reset.button("처음으로(1단계)", width="stretch"):
         s["step"] = 1
         _trigger_scroll_to_top(s)
         _save_ec_to_disk(s)

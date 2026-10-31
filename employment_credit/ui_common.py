@@ -2384,8 +2384,7 @@ def _render_scroll_to_top_if_needed(s: dict) -> None:
         s["_last_rendered_step"] = cur_step
         seq = int(s.get("_scroll_top_seq") or 0) + 1
         s["_scroll_top_seq"] = seq
-        import streamlit.components.v1 as components
-        components.html(
+        st.iframe(
             f"""<!-- ec_scroll_top_{cur_step}_{seq} -->
             <script>
             (function() {{
@@ -2435,7 +2434,7 @@ def _render_scroll_to_top_if_needed(s: dict) -> None:
             }})();
             </script>
             """,
-            height=0,
+            height=1,  # st.iframe는 0을 허용하지 않음 (스크롤 스크립트 실행용 1px 숨김 프레임)
         )
 
 
@@ -2466,7 +2465,7 @@ def _progress(step: int):
                     btn_label,
                     key=f"btn_step_jump_{i}",
                     disabled=(not unlocked),
-                    use_container_width=True,
+                    width="stretch",
                     help=(
                         f"{i}단계({name}) 화면으로 바로 이동합니다."
                         if unlocked

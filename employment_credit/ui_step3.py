@@ -848,7 +848,7 @@ def _render_filed_vs_recalc_comparison_body(s: dict, pkg: dict | None, tax_yr: i
             },
         ]
     )
-    st.dataframe(hc_df, use_container_width=True, hide_index=True)
+    st.dataframe(hc_df, width="stretch", hide_index=True)
 
     # ④ 표 2 — 세액 비교
     st.markdown("**표 2 — 연차별 공제세액 비교**")
@@ -868,7 +868,7 @@ def _render_filed_vs_recalc_comparison_body(s: dict, pkg: dict | None, tax_yr: i
             },
         ]
     )
-    st.dataframe(tx_df, use_container_width=True, hide_index=True)
+    st.dataframe(tx_df, width="stretch", hide_index=True)
     st.caption(
         f"📌 **{tax_yr+1}년 3차 (향후 연속공제 차이 예상):** 세전 **{diff_c3:+,}원** "
         f"(농특세 20% 차감 후 순액 **{c3_net:+,}원**) — {tax_yr+1}년 상시근로자 수가 {y1}년 최초 공제연도 인원 이상으로 유지될 때 실현됩니다."
@@ -1737,7 +1737,7 @@ def _render_pm_quick_fill_banner(
         if st.button(
             f"🔄 {_coh_yr}년 사원표 재계산 값을 기신고 기초값에 바로 반영 ({nth_label} 산출)",
             type="primary",
-            use_container_width=True,
+            width="stretch",
             key=f"btn_quick_fill_{_coh_yr}_{tax_yr}",
             help=_btn_help_md,
         ):
@@ -2440,7 +2440,7 @@ def _page_calculation():
         with c_btn:
             if st.button(
                 "🔄 2단계 사원표 재계산 값으로 빈칸 자동 채우기",
-                use_container_width=True,
+                width="stretch",
                 key=f"btn_fill_from_recalc_{tax_yr}",
                 help=(
                     f"📌 [왜 이 버튼이 필요한가요?]\n"
@@ -2723,7 +2723,7 @@ def _page_calculation():
                 "적용 기준 및 비교 안내": f"{tax_yr-2}년분 사후관리 종전규정(법률 제21223호 부칙 제34조 · 대통령령 제35999호 부칙 제2조 · 제36127호 부칙 제11조 · 구 조특령[대통령령 제36127호 개정 전] 제26조의8 제5항) 반영",
             },
         ]
-        st.dataframe(pd.DataFrame(cmp_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(cmp_rows), width="stretch", hide_index=True)
 
         pm_cmp_df = pd.DataFrame(
             [
@@ -2741,7 +2741,7 @@ def _page_calculation():
                 },
             ]
         )
-        st.dataframe(pm_cmp_df, use_container_width=True, hide_index=True)
+        st.dataframe(pm_cmp_df, width="stretch", hide_index=True)
 
     st.markdown(
         "<div class='ec-law-ref-box'>"
@@ -2773,12 +2773,12 @@ def _page_calculation():
     corp_nm_fn = re.sub(r'[\\/:*?"<>|\s]+', "_", str((b.get("상호") or "사업장")).strip())[:30]
     st.markdown("<div class='ec-nav-divider'></div>", unsafe_allow_html=True)
     c_prev, c_cmp3, _, c_pdf3, c_next = st.columns([1.15, 2.05, 1.4, 1.25, 1.3])
-    if c_prev.button("< 이전", use_container_width=True, key="btn_step3_prev"):
+    if c_prev.button("< 이전", width="stretch", key="btn_step3_prev"):
         s["step"] = 2
         _trigger_scroll_to_top(s)
         _save_ec_to_disk(s)
         st.rerun()
-    if c_cmp3.button("⚖️ 기신고 vs 세법상 재계산 비교", use_container_width=True, key="btn_step3_filed_vs_recalc"):
+    if c_cmp3.button("⚖️ 기신고 vs 세법상 재계산 비교", width="stretch", key="btn_step3_filed_vs_recalc"):
         _dlg_filed_vs_recalc_comparison(s, pkg, tax_yr)
     with c_pdf3:
         with st.container(key="ec_btn_pdf_step3_wrap"):
@@ -2787,11 +2787,11 @@ def _page_calculation():
                 data=_build_step3_calculation_pdf_bytes(s, pkg, matrix_cols),
                 file_name=f"{corp_nm_fn}_{tax_yr}년귀속_통합고용세액공제_계산서.pdf",
                 mime="application/pdf",
-                use_container_width=True,
+                width="stretch",
                 key="dl_pdf_step3_calc",
                 help="3단계 연도별 세액공제 요약표 및 (1)~(4) 상세 계산 산식을 A4 PDF로 즉시 다운로드합니다.",
             )
-    if c_next.button("다음(4단계)", type="primary", use_container_width=True, key="btn_step3_next"):
+    if c_next.button("다음(4단계)", type="primary", width="stretch", key="btn_step3_next"):
         s["step"] = 4
         s["max_step_reached"] = max(int(s.get("max_step_reached") or 1), 4)
         _trigger_scroll_to_top(s)
