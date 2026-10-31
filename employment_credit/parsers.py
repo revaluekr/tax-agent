@@ -234,7 +234,35 @@ def _make_genai_client(api_key: str, timeout_ms: int | None = None):
     return genai.Client(api_key=api_key)
 
 
-def _get_gemini_api_keys() -> list[str]:
+def _note_model_error(model_id: str, e: Exception) -> None:
+    """504·시간 초과 모델은 agent와 같은 규칙으로 15분간 뒤로 미룹니다."""
+    try:
+        import agent
+        if hasattr(agent, "_is_slow_error") and agent._is_slow_error(e):
+            agent._mark_slow_model(model_id)
+    except Exception:
+        pass
+
+
+def _is_slow_error(e: Exception) -> bool:
+    try:
+        import agent
+        return bool(hasattr(agent, "_is_slow_error") and agent._is_slow_error(e))
+    except Exception:
+        return False
+
+
+def _get_gemini_api_keys(pro: bool = False) -> list[str]:
+    # Pro 체인(Argon 등)이면 자율 에이전트와 같은 규칙으로 Pro용 키 풀(PRO_USE_PAID_KEY="on"이면 AI Studio 유료 키)을 씁니다.
+    if pro:
+        try:
+            import agent
+            if hasattr(agent, "get_pro_key_pool"):
+                pro_keys = [item[1] for item in (agent.get_pro_key_pool() or []) if isinstance(item, (list, tuple)) and len(item) >= 2]
+                if pro_keys:
+                    return list(dict.fromkeys(pro_keys))
+        except Exception:
+            pass
     keys: list[str] = []
     try:
         import agent
@@ -283,6 +311,20 @@ def _get_gemini_models(prefer_pro: bool = False) -> list[str]:
       (`gemini-4-argon` -> `gemini-3.1-pro-preview-customtools` -> `gemini-3.1-pro-preview` -> `gemini-2.5-pro`)과 100% 일치시켜 가동합니다.
     """
     use_pro_first = prefer_pro or _is_pro_mode_enabled()
+    return _skip_slow(_get_gemini_models_raw(use_pro_first))
+
+
+def _skip_slow(models: list[str]) -> list[str]:
+    try:
+        import agent
+        if hasattr(agent, "_skip_slow_models"):
+            return agent._skip_slow_models(list(models))
+    except Exception:
+        pass
+    return list(models)
+
+
+def _get_gemini_models_raw(use_pro_first: bool) -> list[str]:
     pro_models: list[str] = []
     flash_models: list[str] = []
     try:
@@ -323,7 +365,7 @@ def call_gemini_json(
     room_key: str = "",
     prefer_pro: bool = False,
 ) -> dict:
-    keys = _get_gemini_api_keys()
+    keys = _get_gemini_api_keys(pro=prefer_pro or _is_pro_mode_enabled())
     if not keys:
         return {}
     try:
@@ -342,7 +384,7 @@ def call_gemini_json(
     )
 
     for api_key in keys:
-        client = _make_genai_client(api_key)
+        client = _make_genai_client(api_key, 120000)
         for model_id in models:
             try:
                 try:
@@ -376,7 +418,8 @@ def call_gemini_json(
                 raw = re.sub(r"^```(?:json)?|```$", "", raw, flags=re.MULTILINE).strip()
                 data = json.loads(raw)
                 return data if isinstance(data, dict) else {}
-            except Exception:
+            except Exception as e:
+                _note_model_error(model_id, e)
                 continue
     return {}
 
@@ -536,7 +579,7 @@ _AI_INTERP_CACHE_PATH = os.path.join(".workspace_storage", "ec_law_ai_cache.json
 
 
 def _call_gemini_text_plain(prompt: str, prefer_pro: bool = False, log_tokens_fn=None) -> str:
-    keys = _get_gemini_api_keys()
+    keys = _get_gemini_api_keys(pro=prefer_pro or _is_pro_mode_enabled())
     if not keys:
         return ""
     try:
@@ -546,7 +589,7 @@ def _call_gemini_text_plain(prompt: str, prefer_pro: bool = False, log_tokens_fn
         return ""
     models = _get_gemini_models(prefer_pro=prefer_pro)
     for api_key in keys:
-        client = _make_genai_client(api_key)
+        client = _make_genai_client(api_key, 120000)
         for model_id in models:
             try:
                 cfg = types.GenerateContentConfig(temperature=0.0)
@@ -562,7 +605,8 @@ def _call_gemini_text_plain(prompt: str, prefer_pro: bool = False, log_tokens_fn
                 raw = (resp.text or "").strip()
                 if raw:
                     return raw
-            except Exception:
+            except Exception as e:
+                _note_model_error(model_id, e)
                 continue
     return ""
 
@@ -1557,7 +1601,7 @@ def call_pro_argon_audit_commentary(
     else:
         calc_law_cite_str = "[조문:조세특례제한법 시행령 제26조의8 제6항] 및 국세청 '26.3월 안내(A/B 적용 구분)"
 
-    keys = _get_gemini_api_keys()
+    keys = _get_gemini_api_keys(pro=True)
     models = _get_gemini_models(prefer_pro=True)
     prompt = (
         "당신은 대한민국 조세특례제한법 제29조의8(통합고용세액공제) 및 사후관리 전문 세무사·감사관입니다.\n"
@@ -1633,7 +1677,9 @@ def call_pro_argon_audit_commentary(
                                 ),
                             )
                             resp = chat.send_message(prompt)
-                        except Exception:
+                        except Exception as e_chat:
+                            if _is_slow_error(e_chat):
+                                raise
                             resp = client.models.generate_content(model=model_id, contents=prompt)
 
                         raw_txt = _ag.extract_safe_text(resp) if hasattr(_ag, "extract_safe_text") else (resp.text or "")
@@ -1700,7 +1746,8 @@ def call_pro_argon_audit_commentary(
                         txt = inject_verified_law_links(txt, trace)
                         res_out = f"[적용 모델: {model_id} | 인용삭제: {quote_del_cnt}건]\n\n{txt}"
                         return (res_out, trace) if return_trace else res_out
-                    except Exception:
+                    except Exception as e:
+                        _note_model_error(model_id, e)
                         continue
                     finally:
                         _ag._TOOL_TRACE.reset(tok_trace)
