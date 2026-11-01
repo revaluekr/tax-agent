@@ -358,5 +358,9 @@ PAY_MAIN_CSS = """
 [data-testid="stDialog"][data-testid="stDialog"] [role="dialog"] [class*="st-key-btn_ai_saving_"] div.stButton button{background:linear-gradient(135deg,#4F46E5,#7C3AED) !important;border:none !important;box-shadow:0 4px 12px rgba(99,102,241,.35) !important;}
 [data-testid="stDialog"][data-testid="stDialog"] [role="dialog"] [class*="st-key-btn_ai_saving_"] div.stButton button p,[data-testid="stDialog"][data-testid="stDialog"] [role="dialog"] [class*="st-key-btn_ai_saving_"] div.stButton button span{color:#FFFFFF !important;font-weight:800 !important;}
 [data-testid="stDialog"][data-testid="stDialog"] [role="dialog"] [class*="st-key-btn_ai_retry_"] div.stButton button p{color:#4F46E5 !important;}
+/* 수당 계산기 등 창 안 입력칸 글씨 크게 */
+[data-testid="stDialog"][data-testid="stDialog"] [role="dialog"] [data-testid="stNumberInput"] input,[data-testid="stDialog"][data-testid="stDialog"] [role="dialog"] [data-testid="stTextInput"] input{font-size:17px !important;font-weight:600 !important;color:#0F172A !important;height:42px;}
+[data-testid="stDialog"][data-testid="stDialog"] [role="dialog"] [data-testid="stSelectbox"] [data-baseweb="select"] div{font-size:16px !important;}
+[data-testid="stDialog"][data-testid="stDialog"] [role="dialog"] [data-testid="stWidgetLabel"] p{font-size:14px !important;font-weight:600 !important;color:#334155 !important;}
 </style>
 """

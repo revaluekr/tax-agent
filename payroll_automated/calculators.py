@@ -161,6 +161,7 @@ def calculate_overtime_night_holiday_allowance(
         f"휴일근로수당(8시간 이내): {hourly:,}원 × {holiday_hours_within_8:g}시간 × {hol_le8_mult}배 = {holiday_le8_pay:,}원",
         f"휴일근로수당(8시간 초과): {hourly:,}원 × {holiday_hours_over_8:g}시간 × {hol_gt8_mult}배 = {holiday_gt8_pay:,}원",
         f"합계 수당: {total_allowance:,}원 (급여대장 반영 시 연장+야간={overtime_pay + night_pay:,}원 / 휴일={holiday_total_pay:,}원)",
+        "참고: 연장근로나 휴일근로가 밤 10시~오전 6시에 이루어졌다면 그 시간을 야간근로시간에도 함께 입력하세요 (가산이 겹쳐 연장 1.5배 + 야간 0.5배 = 2.0배).",
     ]
 
     legal_references = [
@@ -237,12 +238,17 @@ def calculate_weekly_holiday_allowance(
     weekly_base_pay = int(round(weekly_contract_hours * hourly_wage))
     weekly_total_pay = weekly_base_pay + weekly_holiday_pay
 
-    monthly_work_hours = round(weekly_contract_hours * weeks_in_month, 1)
-    monthly_holiday_hours = round(weekly_holiday_hours * weeks_in_month, 1)
-    monthly_total_hours = round(monthly_work_hours + monthly_holiday_hours, 1)
-    monthly_holiday_pay = int(round(weekly_holiday_pay * weeks_in_month))
-    monthly_base_pay = int(round(weekly_base_pay * weeks_in_month))
-    monthly_total_pay = monthly_base_pay + monthly_holiday_pay
+    # 월 환산: 고용노동부 최저임금 고시의 월 환산 기준시간(주 40시간 + 주휴 8시간 = 월 209시간)에 비례
+    #   월 시간 = (주 소정근로시간 + 주휴시간) × 209 / 48  → 주 40시간이면 정확히 209시간(최저 월급 2,156,880원과 일치)
+    #   (단순 4.345주 곱셈은 208.56시간으로 월 최저임금보다 4,541원 적게 나오므로 사용하지 않음)
+    base_week_hours = min(float(weekly_contract_hours), 40.0)          # 40시간 초과분은 연장근로(별도 계산)
+    month_factor = 209.0 / 48.0
+    monthly_work_hours = round(base_week_hours * month_factor, 2)
+    monthly_holiday_hours = round(weekly_holiday_hours * month_factor, 2)
+    monthly_total_hours = round(monthly_work_hours + monthly_holiday_hours, 2)
+    monthly_total_pay = int(round(monthly_total_hours * hourly_wage))
+    monthly_holiday_pay = int(round(monthly_holiday_hours * hourly_wage))
+    monthly_base_pay = monthly_total_pay - monthly_holiday_pay
 
     if weekly_contract_hours < 15.0:
         eligibility_reason = "주 소정근로시간 15시간 미만으로 주휴수당 지급 대상이 아닙니다 (근로기준법 제18조 제3항)."
@@ -255,10 +261,13 @@ def calculate_weekly_holiday_allowance(
         f"수급 요건 판정: {eligibility_reason}",
         f"1주 유급주휴시간: min({weekly_contract_hours:g}시간, 40시간) / 40 × 8시간 = {weekly_holiday_hours:g}시간",
         f"1주 주휴수당: {weekly_holiday_hours:g}시간 × {hourly_wage:,}원 = {weekly_holiday_pay:,}원",
-        f"월 환산 주휴수당 ({weeks_in_month}주 기준): {weekly_holiday_pay:,}원 × {weeks_in_month}주 = {monthly_holiday_pay:,}원",
+        f"월 환산 시간 (월 209시간 기준 비례 = 주 시간 × 209/48): 근로 {base_week_hours:g}시간 → {monthly_work_hours:g}시간 / 주휴 {weekly_holiday_hours:g}시간 → {monthly_holiday_hours:g}시간",
+        f"월 환산 주휴수당: {monthly_holiday_hours:g}시간 × {hourly_wage:,}원 = {monthly_holiday_pay:,}원",
         f"월 소정근로시간 합계 (기본+주휴): {monthly_work_hours:g}시간 + {monthly_holiday_hours:g}시간 = {monthly_total_hours:g}시간",
-        f"월 예상 기본급 (주휴 포함): {monthly_base_pay:,}원 + {monthly_holiday_pay:,}원 = {monthly_total_pay:,}원",
+        f"월 예상 기본급 (주휴 포함): {monthly_total_hours:g}시간 × {hourly_wage:,}원 = {monthly_total_pay:,}원",
     ]
+    if float(weekly_contract_hours) > 40.0:
+        formulas.append(f"주 40시간 초과 {float(weekly_contract_hours) - 40.0:g}시간은 소정근로가 아닌 연장근로이므로 [연장·야간·휴일근로수당 계산기]로 따로 계산하세요 (근로기준법 제50조·제56조).")
 
     legal_references = [
         {

@@ -1151,21 +1151,26 @@ def render_credit_sidebar():
             _ui_theme.sb_title("calendar", "귀속사업연도", yr_badge),
             unsafe_allow_html=True,
         )
-        new_year = st.selectbox(
+        def _on_tax_year_change() -> None:
+            # 사용자가 직접 바꾼 경우에만 반영 (백업 복원·인건비 연동 등으로 연도가 바뀐 뒤 화면 기억값이 되돌리지 않도록)
+            _ny = st.session_state.get("ec_sb_tax_year_select")
+            if _ny and int(_ny) != int(s["tax_year"]):
+                s["tax_year"] = int(_ny)
+                s["manual_extra_years"] = []
+                s["built_sig"] = None
+                _ensure_built_for_tax_year(s)
+                _save_ec_to_disk(s)
+
+        if st.session_state.get("ec_sb_tax_year_select") != tax_yr:
+            st.session_state["ec_sb_tax_year_select"] = tax_yr
+        st.selectbox(
             "통합고용세액공제 계산 기준 사업연도",
             options=R.SUPPORTED_TAX_YEARS,
-            index=R.SUPPORTED_TAX_YEARS.index(tax_yr),
             format_func=lambda y: f"{y}년 귀속 ({R.calc_method_short_label(y, eval_year=y)} · {(y-1)%100:02d}·{(y-2)%100:02d} 사후관리)",
             label_visibility="collapsed",
             key="ec_sb_tax_year_select",
+            on_change=_on_tax_year_change,
         )
-        if new_year != s["tax_year"]:
-            s["tax_year"] = int(new_year)
-            s["manual_extra_years"] = []
-            s["built_sig"] = None
-            _ensure_built_for_tax_year(s)
-            _save_ec_to_disk(s)
-            st.rerun()
 
     with st.container(border=True, key="ec_biz"):
         b, conf = s["biz"], set(s["biz_confirmed"])
@@ -1277,22 +1282,30 @@ def render_credit_sidebar():
                 "2·3차년도 연속공제 및 추가납부 단가는 **최초 공제연도 당시 소재지** 기준입니다(예: 2024년 비수도권 공제 후 2025년 수도권 이전 시 2024년분은 비수도권 단가 유지)."
             )
             loc_opts_sb = ["현재 소재지와 같음", "수도권", "수도권 외(비수도권)"]
+
+            def _on_coh_loc_change(_wkey: str, _coh: int) -> None:
+                # 사용자가 직접 고른 경우에만 저장 (기신고 공제세액으로 자동 판정한 값을 화면 기억값이 덮어쓰지 않도록)
+                _sel = st.session_state.get(_wkey)
+                _f = s.setdefault("prev_summary", {}).setdefault(str(_coh), {})
+                _f["수도권"] = None if _sel == loc_opts_sb[0] else (_sel == "수도권")
+                _f["_소재지_추정"] = False
+                _save_ec_to_disk(s)
+
             for coh_y in (tax_yr - 1, tax_yr - 2):
                 f_coh = ps_sb.setdefault(str(coh_y), {})
                 cur_c_loc = f_coh.get("수도권")
-                idx_c = 0 if cur_c_loc is None else (1 if cur_c_loc else 2)
-                sel_c = st.selectbox(
-                    f"{coh_y}년 귀속 공제 당시 소재지",
+                want_c = loc_opts_sb[0 if cur_c_loc is None else (1 if cur_c_loc else 2)]
+                wkey_c = f"ec_sb_coh_loc_{coh_y}_{tax_yr}"
+                if st.session_state.get(wkey_c) != want_c:
+                    st.session_state[wkey_c] = want_c      # 저장값(자동 판정 포함)을 화면에 맞춤 — 강제 새로고침 없음
+                st.selectbox(
+                    f"{coh_y}년 귀속 공제 당시 소재지"
+                    + (" · 신고 공제세액으로 자동 판정" if f_coh.get("_소재지_추정") and cur_c_loc is not None else ""),
                     loc_opts_sb,
-                    index=idx_c,
-                    key=f"ec_sb_coh_loc_{coh_y}_{tax_yr}",
+                    key=wkey_c,
+                    on_change=_on_coh_loc_change,
+                    args=(wkey_c, coh_y),
                 )
-                new_c_loc = None if sel_c == loc_opts_sb[0] else (sel_c == "수도권")
-                if new_c_loc != cur_c_loc:
-                    f_coh["수도권"] = new_c_loc
-                    f_coh["_소재지_추정"] = False
-                    _save_ec_to_disk(s)
-                    st.rerun()
 
 
 

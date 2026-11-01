@@ -507,9 +507,7 @@ def _trigger_multi_download(files: List[Tuple[str, bytes]], mime: str, key: str)
     import json as _json
     payload = _json.dumps([{"n": n, "d": _b64.b64encode(b).decode("ascii")} for n, b in files], ensure_ascii=False)
     html = (
-        "<div style='font-family:sans-serif;font-size:12px;color:#334155;'>"
-        "<button id='go' style='padding:4px 10px;border:1px solid #cbd5e1;border-radius:6px;background:#f8fafc;cursor:pointer;'>"
-        f"다운로드가 시작되지 않으면 여기를 누르세요 ({len(files)}개)</button></div>"
+        "<div></div>"
         "<script>"
         f"const FILES={payload};const MIME={_json.dumps(mime)};"
         "async function go(){for(const f of FILES){const bin=atob(f.d);const arr=new Uint8Array(bin.length);"
@@ -517,11 +515,22 @@ def _trigger_multi_download(files: List[Tuple[str, bytes]], mime: str, key: str)
         "const url=URL.createObjectURL(new Blob([arr],{type:MIME}));const a=document.createElement('a');"
         "a.href=url;a.download=f.n;document.body.appendChild(a);a.click();a.remove();"
         "setTimeout(()=>URL.revokeObjectURL(url),8000);await new Promise(r=>setTimeout(r,250));}}"
-        "document.getElementById('go').onclick=go;go();"
+        "go();"
         "</script>"
     )
-    st.iframe(html, height=40)
-    st.caption(f"{len(files)}개 파일 다운로드를 시작했습니다. 브라우저가 '여러 파일 다운로드'를 물으면 [허용]을 눌러 주세요.")
+    # 화면 배치를 바꾸지 않도록 내려받기용 숨김 프레임만 넣고(버튼 위치 고정), 안내는 오른쪽 아래 알림으로 표시
+    with st.container(key=f"pay_mdl_{key}"):
+        st.markdown(
+            f"<style>.st-key-pay_mdl_{key},div:has(> .st-key-pay_mdl_{key}){{position:absolute !important;left:-9999px;"
+            f"width:1px !important;height:1px !important;margin:0 !important;padding:0 !important;"
+            f"overflow:hidden;opacity:0;pointer-events:none;}}</style>",
+            unsafe_allow_html=True,
+        )
+        st.iframe(html, height=1)
+    st.toast(
+        f"{len(files)}개 파일 다운로드를 시작했습니다. 브라우저가 '여러 파일 다운로드'를 물으면 [허용]을 눌러 주세요.",
+        icon=":material/download:",
+    )
 
 
 def _lazy_bytes(fn, *args, enabled: bool = True, **kwargs):
@@ -601,14 +610,19 @@ def _sync_workplace_to_employees(pstate: Dict[str, Any], force_all: bool = False
             emp["사업장"] = wp_lbl
 
 
-def _reset_payroll_current_work() -> None:
+def _reset_payroll_current_work(which: str = "ALL") -> None:
+    """작업 자료 초기화 — which: "EMP"(급여명세서만) / "FREE"(사업소득만) / "ALL"(둘 다).
+    급여명세서와 사업소득은 서로 영향을 주지 않도록 지금 보고 있는 화면의 자료만 비웁니다."""
     pstate = _get_payroll_state()
-    pstate["employees"] = []
-    pstate["freelancers"] = []
-    pstate["selected_emp_indices"] = []
-    pstate["selected_free_indices"] = []
-    pstate["notice_logs"] = []
-    pstate["chat_logs"] = []
+    if which in ("EMP", "ALL"):
+        pstate["employees"] = []
+        pstate["selected_emp_indices"] = []
+    if which in ("FREE", "ALL"):
+        pstate["freelancers"] = []
+        pstate["selected_free_indices"] = []
+    if which == "ALL" or not (pstate.get("employees") or pstate.get("freelancers")):
+        pstate["notice_logs"] = []
+        pstate["chat_logs"] = []
     pstate["grid_version"] = int(pstate.get("grid_version", 0)) + 1
 
 
@@ -937,7 +951,7 @@ def _dlg_weekly_holiday_calculator():
 
     k1, k2, k3 = st.columns(3)
     k1.metric("1주 주휴수당 (주휴시간)", f"{res['weekly_holiday_pay']:,}원 ({res['weekly_holiday_hours']:g}h)")
-    k2.metric("월 환산 주휴수당 (4.345주)", f"{res['monthly_holiday_pay']:,}원")
+    k2.metric("월 환산 주휴수당 (월 209시간 기준)", f"{res['monthly_holiday_pay']:,}원")
     k3.metric("월 예상 기본급 (주휴 포함)", f"{res['monthly_total_pay']:,}원")
 
     formula_html = "<b>[산출 산식]</b><br>" + "<br>".join(f"• {line}" for line in res["formulas"])
@@ -1286,11 +1300,13 @@ def render_payroll_automated_sidebar() -> None:
             emp_key = "btn_pay_submode_emp_active" if is_emp_mode else "btn_pay_submode_emp"
             if st.button("급여명세서", key=emp_key, width="stretch"):
                 pstate["sub_mode"] = "EMP"
+                st.session_state["pay_confirm_reset"] = False   # 화면을 바꾸면 초기화 확인창 닫기 (다른 화면 자료가 지워지지 않도록)
                 st.rerun()
         with col_free:
             free_key = "btn_pay_submode_free_active" if not is_emp_mode else "btn_pay_submode_free"
             if st.button("사업소득", key=free_key, width="stretch"):
                 pstate["sub_mode"] = "FREE"
+                st.session_state["pay_confirm_reset"] = False   # 화면을 바꾸면 초기화 확인창 닫기 (다른 화면 자료가 지워지지 않도록)
                 st.rerun()
 
     # (2) 개정사항·신규 세법 카드 (통합고용세액공제와 동일한 3D 상태줄·아이콘 디자인 적용)
@@ -1339,6 +1355,9 @@ def render_payroll_automated_sidebar() -> None:
     emp_cnt = len(pstate.get("employees", []))
     free_cnt = len(pstate.get("freelancers", []))
     has_data = (emp_cnt + free_cnt) > 0 or bool(pstate.get("corp_name"))
+    _rs_which = "EMP" if is_emp_mode else "FREE"
+    _rs_name = "급여명세서(급여대장)" if is_emp_mode else "사업소득(사업소득대장)"
+    _rs_has = (emp_cnt if is_emp_mode else free_cnt) > 0
 
     with st.container(border=True):
         status_pill = (
@@ -1354,17 +1373,17 @@ def render_payroll_automated_sidebar() -> None:
             if st.button(
                 "자료 초기화 (내용 비우기)",
                 width="stretch",
-                disabled=not has_data,
+                disabled=not _rs_has,
                 key="btn_pay_reset_ask",
-                help="현재 입력·업로드된 급여대장, 사업소득대장, 사업자정보를 모두 비우고 초기 상태로 되돌립니다.",
+                help=f"지금 보고 있는 {_rs_name} 자료만 비웁니다. 다른 화면 자료와 사업자정보는 그대로 둡니다.",
             ):
                 st.session_state["pay_confirm_reset"] = True
                 st.rerun()
         else:
-            st.caption("⚠️ 현재 화면의 급여대장·사업소득대장 입력 내용을 모두 비우고 초기화할까요? (백업 DB는 유지됩니다)")
+            st.caption(f"현재 화면의 {_rs_name} 입력 내용만 비울까요? (다른 화면 자료·사업자정보·백업 파일은 그대로)")
             c_y, c_n = st.columns(2)
-            if c_y.button("✅ 초기화 실행", type="primary", width="stretch", key="btn_pay_reset_yes"):
-                _reset_payroll_current_work()
+            if c_y.button("초기화 실행", type="primary", width="stretch", key="btn_pay_reset_yes"):
+                _reset_payroll_current_work(_rs_which)
                 st.session_state["pay_confirm_reset"] = False
                 st.rerun()
             if c_n.button("취소", width="stretch", key="btn_pay_reset_no"):
@@ -2029,45 +2048,53 @@ def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
         custom_css=custom_css,
         theme="streamlit",
         key=f"pay_emp_aggrid_{pstate.get('grid_version', 0)}",
+        server_sync_strategy="server_wins",   # 수정 후 다시 계산한 값(4대보험·세액 등)을 표를 새로 만들지 않고 그대로 반영
     )
 
     pstate["selected_emp_indices"] = _extract_selected_row_indices(grid_resp)
     updated_df = grid_resp.get("data")
     if updated_df is not None and isinstance(updated_df, pd.DataFrame) and not updated_df.empty:
-        new_emps: List[Dict[str, Any]] = []
-        changed = False
-        for idx, row in updated_df.iterrows():
-            orig = emps[idx] if idx < len(emps) else {}
-            merged = dict(orig)
-            shown = df.iloc[idx].to_dict() if idx < len(df) else {}
-            hand = [k for k, _, _, editable, _ct in EMP_GRID_COLUMNS
-                    if editable and k in shown and not _same_cell(shown.get(k), row.get(k))]
-            _add_manual_marks(orig, merged, hand)
-            if hand:
+        # 같은 응답을 두 번 처리하지 않음 (그리드를 새로 만들지 않고 값만 바꾸므로, 직전 응답이 다시 돌아와도 무시)
+        _edit_cols = [k for k, _, _, editable, _ct in EMP_GRID_COLUMNS if editable and k in updated_df.columns]
+        _sig = _grid_resp_sig(updated_df, _edit_cols)
+        if _sig != pstate.get("_emp_grid_resp_sig"):
+            pstate["_emp_grid_resp_sig"] = _sig
+            new_emps: List[Dict[str, Any]] = []
+            changed = False
+            for idx, row in updated_df.iterrows():
+                orig = emps[idx] if idx < len(emps) else {}
+                merged = dict(orig)
+                shown = df.iloc[idx].to_dict() if idx < len(df) else {}
+                hand = [k for k in _edit_cols if k in shown and not _same_cell(shown.get(k), row.get(k))]
+                if not hand:
+                    new_emps.append(merged)
+                    continue
                 changed = True
-            for k, _, _, _, ctype in EMP_GRID_COLUMNS:
-                val = row.get(k)
-                if ctype == "select_red":
-                    red_v = _reduction_value(val)
-                    if float(orig.get(k, 0) or 0) != red_v:
-                        changed = True
-                    merged[k] = red_v
-                elif ctype.startswith("numeric"):
-                    num_v = int(round(float(val or 0))) if pd.notna(val) and str(val).strip() != "" else 0
-                    if int(orig.get(k, 0) or 0) != num_v:
-                        changed = True
-                    merged[k] = num_v
-                else:
-                    str_v = "" if pd.isna(val) else str(val).strip()
-                    if str(orig.get(k, "") or "") != str_v:
-                        changed = True
-                    merged[k] = str_v
-            new_emps.append(merged)
-        if changed:
-            pstate["employees"] = new_emps
-            _recalculate_all_employee_rows(pstate)
-            pstate["grid_version"] += 1
-            st.rerun()
+                _add_manual_marks(orig, merged, hand)
+                # 수기 입력 칸만 반영하고 4대보험·세액 등 계산 칸은 다시 계산 (그리드에 남은 예전 계산값으로 덮어쓰지 않음)
+                for k, _, _, editable, ctype in EMP_GRID_COLUMNS:
+                    if not editable or k not in hand:
+                        continue
+                    val = row.get(k)
+                    if ctype == "select_red":
+                        merged[k] = _reduction_value(val)
+                    elif ctype.startswith("numeric"):
+                        merged[k] = int(round(float(val or 0))) if pd.notna(val) and str(val).strip() != "" else 0
+                    else:
+                        merged[k] = "" if pd.isna(val) else str(val).strip()
+                new_emps.append(merged)
+            if changed:
+                pstate["employees"] = new_emps
+                _recalculate_all_employee_rows(pstate)
+                st.rerun()   # 그리드 열쇠(key)는 그대로 → 표를 새로 만들지 않고 값만 갱신 (깜빡임·대기 감소)
+
+
+def _grid_resp_sig(df_resp: pd.DataFrame, cols: List[str]) -> str:
+    try:
+        sub = df_resp[cols] if cols else df_resp
+        return f"{len(df_resp)}:" + str(pd.util.hash_pandas_object(sub.astype(str), index=True).sum())
+    except Exception:
+        return str(hash(df_resp.to_string()))
 
 
 # 선택 칸 표시: 글자 + 오른쪽 ▾ (HTML 문자열을 돌려주면 그리드가 글자 그대로 보여 주므로 화면 요소를 직접 만듭니다)
@@ -2286,42 +2313,44 @@ def _render_freelancer_aggrid(pstate: Dict[str, Any]) -> None:
         allow_unsafe_jscode=True,
         theme="streamlit",
         key=f"pay_free_aggrid_{pstate.get('grid_version', 0)}",
+        server_sync_strategy="server_wins",   # 수정 후 다시 계산한 값(4대보험·세액 등)을 표를 새로 만들지 않고 그대로 반영
     )
 
     pstate["selected_free_indices"] = _extract_selected_row_indices(grid_resp)
     updated_df = grid_resp.get("data")
     if updated_df is not None and isinstance(updated_df, pd.DataFrame) and not updated_df.empty:
-        new_frees: List[Dict[str, Any]] = []
-        changed = False
-        for idx, row in updated_df.iterrows():
-            orig = frees[idx] if idx < len(frees) else {}
-            merged = dict(orig)
-            shown = df.iloc[idx].to_dict() if idx < len(df) else {}
-            hand = [k for k, _, _, editable, _ct in FREE_GRID_COLUMNS
-                    if editable and k in shown and not _same_cell(shown.get(k), row.get(k))]
-            _add_manual_marks(orig, merged, hand)
-            if hand:
+        _edit_cols = [k for k, _, _, editable, _ct in FREE_GRID_COLUMNS if editable and k in updated_df.columns]
+        _sig = _grid_resp_sig(updated_df, _edit_cols)
+        if _sig != pstate.get("_free_grid_resp_sig"):
+            pstate["_free_grid_resp_sig"] = _sig
+            new_frees: List[Dict[str, Any]] = []
+            changed = False
+            for idx, row in updated_df.iterrows():
+                orig = frees[idx] if idx < len(frees) else {}
+                merged = dict(orig)
+                shown = df.iloc[idx].to_dict() if idx < len(df) else {}
+                hand = [k for k in _edit_cols if k in shown and not _same_cell(shown.get(k), row.get(k))]
+                if not hand:
+                    new_frees.append(merged)
+                    continue
                 changed = True
-            for k, _, _, _, ctype in FREE_GRID_COLUMNS:
-                val = row.get(k)
-                if ctype.startswith("numeric"):
-                    num_v = int(round(float(val or 0))) if pd.notna(val) and str(val).strip() != "" else 0
-                    if int(orig.get(k, 0) or 0) != num_v:
-                        changed = True
-                    merged[k] = num_v
-                else:
-                    str_v = "" if pd.isna(val) else str(val).strip()
-                    if k == "소득구분":
-                        str_v = _ind_code_only(str_v)  # 화면 표시는 "940909 (기타자영업)", 저장은 코드 6자리
-                    if str(orig.get(k, "") or "") != str_v:
-                        changed = True
-                    merged[k] = str_v
-            new_frees.append(merged)
-        if changed:
-            pstate["freelancers"] = new_frees
-            _recalculate_all_freelancer_rows(pstate)
-            pstate["grid_version"] += 1
-            st.rerun()
+                _add_manual_marks(orig, merged, hand)
+                for k, _, _, editable, ctype in FREE_GRID_COLUMNS:
+                    if not editable or k not in hand:
+                        continue
+                    val = row.get(k)
+                    if ctype.startswith("numeric"):
+                        merged[k] = int(round(float(val or 0))) if pd.notna(val) and str(val).strip() != "" else 0
+                    else:
+                        str_v = "" if pd.isna(val) else str(val).strip()
+                        if k == "소득구분":
+                            str_v = _ind_code_only(str_v)  # 화면 표시는 "940909 (기타자영업)", 저장은 코드 6자리
+                        merged[k] = str_v
+                new_frees.append(merged)
+            if changed:
+                pstate["freelancers"] = new_frees
+                _recalculate_all_freelancer_rows(pstate)
+                st.rerun()
 
 
 def _payslip_tpl_label(tpl_name: str) -> str:
