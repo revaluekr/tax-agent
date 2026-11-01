@@ -4,6 +4,8 @@
 (ui.py에서 나눈 파일. 함수 본문은 원래 ui.py와 같습니다.)
 """
 from __future__ import annotations
+import re
+_WARN_LEAD_RE = re.compile(r"^\s*\u26a0\ufe0f?\s*")  # 표 설명 앞 경고 이모티콘 제거 (B안)
 import io
 import json
 import streamlit as st
@@ -76,12 +78,12 @@ def _read_upload_text(u, extract_file_fn, room_key: str = "") -> str:
 # ══════════════════════════════════════════════════════════════════
 # 2. 별도 창(대화상자 — 12대 정밀 오류검토 + Pro/Argon 심층 세무진단 연동)
 # ══════════════════════════════════════════════════════════════════
-@st.dialog("📋 자료 확인 안내")
+@st.dialog("자료 확인 안내")
 def _dlg_missing(msgs: list[str]):
     for m in msgs:
         st.markdown(f"- {m}")
     st.caption("확인을 누르면 현재까지 인식된 자료로 다음 단계로 넘어갑니다. 부족한 정보는 사원정보 화면과 사이드바에서 직접 입력·수정할 수 있습니다.")
-    if st.button("✅ 확인 및 2단계(사원정보)로 이동", type="primary", width="stretch"):
+    if st.button("확인 및 2단계(사원정보)로 이동", type="primary", width="stretch"):
         s = _S()
         s["go_step2"] = True
         _save_ec_to_disk(s)
@@ -98,12 +100,12 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
         _enter_step2()
         st.rerun()
 
-    st.markdown(f"### 📂 1. 자료 업로드 ({tax_yr}년 귀속 기준)")
+    pass  # 제목은 상단 머리(ecx-h1)에 표시
 
     if tax_yr == 2026:
         st.markdown(
             "<div class='ec-law-banner'>"
-            "💡 <b>[2026년 귀속 통합 계산 안내]</b> 2026년 귀속 신고 시에는 "
+            "<b>[2026년 귀속 통합 계산 안내]</b> 2026년 귀속 신고 시에는 "
             f"<b>① 26년 세액공제({R.calc_method_short_label(2026, eval_year=2026)})</b>, <b>② 25년 1차 사후관리(2차년도 연속공제·추징)</b>, "
             "<b>③ 24년 2차 사후관리(3차년도 연속공제·추징)</b>를 함께 검토합니다. "
             "24·25·26년 공제 및 사후관리(24년 고용증가 23→24년 산정 포함)를 위해 <b>23년 자료(원천징수부·기신고서)</b>도 함께 올리실 수 있으며, "
@@ -115,7 +117,7 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
         trunc_lbl = R.calc_method_short_label(tax_yr, eval_year=tax_yr)
         st.markdown(
             f"<div class='ec-law-banner'>"
-            f"💡 <b>[{tax_yr}년 귀속 세액공제({trunc_lbl}) 및 사후관리 안내]</b> 2단계 진입 시 <b>『{tax_yr}년 귀속 상시근로자 명세』</b>가 맨 위에 표시되며, "
+            f"<b>[{tax_yr}년 귀속 세액공제({trunc_lbl}) 및 사후관리 안내]</b> 2단계 진입 시 <b>『{tax_yr}년 귀속 상시근로자 명세』</b>가 맨 위에 표시되며, "
             f"<b>{tax_yr}년 세액공제({trunc_lbl})</b>와 자료가 있는 <b>{tax_yr-1}년 1차 사후관리</b>·<b>{tax_yr-2}년 2차 사후관리</b>를 자동 구성합니다."
             f"</div>",
             unsafe_allow_html=True,
@@ -125,7 +127,7 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
         active_comp = [f"{k}({v}년)" for k, v in comp_map.items() if v is not None]
         st.markdown(
             f"<div class='ec-law-banner'>"
-            f"💡 <b>[{tax_yr}년 귀속 점증형 공제 안내]</b> 비교 대상 과세연도: <b>{', '.join(active_comp)}</b> "
+            f"<b>[{tax_yr}년 귀속 점증형 공제 안내]</b> 비교 대상 과세연도: <b>{', '.join(active_comp)}</b> "
             f"(2024.12.31. 이전 개시 과세연도 제외 규정 반영 · A+B+C 자동 합산)."
             f"</div>",
             unsafe_allow_html=True,
@@ -165,7 +167,7 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
                 _save_ec_to_disk(s)
                 st.rerun()
         with c_def_help:
-            st.caption("💡 중소기업 유예기간(조특령 제2조) 중이면 중소기업으로 선택하세요.")
+            st.caption("중소기업 유예기간(조특령 제2조) 중이면 중소기업으로 선택하세요.")
             diff_yrs_s1 = [
                 f"{yy}년({_cohort_corp_size(s, yy)})"
                 for yy in four_years_s1
@@ -175,7 +177,7 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
                 st.markdown(
                     f"<span style='background:#fff7ed;color:#c2410c;border:1px solid #fdba74;padding:2px 8px;"
                     f"border-radius:999px;font-size:0.78rem;font-weight:700;'>"
-                    f"⚠️ 기본값과 다름: {', '.join(diff_yrs_s1)}</span>",
+                    f"기본값과 다름: {', '.join(diff_yrs_s1)}</span>",
                     unsafe_allow_html=True,
                 )
 
@@ -229,7 +231,7 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
 
     st.markdown(
         "<div class='ec-bottom-upload-label'>"
-        "<span>📥 <b>파일 추가 업로드</b> (본·지점 / 양도·양수 복수 사업장 파일도 한꺼번에 끌어다 놓으세요)</span>"
+        "<span><b>파일 추가 업로드</b> (본·지점 / 양도·양수 복수 사업장 파일도 한꺼번에 끌어다 놓으세요)</span>"
         f"<span style='color:#16a34a;font-size:0.80rem;'>{tax_yr-3}·{tax_yr-2}·{tax_yr-1}·{tax_yr}년 원천징수부(100% 자체 고속파싱) · 복수 사업장 합산 지원</span>"
         "</div>",
         unsafe_allow_html=True,
@@ -247,12 +249,12 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
     if new:
         # pypdfium2(PDFium C 바인딩)의 스레드 안전성 보호를 위해 순차 처리를 유지하되 실시간 진행률 바를 표시합니다.
         total_new = len(new)
-        prog_bar = st.progress(0, text=f"📄 총 {total_new}개 파일 순차 안전 판독 준비 중...")
+        prog_bar = st.progress(0, text=f"총 {total_new}개 파일 순차 안전 판독 준비 중...")
         try:
             for idx_u, u in enumerate(new, start=1):
                 prog_bar.progress(
                     min(99, int((idx_u - 1) * 100 / max(1, total_new))),
-                    text=f"📄 파일 안전 판독 중 ({idx_u}/{total_new}): {u.name}",
+                    text=f"파일 안전 판독 중 ({idx_u}/{total_new}): {u.name}",
                 )
                 if str(getattr(u, "name", "")).lower().endswith(".paybak"):
                     try:
@@ -284,7 +286,7 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
                     "text": text,
                     "wp": auto_wp,
                 }
-            prog_bar.progress(100, text=f"✅ {total_new}개 파일 판독 완료!")
+            prog_bar.progress(100, text=f"{total_new}개 파일 판독 완료!")
         finally:
             prog_bar.empty()
         s["uploader_ver"] += 1
@@ -301,7 +303,7 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
                         f"**📎 업로드된 파일 목록 ({len(s['files'])}건)** — *본·지점 또는 1·2번 사업장 합산 시 가운데 칸에서 『사업장명』을 구분해 주시면 2단계 표 맨 앞에 자동 기록됩니다.*"
                     )
                 with c_h2:
-                    if st.button("🗑️ 전체 파일 비우기", width="stretch", key="ec_clear_all_files"):
+                    if st.button("전체 파일 비우기", width="stretch", key="ec_clear_all_files"):
                         s["files"] = {}
                         s["ext"] = None
                         s["ext_sig"] = None
@@ -313,7 +315,7 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
                 opts = [None] + list(all_labels.keys())
                 for name, f in list(s["files"].items()):
                     c1, c_wp, c2, c3 = st.columns([3.4, 1.8, 3.8, 0.9])
-                    c1.markdown(f"📄 **{name}**" + (" · <span style='color:#64748b;font-size:.8rem'>💾 백업 복원(원문 없음)</span>"
+                    c1.markdown(f"**{name}**" + (" · <span style='color:#64748b;font-size:.8rem'>백업 복원(원문 없음)</span>"
                                                      if f.get("restored") and not f.get("text") else ""),
                                 unsafe_allow_html=True)
                     cur_wp = _sanitize_workplace_label(str(f.get("wp") or ""), _default_workplace_label(s))
@@ -336,7 +338,7 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
                         opts,
                         index=opts.index(cur_k),
                         key=f"ec_k_{name}",
-                        format_func=lambda k: "⚠️ 서류 종류를 선택하세요 (미선택 시 분석 제외)"
+                        format_func=lambda k: "서류 종류를 선택하세요 (미선택 시 분석 제외)"
                         if k is None
                         else all_labels.get(k, str(k)),
                         label_visibility="collapsed",
@@ -368,7 +370,7 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
             f"<tr class='{'on' if on else ''}'>"
             f"<td class='led-cell'><span class='ec-led{' on' if on else ''}'></span></td>"
             f"<td><b>{label}</b> {pill}</td>"
-            f"<td class='help'>{doc_help.get(key, '')}</td>"
+            f"<td class='help'>{_WARN_LEAD_RE.sub('', str(doc_help.get(key, '')))}</td>"
             f"<td class='fname'>{files_str}</td></tr>"
         )
 
@@ -379,7 +381,7 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
             trs.append(
                 f"<tr class='extra'>"
                 f"<td class='led-cell'><span class='ec-led on'></span></td>"
-                f"<td><b>{extra_lbl}</b> <span class='ec-extra-pill'>➕ 추가 인식됨</span></td>"
+                f"<td><b>{extra_lbl}</b> <span class='ec-extra-pill'>추가 인식됨</span></td>"
                 f"<td class='help'>{extra_help}</td>"
                 f"<td class='fname'>{', '.join(extra_files)}</td></tr>"
             )
@@ -391,8 +393,7 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
         unsafe_allow_html=True,
     )
 
-    st.markdown("<div class='ec-nav-divider'></div>", unsafe_allow_html=True)
-    _, right = st.columns([5.8, 1.3])
+    _, right = st.container(key="ecx_actionbar").columns([5.8, 1.3], vertical_alignment="center")
     if right.button("다음(2단계)", type="primary", width="stretch"):
         classified: dict[str, list[str]] = {}
         for name, f in s["files"].items():
@@ -411,7 +412,7 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
         if s["ext_sig"] != sig and restored_left and s.get("ext"):
             if classified_with_text:
                 texts_new = _compose_doc_texts_with_wp(s, classified_with_text)
-                with st.spinner("⚡ 새로 추가·변경된 서류를 추출하여 기존 복원 데이터에 병합하고 있습니다..."):
+                with st.spinner("새로 추가·변경된 서류를 추출하여 기존 복원 데이터에 병합하고 있습니다..."):
                     new_ext = P.extract_all(texts_new, log_tokens_fn, room_key)
                     s["ext"] = _merge_ext_dicts(s.get("ext"), new_ext)
                     msgs = P.check_missing(classified, s["ext"], tax_yr)
@@ -430,7 +431,7 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
         if s["ext_sig"] != sig:
             texts = _compose_doc_texts_with_wp(s, classified_with_text or classified)
             if texts:
-                with st.spinner("⚡ 자체 고속 파서(1순위) 및 하이브리드 Pro/Argon AI(2순위)로 사업자·복수사업장·사원 정보를 추출하고 있습니다..."):
+                with st.spinner("자체 고속 파서(1순위) 및 하이브리드 Pro/Argon AI(2순위)로 사업자·복수사업장·사원 정보를 추출하고 있습니다..."):
                     s["ext"] = P.extract_all(texts, log_tokens_fn, room_key)
                     msgs = P.check_missing(classified, s["ext"], tax_yr)
             else:

@@ -79,6 +79,7 @@ BACKUP_KEYS = (
     "show_all_4_blocks",
     "show_empty_pm_blocks",
     "next_pid_seq",
+    "deleted_people",
 )
 
 

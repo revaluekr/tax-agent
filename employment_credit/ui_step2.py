@@ -52,6 +52,8 @@ from .ui_common import (  # noqa: F401
     _save_ec_to_disk,
     _trigger_scroll_to_top,
     _years,
+    delete_people,
+    restore_deleted_people,
 )
 
 
@@ -322,7 +324,7 @@ def _build_schedule_pdf_bytes(s: dict, target_years: list[int], include_summary:
     return buf.getvalue()
 
 
-@st.dialog("🔍 법령·심판례·절세누락 12대 정밀 오류 검토", width="large")
+@st.dialog("법령·심판례·절세누락 12대 정밀 오류 검토", width="large")
 def _dlg_review(items: list[tuple[str, str]], audit_payload: dict | None = None, log_tokens_fn=None, room_key: str = ""):
     s = _S()
     errs = [m for lv, m in items if lv == "오류"]
@@ -332,9 +334,9 @@ def _dlg_review(items: list[tuple[str, str]], audit_payload: dict | None = None,
     st.markdown(
         f"<div style='display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;flex-wrap:wrap;'>"
         f"<div style='display:flex;gap:8px;flex-wrap:wrap;'>"
-        f"<span style='background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;padding:5px 13px;border-radius:999px;font-weight:800;font-size:0.92rem;'>🚨 필수 수정 오류 {len(errs)}건</span>"
-        f"<span style='background:#f0fdf4;color:#15803d;border:1px solid #86efac;padding:5px 13px;border-radius:999px;font-weight:800;font-size:0.92rem;'>💰 절세누락 주의 {len(savs)}건</span>"
-        f"<span style='background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;padding:5px 13px;border-radius:999px;font-weight:800;font-size:0.92rem;'>💡 실무·심판례 확인 {len(chks)}건</span>"
+        f"<span style='background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;padding:5px 13px;border-radius:999px;font-weight:800;font-size:0.92rem;'>필수 수정 오류 {len(errs)}건</span>"
+        f"<span style='background:#f0fdf4;color:#15803d;border:1px solid #86efac;padding:5px 13px;border-radius:999px;font-weight:800;font-size:0.92rem;'>절세누락 주의 {len(savs)}건</span>"
+        f"<span style='background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;padding:5px 13px;border-radius:999px;font-weight:800;font-size:0.92rem;'>실무·심판례 확인 {len(chks)}건</span>"
         f"</div>"
         f"<span style='font-size:0.86rem;color:#64748b;font-weight:600;'>※ 반복 안내 항목은 연도별로 자동 묶음 요약됩니다.</span>"
         f"</div>",
@@ -342,13 +344,13 @@ def _dlg_review(items: list[tuple[str, str]], audit_payload: dict | None = None,
     )
 
     if not items:
-        st.success("✅ 법령 및 최신 조세심판례 12대 항목 검토 결과, 발견된 오류나 절세누락 사항이 없습니다.")
+        st.success("법령 및 최신 조세심판례 12대 항목 검토 결과, 발견된 오류나 절세누락 사항이 없습니다.")
     else:
         sections_html = ["<div class='ec-rev-scroll-wrap'>"]
         if errs:
             sections_html.append(
                 f"<div class='ec-rev-sec-hdr err'>"
-                f"<span>🚨 필수 수정 오류 ({len(errs)}건) — 수정해야 정확한 상시근로자 수가 계산됩니다</span>"
+                f"<span>필수 수정 오류 ({len(errs)}건) — 수정해야 정확한 상시근로자 수가 계산됩니다</span>"
                 f"</div>"
                 f"<div class='ec-rev-grid'>"
             )
@@ -359,7 +361,7 @@ def _dlg_review(items: list[tuple[str, str]], audit_payload: dict | None = None,
         if savs:
             sections_html.append(
                 f"<div class='ec-rev-sec-hdr sav'>"
-                f"<span>💰 절세누락 주의 ({len(savs)}건) — 청년·고령자·장애인 우대공제 추가 적용 가능 대상</span>"
+                f"<span>절세누락 주의 ({len(savs)}건) — 청년·고령자·장애인 우대공제 추가 적용 가능 대상</span>"
                 f"</div>"
                 f"<div class='ec-rev-grid'>"
             )
@@ -370,7 +372,7 @@ def _dlg_review(items: list[tuple[str, str]], audit_payload: dict | None = None,
         if chks:
             sections_html.append(
                 f"<div class='ec-rev-sec-hdr chk'>"
-                f"<span>💡 실무·심판례 확인 사항 ({len(chks)}건) — 사실관계가 맞다면 그대로 진행하셔도 됩니다</span>"
+                f"<span>실무·심판례 확인 사항 ({len(chks)}건) — 사실관계가 맞다면 그대로 진행하셔도 됩니다</span>"
                 f"</div>"
                 f"<div class='ec-rev-grid'>"
             )
@@ -388,8 +390,8 @@ def _dlg_review(items: list[tuple[str, str]], audit_payload: dict | None = None,
     c_ai, c_pdf_rev, c_close = st.columns([2.15, 1.15, 0.85])
     with c_ai:
         if audit_payload:
-            if st.button("👑 Pro/Argon AI 심층 세무진단 코멘트 생성 (특수사례·판례 정밀점검)", width="stretch", key="btn_run_pro_audit"):
-                with st.spinner("👑 Pro/Argon 모델이 사원표·특례·사후관리 리스크를 심층 분석하고 있습니다..."):
+            if st.button("Pro/Argon AI 심층 세무진단 코멘트 생성 (특수사례·판례 정밀점검)", width="stretch", key="btn_run_pro_audit"):
+                with st.spinner("Pro/Argon 모델이 사원표·특례·사후관리 리스크를 심층 분석하고 있습니다..."):
                     s["pro_audit_comment"] = getattr(P, "call_pro_argon_audit_commentary", lambda *a, **kw: "Pro/Argon 심층 진단 함수를 찾을 수 없습니다. parsers.py를 최신 버전으로 업데이트해 주세요.")(
                         audit_payload, log_tokens_fn=log_tokens_fn, room_key=room_key
                     )
@@ -397,7 +399,7 @@ def _dlg_review(items: list[tuple[str, str]], audit_payload: dict | None = None,
     with c_pdf_rev:
         with st.container(key="ec_btn_pdf_rev_only"):
             st.download_button(
-                "📕 오류검토 PDF 다운",
+                "오류검토 PDF 다운",
                 data=_build_review_pdf_bytes(s, items, pro_comment=""),
                 file_name=f"통합고용_오류검토_{corp_fn}_{tax_yr}귀속.pdf",
                 mime="application/pdf",
@@ -418,7 +420,7 @@ def _dlg_review(items: list[tuple[str, str]], audit_payload: dict | None = None,
                 if not str(s["pro_audit_comment"]).startswith("❌"):
                     with st.container(key="ec_btn_pdf_rev_pro"):
                         st.download_button(
-                            "📕 심층진단 포함 PDF 다운",
+                            "심층진단 포함 PDF 다운",
                             data=_build_review_pdf_bytes(s, items, pro_comment=str(s.get("pro_audit_comment") or "")),
                             file_name=f"통합고용_심층진단_{corp_fn}_{tax_yr}귀속.pdf",
                             mime="application/pdf",
@@ -522,7 +524,7 @@ def _dlg_add_employee():
 
     if is_dup:
         st.warning(
-            f"⚠️ 같은 성명({name_str})·생년월일({birth_dt.isoformat()}) 사원이 이미 존재합니다 (중복 가능성). "
+            f"같은 성명({name_str})·생년월일({birth_dt.isoformat()}) 사원이 이미 존재합니다 (중복 가능성). "
             f"동일인이 아닌 경우 [그래도 추가] 버튼을 눌러 추가하세요."
         )
 
@@ -631,6 +633,8 @@ def _grid_options(
         suppressRowVirtualisation=True,
         suppressColumnVirtualisation=True,
         alwaysShowHorizontalScroll=True,
+        rowSelection="multiple",
+        suppressRowClickSelection=True,
     )
     go = gb.build()
 
@@ -655,8 +659,10 @@ def _grid_options(
             "field": "사업장명",
             "headerName": "사업장명",
             "pinned": "left",
-            "width": 76,
-            "minWidth": 76,
+            "width": 100,
+            "minWidth": 100,
+            "checkboxSelection": True,          # [선택한 행 삭제]용 사람별 선택칸
+            "headerCheckboxSelection": True,    # 머리글 칸: 전체 선택
             "suppressSizeToFit": True,
             "editable": True,
             "cellStyle": JS_STYLE_WORKPLACE,
@@ -1039,13 +1045,87 @@ def _year_role_description(s: dict, tax_year: int, year: int) -> str:
     return f"{prefix} · {' · '.join(active_parts)}{omit_note}"
 
 
+def _selected_pids(resp) -> list:
+    """AgGrid 응답에서 체크한 사원의 pid 목록."""
+    sel = None
+    try:
+        sel = resp["selected_rows"]
+    except Exception:
+        sel = getattr(resp, "selected_rows", None)
+    if sel is None:
+        return []
+    if isinstance(sel, pd.DataFrame):
+        recs = sel.to_dict("records")
+    elif isinstance(sel, list):
+        recs = sel
+    else:
+        return []
+    out = []
+    for r in recs:
+        pid = (r or {}).get("pid") if isinstance(r, dict) else None
+        if pid and pid not in out:
+            out.append(str(pid))
+    return out
+
+
+@st.dialog("선택한 사원 삭제")
+def _dlg_delete_people(year: int):
+    s = _S()
+    pids = [p for p in st.session_state.get(f"ec_sel_pids_{year}", []) if p in (s.get("people") or {})]
+    if not pids:
+        st.info("선택한 사원이 없습니다. 표 왼쪽 선택칸을 체크해 주세요.")
+        if st.button("닫기", width="stretch", key=f"btn_del_close_{year}"):
+            st.rerun()
+        return
+    names = [str((s["people"][p] or {}).get("성명") or "") for p in pids]
+    st.markdown(f"**{len(pids)}명**을 사원표에서 삭제할까요?")
+    st.markdown(", ".join(names))
+    st.caption("모든 연도 표에서 빠지고 상시근로자 수를 다시 계산합니다. 올린 원천징수부 파일은 그대로이며, 파일로 다시 만들어도 이 사원은 나오지 않습니다. "
+               "(표 위 [삭제 되돌리기]로 복원할 수 있지만, 직접 추가했던 사원은 복원되지 않습니다.)")
+    c_ok, c_no = st.columns(2)
+    with c_ok:
+        if st.button(f"{len(pids)}명 삭제", type="primary", width="stretch", key=f"btn_del_ok_{year}"):
+            delete_people(s, pids)
+            for k in list(st.session_state.keys()):
+                if str(k).startswith("ec_sel_pids_"):
+                    st.session_state[k] = []
+            st.rerun()
+    with c_no:
+        if st.button("취소", width="stretch", key=f"btn_del_cancel_{year}"):
+            st.rerun()
+
+
+def _render_people_toolbar(s: dict, year: int) -> None:
+    """사원표 바로 위 툴바: [사원 추가] [선택한 행 삭제 · N명] (+ 삭제한 사원이 있으면 [삭제 되돌리기])."""
+    n_sel = len([p for p in st.session_state.get(f"ec_sel_pids_{year}", []) if p in (s.get("people") or {})])
+    n_del = len(s.get("deleted_people") or [])
+    cols = st.columns([1.15, 1.6, 1.35, 3.9] if n_del else [1.15, 1.6, 5.25], vertical_alignment="center")
+    with cols[0]:
+        if st.button("+ 사원 추가", width="stretch", key=f"btn_ec_add_emp_{year}"):
+            _dlg_add_employee()
+    with cols[1]:
+        with st.container(key=f"ec_btn_del_rows_{year}"):
+            if st.button(f"선택한 행 삭제 · {n_sel}명" if n_sel else "선택한 행 삭제", width="stretch",
+                         disabled=(n_sel == 0), key=f"btn_ec_del_rows_{year}",
+                         help="표 왼쪽 선택칸으로 여러 명을 고른 뒤 누르세요."):
+                _dlg_delete_people(year)
+    if n_del:
+        with cols[2]:
+            if st.button(f"삭제 되돌리기 ({n_del}명)", width="stretch", key=f"btn_ec_restore_{year}",
+                         help="삭제한 사원을 올린 파일 기준으로 다시 불러옵니다 (직접 추가했던 사원 제외)."):
+                restore_deleted_people(s)
+                st.rerun()
+    with cols[-1]:
+        st.caption("왼쪽 선택칸으로 여러 명을 고를 수 있습니다 (머리글 칸 = 전체 선택).")
+
+
 def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
     rows, computed, totals = _build_year_rows(s, year)
     tax_year = int(s["tax_year"])
     role_desc = _year_role_description(s, tax_year, year)
     last_m = H.detect_last_paid_month(s.get("people") or {}, year)
     mid_yr_badge = (
-        f" &nbsp;·&nbsp; <span style='color:#0369a1;font-weight:700;'>⚡ {last_m}월 가결산 ({last_m+1}~12월 {'연말재직 자동가정' if s.get('assume_year_end', True) else '미도래 0 처리'})</span>"
+        f" &nbsp;·&nbsp; <span style='color:#0369a1;font-weight:700;'>{last_m}월 가결산 ({last_m+1}~12월 {'연말재직 자동가정' if s.get('assume_year_end', True) else '미도래 0 처리'})</span>"
         if last_m < 12
         else ""
     )
@@ -1070,7 +1150,7 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
     )
     method_badge_html = (
         f"<span style='{m_pill_style}padding:2px 8px;border-radius:999px;font-size:0.76rem;font-weight:800;margin-left:6px;'>"
-        f"📐 {m_lbl_yr}</span>"
+        f"{m_lbl_yr}</span>"
     )
     # 우측에 이미 연도별 기업규모 드롭다운이 있으므로 헤더 좌측에는 계산방식 배지(+기본값과 다를 때만 알림 배지)만 간결히 표시
     yr_sz_badge_html = f"{method_badge_html}{diff_pill_html}"
@@ -1078,7 +1158,7 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
     with c_hdr:
         st.markdown(
             f"<div class='ec-year-header'>"
-            f"<span class='ec-year-title'>📅 {year}년 귀속 상시근로자 명세 ({len(rows)}명){yr_sz_badge_html}</span>"
+            f"<span class='ec-year-title'>{year}년 귀속 상시근로자 명세 ({len(rows)}명){yr_sz_badge_html}</span>"
             f"<span class='ec-year-sub'>{role_desc}{mid_yr_badge}</span>"
             f"</div>",
             unsafe_allow_html=True,
@@ -1089,11 +1169,11 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
             f"{year}년 기업규모",
             options=R.CORP_SIZES,
             index=R.CORP_SIZES.index(cur_yr_sz) if cur_yr_sz in R.CORP_SIZES else 0,
-            format_func=lambda x: f"🏢 {year%100:02d}년: {'일반기업(대기업)' if x == '일반기업' else x}",
+            format_func=lambda x: f"{year%100:02d}년: {'일반기업(대기업)' if x == '일반기업' else x}",
             label_visibility="collapsed",
             key=f"ec_yr_corp_size_{year}_{yr_sz_ver}",
             help=(
-                f"📌 [{year}년 귀속 기업규모 선택 — 중소기업 / 중견기업 / 일반기업(대기업)]\n"
+                f"[{year}년 귀속 기업규모 선택 — 중소기업 / 중견기업 / 일반기업(대기업)]\n"
                 f"• 1단계·사이드바의 해당 연도 기업규모와 동일한 상태를 공유합니다.\n"
                 f"• 변경 시 근로계약 체결연도({year}년) 기업규모에 따른 청년 유예기간(2026년 이후 계약: 중소·중견 4년 / 일반 3년, "
                 f"2025년 계약: 중소·중견 3년 / 일반 2년 — 계약일로부터 유예연수가 되는 날이 속한 달부터 청년에서 제외, "
@@ -1112,7 +1192,7 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
     with c_pdf:
         with st.container(key=f"ec_btn_pdf_yr_{year}"):
             st.download_button(
-                "📕 PDF 다운",
+                "PDF 다운",
                 data=_build_schedule_pdf_bytes(s, [year], include_summary=False),
                 file_name=f"{corp_nm}_{year}년귀속_상시근로자명세.pdf",
                 mime="application/pdf",
@@ -1121,8 +1201,10 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
                 help=f"{year}년 귀속 상시근로자 명세 및 사후관리 판정표(A4 가로 PDF)를 다운로드합니다.",
             )
 
+    _render_people_toolbar(s, year)
+
     if not rows:
-        st.info(f"{year}년에 근무한 근로자가 없습니다. {year}년 원천징수부를 올렸는지 확인하거나 아래 [➕ 사원 추가]로 입력하세요.")
+        st.info(f"{year}년에 근무한 근로자가 없습니다. {year}년 원천징수부를 올렸는지 확인하거나 위 [사원 추가]로 입력하세요.")
         return computed, totals
 
     for _r in rows:
@@ -1179,14 +1261,14 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
     show_b3 = show_all_4 and (has_y2 or force_empty)
 
     custom_ag_css = {
-        ".ag-header": {"background-color": "#1e293b !important", "color": "#ffffff !important"},
+        ".ag-header": {"background-color": "#F7F9FC !important", "color": "#334155 !important", "border-bottom": "1px solid #E4E8F0 !important"},
         ".ag-header-group-cell": {
-            "background-color": "#0f172a !important",
-            "color": "#f8fafc !important",
+            "background-color": "#EEF2F7 !important",
+            "color": "#0F172A !important",
             "font-weight": "800 !important",
             "font-family": "'Pretendard', 'Malgun Gothic', sans-serif !important",
             "font-size": "12.6px !important",
-            "border-right": "1px solid #475569 !important",
+            "border-right": "1px solid #E4E8F0 !important",
             "justify-content": "center !important",
             "padding-left": "3px !important",
             "padding-right": "3px !important",
@@ -1206,12 +1288,12 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
             "overflow": "visible !important",
             "text-overflow": "clip !important",
             "font-weight": "800 !important",
-            "color": "#f8fafc !important",
+            "color": "#0F172A !important",
         },
         ".ag-header-cell": {
             "padding-left": "2px !important",
             "padding-right": "2px !important",
-            "border-right": "1px solid #334155 !important",
+            "border-right": "1px solid #E4E8F0 !important",
         },
         ".ag-header-cell-label": {
             "justify-content": "center !important",
@@ -1219,7 +1301,7 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
             "text-overflow": "clip !important",
         },
         ".ag-header-cell-text": {
-            "color": "#ffffff !important",
+            "color": "#475569 !important",
             "font-weight": "700 !important",
             "font-family": "'Pretendard', 'Malgun Gothic', sans-serif !important",
             "font-size": "12.4px !important",
@@ -1236,12 +1318,13 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
             "overflow": "visible !important",
             "text-overflow": "clip !important",
         },
-        ".ag-root-wrapper": {"border-radius": "8px !important", "border": "1px solid #cbd5e1 !important"},
+        ".ag-root-wrapper": {"border-radius": "12px !important", "border": "1px solid #E4E8F0 !important"},
+        ".ag-checkbox-input-wrapper.ag-checked::after": {"color": "#2B50B8 !important"},
     }
     resp = AgGrid(
         df,
         gridOptions=_grid_options(df, totals, year=year, show_b2=show_b2, show_b3=show_b3),
-        update_mode=GridUpdateMode.VALUE_CHANGED,
+        update_mode=GridUpdateMode.VALUE_CHANGED | GridUpdateMode.SELECTION_CHANGED,
         allow_unsafe_jscode=True,
         theme="balham",
         custom_css=custom_ag_css,
@@ -1249,6 +1332,11 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
         height=min(720, 128 + 32 * (len(rows) + 3)),
         fit_columns_on_grid_load=False,
     )
+    sel_key = f"ec_sel_pids_{year}"
+    new_sel = _selected_pids(resp)
+    if new_sel != st.session_state.get(sel_key, []):
+        st.session_state[sel_key] = new_sel   # 표 위 [선택한 행 삭제 · N명] 숫자를 바로 맞추기 위해 한 번 더 그림
+        st.rerun()
     back = getattr(resp, "data", None)
     if back is None:
         try:
@@ -1264,7 +1352,7 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
     b3_title, b4_title, b5_title = _block_titles_for_year(year, two_line=False)
     kpi_chips = [
         f"<div class='ec-kpi-chip b3'>"
-        f"<span class='kpi-tag'>👥 {b3_title}</span>"
+        f"<span class='kpi-tag'>{b3_title}</span>"
         f"<span class='kpi-main'>상시 {totals['b1_reg']:.2f}명</span>"
         f"<span class='kpi-sub'>(청년등 <b>{totals['b1_yth']:.2f}</b> · 청년외 <b>{totals['b1_gen']:.2f}</b>)</span>"
         f"</div>"
@@ -1272,7 +1360,7 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
     if show_b2:
         kpi_chips.append(
             f"<div class='ec-kpi-chip b4'>"
-            f"<span class='kpi-tag'>🔄 {b4_title}</span>"
+            f"<span class='kpi-tag'>{b4_title}</span>"
             f"<span class='kpi-main'>상시 {totals['b2_reg']:.2f}명</span>"
             f"<span class='kpi-sub'>(청년등 <b>{totals['b2_yth']:.2f}</b> · 청년외 <b>{totals['b2_gen']:.2f}</b>)</span>"
             f"</div>"
@@ -1280,7 +1368,7 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
     if show_b3:
         kpi_chips.append(
             f"<div class='ec-kpi-chip b5'>"
-            f"<span class='kpi-tag'>🛡️ {b5_title}</span>"
+            f"<span class='kpi-tag'>{b5_title}</span>"
             f"<span class='kpi-main'>상시 {totals['b3_reg']:.2f}명</span>"
             f"<span class='kpi-sub'>(청년등 <b>{totals['b3_yth']:.2f}</b> · 청년외 <b>{totals['b3_gen']:.2f}</b>)</span>"
             f"</div>"
@@ -1341,7 +1429,7 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
     cls_diff_html = (
         f"<div style='margin:-16px 0 20px 0;padding:8px 12px;background:#fff7ed;border:1.5px solid #fdba74;"
         f"border-left:5px solid #f97316;border-radius:8px;font-size:0.84rem;color:#9a3412;line-height:1.5;'>"
-        f"🟧 <b>상시근로자 명세서(별지 제10호의10) vs 원천징수부 분류 차이 감지 ({len(cls_diff_items)}명 · 표 주황색 행 표시):</b><br>"
+        f"<b>상시근로자 명세서(별지 제10호의10) vs 원천징수부 분류 차이 감지 ({len(cls_diff_items)}명 · 표 주황색 행 표시):</b><br>"
         + "<br>".join(f"• {it}" for it in cls_diff_items)
         + "</div>"
         if cls_diff_items
@@ -1383,11 +1471,11 @@ def _render_prev_filing_summary_card(s: dict, shown_years: list[int]):
     has_prev_doc = bool(((s.get("ext") or {}).get("prev_filing") or {}).get("연도별"))
 
     with st.expander(
-        f"📋 {t2_year}년 귀속분(2차 사후관리 대상) 인원 확인 — 현재 {t2_year}년 원천징수부 미첨부로 표 생략됨 (기신고 숫자로 간편 입력 가능)",
+        f"{t2_year}년 귀속분(2차 사후관리 대상) 인원 확인 — 현재 {t2_year}년 원천징수부 미첨부로 표 생략됨 (기신고 숫자로 간편 입력 가능)",
         expanded=has_prev_doc,
     ):
         st.caption(
-            f"💡 **{t2_year}년 귀속분 2차 사후관리(3차년도 연속공제 또는 추가납부세액)** 및 **{tax_yr-1}년 고용증가 인원 검증**을 위해 "
+            f"**{t2_year}년 귀속분 2차 사후관리(3차년도 연속공제 또는 추가납부세액)** 및 **{tax_yr-1}년 고용증가 인원 검증**을 위해 "
             f"{t2_year}년 기신고 상시·청년등 인원을 입력하거나 아래 버튼으로 {t2_year}년 사원표를 직접 열 수 있습니다."
         )
         c1, c2, c3 = st.columns([1.8, 1.8, 2.4])
@@ -1415,7 +1503,7 @@ def _render_prev_filing_summary_card(s: dict, shown_years: list[int]):
             y_entry["청년등"] = yth_val
         with c3:
             st.write("")
-            if st.button(f"➕ {t2_year}년 사원정보 표 직접 열어서 계산하기", width="stretch", key=f"btn_open_yr_{t2_year}"):
+            if st.button(f"{t2_year}년 사원정보 표 직접 열어서 계산하기", width="stretch", key=f"btn_open_yr_{t2_year}"):
                 extra = s.setdefault("manual_extra_years", [])
                 if t2_year not in extra:
                     extra.append(t2_year)
@@ -1439,16 +1527,16 @@ def _page_employees(room_key: str, log_tokens_fn=None):
     # ── 상단 타이틀 + 슬림 옵션 바 (첫 번째 사원표가 화면 상단에서 즉시 시작되도록 최적화) ──
     c_ttl, c_opt_pop = st.columns([4.2, 1.8])
     with c_ttl:
-        st.markdown(f"### 2. 사원정보 및 상시근로자 판정 ({tax_yr}년 귀속)")
+        pass  # 제목은 상단 머리(ecx-h1)에 표시
     with c_opt_pop:
         if len(s.get("people") or {}) >= 35 and not s.get("use_year_tabs", False):
-            st.caption("💡 인원수가 많을 때는 아래 **『연도별 탭 보기』**를 켜면 브라우저가 훨씬 빠릅니다.")
+            st.caption("인원수가 많을 때는 아래 **『연도별 탭 보기』**를 켜면 브라우저가 훨씬 빠릅니다.")
 
     with st.container(border=True):
         co1, co2, co3, co4 = st.columns([1.5, 1.5, 1.5, 1.5])
         with co1:
             assume_on = st.toggle(
-                "⏩ 미도래 월 연말재직 가정(1 채움)",
+                "미도래 월 연말재직 가정(1 채움)",
                 value=bool(s.get("assume_year_end", True)),
                 key="ec_toggle_assume_ye",
                 help="기중(예: 9월 가결산) 원천징수부 업로드 시 미도래 월(10~12월)을 연말까지 재직 가정(1 자동 채움 · 하늘색 표시)합니다.",
@@ -1459,7 +1547,7 @@ def _page_employees(room_key: str, log_tokens_fn=None):
                 st.rerun()
         with co2:
             hm_on = st.toggle(
-                "📅 입사월 무급 시 익월지급 산입(1)",
+                "입사월 무급 시 익월지급 산입(1)",
                 value=bool(s.get("include_unpaid_hire_month", True)),
                 key="ec_toggle_hire_month_nopay",
                 help="입사월 급여가 다음 달에 지급되어 당월 원천징수부 급여가 0원인 경우에도 재직(1)으로 산입하고 살구색으로 표시합니다.",
@@ -1470,7 +1558,7 @@ def _page_employees(room_key: str, log_tokens_fn=None):
                 st.rerun()
         with co3:
             show_4 = st.toggle(
-                "📊 우측 4·5번 사후관리 열 표시",
+                "우측 4·5번 사후관리 열 표시",
                 value=bool(s.get("show_all_4_blocks", True)),
                 key="ec_toggle_4blocks",
                 help="우측 4번(1차 사후관리)·5번(2차 사후관리) 블록을 함께 표시합니다.",
@@ -1481,7 +1569,7 @@ def _page_employees(room_key: str, log_tokens_fn=None):
                 st.rerun()
         with co4:
             use_tabs = st.toggle(
-                "🗂️ 연도별 탭으로 나누어 보기",
+                "연도별 탭으로 나누어 보기",
                 value=bool(s.get("use_year_tabs", False)),
                 key="ec_toggle_year_tabs",
                 help="기본은 전 연도 연속 펼쳐보기이며, 인원이 많을 때 탭 보기로 전환하면 한 연도씩 쾌적하게 볼 수 있습니다.",
@@ -1496,16 +1584,16 @@ def _page_employees(room_key: str, log_tokens_fn=None):
         if has_people:
             filter_opts = ["ALL", "CHECK", "SAVING", "MOVED"]
             filter_labels = {
-                "ALL": "👥 전체 사원 보기",
-                "CHECK": "🚨 제외·확인 필요 사원만 (상시X·누락·무급월)",
-                "SAVING": "💰 청년·병역 절세 후보만 (35~40세 병역미입력·청년우대)",
-                "MOVED": "🔄 중도 입·퇴사 · 사업장 전출입자만",
+                "ALL": "전체 사원 보기",
+                "CHECK": "제외·확인 필요 사원만 (상시X·누락·무급월)",
+                "SAVING": "청년·병역 절세 후보만 (35~40세 병역미입력·청년우대)",
+                "MOVED": "중도 입·퇴사 · 사업장 전출입자만",
             }
             cur_qf = str(s.get("emp_quick_filter") or "ALL")
             if cur_qf not in filter_opts:
                 cur_qf = "ALL"
             chosen_qf = st.radio(
-                "🔎 사원 빠른 필터 (필터 상태에서도 하단 합산합계는 전체 인원 기준으로 유지됩니다)",
+                "사원 빠른 필터 (필터 상태에서도 하단 합산합계는 전체 인원 기준으로 유지됩니다)",
                 options=filter_opts,
                 index=filter_opts.index(cur_qf),
                 format_func=lambda k: filter_labels.get(k, k),
@@ -1520,14 +1608,14 @@ def _page_employees(room_key: str, log_tokens_fn=None):
     if has_people:
         st.markdown(
             "<div class='ec-legend'>"
-            "<span style='background:#e2e8f0;color:#0f172a;border:1px solid #cbd5e1'>🔒 서류 확인값 (상시 O/X 전환 시 잠금해제)</span>"
-            "<span style='background:#ffffff;color:#1d4ed8;border:1px solid #93c5fd'>✏️ 입력·선택 가능</span>"
-            "<span style='background:#dbeafe;color:#1e40af;border:1px solid #93c5fd'>🏢 사업장 간 전출입·승계 합산(A→B)</span>"
-            "<span style='background:#dcfce7;color:#14532d;border:1px solid #86efac'>🌱 청년등 인정 월</span>"
-            "<span style='background:#e0f2fe;color:#0369a1;border:1px solid #7dd3fc'>🟦 미도래 월 연말재직 가정(자동 1)</span>"
-            "<span style='background:#ffedd5;color:#c2410c;border:1px solid #fdba74'>🟧 급여 0원 월 (입사월 익월지급 산입 / 기중 무급 0 제외)</span>"
-            "<span style='background:#ffffff;color:#0f172a;border:2px solid #f59e0b'>🔧 직접 수정한 값</span>"
-            "<span style='background:#f3e8ff;color:#6b21a8;border:1px solid #d8b4fe'>✍️ [수기 추가] 수기 입력 사원</span>"
+            "<span style='background:#e2e8f0;color:#0f172a;border:1px solid #cbd5e1'>서류 확인값 (상시 O/X 전환 시 잠금해제)</span>"
+            "<span style='background:#ffffff;color:#1d4ed8;border:1px solid #93c5fd'>입력·선택 가능</span>"
+            "<span style='background:#dbeafe;color:#1e40af;border:1px solid #93c5fd'>사업장 간 전출입·승계 합산(A→B)</span>"
+            "<span style='background:#dcfce7;color:#14532d;border:1px solid #86efac'>청년등 인정 월</span>"
+            "<span style='background:#e0f2fe;color:#0369a1;border:1px solid #7dd3fc'>미도래 월 연말재직 가정(자동 1)</span>"
+            "<span style='background:#ffedd5;color:#c2410c;border:1px solid #fdba74'>급여 0원 월 (입사월 익월지급 산입 / 기중 무급 0 제외)</span>"
+            "<span style='background:#ffffff;color:#0f172a;border:2px solid #f59e0b'>직접 수정한 값</span>"
+            "<span style='background:#f3e8ff;color:#6b21a8;border:1px solid #d8b4fe'>[수기 추가] 수기 입력 사원</span>"
             "</div>",
             unsafe_allow_html=True,
         )
@@ -1535,7 +1623,7 @@ def _page_employees(room_key: str, log_tokens_fn=None):
     computed_all, totals_all, ctx_all = {}, {}, {}
     if s.get("use_year_tabs", False) and len(shown_years) > 1:
         from .ui_step3 import _build_compact_bridge_info, _render_compact_bridge
-        tab_objs = st.tabs([f"📅 {y}년 귀속 명세" for y in shown_years])
+        tab_objs = st.tabs([f"{y}년 귀속 명세" for y in shown_years])
         for tab_o, y in zip(tab_objs, shown_years):
             with tab_o:
                 computed_all[y], totals_all[y] = _render_year(s, y, room_key)
@@ -1590,7 +1678,7 @@ def _page_employees(room_key: str, log_tokens_fn=None):
                    (f" (기중양도 승계 근로자 직전인원 −{ded_reg:.2f}명 차감)" if ded_reg > 0 else "")
         st.markdown(
             f"<div class='ec-law-banner'>"
-            f"📊 <b>[{tax_yr}년 vs {tax_yr-1}년 신규공제 고용증가 요약{suc_note}]</b> &nbsp; "
+            f"<b>[{tax_yr}년 vs {tax_yr-1}년 신규공제 고용증가 요약{suc_note}]</b> &nbsp; "
             f"전체 상시 증가: <b>+{inc['전체_증가']:.2f}명</b> &nbsp;|&nbsp; "
             f"청년등 인정 증가: <b>+{inc['청년등_증가']:.2f}명</b> &nbsp;|&nbsp; "
             f"청년등 외 인정 증가: <b>+{inc['청년등외_증가']:.2f}명</b>{cap_note} &nbsp;&nbsp; "
@@ -1601,14 +1689,9 @@ def _page_employees(room_key: str, log_tokens_fn=None):
             unsafe_allow_html=True,
         )
 
-    c_add, _ = st.columns([1.3, 5.8])
-    if c_add.button("➕ 사원 추가", width="stretch"):
-        _dlg_add_employee()
-
     # ── 하단 네비게이션 바: [< 이전] ... [📕 전체 PDF 다운] [🔍 오류 검토] [다음(3단계)] ──
     corp_nm = (s.get("biz", {}).get("상호") or "상호미입력").strip()
-    st.markdown("<div class='ec-nav-divider'></div>", unsafe_allow_html=True)
-    c_prev, _, c_all_pdf, c_rev, c_next = st.columns([1.2, 2.3, 1.25, 1.15, 1.3])
+    c_prev, _, c_all_pdf, c_rev, c_next = st.container(key="ecx_actionbar").columns([1.2, 2.3, 1.25, 1.15, 1.3], vertical_alignment="center")
     if c_prev.button("< 이전", width="stretch"):
         s["step"] = 1
         _trigger_scroll_to_top(s)
@@ -1618,7 +1701,7 @@ def _page_employees(room_key: str, log_tokens_fn=None):
     with c_all_pdf:
         with st.container(key="ec_btn_pdf_all_wrap"):
             st.download_button(
-                "📕 전체 PDF 다운",
+                "전체 PDF 다운",
                 data=_build_schedule_pdf_bytes(s, shown_years, include_summary=True),
                 file_name=f"{corp_nm}_{tax_yr}년귀속_전체연도_상시근로자명세.pdf",
                 mime="application/pdf",
@@ -1627,7 +1710,7 @@ def _page_employees(room_key: str, log_tokens_fn=None):
                 help=f"화면에 표시된 전체 연도({', '.join(str(y)+'년' for y in shown_years)})의 상시근로자 명세 및 고용증가 요약을 한 파일의 PDF로 다운로드합니다.",
             )
 
-    if c_rev.button("🔍 오류 검토", width="stretch"):
+    if c_rev.button("오류 검토", width="stretch"):
         prev = ((s.get("ext") or {}).get("prev_filing") or {}).get("연도별")
         review_items = H.review(
             s["people"],

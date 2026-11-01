@@ -56,8 +56,8 @@ def _render_pm_basis_selector_right(s: dict, widget_key: str) -> str:
 
     opts = [R.PM_BASIS_RECALC, R.PM_BASIS_FILED]
     fmt_map = {
-        R.PM_BASIS_RECALC: "⚖️ 2단계 사원표(세법원칙) 기준 계산",
-        R.PM_BASIS_FILED: "📋 기신고 서식 숫자 기준 계산",
+        R.PM_BASIS_RECALC: "2단계 사원표(세법원칙) 기준 계산",
+        R.PM_BASIS_FILED: "기신고 서식 숫자 기준 계산",
     }
 
     seg_fn = getattr(st, "segmented_control", None)
@@ -169,7 +169,7 @@ def _verify_step3_math_integrity(pkg: dict, matrix_cols: dict[int, dict[str, Any
 
 def _build_top_kpi_cards_html(pkg: dict, tax_yr: int) -> str:
     """
-    [⑨ 상단 3대 핵심 KPI 요약 카드 — 당해 확정 공제세액 · 추징/농특세 · 실질 순절세액]
+    [⑨ 상단 3대 핵심 KPI 요약 카드 — 당해 확정 공제세액 · 추징/농특세 · 세액공제순액]
     - 경정청구(기신고 vs 세법상 재계산 비교)는 상단 KPI 카드에서 제외하고 하단 전용 비교 창(st.dialog)으로 분리합니다.
     """
     tot_gross = int(pkg.get("total_credit_gross_won") or 0)
@@ -181,25 +181,21 @@ def _build_top_kpi_cards_html(pkg: dict, tax_yr: int) -> str:
     c_cont = int(pkg.get("total_continued_credit_won") or 0)
     c_add = int(pkg.get("additional_credit_won") or 0)
 
+    neg_col = "#DC2626" if (claw_net + rural_won) > 0 else "#334155"
     return (
-        "<div style='display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:12px;'>"
-        f"<div style='background:#eff6ff;border:1px solid #bfdbfe;border-left:4px solid #1d4ed8;border-radius:10px;padding:10px 14px;'>"
-        f"<div style='font-size:0.83rem;font-weight:800;color:#1e40af;'>① {tax_yr}년 총 공제세액 (확정)</div>"
-        f"<div style='font-size:1.32rem;font-weight:900;color:#1d4ed8;margin-top:3px;'>+{tot_gross:,}원</div>"
-        f"<div style='font-size:0.77rem;color:#475569;margin-top:2px;'>1차 {c1_won:,} + 연속 {c_cont:,}"
-        + (f" + 추가 {c_add:,}" if c_add > 0 else "")
-        + "</div></div>"
-        f"<div style='background:#f8fafc;border:1px solid #cbd5e1;border-left:4px solid #64748b;border-radius:10px;padding:10px 14px;'>"
-        f"<div style='font-size:0.83rem;font-weight:800;color:#334155;'>② 추가납부(추징) · 농특세(20%)</div>"
-        f"<div style='font-size:1.32rem;font-weight:900;color:{'#dc2626' if claw_net > 0 else '#334155'};margin-top:3px;'>"
-        f"-{claw_net + rural_won:,}원</div>"
-        f"<div style='font-size:0.77rem;color:#475569;margin-top:2px;'>사후추징 -{claw_net:,}원 · 농특세 -{rural_won:,}원</div>"
-        f"</div>"
-        f"<div style='background:#f0fdf4;border:1px solid #86efac;border-left:4px solid #16a34a;border-radius:10px;padding:10px 14px;'>"
-        f"<div style='font-size:0.83rem;font-weight:800;color:#166534;'>③ 당해 확정 실질 순절세액</div>"
-        f"<div style='font-size:1.32rem;font-weight:900;color:#15803d;margin-top:3px;'>{net_confirmed:+,}원</div>"
-        f"<div style='font-size:0.77rem;color:#15803d;font-weight:700;margin-top:2px;'>총공제 − 추징 − 농특세 (당해 확정분)</div>"
-        f"</div>"
+        "<div class='ecx-kpis' style='display:grid;grid-template-columns:1fr 1fr 1.15fr;gap:12px;margin-bottom:14px;'>"
+        "<div class='ecx-kpi'>"
+        f"<div class='l'>① {tax_yr}년 총 공제세액 (확정)</div>"
+        f"<div class='v' style='color:#1D4ED8;'>+{tot_gross:,}원</div>"
+        f"<div class='s'>1차 {c1_won:,} + 연속 {c_cont:,}" + (f" + 추가 {c_add:,}" if c_add > 0 else "") + "</div></div>"
+        "<div class='ecx-kpi'>"
+        "<div class='l'>② 추가납부(추징) · 농특세 20%</div>"
+        f"<div class='v' style='color:{neg_col};'>−{claw_net + rural_won:,}원</div>"
+        f"<div class='s'>사후추징 {claw_net:,} · 농특세 {rural_won:,}</div></div>"
+        "<div class='ecx-kpi money'>"
+        "<div class='l'>③ 당해 확정 세액공제순액</div>"
+        f"<div class='v'>{net_confirmed:+,}원</div>"
+        "<div class='s'>총공제 − 추징 − 농특세 (당해 확정분)</div></div>"
         "</div>"
     )
 
@@ -462,7 +458,7 @@ def _render_compact_bridge(
     cont_items = bridge.get("cont_items") or []
     if len(excl_items) >= 4 or force_expander:
         with st.expander(
-            f"📋 {bridge['prev_yr']}년 → {bridge['cur_yr']}년 퇴사·제외 및 인원 증감 전체 명단 보기 "
+            f"{bridge['prev_yr']}년 → {bridge['cur_yr']}년 퇴사·제외 및 인원 증감 전체 명단 보기 "
             f"(퇴사·제외 {len(excl_items)}명 · 신규 {len(new_items)}명 · 기존재직 변동 {len(cont_items)}명)",
             expanded=False,
         ):
@@ -713,11 +709,11 @@ def _render_filed_vs_recalc_comparison_body(s: dict, pkg: dict | None, tax_yr: i
         st.markdown(
             "<div style='margin-bottom:8px;padding:8px 12px;background:#fff7ed;border:1.5px solid #fdba74;"
             "border-left:5px solid #f97316;border-radius:8px;font-size:0.86rem;font-weight:800;color:#c2410c;'>"
-            "🟧 사원표 재계산값 임시 입력 · 신고서 확인 필요"
+            "사원표 재계산값 임시 입력 · 신고서 확인 필요"
             "</div>",
             unsafe_allow_html=True,
         )
-        badge_html = "<span style='background:#ffedd5;color:#c2410c;border:1px solid #fdba74;padding:3px 10px;border-radius:999px;font-weight:800;font-size:0.84rem;'>🟧 신고서 미입력 (사원표 재계산값 임시 입력 · 신고서 확인 필요)</span>"
+        badge_html = "<span style='background:#ffedd5;color:#c2410c;border:1px solid #fdba74;padding:3px 10px;border-radius:999px;font-weight:800;font-size:0.84rem;'>신고서 미입력 (사원표 재계산값 임시 입력 · 신고서 확인 필요)</span>"
         card_bg, card_bd, val_color = "#fff7ed", "#fdba74", "#c2410c"
         action_lbl = f"{y1}년 1차 세액 차이 (신고서 미입력)"
         guide_line_txt = "안내: 기신고 공제세액계산서(별지 제10호의9) 원문을 확인하여 실제 기신고 수치를 입력해 주세요."
@@ -725,28 +721,28 @@ def _render_filed_vs_recalc_comparison_body(s: dict, pkg: dict | None, tax_yr: i
         row2_label = f"{tax_yr}년 2차"
     elif d.get("is_only_ab_method_diff"):
         # [Section 5] 기신고값과 재계산값의 차이가 A·B 계산방식 차이로만 설명되는 경우 경정청구·수정신고 미안내
-        badge_html = "<span style='background:#e0f2fe;color:#0369a1;border:1px solid #7dd3fc;padding:3px 10px;border-radius:999px;font-weight:800;font-size:0.84rem;'>🟦 계산방식(A/B) 차이 — 국세청 '26.3월 안내 기준 적용</span>"
+        badge_html = "<span style='background:#e0f2fe;color:#0369a1;border:1px solid #7dd3fc;padding:3px 10px;border-radius:999px;font-weight:800;font-size:0.84rem;'>계산방식(A/B) 차이 — 국세청 '26.3월 안내 기준 적용</span>"
         card_bg, card_bd, val_color = "#f0f9ff", "#7dd3fc", "#0369a1"
         action_lbl = f"{y1}년 1차 계산방식(A/B) 단수 차이"
         guide_line_txt = "계산방식(A/B) 차이 — 국세청 '26.3월 안내 기준 적용 (단순 계산방식 차이이므로 별도 안내 대상 아님)"
         row1_label = f"{y1}년 1차 (계산방식 A/B 차이)"
         row2_label = f"{tax_yr}년 2차"
     elif diff_c1 > 0 or tot_2yr_gross > 0:
-        badge_html = "<span style='background:#dbeafe;color:#1d4ed8;border:1px solid #93c5fd;padding:3px 10px;border-radius:999px;font-weight:800;font-size:0.84rem;'>🟦 경정청구 가능 (재계산 유리)</span>"
+        badge_html = "<span style='background:#dbeafe;color:#1d4ed8;border:1px solid #93c5fd;padding:3px 10px;border-radius:999px;font-weight:800;font-size:0.84rem;'>경정청구 가능 (재계산 유리)</span>"
         card_bg, card_bd, val_color = "#eff6ff", "#93c5fd", "#1d4ed8"
         action_lbl = f"{y1}년 1차 경정청구 환급 예상액"
         guide_line_txt = f"청구기한: 법정신고기한 경과 후 5년 이내 (국세기본법 제45조의2 · 12월 결산법인 {y1}년분은 {y1+6}.03.31.까지)"
         row1_label = f"{y1}년 1차 (경정 대상)"
         row2_label = f"{tax_yr}년 2차 ({y1}년 경정청구와 함께 반영)"
     elif diff_c1 < 0 or tot_2yr_gross < 0:
-        badge_html = "<span style='background:#fee2e2;color:#b91c1c;border:1px solid #fca5a5;padding:3px 10px;border-radius:999px;font-weight:800;font-size:0.84rem;'>🟥 수정신고 필요 (기신고 과다)</span>"
+        badge_html = "<span style='background:#fee2e2;color:#b91c1c;border:1px solid #fca5a5;padding:3px 10px;border-radius:999px;font-weight:800;font-size:0.84rem;'>수정신고 필요 (기신고 과다)</span>"
         card_bg, card_bd, val_color = "#fef2f2", "#fca5a5", "#dc2626"
         action_lbl = f"{y1}년 1차 수정신고 추가납부 예상액"
         guide_line_txt = "신고안내: 법정신고기한 경과 후 수정신고 대상 (국세기본법 제45조 · 과소신고 가산세 감면은 수정신고 시기에 따라 달라짐, 국세기본법 제48조 제2항)"
         row1_label = f"{y1}년 1차 (수정신고 대상)"
         row2_label = f"{tax_yr}년 2차 ({y1}년 수정신고와 함께 반영)"
     else:
-        badge_html = "<span style='background:#f1f5f9;color:#475569;border:1px solid #cbd5e1;padding:3px 10px;border-radius:999px;font-weight:800;font-size:0.84rem;'>⬜ 차이 없음 (기신고·재계산 일치)</span>"
+        badge_html = "<span style='background:#f1f5f9;color:#475569;border:1px solid #cbd5e1;padding:3px 10px;border-radius:999px;font-weight:800;font-size:0.84rem;'>차이 없음 (기신고·재계산 일치)</span>"
         card_bg, card_bd, val_color = "#f8fafc", "#cbd5e1", "#334155"
         action_lbl = f"{y1}년 1차 세액 차이"
         guide_line_txt = f"적용 방식: {d.get('calc_method_badge')} — 기신고 내역과 세법상 재계산 결과 일치"
@@ -793,9 +789,9 @@ def _render_filed_vs_recalc_comparison_body(s: dict, pkg: dict | None, tax_yr: i
             b_st = "요건 충족(유지·증가)" if rc["b_maintained"] else "요건 미충족(감소)"
             a_st = "요건 충족(유지·증가)" if rc["a_maintained"] else "요건 미충족(감소)"
             chg_badge = (
-                "<span style='color:#dc2626;font-weight:800;'>⚠️ B→A 재계산 시 요건 충족 여부 변동됨!</span>"
+                "<span style='color:#dc2626;font-weight:800;'>B→A 재계산 시 요건 충족 여부 변동됨!</span>"
                 if rc["requirement_changed"]
-                else "<span style='color:#15803d;font-weight:800;'>✓ B→A 재계산 시에도 요건 충족 여부 동일</span>"
+                else "<span style='color:#15803d;font-weight:800;'>B→A 재계산 시에도 요건 충족 여부 동일</span>"
             )
             chk_lines.append(
                 f"• <b>{c_yr}년 귀속분 {n_lbl} (국세청 '26.3월 안내상 A방식[신뢰보호] 적용 대상)</b>: "
@@ -804,7 +800,7 @@ def _render_filed_vs_recalc_comparison_body(s: dict, pkg: dict | None, tax_yr: i
             )
         st.markdown(
             "<div style='background:#f8fafc;border:1px solid #cbd5e1;border-left:4px solid #0284c7;padding:8px 12px;border-radius:7px;font-size:0.83rem;color:#1e293b;margin-bottom:10px;line-height:1.55;'>"
-            "<b>📐 [2·3차년도 사후관리 요건 B방식 → A방식(신뢰보호) 재계산 점검]</b><br>"
+            "<b>[2·3차년도 사후관리 요건 B방식 → A방식(신뢰보호) 재계산 점검]</b><br>"
             + "<br>".join(chk_lines)
             + "</div>",
             unsafe_allow_html=True,
@@ -856,7 +852,7 @@ def _render_filed_vs_recalc_comparison_body(s: dict, pkg: dict | None, tax_yr: i
     )
     st.dataframe(tx_df, width="stretch", hide_index=True)
     st.caption(
-        f"📌 **{tax_yr+1}년 3차 (향후 연속공제 차이 예상):** 세전 **{diff_c3:+,}원** "
+        f"**{tax_yr+1}년 3차 (향후 연속공제 차이 예상):** 세전 **{diff_c3:+,}원** "
         f"(농특세 20% 차감 후 순액 **{c3_net:+,}원**) — {tax_yr+1}년 상시근로자 수가 {y1}년 최초 공제연도 인원 이상으로 유지될 때 실현됩니다."
     )
 
@@ -872,7 +868,7 @@ def _render_filed_vs_recalc_comparison_body(s: dict, pkg: dict | None, tax_yr: i
 
 
 if hasattr(st, "dialog"):
-    @st.dialog("⚖️ 기신고 vs 세법상 재계산 비교", width="large")
+    @st.dialog("기신고 vs 세법상 재계산 비교", width="large")
     def _dlg_filed_vs_recalc_comparison(s: dict, pkg: dict | None, tax_yr: int) -> None:
         _render_filed_vs_recalc_comparison_body(s, pkg, tax_yr)
 else:
@@ -1495,7 +1491,7 @@ def _build_prior_new_law_recalc_warnings(
         nr_names = t_y.get("nr_names") or []
         names_sfx = f": {', '.join(nr_names)}" if nr_names else ""
         warnings_out.append(
-            f"⚠️ <b>[기신고 과세연도 사후 재산정 안내]</b> "
+            f"<b>[기신고 과세연도 사후 재산정 안내]</b> "
             f"<b>{y_chk}년</b> 인원이 신고 당시 <b>{orig_reg:.2f}명</b> → 재산정 <b>{recalc_reg:.2f}명</b>으로 변경됨 "
             f"(1년 미만 퇴사 확정{names_sfx}). "
             f"<b>{y_chk}년 공제액 차이 {diff_won:,}원</b>, 수정신고 여부 검토 필요"
@@ -1682,11 +1678,11 @@ def _render_pm_quick_fill_banner(
     )
 
     _btn_help_md = (
-        f"📌 [왜 이 버튼이 나타났나요?]\n"
+        f"[왜 이 버튼이 나타났나요?]\n"
         f"• 현재 계산 기준이 『📋 기신고 서식 숫자 기준』으로 선택되어 있으나, {_coh_yr}년 기신고 서류(공제감면세액계산서 등)가 없거나 "
         f"기초값(상시·청년등 인원, 증가인원, 최초 공제세액)이 비어 있어 바로 위 {nth_label} 사후관리 계산이 0원으로 보류된 상태입니다.\n"
         f"• 반면 2단계 사원표에는 원천징수부 급여대장으로 산출된 {_coh_yr}년 재계산 데이터가 준비되어 있어 원클릭 연동을 안내합니다.\n\n"
-        f"⚡ [누르면 어떤 동작이 실행되나요?]\n"
+        f"[누르면 어떤 동작이 실행되나요?]\n"
         f"• 하단 기신고 입력칸을 일일이 수기로 열지 않고도, 2단계 사원표의 {_coh_yr}년 상시({_rc_reg:.2f}명)·청년등({_rc_yth:.2f}명)·"
         f"고용증가(+{_rc_tot_inc:.2f}명)·최초 공제세액({_est_c1_won:,}원)을 기신고 기초값에 즉시 복사·저장합니다.\n"
         f"• 반영 즉시 위 {nth_label} 사후관리 결과가 『{_pm_rc.get('case_code')}』(공제 +{_rc_cont_won:,}원 / 추징 -{_rc_claw_won:,}원)으로 자동 계산됩니다."
@@ -1697,8 +1693,8 @@ def _render_pm_quick_fill_banner(
         st.markdown(
             f"<div class='ec-qf-card'>"
             f"<div class='ec-qf-top-row'>"
-            f"<span class='ec-qf-why-badge'>⚡ 왜 0원인가요? {_coh_yr}년 기신고 기초값 미입력 (사후관리 보류 중)</span>"
-            f"<span class='ec-qf-hover-pill'>💬 버튼 상세설명 (마우스 오버)"
+            f"<span class='ec-qf-why-badge'>왜 0원인가요? {_coh_yr}년 기신고 기초값 미입력 (사후관리 보류 중)</span>"
+            f"<span class='ec-qf-hover-pill'>버튼 상세설명 (마우스 오버)"
             f"<span class='ec-qf-tooltip-box'>"
             f"<b style='color:#4ade80;'>① 왜 이 버튼이 나타났나요?</b><br>"
             f"원천징수부만 업로드하고 {_coh_yr}년 기신고 세액공제 서식을 넣지 않았거나 기초값이 비어 있어, "
@@ -1712,7 +1708,7 @@ def _render_pm_quick_fill_banner(
             f"원천징수부 기준으로 계산된 <b>2단계 사원표({_coh_yr}년 귀속)</b> 수치가 준비되어 있습니다. 우측 초록 버튼을 누르면 하단 기신고 입력칸에 즉시 반영됩니다."
             f"</div>"
             f"<div class='ec-qf-preview'>"
-            f"👉 <b>반영될 사원표 기초값</b>: 상시 <b>{_rc_reg:.2f}명</b> (청년등 <b>{_rc_yth:.2f}명</b>) · 증가 <b>+{_rc_tot_inc:.2f}명</b> "
+            f"<b>반영될 사원표 기초값</b>: 상시 <b>{_rc_reg:.2f}명</b> (청년등 <b>{_rc_yth:.2f}명</b>) · 증가 <b>+{_rc_tot_inc:.2f}명</b> "
             f"→ <b>사후관리 산출: {_pm_rc.get('case_code')} (공제 +{_rc_cont_won:,}원 / 추징 -{_rc_claw_won:,}원)</b>"
             f"</div>"
             f"</div>",
@@ -1720,7 +1716,7 @@ def _render_pm_quick_fill_banner(
         )
     with _c_b:
         if st.button(
-            f"🔄 {_coh_yr}년 사원표 재계산 값을 기신고 기초값에 바로 반영 ({nth_label} 산출)",
+            f"{_coh_yr}년 사원표 재계산 값을 기신고 기초값에 바로 반영 ({nth_label} 산출)",
             type="primary",
             width="stretch",
             key=f"btn_quick_fill_{_coh_yr}_{tax_yr}",
@@ -1788,7 +1784,7 @@ def _page_calculation():
     if s.get("assume_year_end", True) and last_m_cur < 12:
         st.markdown(
             f"<div class='ec-warn-banner'>"
-            f"⚠️ <b>[기중 가결산 추정치 안내]</b> 현재 {tax_yr}년 원천징수부가 <b>{last_m_cur}월분</b>까지 업로드되어, "
+            f"<b>[기중 가결산 추정치 안내]</b> 현재 {tax_yr}년 원천징수부가 <b>{last_m_cur}월분</b>까지 업로드되어, "
             f"미도래 월(<b>{last_m_cur+1}~12월</b>)은 <b>'① 연말까지 재직 가정(1 자동 채움)'</b> 기준으로 시뮬레이션된 추정 세액입니다. "
             f"실제 세무신고 시에는 12월 최종 원천징수부를 업로드하거나, 2단계 상단에서 <b>'미도래 월 연말재직 가정'</b> 스위치를 끄고 확정하세요."
             f"</div>",
@@ -1862,29 +1858,29 @@ def _page_calculation():
     # 기신고 공제세액과 선택한 연도별 기업규모 단가가 다른 경우 주황 경고 표시
     for _mismatch_msg in (pkg.get("filed_credit_mismatch_warnings") or []):
         st.markdown(
-            f"<div class='ec-warn-banner'>⚠️ <b>{_mismatch_msg}</b></div>",
+            f"<div class='ec-warn-banner'><b>{_mismatch_msg}</b></div>",
             unsafe_allow_html=True,
         )
 
-    # 상단 3대 KPI 요약 카드 (당해 확정 공제세액 · 추징/농특세 · 실질 순절세액) 및 5대 수리·법령 정합성 배지
+    # 상단 3대 KPI 요약 카드 (당해 확정 공제세액 · 추징/농특세 · 세액공제순액) 및 5대 수리·법령 정합성 배지
     st.markdown(_build_top_kpi_cards_html(pkg, tax_yr), unsafe_allow_html=True)
     ok_math, math_issues = _verify_step3_math_integrity(pkg, matrix_cols, yr_list)
     if ok_math:
         st.markdown(
             "<div style='margin-bottom:8px;padding:6px 12px;background:#f0fdf4;border:1px solid #86efac;border-radius:8px;"
             "font-size:0.86rem;font-weight:700;color:#166534;display:flex;justify-content:space-between;align-items:center;'>"
-            "<span>🛡️ <b>5대 수리·법령 항등식 자동검증 통과</b>: ① 청년등외 차감 정본산식(0.00명 오차) · ② 청년등 증가한도(Cap) · ③ 코호트 연속성 · ④ 추징한도 · ⑤ 농특세(20%) 일치</span>"
+            "<span><b>5대 수리·법령 항등식 자동검증 통과</b>: ① 청년등외 차감 정본산식(0.00명 오차) · ② 청년등 증가한도(Cap) · ③ 코호트 연속성 · ④ 추징한도 · ⑤ 농특세(20%) 일치</span>"
             "<span style='font-size:0.78rem;color:#15803d;'>100% 파이썬 결정론적 엔진</span>"
             "</div>",
             unsafe_allow_html=True,
         )
     else:
-        st.warning("⚠️ 수리 정합성 점검 필요: " + " | ".join(math_issues))
+        st.warning("수리 정합성 점검 필요: " + " | ".join(math_issues))
 
     basis_badge_html = (
-        f"<span class='ec-basis-pill-recalc'>⚖️ 적용 기준: 2단계 사원표(세법원칙) 기준</span>"
+        f"<span class='ec-basis-pill-recalc'>적용 기준: 2단계 사원표(세법원칙) 기준</span>"
         if active_pm_basis == R.PM_BASIS_RECALC
-        else f"<span class='ec-basis-pill-filed'>📋 적용 기준: 기신고 서식 숫자 기준</span>"
+        else f"<span class='ec-basis-pill-filed'>적용 기준: 기신고 서식 숫자 기준</span>"
     )
 
     filed_tag = "<br><span style='font-size:10px;font-weight:500;opacity:.75'>기신고 금액</span>"
@@ -1918,7 +1914,7 @@ def _page_calculation():
     st.markdown(
         f"<div class='ec-matrix-wrap'>"
         f"<div class='ec-matrix-title'>"
-        f"<span>📊 연도별 통합고용세액공제 요약표 ({corp_size_summary_s3} · {loc_label})</span>"
+        f"<span>연도별 통합고용세액공제 요약표 ({corp_size_summary_s3} · {loc_label})</span>"
         f"<span style='font-size:1.04rem;font-weight:700;color:#475569;'>"
         f"{basis_badge_html} &nbsp;·&nbsp; 단위: 원 (추가납부세액은 <span class='ec-neg-val'>-붉은색</span> 표시)"
         f"</span>"
@@ -1945,7 +1941,7 @@ def _page_calculation():
     if any(bool(matrix_cols[y].get("r1_needs_check")) for y in yr_list):
         chk_yrs = [str(y) for y in yr_list if matrix_cols[y].get("r1_needs_check")]
         st.caption(
-            f"🟧 **[신고서 확인 필요]** {', '.join(chk_yrs)}년 1차 세액공제액은 기신고 공제세액계산서(별지 제10호의9) 또는 세액공제조정명세서(별지 제8호서식 부표3)에서 확인되지 않아 추정복원 없이 빈칸으로 표시했습니다."
+            f"**[신고서 확인 필요]** {', '.join(chk_yrs)}년 1차 세액공제액은 기신고 공제세액계산서(별지 제10호의9) 또는 세액공제조정명세서(별지 제8호서식 부표3)에서 확인되지 않아 추정복원 없이 빈칸으로 표시했습니다."
         )
 
     with st.container(border=True):
@@ -1953,7 +1949,7 @@ def _page_calculation():
         with c_sel_lbl:
             st.markdown(
                 "<div style='padding-top:2px;font-size:1.04rem;font-weight:800;color:#0f172a;'>"
-                "🔘 세액공제·사후관리 계산 기준 선택"
+                "세액공제·사후관리 계산 기준 선택"
                 "</div>"
                 "<div style='font-size:.90rem;color:#475569;margin-top:2px;'>"
                 "2단계 사원표 재계산 값과 기신고 서식 숫자 중 적용할 기준을 선택하세요."
@@ -2003,7 +1999,7 @@ def _page_calculation():
     m_cur_badge = R.calc_method_badge_label(tax_yr, eval_year=tax_yr)
     st.markdown(
         f"<div class='ec-sub-header'><span class='ec-sub-num'>(1)</span><span>평균 상시근로자 증가 인원</span>"
-        f"<span style='background:#dcfce7;color:#15803d;border:1px solid #86efac;padding:2px 9px;border-radius:999px;font-size:0.80rem;font-weight:800;margin-left:8px;'>📐 {m_cur_badge}</span></div>",
+        f"<span style='background:#dcfce7;color:#15803d;border:1px solid #86efac;padding:2px 9px;border-radius:999px;font-size:0.80rem;font-weight:800;margin-left:8px;'>{m_cur_badge}</span></div>",
         unsafe_allow_html=True,
     )
     st.markdown(
@@ -2097,7 +2093,7 @@ def _page_calculation():
         )
 
     st.markdown(
-        f"<div class='ec-sub-header'><span class='ec-sub-num'>(2)</span><span>1차년도 세액공제액 계산 ({tax_yr}년 귀속 · {R.format_corp_size_label(corp_size)}, {loc_label})</span><span style='background:#dcfce7;color:#15803d;border:1px solid #86efac;padding:2px 9px;border-radius:999px;font-size:0.80rem;font-weight:800;margin-left:8px;'>📐 {R.calc_method_badge_label(tax_yr, eval_year=tax_yr)}</span></div>",
+        f"<div class='ec-sub-header'><span class='ec-sub-num'>(2)</span><span>1차년도 세액공제액 계산 ({tax_yr}년 귀속 · {R.format_corp_size_label(corp_size)}, {loc_label})</span><span style='background:#dcfce7;color:#15803d;border:1px solid #86efac;padding:2px 9px;border-radius:999px;font-size:0.80rem;font-weight:800;margin-left:8px;'>{R.calc_method_badge_label(tax_yr, eval_year=tax_yr)}</span></div>",
         unsafe_allow_html=True,
     )
     if pkg["active_scheme"] == "new_2026":
@@ -2216,13 +2212,13 @@ def _page_calculation():
     _m1_badge = R.calc_method_badge_label(tax_yr - 1, eval_year=tax_yr)
     _m1_style = "background:#dcfce7;color:#15803d;border:1px solid #86efac;" if (tax_yr >= 2026 or R.calc_method_for(tax_yr - 1, eval_year=tax_yr) == "B") else "background:#fef3c7;color:#b45309;border:1px solid #fcd34d;"
     _af1_badge = (
-        "<span style='background:#ffedd5;color:#c2410c;border:1px solid #fdba74;padding:2px 9px;border-radius:999px;font-size:0.80rem;font-weight:800;margin-left:6px;'>🟧 사원표 재계산값 임시 입력 · 신고서 확인 필요</span>"
+        "<span style='background:#ffedd5;color:#c2410c;border:1px solid #fdba74;padding:2px 9px;border-radius:999px;font-size:0.80rem;font-weight:800;margin-left:6px;'>사원표 재계산값 임시 입력 · 신고서 확인 필요</span>"
         if p1.get("_auto_filled")
         else ""
     )
     st.markdown(
         f"<div class='ec-sub-header'><span class='ec-sub-num'>(3)</span><span>2차년도 사후관리 계산 ({tax_yr - 1}년 귀속 · {R.format_corp_size_label(coh1_corp_size)} → {tax_yr}년 1차 사후관리)</span>"
-        f"<span style='{_m1_style}padding:2px 9px;border-radius:999px;font-size:0.80rem;font-weight:800;margin-left:8px;'>📐 {_m1_badge}</span>{_af1_badge}</div>",
+        f"<span style='{_m1_style}padding:2px 9px;border-radius:999px;font-size:0.80rem;font-weight:800;margin-left:8px;'>{_m1_badge}</span>{_af1_badge}</div>",
         unsafe_allow_html=True,
     )
     pm1_req_bar_html = _build_pm_req_check_bar_html(
@@ -2297,13 +2293,13 @@ def _page_calculation():
     _m2_badge = R.calc_method_badge_label(tax_yr - 2, eval_year=tax_yr)
     _m2_style = "background:#dcfce7;color:#15803d;border:1px solid #86efac;" if (tax_yr >= 2026 or R.calc_method_for(tax_yr - 2, eval_year=tax_yr) == "B") else "background:#fef3c7;color:#b45309;border:1px solid #fcd34d;"
     _af2_badge = (
-        "<span style='background:#ffedd5;color:#c2410c;border:1px solid #fdba74;padding:2px 9px;border-radius:999px;font-size:0.80rem;font-weight:800;margin-left:6px;'>🟧 사원표 재계산값 임시 입력 · 신고서 확인 필요</span>"
+        "<span style='background:#ffedd5;color:#c2410c;border:1px solid #fdba74;padding:2px 9px;border-radius:999px;font-size:0.80rem;font-weight:800;margin-left:6px;'>사원표 재계산값 임시 입력 · 신고서 확인 필요</span>"
         if p2.get("_auto_filled")
         else ""
     )
     st.markdown(
         f"<div class='ec-sub-header'><span class='ec-sub-num'>(4)</span><span>3차년도 사후관리 계산 ({tax_yr - 2}년 귀속 · {R.format_corp_size_label(coh2_corp_size)} → {tax_yr}년 2차 사후관리)</span>"
-        f"<span style='{_m2_style}padding:2px 9px;border-radius:999px;font-size:0.80rem;font-weight:800;margin-left:8px;'>📐 {_m2_badge}</span>{_af2_badge}</div>",
+        f"<span style='{_m2_style}padding:2px 9px;border-radius:999px;font-size:0.80rem;font-weight:800;margin-left:8px;'>{_m2_badge}</span>{_af2_badge}</div>",
         unsafe_allow_html=True,
     )
     pm2_req_bar_html = _build_pm_req_check_bar_html(
@@ -2413,7 +2409,7 @@ def _page_calculation():
         )
 
     with st.expander(
-        f"⚙️ 기신고 서식 숫자 직접 입력·보정 ({tax_yr-1}년 · {tax_yr-2}년 귀속분 — 『📋 기신고 서식 숫자 기준』 선택 시 사용)",
+        f"기신고 서식 숫자 직접 입력·보정 ({tax_yr-1}년 · {tax_yr-2}년 귀속분 — 『📋 기신고 서식 숫자 기준』 선택 시 사용)",
         expanded=(active_pm_basis == R.PM_BASIS_FILED and not has_any_manual_ps),
     ):
         c_cap, c_btn = st.columns([4.2, 1.8])
@@ -2424,13 +2420,13 @@ def _page_calculation():
             )
         with c_btn:
             if st.button(
-                "🔄 2단계 사원표 재계산 값으로 빈칸 자동 채우기",
+                "2단계 사원표 재계산 값으로 빈칸 자동 채우기",
                 width="stretch",
                 key=f"btn_fill_from_recalc_{tax_yr}",
                 help=(
-                    f"📌 [왜 이 버튼이 필요한가요?]\n"
+                    f"[왜 이 버튼이 필요한가요?]\n"
                     f"• {tax_yr-1}년·{tax_yr-2}년 기신고 서식을 업로드하지 않았거나 일부 칸이 비어 있을 때 수기로 하나씩 타이핑하는 번거로움을 덜어줍니다.\n\n"
-                    f"⚡ [누르면 어떤 동작이 실행되나요?]\n"
+                    f"[누르면 어떤 동작이 실행되나요?]\n"
                     f"• 현재 비어 있는 기신고 입력칸(상시·청년등 연인원/평균인원, 고용증가 인원, 최초 공제세액, 2차 공제세액)에 2단계 사원표 재계산 값을 한 번에 채워 넣습니다. (이미 직접 입력한 칸은 덮어쓰지 않고 보존합니다.)"
                 ),
             ):
@@ -2519,7 +2515,7 @@ def _page_calculation():
                     st.markdown(
                         f"<div style='margin:4px 0 8px 0;padding:8px 10px;background:#fff7ed;border:1.5px solid #fdba74;"
                         f"border-left:4px solid #f97316;border-radius:7px;font-size:0.80rem;color:#9a3412;line-height:1.45;'>"
-                        f"🟧 <b>[{cohort}년 기신고 인원 신고서 간 불일치 감지]</b><br>{_conf_desc}<br>"
+                        f"<b>[{cohort}년 기신고 인원 신고서 간 불일치 감지]</b><br>{_conf_desc}<br>"
                         f"<span style='color:#c2410c;'>사후관리 기준으로 사용할 신고서를 선택하세요 (기본값: 최신 신고서):</span>"
                         f"</div>",
                         unsafe_allow_html=True,
@@ -2611,19 +2607,19 @@ def _page_calculation():
                 f["수도권"] = new_loc
                 notes = []
                 if f.get("_증가_추정"):
-                    st.warning("⚠️ 공제세액을 만드는 증가인원 조합이 여러 개라 그중 하나를 추정했습니다. "
+                    st.warning("공제세액을 만드는 증가인원 조합이 여러 개라 그중 하나를 추정했습니다. "
                                "단시간근로자가 있었던 회사는 틀릴 수 있으니 기신고 상시근로자 명세서로 꼭 확인하세요.")
                 elif f.get("_증가_역산"):
                     notes.append("증가인원은 기신고 공제세액에서 역산한 값입니다")
                 if f.get("_2차_AI판독") and cohort == tax_yr - 2:
-                    st.warning("⚠️ 2차 공제세액은 세액공제조정명세서 계산명세(18S)로 확인하지 못해 AI가 읽은 값입니다. "
+                    st.warning("2차 공제세액은 세액공제조정명세서 계산명세(18S)로 확인하지 못해 AI가 읽은 값입니다. "
                                f"{tax_yr-1}년 신고서의 통합고용세액공제 2차 금액과 맞는지 확인하세요.")
                 if f.get("_소재지_추정") and new_loc is not None:
                     notes.append(f"소재지는 기신고 공제세액이 {'수도권' if new_loc else '수도권 밖'} 단가와 맞아 자동 선택했습니다")
                 if notes:
                     st.caption("ℹ️ " + " · ".join(notes) + ". 다르면 고쳐주세요.")
 
-    with st.expander("➕ 추가공제(육아휴직복귀·정규직전환·출산휴가대체인력) 및 최저한세 미공제 이월세액 입력", expanded=False):
+    with st.expander("추가공제(육아휴직복귀·정규직전환·출산휴가대체인력) 및 최저한세 미공제 이월세액 입력", expanded=False):
         ca1, ca2, ca3 = st.columns(3)
         add_in["parental_return_count"] = ca1.number_input(
             "육아휴직 복귀자 수 (명, ~2026년 복귀분 적용)",
@@ -2679,7 +2675,7 @@ def _page_calculation():
         )
 
 
-    with st.expander("📊 [상세 대조] 연도 · 블록별 상시근로자 현황 및 사후관리 기신고 vs 세법원칙 요약표", expanded=False):
+    with st.expander("[상세 대조] 연도 · 블록별 상시근로자 현황 및 사후관리 기신고 vs 세법원칙 요약표", expanded=False):
         st.markdown("**연도 · 블록별 상시근로자 현황 및 사후관리 기신고 vs 세법원칙 비교**")
         cur_b2_gen = round(max(0.0, pkg["cur_s"]["b2_reg"] - pkg["cur_s"]["b2_yth"]), 2)
         cur_b3_gen = round(max(0.0, pkg["cur_s"]["b3_reg"] - pkg["cur_s"]["b3_yth"]), 2)
@@ -2731,7 +2727,7 @@ def _page_calculation():
     st.markdown(
         "<div class='ec-law-ref-box'>"
         "<div style='font-weight:900;font-size:1.12rem;color:#1e3a8a;margin-bottom:8px;'>"
-        "📚 계산근거 관련 법령조문 (국가법령정보센터 바로가기)"
+        "계산근거 관련 법령조문 (국가법령정보센터 바로가기)"
         "</div>"
         "• <a href='https://www.law.go.kr/법령/조세특례제한법/제29조의8' target='_blank'>"
         "조세특례제한법 제29조의8 (통합고용세액공제)</a> — "
@@ -2756,19 +2752,18 @@ def _page_calculation():
 
     _save_ec_to_disk(s)
     corp_nm_fn = re.sub(r'[\\/:*?"<>|\s]+', "_", str((b.get("상호") or "사업장")).strip())[:30]
-    st.markdown("<div class='ec-nav-divider'></div>", unsafe_allow_html=True)
-    c_prev, c_cmp3, _, c_pdf3, c_next = st.columns([1.15, 2.05, 1.4, 1.25, 1.3])
+    c_prev, c_cmp3, _, c_pdf3, c_next = st.container(key="ecx_actionbar").columns([1.15, 2.05, 1.4, 1.25, 1.3], vertical_alignment="center")
     if c_prev.button("< 이전", width="stretch", key="btn_step3_prev"):
         s["step"] = 2
         _trigger_scroll_to_top(s)
         _save_ec_to_disk(s)
         st.rerun()
-    if c_cmp3.button("⚖️ 기신고 vs 세법상 재계산 비교", width="stretch", key="btn_step3_filed_vs_recalc"):
+    if c_cmp3.button("기신고 vs 세법상 재계산 비교", width="stretch", key="btn_step3_filed_vs_recalc"):
         _dlg_filed_vs_recalc_comparison(s, pkg, tax_yr)
     with c_pdf3:
         with st.container(key="ec_btn_pdf_step3_wrap"):
             st.download_button(
-                "📕 PDF 출력",
+                "PDF 출력",
                 data=_build_step3_calculation_pdf_bytes(s, pkg, matrix_cols),
                 file_name=f"{corp_nm_fn}_{tax_yr}년귀속_통합고용세액공제_계산서.pdf",
                 mime="application/pdf",

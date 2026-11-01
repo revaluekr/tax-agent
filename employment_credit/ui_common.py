@@ -62,6 +62,7 @@ _PERSIST_KEYS = (
     "show_empty_pm_blocks",
     "manual_extra_years",
     "next_pid_seq",
+    "deleted_people",
     "_pm_basis_user_touched",
     "_tabs_user_touched",
     "fill_ver",
@@ -216,6 +217,7 @@ def _default_state_dict() -> dict:
         "last_sent": {},
         "industry_alert_for": "",
         "next_pid_seq": 1,
+        "deleted_people": [],   # 2단계에서 [선택한 행 삭제]로 지운 사원 (성명|생년월일|입사일) — 파일로 사원표를 다시 만들어도 계속 제외
         "corp_size_default": "중소기업",
         "corp_size_by_year": {},
         "corp_size_user_set": [],
@@ -750,6 +752,65 @@ def _carry_over_user_edits(s: dict, old_people: dict, old_recs: dict) -> None:
                 s["year_recs"][yi][npid] = recs[opid]
 
 
+def _person_del_key(p: dict) -> str:
+    """삭제 표시용 사원 식별값: 성명|생년월일|입사일 (파일로 사원표를 다시 만들어도 같은 사람을 찾을 수 있게)."""
+    def _d(v):
+        d = H.parse_date(v)
+        return d.isoformat() if d else str(v or "").strip()
+    return f"{str(p.get('성명') or '').strip()}|{_d(p.get('생년월일'))}|{_d(p.get('입사일'))}"
+
+
+def _apply_deleted_people(s: dict) -> int:
+    """삭제 목록(deleted_people)에 있는 사원을 사원표(people)와 연도별 기록(year_recs)에서 뺍니다."""
+    keys = set(s.get("deleted_people") or [])
+    people = s.get("people") or {}
+    if not keys or not people:
+        return 0
+    drop = [pid for pid, p in list(people.items()) if isinstance(p, dict) and _person_del_key(p) in keys]
+    for pid in drop:
+        people.pop(pid, None)
+        for recs in (s.get("year_recs") or {}).values():
+            if isinstance(recs, dict):
+                recs.pop(pid, None)
+    return len(drop)
+
+
+def delete_people(s: dict, pids: list) -> list:
+    """[선택한 행 삭제]: 고른 사원을 모든 연도 사원표에서 지우고, 다시 만들어도 나오지 않게 삭제 목록에 남깁니다. 지운 이름 목록을 돌려줍니다."""
+    people = s.get("people") or {}
+    keys = list(s.get("deleted_people") or [])
+    names = []
+    for pid in pids:
+        p = people.get(pid)
+        if not isinstance(p, dict):
+            continue
+        k = _person_del_key(p)
+        if k not in keys:
+            keys.append(k)
+        names.append(str(p.get("성명") or ""))
+    s["deleted_people"] = keys
+    _apply_deleted_people(s)
+    for y in list((s.get("grid_ver") or {}).keys()) + list(_all_possible_years(s)):
+        s.setdefault("grid_ver", {})[y] = s["grid_ver"].get(y, 0) + 1
+    st.session_state.pop(_CALC_CACHE_KEY, None)
+    s.pop("totals_snapshot", None)
+    s.pop("_report_artifact_cache", None)
+    _save_ec_to_disk(s)
+    return names
+
+
+def restore_deleted_people(s: dict) -> int:
+    """삭제한 사원 되돌리기: 삭제 목록을 비우고 올린 파일로 사원표를 다시 만듭니다 (직접 추가했던 사원은 되돌릴 수 없음)."""
+    n = len(s.get("deleted_people") or [])
+    s["deleted_people"] = []
+    s["built_sig"] = None
+    st.session_state.pop(_CALC_CACHE_KEY, None)
+    s.pop("totals_snapshot", None)
+    s.pop("_report_artifact_cache", None)
+    _save_ec_to_disk(s)
+    return n
+
+
 def _ensure_built_for_tax_year(s: dict):
     """
     2단계·3단계·4단계 진입 시 또는 좌측 사이드바에서 `귀속사업연도`를 변경했을 때,
@@ -795,6 +856,7 @@ def _ensure_built_for_tax_year(s: dict):
         )
         _carry_over_user_edits(s, old_people, old_recs)
         _prune_manual_without_hire(s)
+        _apply_deleted_people(s)
 
         # 인원수가 45명 이상이면 브라우저 렌더링 부하 방지를 위해 연도별 탭 뷰를 기본 활성화
         if len(s["people"]) >= 45 and not s.get("_tabs_user_touched"):
@@ -2345,12 +2407,24 @@ def _top_status_bar(s: dict):
     law_ver = f"{tax_yr}귀속 ({m_badge} · 사후관리: {pm_lbl})"
     step_nm = STEPS[max(0, min(len(STEPS) - 1, int(s.get("step", 1)) - 1))]
 
+    cur_step = int(s.get("step", 1) or 1)
+    corp_chip = (f"{corp_nm} · {meta_str}" if (corp_nm and meta_str) else (corp_nm or meta_str or "사업자 미입력"))
+    corp_chip = re.sub(r"<[^>]+>", "", corp_chip)
+    titles = {
+        1: ("자료 업로드", f"{tax_yr}년 귀속 · 원천징수부와 기신고서를 올리면 연도·사업장별로 자동 분류하고 합산합니다."),
+        2: ("사원정보 · 상시근로자 판정", f"{tax_yr}년 귀속 · 사원별 월 재직을 확인하고, 고용형태·청년 여부를 고치면 바로 다시 계산합니다."),
+        3: ("공제액 계산", f"{tax_yr}년 귀속 · 연도별 세액공제와 1·2차 사후관리(연속공제·추징)를 계산합니다."),
+        4: ("검토보고서", f"{tax_yr}년 귀속 · 거래처에 보낼 보고서를 확인하고 원하는 형식으로 내려받으세요."),
+    }
+    t_main, t_sub = titles.get(cur_step, (step_nm, ""))
     st.markdown(
         f"<div id='ec-page-top-anchor'></div>"
-        f"<div class='top-mini-status-bar'>"
-        f"<span>🧮 <b>통합고용세액공제 ({tax_yr}년 귀속)</b> &nbsp;|&nbsp; {biz_disp}</span>"
-        f"<span>📌 현재 단계: <b>{s.get('step', 1)}단계 [{step_nm}]</b> &nbsp;·&nbsp; <span class='sb-badge-green'>💾 자동보관 ON · {law_ver}</span></span>"
-        f"</div>",
+        f"<div class='ecx-top'>"
+        f"<div class='ecx-crumb'>통합고용세액공제 <span class='sep'>›</span> {cur_step}단계 · {step_nm}</div>"
+        f"<div class='ecx-chips'><span class='ecx-chip ec'><span class='dot'></span>{corp_chip}</span>"
+        f"<span class='ecx-chip'>자동보관 켜짐 · {law_ver}</span></div>"
+        f"</div>"
+        f"<div class='ecx-h1'>{t_main}</div><div class='ecx-sub'>{t_sub}</div>",
         unsafe_allow_html=True,
     )
     pruned_n = int(s.pop("_pruned_manual_no_hire_count", 0) or 0)
@@ -2443,18 +2517,19 @@ def _progress(step: int):
         max_reached = max(max_reached, 4)
     s["max_step_reached"] = max_reached
 
-    cols = st.columns(len(STEPS), gap="small")
+    cols = st.container(key="ecx_stepper").columns(len(STEPS), gap="small")
     for i, name in enumerate(STEPS, start=1):
         unlocked = (i <= max_reached) or (i == 1)
+        # B안 진행 표시: 번호 원 + 단계 이름 (+ 상태 글자는 CSS로 표시), 누르면 그 단계로 이동
+        btn_label = name
         if i == step:
             state_cls = "now"
-            btn_label = f"{i}. {name}   [진행중]"
-        elif unlocked:
+        elif i < step or (unlocked and i != step and i <= max_reached and i < step + 0):
             state_cls = "done"
-            btn_label = f"{i}. {name}   [✓ 완료]"
+        elif unlocked:
+            state_cls = "open"
         else:
             state_cls = "wait"
-            btn_label = f"{i}. {name}   [대기]"
 
         with cols[i - 1]:
             with st.container(key=f"ec_step_nav_{state_cls}_{i}"):

@@ -781,7 +781,7 @@ def _build_report_markdown(
         f"| **합계: 당해 총 공제세액 (1+2+3)** | **{pkg['total_credit_gross_won']:,}원** | **공제감면세액계산서 및 세액공제신청서 반영 금액** |",
         f"| **4. 사후관리 추가납부세액 (이월공제 차감 후)** | **{pkg['total_clawback_net_payable_won']:,}원** | 차감전 추징액 {pkg['total_clawback_gross_won']:,}원 − 미공제 이월세액 소멸 {pkg['total_carryforward_offset_won']:,}원 (구 조특법 제29조의8 제3항 · [부칙:조세특례제한법 부칙 제34조] [각주 4, 5]) |",
         f"| **5. 농어촌특별세 (실공제세액의 20%)** | **{pkg['rural_special_tax_won']:,}원** | 실공제 {pkg['actual_deducted_credit_won']:,}원 기준 ([조문:농어촌특별세법 제5조 제1항] [각주 7]) |",
-        f"| **최종 실질 순절세액 (합계 − 4 − 5)** | **{pkg['net_after_rural_tax_won']:,}원** | **{cf_note_str}** |",
+        f"| **최종 세액공제순액 (합계 − 4 − 5)** | **{pkg['net_after_rural_tax_won']:,}원** | **{cf_note_str}** |",
         "",
         f"### (3) 4개 과세연도({tax_yr-3}~{tax_yr}년) 세액공제 및 추가납부세액 총괄표",
         "",
@@ -1030,7 +1030,7 @@ def _build_report_pdf_bytes(s: dict, log_tokens_fn=None, room_key: str = "", md_
                     first_cell_plain = re.sub(r"\*\*|`|<[^>]+>", "", str(padded_r[0] or "")).strip()
                     is_summary_row = r_idx > 0 and any(
                         first_cell_plain.startswith(k) or k in first_cell_plain
-                        for k in ("합계", "최종 실질 순절세액", "총 공제세액")
+                        for k in ("합계", "최종 세액공제순액", "총 공제세액")
                     )
                     if is_summary_row:
                         summary_row_indices.append(r_idx)
@@ -1300,7 +1300,7 @@ def _build_client_kakao_and_email_drafts(s: dict, pkg: dict, tax_yr: int) -> tup
         "[한줄 결론]",
         f"- {tax_yr}년 귀속 총 공제세액은 {tot_gross:,}원이며, 농어촌특별세(20%, {rural_won:,}원)"
         + (f" 및 사후관리 추징세액({claw_net:,}원)" if claw_net > 0 else "")
-        + f"을 반영한 최종 실질 순절세액은 {net_saving:,}원입니다.",
+        + f"을 반영한 최종 세액공제순액은 {net_saving:,}원입니다.",
         "",
         "[핵심 인원 및 금액 내역]",
         f"- 연평균 상시근로자 수: 직전연도 {prev_s['regular']:.2f}명 -> 당해연도 {cur_s['regular']:.2f}명 (전체 +{cur_inc['total_inc']:.2f}명 증가 / 청년등 +{cur_inc['youth_inc']:.2f}명, 일반 +{cur_inc['non_youth_inc']:.2f}명)",
@@ -1319,12 +1319,12 @@ def _build_client_kakao_and_email_drafts(s: dict, pkg: dict, tax_yr: int) -> tup
         f"{corp_nm} 대표님 및 재무·인사 담당자님께,",
         f"안녕하십니까. {tax_yr}년 귀속 통합고용세액공제 및 과거 과세연도 사후관리 정밀 검토 결과를 아래와 같이 안내해 드립니다.",
         "",
-        f"1. {tax_yr}년 귀속 최종 세액공제 및 순절세액 요약",
+        f"1. {tax_yr}년 귀속 최종 세액공제 및 세액공제순액 요약",
         f"  - 당해 1차년도 신규 고용증가 세액공제: {c1_won:,}원 (상시근로자 {prev_s['regular']:.2f}명 -> {cur_s['regular']:.2f}명, +{cur_inc['total_inc']:.2f}명 증가)",
         f"  - 직전·전전연도 기공제분 연속공제(2·3차년도): {c_cont:,}원",
         f"  - 당해 총 공제세액 합계: {tot_gross:,}원",
         f"  - 사후관리 추가납부세액: {claw_net:,}원 / 농어촌특별세(20%): {rural_won:,}원",
-        f"  - 차감 후 최종 실질 순절세액: {net_saving:,}원",
+        f"  - 차감 후 최종 세액공제순액: {net_saving:,}원",
         "    (※ 당기 법인세/소득세 산출세액 및 최저한세 한도를 초과하여 당기 공제받지 못하는 금액은 향후 10년간 이월공제되며, 이월분에는 당기 농어촌특별세가 부과되지 않습니다.)",
         "",
         "2. 신고 전 최종 확인 및 요청 서류",
@@ -1390,7 +1390,7 @@ def _page_report(room_key: str = "", log_tokens_fn=None):
             "xlsx": xlsx_report_bytes,
         }
 
-    # ⑨ 상단 3대 KPI 요약 카드 표시 (당해 확정 공제세액 · 추징/농특세 · 실질 순절세액)
+    # ⑨ 상단 3대 KPI 요약 카드 표시 (당해 확정 공제세액 · 추징/농특세 · 세액공제순액)
     pkg_now = s.get("calc_pkg")
     if isinstance(pkg_now, dict):
         try:
@@ -1402,7 +1402,7 @@ def _page_report(room_key: str = "", log_tokens_fn=None):
     st.markdown(f"<div class='ec-agent-report-wrap'>\n\n{md_text}\n\n</div>", unsafe_allow_html=True)
 
     disp_model = model_used or str(s.get("pro_audit_model") or "gemini-2.5-pro")
-    with st.expander("✏️ Ⅳ. 심층 세무진단 의견 문구 직접 수정 · AI 재생성", expanded=False):
+    with st.expander("Ⅳ. 심층 세무진단 의견 문구 직접 수정 · AI 재생성", expanded=False):
         st.caption("아래에서 보고서 『Ⅳ. 심층 세무진단 의견』 문구를 직접 수정하고 [수정 내용 반영]을 누르면 화면 보고서와 PDF·워드 출력물에 즉시 반영됩니다.")
         edited_audit = st.text_area(
             "Ⅳ. 심층 세무진단 의견 본문",
@@ -1412,7 +1412,7 @@ def _page_report(room_key: str = "", log_tokens_fn=None):
             key=f"ec_edit_audit_area_{tax_yr}",
         )
         ce1, ce2, _ = st.columns([1.4, 1.4, 4.2])
-        if ce1.button("💾 수정 내용 반영", type="primary", width="stretch", key="btn_save_edited_audit"):
+        if ce1.button("수정 내용 반영", type="primary", width="stretch", key="btn_save_edited_audit"):
             _, _ed_trace = P._fetch_live_employment_law_context() if hasattr(P, "_fetch_live_employment_law_context") else ("", None)
             _ed_verified, _ed_qdel = (
                 P.verify_and_redact_unmatched_quotes(_sanitize_markdown_tilde(edited_audit), _ed_trace)
@@ -1424,21 +1424,21 @@ def _page_report(room_key: str = "", log_tokens_fn=None):
             s.pop("_report_artifact_cache", None)
             _save_ec_to_disk(s)
             st.rerun()
-        if ce2.button("🔄 AI 의견 다시 생성 (법제처 API 재조회)", width="stretch", key="btn_regen_audit"):
+        if ce2.button("AI 의견 다시 생성 (법제처 API 재조회)", width="stretch", key="btn_regen_audit"):
             s["pro_audit_comment"] = ""
             s["pro_audit_sig"] = ""
             s.pop("_report_artifact_cache", None)
             _save_ec_to_disk(s)
             st.rerun()
 
-    with st.expander("💬 거래처 전송용 카카오톡 안내문 · 이메일 회신 초안 (버튼을 누를 때만 생성)", expanded=False):
+    with st.expander("거래처 전송용 카카오톡 안내문 · 이메일 회신 초안 (버튼을 누를 때만 생성)", expanded=False):
         st.caption("평소에는 생성하지 않아 속도와 토큰을 아끼며, 아래 버튼을 누를 때만 즉시 생성합니다.")
         ck1, ck2, _ = st.columns([1.8, 1.8, 3.4])
-        if ck1.button("💬 카카오톡 안내문 생성 (순수 텍스트)", width="stretch", key=f"btn_gen_kakao_{tax_yr}"):
+        if ck1.button("카카오톡 안내문 생성 (순수 텍스트)", width="stretch", key=f"btn_gen_kakao_{tax_yr}"):
             if isinstance(pkg_now, dict):
                 k_txt, _ = _build_client_kakao_and_email_drafts(s, pkg_now, tax_yr)
                 s["_client_kakao_draft"] = k_txt
-        if ck2.button("📧 비즈니스 이메일 초안 생성", width="stretch", key=f"btn_gen_email_{tax_yr}"):
+        if ck2.button("비즈니스 이메일 초안 생성", width="stretch", key=f"btn_gen_email_{tax_yr}"):
             if isinstance(pkg_now, dict):
                 _, e_txt = _build_client_kakao_and_email_drafts(s, pkg_now, tax_yr)
                 s["_client_email_draft"] = e_txt
@@ -1457,12 +1457,14 @@ def _page_report(room_key: str = "", log_tokens_fn=None):
         unsafe_allow_html=True,
     )
 
-    st.markdown("<div class='ec-nav-divider'></div>", unsafe_allow_html=True)
-    c_cmp_bot, _ = st.columns([2.6, 4.8])
-    if c_cmp_bot.button("⚖️ 기신고 vs 세법상 재계산 비교 (경정청구 · 수정신고 진단)", width="stretch", key=f"btn_step4_filed_vs_recalc_{tax_yr}"):
+    # B안: [보고서 내려받기] 카드 한 줄 (PDF · 워드 · 엑셀 · 마크다운) + 아래 이동 줄
+    _dl = st.container(key="ecx_dlcard")
+    _dl.markdown("<div class='ecx-dl-title'>보고서 내려받기</div>", unsafe_allow_html=True)
+    c_pdf_bot, c_docx_bot, c_xlsx_bot, c_md_bot = _dl.columns([1.3, 1, 1, 1], gap="small")
+    c_prev, c_cmp_bot, _, c_reset = st.container(key="ecx_actionbar").columns([1.3, 2.9, 2.0, 1.3], vertical_alignment="center")
+    if c_cmp_bot.button("기신고 vs 세법상 재계산 비교 (경정청구 · 수정신고 진단)", width="stretch", key=f"btn_step4_filed_vs_recalc_{tax_yr}"):
         from .ui_step3 import _dlg_filed_vs_recalc_comparison
         _dlg_filed_vs_recalc_comparison(s, pkg_now if isinstance(pkg_now, dict) else None, tax_yr)
-    c_prev, c_pdf_bot, c_docx_bot, c_xlsx_bot, c_md_bot, c_reset = st.columns([1.15, 1.35, 1.25, 1.25, 1.25, 1.15])
     if c_prev.button("< 이전(3단계)", width="stretch"):
         s["step"] = 3
         _trigger_scroll_to_top(s)
@@ -1471,7 +1473,7 @@ def _page_report(room_key: str = "", log_tokens_fn=None):
     with c_pdf_bot:
         with st.container(key="ec_btn_pdf_rep_bot"):
             st.download_button(
-                "📕 보고서 PDF 다운",
+                "보고서 PDF · 거래처 발송용",
                 data=pdf_report_bytes,
                 file_name=f"{corp_fn}_{tax_yr}년귀속_통합고용세액공제_검토보고서.pdf",
                 mime="application/pdf",
@@ -1479,27 +1481,27 @@ def _page_report(room_key: str = "", log_tokens_fn=None):
                 key="dl_pdf_report_bot",
                 help="현재 화면의 통합고용세액공제 및 사후관리 검토보고서를 A4 PDF로 다운로드합니다.",
             )
-    with c_docx_bot:
+    with c_docx_bot, st.container(key="ecx_dl_docx"):
         st.download_button(
-            "📘 워드 (.docx)",
+            "워드 (.docx) · 문구 수정용",
             data=docx_report_bytes,
             file_name=f"{corp_fn}_{tax_yr}년귀속_통합고용세액공제_검토보고서.docx",
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             width="stretch",
             key="dl_docx_report_bot",
         )
-    with c_xlsx_bot:
+    with c_xlsx_bot, st.container(key="ecx_dl_xlsx"):
         st.download_button(
-            "📊 표 엑셀 (.xlsx)",
+            "표 엑셀 (.xlsx) · 숫자 검증용",
             data=xlsx_report_bytes,
             file_name=f"{corp_fn}_{tax_yr}년귀속_통합고용세액공제_요약표.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             width="stretch",
             key="dl_xlsx_report_bot",
         )
-    with c_md_bot:
+    with c_md_bot, st.container(key="ecx_dl_md"):
         st.download_button(
-            "📝 마크다운 (.md)",
+            "마크다운 (.md)",
             data=md_text.encode("utf-8-sig"),
             file_name=f"{corp_fn}_{tax_yr}년귀속_통합고용세액공제_검토보고서.md",
             mime="text/markdown",

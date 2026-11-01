@@ -7,6 +7,7 @@ from __future__ import annotations
 import io
 import re
 import streamlit as st
+import ui_theme as _ui_theme
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -1069,7 +1070,7 @@ def render_credit_sidebar():
 
     with st.container(border=True):
         st.markdown(
-            "<div class='sb-card-title'><span>⚖️ 개정사항·신규 세법해석</span></div>"
+            _ui_theme.sb_title("book", "개정사항·신규 세법해석") +
             f"<div class='ec-law-status-row'>"
             f"<span class='ec-law-status-left'><span class='ec-law-led-3d {law_led_cls}'></span>법령·시행령·규칙 개정</span>"
             f"{law_badge_html}"
@@ -1101,12 +1102,12 @@ def render_credit_sidebar():
             else "<span class='sb-badge-amber'>초기 상태</span>"
         )
         st.markdown(
-            f"<div class='sb-card-title'><span>🧹 작업 자료 관리</span>{status_pill}</div>",
+            _ui_theme.sb_title("refresh", "작업 자료 관리", status_pill),
             unsafe_allow_html=True,
         )
         if not st.session_state.get("ec_confirm_reset"):
             if st.button(
-                "🔄 자료 초기화 (내용 비우기)",
+                "자료 초기화 (내용 비우기)",
                 width="stretch",
                 disabled=(not has_any_ec_data and int(s.get("step") or 1) == 1),
                 key="btn_ec_sidebar_reset_ask",
@@ -1147,7 +1148,7 @@ def render_credit_sidebar():
             else f"<span class='sb-badge-amber'>{tax_yr}년 ({m_badge_sb})</span>"
         )
         st.markdown(
-            f"<div class='sb-card-title'><span>📅 귀속사업연도</span>{yr_badge}</div>",
+            _ui_theme.sb_title("calendar", "귀속사업연도", yr_badge),
             unsafe_allow_html=True,
         )
         new_year = st.selectbox(
@@ -1177,9 +1178,9 @@ def render_credit_sidebar():
         else:
             loc_pill = "<span class='sb-badge-pro'>직접입력/자동추출</span>"
 
-        main_title_lbl = "🏢 주사업장(본점) 정보" if sub_list else "🏢 사업자정보"
+        main_title_lbl = "주사업장(본점) 정보" if sub_list else "사업자정보"
         st.markdown(
-            f"<div class='sb-card-title'><span>{main_title_lbl}</span>{loc_pill}</div>",
+            _ui_theme.sb_title("building", main_title_lbl, loc_pill),
             unsafe_allow_html=True,
         )
 
@@ -1261,7 +1262,7 @@ def render_credit_sidebar():
             key="ec_biz_cm",
             help="1년 과세기간 상한이 12개월이므로 12개월일 때는 [+] 버튼이 비활성화됩니다. 기중 개업·폐업 시 [-] 버튼이나 직접 입력으로 월수를 줄일 수 있습니다.",
         )
-        st.caption("💡 과세연도 월수 상한은 12개월입니다(12일 때 `+` 비활성 · 기중 개업/폐업 시 `-`로 조정).")
+        st.caption("과세연도 월수 상한은 12개월입니다(12일 때 `+` 비활성 · 기중 개업/폐업 시 `-`로 조정).")
 
         if conf:
             if st.button("🔓 사업자정보 잠금 해제 (직접 수정)", width="stretch", key="btn_unlock_biz"):
@@ -1271,7 +1272,7 @@ def render_credit_sidebar():
 
         # ── 과거 공제연도(T-1 · T-2) 당시 사업장 소재지 빠른 설정 (지방→수도권 이전 기업용) ──
         ps_sb = s.setdefault("prev_summary", {})
-        with st.expander(f"📍 과거 공제연도({tax_yr-2}·{tax_yr-1}년) 소재지 설정 (이전 기업용)", expanded=False):
+        with st.expander(f"과거 공제연도({tax_yr-2}·{tax_yr-1}년) 소재지 설정 (이전 기업용)", expanded=False):
             st.caption(
                 "2·3차년도 연속공제 및 추가납부 단가는 **최초 공제연도 당시 소재지** 기준입니다(예: 2024년 비수도권 공제 후 2025년 수도권 이전 시 2024년분은 비수도권 단가 유지)."
             )
@@ -1403,7 +1404,8 @@ def render_credit_sidebar():
                 st.rerun()
 
         if st.button(
-            "➕ 합산 사업장 추가 (지점 · 양도/양수)",
+            "합산 사업장 추가 (지점 · 양도/양수)",
+            icon=":material/add_business:",
             width="stretch",
             key="btn_add_sub_biz",
             help="법인 본·지점 합산 또는 개인사업자 기중 사업 양도·포괄양수 시 두 번째(추가) 사업장 정보를 하단에 추가합니다.",
@@ -1428,7 +1430,8 @@ def render_credit_sidebar():
             st.rerun()
 
         if st.button(
-            "🔎 국세청 · DART · 4대보험 사업장 대사",
+            "국세청 · DART · 4대보험 사업장 대사",
+            icon=":material/fact_check:",
             width="stretch",
             key="btn_open_nts_dart_modal",
             help="국세청 API(사업자 휴·폐업일·과세유형·진위확인) 및 Open DART(최대주주·특수관계인 지분 공시)를 실시간 조회합니다.",
@@ -1470,12 +1473,12 @@ def _restore_from_backup(inner: dict) -> None:
 
 def _render_backup_card(s: dict) -> None:
     with st.container(border=True):
-        st.markdown("<div class='sb-card-title'><span>💾 작업 백업 (내 PC)</span></div>", unsafe_allow_html=True)
+        st.markdown(_ui_theme.sb_title("save", "작업 백업 (내 PC)"), unsafe_allow_html=True)
         if not B.crypto_available():
             st.caption("백업 기능을 쓰려면 requirements.txt에 `cryptography`를 추가하고 앱을 재시작하세요.")
             return
         st.caption("앱을 재시작하면 서버의 작업 내용이 사라질 수 있습니다. 비밀번호를 건 파일로 PC에 보관했다가 다시 올려 이어서 작업하세요.")
-        tab_save, tab_load = st.tabs(["⬇️ 내려받기", "⬆️ 불러오기"])
+        tab_save, tab_load = st.tabs(["내려받기", "불러오기"])
 
         with tab_save:
             pw1 = st.text_input("백업 비밀번호", type="password", key="ec_bk_pw1",
