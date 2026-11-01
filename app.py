@@ -1902,7 +1902,7 @@ def create_pdf_report(report_text: str) -> bytes:
                     first_cell_plain = re.sub(r"\*\*|`|<[^>]+>", "", str(padded_r[0] or "")).strip()
                     is_summary_row = r_idx > 0 and any(
                         first_cell_plain.startswith(k) or k in first_cell_plain
-                        for k in ("합계", "최종 실질 순절세액", "총 공제세액")
+                        for k in ("합계", "최종 세액공제순액", "총 공제세액")
                     )
                     if is_summary_row:
                         summary_row_indices.append(r_idx)
@@ -2296,7 +2296,7 @@ def _check_three_tier_manager_pass(registered_email: str, registered_pin_hash: s
     """
     [3단 자동 패스 검증기]
     - 1단 (Google 계정 자동 교차검증): Streamlit/OAuth에 로그인된 구글 이메일이 `MANAGER_GOOGLE_EMAIL`과 일치하면 즉시 통과
-    - 2단 (내 작업공간 암호 자동 교차검증): 좌측 사이드바 `🔐 내 작업공간 코드`에 입력한 암호가 `MANAGER_SECURITY_PIN`(또는 이메일+PIN 조합)과 일치하면 즉시 통과
+    - 2단 (내 작업공간 암호 자동 교차검증): 좌측 사이드바 `내 작업공간 코드`에 입력한 암호가 `MANAGER_SECURITY_PIN`(또는 이메일+PIN 조합)과 일치하면 즉시 통과
     - 3단 (PIN 단독 인증 세션): 모달에서 `MANAGER_SECURITY_PIN` 1개만 입력해 통과한 경우 세션 유지
     """
     oauth_google_email = _get_streamlit_logged_google_email()
@@ -2392,7 +2392,7 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
         st.info(
             f"🛡️ **관리자 3단 자동 패스 보안 구역** — 등록된 관리자 계정(`{masked_mgr}`)\n\n"
             "- **1단 (자동):** Google 로그인 세션이 감지되면 별도 입력 없이 즉시 열립니다.\n"
-            "- **2단 (자동):** 좌측 사이드바 **`🔐 내 작업공간 코드`**에 관리자 보안 PIN(`MANAGER_SECURITY_PIN`)을 입력해 두시면 별도 로그인 없이 즉시 열립니다.\n"
+            "- **2단 (자동):** 좌측 사이드바 **`내 작업공간 코드`**에 관리자 보안 PIN(`MANAGER_SECURITY_PIN`)을 입력해 두시면 별도 로그인 없이 즉시 열립니다.\n"
             "- **3단 (수동):** 아래 칸에 **보안 PIN 번호 1개만** 입력하면 내부 `MANAGER_GOOGLE_EMAIL`과 자동 교차검증하여 즉시 열립니다."
         )
         if oauth_google_email and registered_email and oauth_google_email != registered_email:
@@ -2627,45 +2627,26 @@ def _detect_any_room_button_click() -> None:
 _detect_any_room_button_click()
 
 with st.sidebar:
-    # 🔀 [최상단 고정: 상단 2열 + 하단 2열(1열+예비1열) 동일 크기 배치]
-    sb_m1, sb_m2 = st.columns(2, gap="small")
-    with sb_m1:
-        if st.button(
-            "자율 에이전트AI",
-            key="btn_top_mode_agent",
-            type=("primary" if st.session_state.app_top_mode == "AGENT" else "secondary"),
-            width="stretch",
+    # B안: 로고 + 세로 메뉴 3개 (선택된 메뉴만 연한 바탕 + 포인트색)
+    import ui_theme as _ui_theme
+    st.markdown(_ui_theme.brand_html(), unsafe_allow_html=True)
+    with st.container(key="sbx_nav"):
+        for _lbl, _key, _mode, _ico in (
+            ("자율 에이전트AI", "btn_top_mode_agent", "AGENT", ":material/chat_bubble:"),
+            ("통합고용세액공제", "btn_top_mode_credit", "CREDIT_CALC", ":material/calculate:"),
+            ("인건비 자동화", "btn_top_mode_payroll", "PAYROLL_AUTO", ":material/receipt_long:"),
         ):
-            st.session_state.app_top_mode = "AGENT"
-            st.rerun()
-    with sb_m2:
-        if st.button(
-            "통합고용세액공제",
-            key="btn_top_mode_credit",
-            type=("primary" if st.session_state.app_top_mode == "CREDIT_CALC" else "secondary"),
-            width="stretch",
-        ):
-            st.session_state.app_top_mode = "CREDIT_CALC"
-            st.rerun()
-    sb_m3, sb_m4 = st.columns(2, gap="small")
-    with sb_m3:
-        if st.button(
-            "인건비 자동화",
-            key="btn_top_mode_payroll",
-            type=("primary" if st.session_state.app_top_mode == "PAYROLL_AUTO" else "secondary"),
-            width="stretch",
-        ):
-            st.session_state.app_top_mode = "PAYROLL_AUTO"
-            st.rerun()
-    with sb_m4:
-        st.empty()
+            if st.button(
+                _lbl,
+                key=_key,
+                icon=_ico,
+                type=("primary" if st.session_state.app_top_mode == _mode else "secondary"),
+                width="stretch",
+            ):
+                st.session_state.app_top_mode = _mode
+                st.rerun()
 
     if st.session_state.app_top_mode == "AGENT":
-        st.markdown(
-            "<div style='font-size:1.00rem; font-weight:800; color:#0f172a; line-height:1.4; margin-top:10px; margin-bottom:6px; padding-left:2px; letter-spacing:-0.3px;'>"
-            "⚙️ 에이전트 제어판</div>",
-            unsafe_allow_html=True
-        )
         # 📦 [카드 1] 엔진 출력 모드 제어 (자율 에이전트AI 모드에서만 노출; 통합고용세액공제 모드에서는 법령·예규 모니터링 카드로 대체)
         with st.container(border=True):
             is_pro_now = st.session_state.get("pro_toggle_state", False)
@@ -2674,13 +2655,13 @@ with st.sidebar:
                 st.session_state.law_mode_toggle = bool(st.session_state.get("law_mode_state", True))
             is_law_now = bool(st.session_state.law_mode_toggle)
             mode_pill = (
-                "<span class='sb-badge-pro'>👑 Argon 직결 (3배 개방)</span>"
+                "<span class='sb-badge-pro'>Pro · Argon 직결</span>"
                 if is_pro_now else
-                "<span class='sb-badge-green'>⚡ Flash 고속</span>"
+                "<span class='sb-badge-green'>Flash 고속</span>"
             )
             if gm_feature and not is_law_now:
-                mode_pill = "<span class='sb-badge-amber'>🌐 일반·웹 검색</span>" + (" <span class='sb-badge-pro'>👑 Pro</span>" if is_pro_now else "")
-            st.markdown(f"<div class='sb-card-title'><span>🚀 엔진 출력 모드</span>{mode_pill}</div>", unsafe_allow_html=True)
+                mode_pill = "<span class='sb-badge-amber'>일반·웹 검색</span>" + (" <span class='sb-badge-pro'>Pro</span>" if is_pro_now else "")
+            st.markdown(_ui_theme.sb_title("zap", "엔진 출력 모드", mode_pill), unsafe_allow_html=True)
             if gm_feature:
                 law_toggle_on = st.toggle(
                     "법령 검색 모드",
@@ -2703,11 +2684,11 @@ with st.sidebar:
             ws_widget_ver = st.session_state.get("ws_widget_ver", 0)
             saved_ws_val = st.session_state.get("active_workspace_id", "")
             ws_pill = (
-                "<span class='sb-badge-green'>🟢 보안 저장중</span>"
+                "<span class='sb-badge-green'>보안 저장 중</span>"
                 if saved_ws_val.strip() else
-                "<span class='sb-badge-amber'>🛡️ 개별 분리(임시)</span>"
+                "<span class='sb-badge-amber'>개별 분리(임시)</span>"
             )
-            st.markdown(f"<div class='sb-card-title'><span>🔐 내 작업공간 코드</span>{ws_pill}</div>", unsafe_allow_html=True)
+            st.markdown(_ui_theme.sb_title("lock", "내 작업공간 코드", ws_pill), unsafe_allow_html=True)
             workspace_input = st.text_input(
                 "작업공간 코드",
                 value=saved_ws_val,
@@ -2715,7 +2696,7 @@ with st.sidebar:
                 placeholder="나만의 암호 입력 후 Enter",
                 label_visibility="collapsed",
                 key=f"ws_input_box_{ws_widget_ver}",
-                help="암호를 입력하지 않아도 각 접속 PC/브라우저마다 1~10번 대화방이 타인과 완벽히 분리됩니다. 여기에 관리자 보안 PIN(MANAGER_SECURITY_PIN)을 입력해 두시면 하단 [🔑 API키]도 별도 로그인 없이 즉시 열립니다."
+                help="암호를 입력하지 않아도 각 접속 PC/브라우저마다 1~10번 대화방이 타인과 완벽히 분리됩니다. 여기에 관리자 보안 PIN(MANAGER_SECURITY_PIN)을 입력해 두시면 하단 [API 키]도 별도 로그인 없이 즉시 열립니다."
             )
             effective_ws_id = (
                 workspace_input.strip()
@@ -2741,7 +2722,7 @@ with st.sidebar:
             sync_all_rooms_state(effective_ws_id)
 
             if workspace_input.strip():
-                if st.button("🔒 작업공간 잠금 (나가기)", width="stretch"):
+                if st.button("작업공간 잠금 (나가기)", icon=":material/lock:", width="stretch"):
                     st.session_state.active_workspace_id = ""
                     st.session_state.loaded_workspace_id = None
                     st.session_state.manager_google_authed_email = ""
@@ -2781,10 +2762,10 @@ with st.sidebar:
                 if get_room_revision_alerts(effective_ws_id, r_id, st.session_state.chat_rooms.get(r_id, []), law_prom_map)[0]
             )
             rev_header_pill = (
-                f"<span class='sb-badge-amber'>🔄 {rooms_with_rev_cnt}개방 개정</span>"
+                f"<span class='sb-badge-amber'>{rooms_with_rev_cnt}개 방 개정</span>"
                 if rooms_with_rev_cnt > 0 else ""
             )
-            st.markdown(f"<div class='sb-card-title'><span>🗂️ 멀티 대화방 (1~10번)</span>{rev_header_pill}</div>", unsafe_allow_html=True)
+            st.markdown(_ui_theme.sb_title("layers", "대화방 1~10", rev_header_pill), unsafe_allow_html=True)
 
             room_search_kw = st.text_input(
                 "전체 대화방 통합 검색",
@@ -2834,7 +2815,7 @@ with st.sidebar:
                 save_workspace_to_disk(effective_ws_id)
                 st.rerun()
 
-            if st.button(f"🗑️ [{selected_room}] 현재 방 비우기", key="btn_clear_current_room", width="stretch"):
+            if st.button(f"[{selected_room}] 현재 방 비우기", key="btn_clear_current_room", icon=":material/delete:", width="stretch"):
                 with task_mgr["lock"]:
                     task_mgr["tasks"].pop(active_room_key, None)
                 st.session_state.chat_rooms[selected_room] = []
@@ -2873,16 +2854,18 @@ with st.sidebar:
                         st.rerun()
 
     # 📦 [카드 4 — 최하단 고정: [💳 결제] 및 [🔑 API키] 버튼]
-    with st.container(border=True):
+    with st.container(key="sbx_footer"):
         col_b1, col_b2 = st.columns(2)
         with col_b1:
-            st.link_button("💳 결제", "https://console.cloud.google.com/billing", width="stretch")
+            st.link_button("결제", "https://console.cloud.google.com/billing", icon=":material/credit_card:", width="stretch")
         with col_b2:
-            if st.button("🔑 API키", width="stretch", help="연동된 전체 API 리스트 및 갱신 링크 열기"):
+            if st.button("API 키", icon=":material/key:", width="stretch", help="연동된 전체 API 리스트 및 갱신 링크 열기"):
                 if _dialog_decorator:
                     open_api_key_manager_modal(expiry_all_status, law_prom_map)
                 else:
                     st.session_state.show_inline_api_manager = not st.session_state.get("show_inline_api_manager", False)
+    # B안 사이드바 디자인 (각 화면 CSS보다 뒤에 넣어 우선 적용)
+    st.markdown(_ui_theme.SIDEBAR_CSS, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
 # 3. 메인 화면 상단 (슬림 상태바 + 법령 개정 배너 버튼: '📜 개정이유서' / '⚡ 신·구법 비교')
