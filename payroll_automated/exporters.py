@@ -1361,7 +1361,7 @@ def render_freelancer_receipt_pdf(
     year_month: str = "",
     pay_date: str = "",
 ) -> bytes:
-    """사업소득명세서 이미지(JPG)용 C안 · 영수증형 (세로로 좁은 한 장, 파란 포인트) — JPG로 바꿔 내려받습니다."""
+    """사업소득명세서 이미지(JPG)용 B안 · 블루 띠 + 실지급액 강조 (지급 내역 | 공제 내역 카드 2개) — JPG로 바꿔 내려받습니다."""
     from reportlab.pdfgen import canvas as _cv
     font_reg, font_bold = get_korean_font_names()
     yyyy, mm_num = _parse_ym_parts(fr.get("귀속년월") or year_month)
@@ -1375,53 +1375,85 @@ def render_freelancer_receipt_pdf(
     code = m_ind.group(1) if m_ind else "940909"
     ind_nm = _freelancer_industry_name(code)
     birth = rrn_to_birth_dot(str(fr.get("주민등록번호") or "")) or "-"
+    name = str(fr.get("성명") or "")
 
-    W, H = 112 * mm, 138 * mm
-    blue, ink, mute, faint, line = (colors.HexColor(x) for x in ("#1D4ED8", "#0F172A", "#64748B", "#94A3B8", "#BFD0EA"))
+    W, H = 190 * mm, 116 * mm
+    pad = 10 * mm
+    C = {k: colors.HexColor(v) for k, v in dict(
+        navy="#123A7A", blue="#2563EB", ink="#0F172A", body="#334155", mute="#5B6B85", soft="#EEF4FF", softline="#D3E2FF",
+        boxline="#E1E8F4", boxhead="#F4F8FF", rowline="#F0F4FA", calc="#F8FAFD", band_sub="#CFE0FF", band_r="#DCE8FF").items()}
     buf = io.BytesIO()
     c = _cv.Canvas(buf, pagesize=(W, H))
     c.setFillColor(colors.white); c.rect(0, 0, W, H, stroke=0, fill=1)
-    c.setFillColor(blue); c.rect(0, H - 2.2 * mm, W, 2.2 * mm, stroke=0, fill=1)
-    pad = 9 * mm
-    y = H - 12 * mm
 
-    def center(txt, font, size, color, yy, space=0):
-        c.setFont(font, size); c.setFillColor(color)
-        if space:
-            c.saveState()   # 자간은 이 제목에만 (아래 글자에 번지지 않게)
-            t = c.beginText(); t.setFont(font, size); t.setCharSpace(space)
-            tw = c.stringWidth(txt, font, size) + space * (len(txt) - 1)
-            t.setTextOrigin((W - tw) / 2, yy); t.setFillColor(color); t.textOut(txt); t.setCharSpace(0); c.drawText(t)
-            c.restoreState()
-        else:
-            c.drawCentredString(W / 2, yy, txt)
+    # 1) 위쪽 블루 띠
+    band_h = 25 * mm
+    try:
+        c.saveState()
+        p = c.beginPath(); p.rect(0, H - band_h, W, band_h); c.clipPath(p, stroke=0, fill=0)
+        c.linearGradient(0, H - band_h, W, H, (C["navy"], C["blue"]), extend=False)
+        c.restoreState()
+    except Exception:
+        c.setFillColor(C["navy"]); c.rect(0, H - band_h, W, band_h, stroke=0, fill=1)
+    c.setFillColor(colors.white); c.setFont(font_bold, 16); c.drawString(pad, H - 12.5 * mm, "사업소득명세서")
+    c.setFillColor(C["band_sub"]); c.setFont(font_reg, 8.6); c.drawString(pad, H - 18.5 * mm, corp_name or "회사명 미입력")
+    c.setFillColor(C["band_r"]); c.setFont(font_reg, 8.6)
+    c.drawRightString(W - pad, H - 12.5 * mm, f"귀속 {yyyy}년 {mm_num:02d}월")
+    c.drawRightString(W - pad, H - 18.5 * mm, f"지급일 {pay_dt_str}")
 
-    def dash(yy):
-        c.setStrokeColor(line); c.setLineWidth(0.6); c.setDash(2, 2); c.line(pad, yy, W - pad, yy); c.setDash()
+    # 2) 실지급액 강조 카드 (왼쪽 금액 · 오른쪽 받는 사람)
+    y_top = H - band_h - 6 * mm
+    hero_h = 21 * mm
+    c.setFillColor(C["soft"]); c.setStrokeColor(C["softline"]); c.setLineWidth(0.6)
+    c.roundRect(pad, y_top - hero_h, W - 2 * pad, hero_h, 3.2 * mm, stroke=1, fill=1)
+    c.setFillColor(C["mute"]); c.setFont(font_bold, 8.4); c.drawString(pad + 6 * mm, y_top - 7 * mm, "차인지급액 (실지급액)")
+    c.setFillColor(C["navy"]); c.setFont(font_bold, 21); c.drawString(pad + 6 * mm, y_top - 16 * mm, f"{net:,}원")
+    c.setFillColor(C["ink"]); c.setFont(font_bold, 12.5)
+    nm_w = c.stringWidth(" 님", font_reg, 9.5)
+    c.drawRightString(W - pad - 6 * mm - nm_w, y_top - 8.5 * mm, name)
+    c.setFillColor(C["mute"]); c.setFont(font_reg, 9.5); c.drawRightString(W - pad - 6 * mm, y_top - 8.5 * mm, " 님")
+    c.setFillColor(C["body"]); c.setFont(font_reg, 8.6)
+    c.drawRightString(W - pad - 6 * mm, y_top - 15 * mm, f"생년월일 {birth} · {code} {ind_nm}".strip())
 
-    def kv(k, v, yy, bold=False, vcol=None):
-        c.setFont(font_bold if bold else font_reg, 9.2); c.setFillColor(ink if bold else mute); c.drawString(pad, yy, k)
-        c.setFont(font_bold if bold else font_reg, 9.2); c.setFillColor(vcol or ink); c.drawRightString(W - pad, yy, v)
+    # 3) 지급 내역 | 공제 내역 카드
+    gap = 5 * mm
+    bw = (W - 2 * pad - gap) / 2
+    row_h, head_h = 8 * mm, 8 * mm
+    by_top = y_top - hero_h - 6 * mm
+    bh = head_h + 3 * row_h
 
-    center("PAY STATEMENT", font_bold, 7.5, blue, y, space=1.6); y -= 7.2 * mm
-    center("사업소득명세서", font_bold, 15, ink, y); y -= 5.2 * mm
-    center(corp_name or "회사명 미입력", font_reg, 8.5, mute, y); y -= 5 * mm
-    dash(y); y -= 6.5 * mm
-    for k, v in (("성명", str(fr.get("성명") or "")), ("생년월일", birth),
-                 ("업종코드", f"{code} {ind_nm}".strip()), ("귀속연월 · 지급일", f"{yyyy}년 {mm_num:02d}월 · {pay_dt_str[5:] if len(pay_dt_str) >= 10 else pay_dt_str}")):
-        kv(k, v, y); y -= 5.6 * mm
-    y += 1.2 * mm; dash(y); y -= 6.5 * mm
-    kv("사업소득 지급액", f"{gross:,}", y); y -= 5.6 * mm
-    kv("소득세 (3%)", f"- {itax:,}", y); y -= 5.6 * mm
-    kv("지방소득세 (0.3%)", f"- {ltax:,}", y); y -= 5.6 * mm
-    kv("공제액 계", f"- {ded:,}", y, bold=True); y -= 4.4 * mm
-    dash(y); y -= 7 * mm
-    center("차인지급액 (실지급액)", font_reg, 8.5, mute, y); y -= 10 * mm
-    center(f"{net:,}원", font_bold, 22, blue, y); y -= 6.5 * mm
-    dash(y); y -= 6 * mm
-    center("소득세 = 지급액 × 3.0% · 지방소득세 = 소득세 × 10%", font_reg, 7.3, faint, y); y -= 4 * mm
-    center("(각 10원 미만 절사)", font_reg, 7.3, faint, y); y -= 8 * mm
-    center("귀하의 노고에 감사드립니다.", font_reg, 9, colors.HexColor("#334155"), y)
+    def card(x, title, rows):
+        c.setStrokeColor(C["boxline"]); c.setLineWidth(0.6); c.setFillColor(colors.white)
+        c.roundRect(x, by_top - bh, bw, bh, 2.6 * mm, stroke=1, fill=1)
+        c.saveState()
+        p = c.beginPath(); p.roundRect(x, by_top - bh, bw, bh, 2.6 * mm); c.clipPath(p, stroke=0, fill=0)
+        c.setFillColor(C["boxhead"]); c.rect(x, by_top - head_h, bw, head_h, stroke=0, fill=1)
+        c.restoreState()
+        c.setStrokeColor(C["boxline"]); c.line(x, by_top - head_h, x + bw, by_top - head_h)
+        c.setFillColor(C["navy"]); c.setFont(font_bold, 8.8); c.drawString(x + 4.5 * mm, by_top - 5.4 * mm, title)
+        yy = by_top - head_h
+        for i, (k, v, bold) in enumerate(rows):
+            if bold:
+                c.setFillColor(colors.HexColor("#FAFCFF")); c.rect(x + 0.3, yy - row_h, bw - 0.6, row_h, stroke=0, fill=1)
+            c.setFillColor(C["ink"] if bold else C["body"]); c.setFont(font_bold if bold else font_reg, 9.2)
+            c.drawString(x + 4.5 * mm, yy - 5.3 * mm, k); c.drawRightString(x + bw - 4.5 * mm, yy - 5.3 * mm, v)
+            if i < len(rows) - 1:
+                c.setStrokeColor(C["rowline"]); c.line(x + 0.5, yy - row_h, x + bw - 0.5, yy - row_h)
+            yy -= row_h
+        c.setStrokeColor(C["boxline"]); c.setLineWidth(0.6)
+        c.roundRect(x, by_top - bh, bw, bh, 2.6 * mm, stroke=1, fill=0)   # 테두리를 마지막에 다시 그려 칸 색에 가려지지 않게
+
+    card(pad, "지급 내역", [("사업소득 지급액", f"{gross:,}", False), ("지급액 계", f"{gross:,}", True)])
+    card(pad + bw + gap, "공제 내역", [("소득세 (3%)", f"{itax:,}", False), ("지방소득세 (0.3%)", f"{ltax:,}", False), ("공제액 계", f"{ded:,}", True)])
+
+    # 4) 계산 방법 · 끝 문구
+    cy = by_top - bh - 5 * mm
+    c.setFillColor(C["calc"]); c.roundRect(pad, cy - 8 * mm, W - 2 * pad, 8 * mm, 2.2 * mm, stroke=0, fill=1)
+    c.setFillColor(C["mute"]); c.setFont(font_reg, 7.6)
+    c.drawString(pad + 4.5 * mm, cy - 5 * mm, "계산 방법 · 소득세 = 지급액 × 3.0% · 지방소득세 = 소득세 × 10% (각 10원 미만 절사) · 차인지급액 = 지급액 - 공제액 계")
+    fy = cy - 8 * mm - 6.5 * mm
+    c.setFillColor(C["body"]); c.setFont(font_reg, 8.8); c.drawString(pad, fy, "귀하의 노고에 감사드립니다.")
+    c.setFillColor(C["mute"]); c.setFont(font_reg, 8.2); c.drawRightString(W - pad, fy, "(단위: 원)")
     c.showPage(); c.save()
     return buf.getvalue()
 
@@ -1494,13 +1526,13 @@ def export_freelancer_statements_jpg_zip(
             else:
                 name_tag = safe_name
 
-            pdf_bytes = render_freelancer_receipt_pdf(   # 이미지는 C안 · 영수증형
+            pdf_bytes = render_freelancer_receipt_pdf(   # 이미지는 B안 · 블루 띠 + 실지급액 강조
                 fr=fr,
                 corp_name=corp_name,
                 year_month=year_month,
                 pay_date=pay_date,
             )
-            jpg_bytes = convert_pdf_bytes_to_jpg_bytes(pdf_bytes, scale=3.2)
+            jpg_bytes = convert_pdf_bytes_to_jpg_bytes(pdf_bytes, scale=2.4)
             zf.writestr(f"{name_tag}_사업소득명세서_{yymm}.jpg", jpg_bytes)
     return zip_buf.getvalue()
 
@@ -1555,13 +1587,13 @@ def get_payslip_template_preview_b64(template_type: str = "근로기준1") -> st
 
 
 def get_freelancer_receipt_preview_b64() -> str:
-    """사업소득명세서 이미지(C안 · 영수증형) 미리보기 JPG Base64 (캐시)."""
-    cache_key = "free_receipt_default"
+    """사업소득명세서 이미지(B안 · 블루 띠) 미리보기 JPG Base64 (캐시)."""
+    cache_key = "free_card_b_default"
     if cache_key in _PREVIEW_B64_CACHE:
         return _PREVIEW_B64_CACHE[cache_key]
     sample_fr = {"코드": "0001", "성명": "홍길동", "주민등록번호": "950101-*******", "소득구분": "940909", "귀속년월": "2026-10",
                  "지급년월일": "2026-10-25", "지급총액": 2_000_000, "소득세": 60_000, "지방소득세": 6_000, "공제액계": 66_000, "차인지급액": 1_934_000}
-    jpg_b = convert_pdf_bytes_to_jpg_bytes(render_freelancer_receipt_pdf(sample_fr, corp_name="주식회사 샘플기업", year_month="2026-10", pay_date="2026-10-25"), scale=1.6)
+    jpg_b = convert_pdf_bytes_to_jpg_bytes(render_freelancer_receipt_pdf(sample_fr, corp_name="주식회사 샘플기업", year_month="2026-10", pay_date="2026-10-25"), scale=1.25)
     b64_str = base64.b64encode(jpg_b).decode("ascii")
     _PREVIEW_B64_CACHE[cache_key] = b64_str
     return b64_str
