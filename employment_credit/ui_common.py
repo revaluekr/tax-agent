@@ -2266,7 +2266,7 @@ div[class*="st-key-ec_step_nav_wait_"] button p {
 /* 사후관리 요건 검토 (1차년도 대비 상시·청년 감소여부 여/부) 표시 바 */
 .ec-pm-req-bar {
   display:grid; grid-template-columns:repeat(auto-fit, minmax(360px, 1fr)); gap:10px;
-  background:#f8fafc; border:1.5px solid #cbd5e1; border-radius:10px;
+  background:#f8fafc; border:1.5px solid #cbd5e1; border-left:5px solid #2563eb; border-radius:10px;
   padding:12px 16px; margin:6px 0 10px 0;
 }
 .ec-pm-req-item {
@@ -2318,6 +2318,39 @@ div[class*="st-key-ec_step_nav_wait_"] button p {
 .ec-calc-box.zero-box {
   border-left:5px solid #94a3b8;
 }
+.ec-brk {
+  flex:0 0 auto; width:min(440px, 46%); min-width:330px; border-radius:12px; overflow:hidden;
+  border:1.5px solid #e2e8f0; background:#f8fafc; font-variant-numeric:tabular-nums;
+}
+.ec-brk .brk-r {
+  display:flex; justify-content:space-between; align-items:baseline; gap:10px;
+  padding:9px 16px; font-size:0.98rem !important; color:#334155; border-bottom:1px solid #e2e8f0;
+}
+.ec-brk .brk-r .brk-k { font-weight:700; }
+.ec-brk .brk-r .brk-sub { font-size:0.82rem !important; font-weight:500; color:#64748b; margin-left:8px; }
+.ec-brk .brk-r b { font-size:1.08rem !important; font-weight:800; color:#0f172a; white-space:nowrap; }
+.ec-brk .brk-r.zero b { color:#94a3b8; }
+.ec-brk .brk-r.neg .brk-k, .ec-brk .brk-r.neg b { color:#dc2626; }
+.ec-brk .brk-r.plus b { color:#0369a1; }
+.ec-brk .brk-sep {
+  padding:5px 16px; font-size:0.78rem !important; font-weight:800; color:#64748b;
+  background:#f1f5f9; border-bottom:1px solid #e2e8f0;
+}
+.ec-brk .brk-tot {
+  display:flex; justify-content:space-between; align-items:baseline; gap:10px; padding:11px 16px; background:#eef2f7;
+}
+.ec-brk .brk-tot span { font-size:1.0rem !important; font-weight:800; color:#334155; }
+.ec-brk .brk-tot b { font-size:1.45rem !important; font-weight:900; color:#0f172a; white-space:nowrap; }
+.ec-brk.brk-pos { background:#f2fbf6; border-color:#cdefd9; }
+.ec-brk.brk-pos .brk-r { border-bottom-color:#ddf3e6; }
+.ec-brk.brk-pos .brk-tot { background:#e3f6eb; }
+.ec-brk.brk-pos .brk-tot span { color:#14532d; }
+.ec-brk.brk-pos .brk-tot b { color:#15803d; }
+.ec-brk.brk-neg { background:#fff7f7; border-color:#fbcaca; }
+.ec-brk.brk-neg .brk-r { border-bottom-color:#fde2e2; }
+.ec-brk.brk-neg .brk-tot { background:#fee2e2; }
+.ec-brk.brk-neg .brk-tot span { color:#7f1d1d; }
+.ec-brk.brk-neg .brk-tot b { color:#dc2626; }
 .ec-calc-formula {
   flex:1; font-size:1.12rem !important; color:#1e293b; line-height:1.75;
 }

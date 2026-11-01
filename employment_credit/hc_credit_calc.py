@@ -504,6 +504,7 @@ def calc_legacy_post_management(
         if y1_continued_credit_won and 0 < y1_continued_credit_won < int(round(full_man * 10_000)) - 10:
             stopped_before = True
     youth_stopped = stopped_now or stopped_before
+    claw_parts: list[dict] = []
 
     if reg_diff >= 0:
         if y1_halted:
@@ -527,6 +528,9 @@ def calc_legacy_post_management(
             case_title = "전체 상시근로자 유지 · 청년등만 감소 (청년 단가 중단 + 단가차액 추가납부)"
             capped_yth_dec = round(min(init_yth_inc, yth_dec), 2)
             raw_claw_man = capped_yth_dec * diff_rate * prior_years_claimed_count
+            claw_parts.append({"kind": "youth", "label": "청년 등 감소분 추가납부",
+                               "sub": f"{capped_yth_dec:.2f}명 × {diff_rate:,}만(차액) × {prior_years_claimed_count}년",
+                               "won": int(round(raw_claw_man * 10_000))})
             formula_note = (
                 f"[{cohort_year}년분 {elapsed+1}차년도 · Case 3] 전체 상시 유지({cur_pm_reg:.2f} ≥ {init_reg:.2f}), "
                 f"청년등 {capped_yth_dec:.2f}명 감소 → 추징(차액): {capped_yth_dec:.2f}명 × ({yth_rate:,}-{gen_rate:,})만원 × "
@@ -575,6 +579,20 @@ def calc_legacy_post_management(
                 + (gen_also_lost * gen_rate)
                 + (sub_yth_to_gen * diff_rate)
             ) * prior_years_claimed_count
+            _n = prior_years_claimed_count
+            _y_sub = []
+            if pure_yth_lost > 0:
+                _y_sub.append(f"{pure_yth_lost:.2f}명 × {yth_rate:,}만")
+            if sub_yth_to_gen > 0:
+                _y_sub.append(f"{sub_yth_to_gen:.2f}명 × {diff_rate:,}만(차액)")
+            _y_won = int(round((pure_yth_lost * yth_rate + sub_yth_to_gen * diff_rate) * _n * 10_000))
+            _g_won = int(round(gen_also_lost * gen_rate * _n * 10_000))
+            if _y_won > 0:
+                claw_parts.append({"kind": "youth", "label": "청년 등 추가납부",
+                                   "sub": (f"({' + '.join(_y_sub)})" if len(_y_sub) > 1 else " + ".join(_y_sub)) + f" × {_n}년", "won": _y_won})
+            if _g_won > 0:
+                claw_parts.append({"kind": "general", "label": "청년 외 추가납부",
+                                   "sub": f"{gen_also_lost:.2f}명 × {gen_rate:,}만 × {_n}년", "won": _g_won})
             formula_note = (
                 f"[{cohort_year}년분 {elapsed+1}차년도 · Case 1] 전체 상시 {capped_reg_dec:.2f}명 감소 ≤ 청년등 {yth_dec:.2f}명 감소 → "
                 f"연속공제 중단(0원) / 추징: [청년이탈 {pure_yth_lost:.2f}명×{yth_rate:,}만 + "
@@ -594,6 +612,15 @@ def calc_legacy_post_management(
             total_yth_lost = yth_lost
 
             raw_claw_man = ((total_yth_lost * yth_rate) + (gen_lost * gen_rate)) * prior_years_claimed_count
+            _n = prior_years_claimed_count
+            _y_won = int(round(total_yth_lost * yth_rate * _n * 10_000))
+            _g_won = int(round(gen_lost * gen_rate * _n * 10_000))
+            if _y_won > 0:
+                claw_parts.append({"kind": "youth", "label": "청년 등 추가납부",
+                                   "sub": f"{total_yth_lost:.2f}명 × {yth_rate:,}만 × {_n}년", "won": _y_won})
+            if _g_won > 0:
+                claw_parts.append({"kind": "general", "label": "청년 외 추가납부",
+                                   "sub": f"{gen_lost:.2f}명 × {gen_rate:,}만 × {_n}년", "won": _g_won})
             credited_cap_man = full_man * prior_years_claimed_count
             case2_cap_note = ""
             case2_formula_man = raw_claw_man
@@ -660,6 +687,7 @@ def calc_legacy_post_management(
         "clawback_net_payable_won": clawback_net_payable_won,
         "cap_applied": cap_applied,
         "claimed_cap_won": claimed_cap,
+        "clawback_parts": claw_parts,
         "retained_yth_inc": ret_yth,
         "retained_gen_inc": ret_gen,
         "reg_decrease": reg_dec,

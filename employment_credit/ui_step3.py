@@ -1087,6 +1087,222 @@ def _build_pm_formula_lines(
     )
 
 
+def _brk_man(won: int) -> str:
+    """단가(원) → '1,450만' 형태 (만원 단위가 아니면 원 단위 그대로)."""
+    w = int(won or 0)
+    return f"{w // 10_000:,}만" if w % 10_000 == 0 else f"{w:,}원"
+
+
+def _brk_box_html(rows: list[tuple[str, str, int, str]], tot_lbl: str, tot_won: int, tone: str) -> str:
+    """
+    (2)·(3)·(4) 우측 금액 상자 — 청년 등 / 청년 외 구분 표시 (화면 전용).
+    rows: (라벨, 작은글씨 산식, 금액(원, 음수=추가납부), 종류[''|'neg'|'plus'|'zero'|'sep'])
+    tone: pos(초록) / neg(추가납부, 빨강) / zero(회색)
+    """
+    out = []
+    for lbl, sub, won, kind in rows:
+        if kind == "sep":
+            out.append(f"<div class='brk-sep'>{lbl}</div>")
+            continue
+        if kind == "neg":
+            v = f"-{abs(int(won)):,}원"
+        elif kind == "plus":
+            v = f"+{abs(int(won)):,}원"
+        else:
+            v = f"{int(won):,}원"
+        cls = kind or ("zero" if int(won) == 0 else "")
+        sub_html = f"<span class='brk-sub'>{sub}</span>" if sub else ""
+        out.append(f"<div class='brk-r {cls}'><span class='brk-k'>{lbl}{sub_html}</span><b>{v}</b></div>")
+    tv = f"-{abs(int(tot_won)):,}원" if int(tot_won) < 0 else f"{int(tot_won):,}원"
+    out.append(f"<div class='brk-tot'><span>{tot_lbl}</span><b>{tv}</b></div>")
+    return f"<div class='ec-brk brk-{tone}'>{''.join(out)}</div>"
+
+
+def _brk_rows_first_year(youth_inc: float, y_unit_won: int, y_amt_won: int,
+                         non_youth_inc: float, g_unit_won: int, g_amt_won: int,
+                         ded_won: int, total_won: int) -> str:
+    rows = [
+        ("청년 등 세액공제액", f"{youth_inc:.2f}명 × {_brk_man(y_unit_won)}", y_amt_won, ""),
+        ("청년 외 세액공제액", f"{non_youth_inc:.2f}명 × {_brk_man(g_unit_won)}", g_amt_won, ""),
+    ]
+    if ded_won > 0:
+        rows.append(("최소고용증가인원 차감", "조특령 §26조의8 ③", ded_won, "neg"))
+    return _brk_box_html(rows, "1차년도 세액공제 합계", total_won, "pos" if total_won > 0 else "zero")
+
+
+def _pm_breakdown(pm: dict, elapsed: int, rates_legacy: dict[str, int]) -> dict | None:
+    """
+    사후관리(2·3차년도) 금액을 '청년 등 / 청년 외'로 나눈 구조값 (화면·3단계 PDF·4단계 보고서 공용).
+    반환 None: 기초자료 미입력·사후관리 대상 아님·공제기간 종료(기존 한 줄 표시 유지).
+    {
+      "nth": "2차년도", "is_new": bool,
+      "credit": {"y": 원, "y_sub": str, "g": 원, "g_sub": str, "ded": 원, "total": 원},
+      "claw": None | {"y": 원, "y_sub", "g": 원, "g_sub", "raw": 원(차감 전), "adj": [(라벨, 작은글씨, 원)], "net": 원},
+    }
+    """
+    nth = f"{elapsed + 1}차년도"
+    if pm.get("base_missing"):
+        return None
+    if str(pm.get("case_code") or "").startswith("신법") and isinstance(pm.get("new_tier_info"), dict):
+        ti = pm["new_tier_info"]
+        t_rates = ti.get("rates") or {}
+        y_u = int(t_rates.get("청년등", 0) or 0) * 10_000
+        g_u = int(t_rates.get("청년등외", 0) or 0) * 10_000
+        return {
+            "nth": nth, "is_new": True, "claw": None,
+            "credit": {
+                "y": int(ti.get("item1_youth_won") or 0), "y_sub": f"{float(ti.get('youth_inc') or 0.0):.2f}명 × {_brk_man(y_u)}",
+                "g": int(ti.get("item2_non_youth_won") or 0), "g_sub": f"{float(ti.get('non_youth_inc') or 0.0):.2f}명 × {_brk_man(g_u)}",
+                "ded": int(ti.get("item3_deduction_won") or 0), "total": int(ti.get("credit_won") or 0),
+            },
+        }
+    if not pm.get("active"):
+        return None
+
+    yth_r = int(rates_legacy.get("청년등", 0) or 0) * 10_000
+    gen_r = int(rates_legacy.get("청년등외", 0) or 0) * 10_000
+    init_y = float(pm.get("init_yth_inc") or 0.0)
+    ret_y = float(pm.get("retained_yth_inc") or 0.0)
+    ret_g = float(pm.get("retained_gen_inc") or 0.0)
+    cont = int(pm.get("continued_credit_won") or 0)
+    raw = int(pm.get("clawback_raw_cumulative_won") or 0)
+    gross = int(pm.get("clawback_gross_won") or 0)
+    prior = int(pm.get("prior_clawback_deducted_won") or 0)
+    cf = int(pm.get("carryforward_offset_won") or 0)
+    net = int(pm.get("clawback_net_payable_won") or 0)
+    has_claw = raw > 0 or gross > 0 or net > 0
+
+    if cont > 0:
+        y_w = min(cont, int(round(ret_y * yth_r)))
+        credit = {
+            "y": y_w,
+            "y_sub": f"{ret_y:.2f}명 × {_brk_man(yth_r)}" if ret_y > 0 else ("청년 단가 중단" if init_y > 0 else ""),
+            "g": cont - y_w,
+            "g_sub": f"{ret_g:.2f}명 × {_brk_man(gen_r)}" + (" (청년 포함)" if ret_y <= 0 < init_y else ""),
+            "ded": 0, "total": cont,
+        }
+    else:
+        why = "연속공제 중단" if has_claw else ("공제기간 종료" if "종료" in str(pm.get("case_code") or "") else "")
+        credit = {"y": 0, "y_sub": why, "g": 0, "g_sub": why, "ded": 0, "total": 0}
+
+    claw = None
+    if has_claw:
+        capped_cum = gross + prior
+        parts = [dict(p) for p in (pm.get("clawback_parts") or []) if int(p.get("won") or 0) > 0]
+        adj: list[tuple[str, str, int]] = []
+        if parts:
+            diff = sum(int(p["won"]) for p in parts) - capped_cum
+            if 0 < abs(diff) <= 10:
+                parts[-1]["won"] = int(parts[-1]["won"]) - diff
+                diff = 0
+            if diff > 0:
+                adj.append(("공제받은 세액 한도 조정", "기공제세액 한도", diff))
+        y_parts = [p for p in parts if p.get("kind") != "general"]
+        g_parts = [p for p in parts if p.get("kind") == "general"]
+        reg_kept = float(pm.get("reg_decrease") or 0.0) <= 0
+        claw = {
+            "y": sum(int(p["won"]) for p in y_parts) if parts else capped_cum,
+            "y_sub": " + ".join(str(p.get("sub") or "") for p in y_parts) if parts else "",
+            "g": sum(int(p["won"]) for p in g_parts),
+            "g_sub": " + ".join(str(p.get("sub") or "") for p in g_parts) or ("전체 유지" if reg_kept else "해당 없음"),
+            "raw": sum(int(p["won"]) for p in parts) if parts else capped_cum,
+            "adj": adj,
+            "net": net,
+        }
+        if prior > 0:
+            claw["adj"].append(("1차 사후관리 기추징액 차감", "", prior))
+        if cf > 0:
+            claw["adj"].append(("미공제 이월세액 차감", "이월세액에서 먼저 상계", cf))
+    return {"nth": nth, "is_new": False, "credit": credit, "claw": claw}
+
+
+def _brk_credit_html(bd: dict) -> str:
+    c = bd["credit"]
+    rows = [("청년 등 세액공제액", c["y_sub"], c["y"], ""), ("청년 외 세액공제액", c["g_sub"], c["g"], "")]
+    if c.get("ded"):
+        rows.append(("최소고용증가인원 차감", "", c["ded"], "neg"))
+    return _brk_box_html(rows, f"{bd['nth']} 세액공제 합계", c["total"], "pos" if c["total"] > 0 else "zero")
+
+
+def _brk_claw_html(bd: dict) -> str:
+    k = bd["claw"]
+    rows = [
+        ("청년 등 추가납부세액", k["y_sub"], k["y"], "neg" if k["y"] > 0 else "zero"),
+        ("청년 외 추가납부세액", k["g_sub"], k["g"], "neg" if k["g"] > 0 else "zero"),
+    ]
+    for lbl, sub, won in k["adj"]:
+        rows.append((lbl, sub, won, "plus"))
+    return _brk_box_html(rows, f"{bd['nth']} 추가납부 합계", -k["net"], "neg" if k["net"] > 0 else "zero")
+
+
+def _pm_cards(pm: dict, elapsed: int, rates_legacy: dict[str, int], base: tuple) -> list[tuple[str, str, list[str], str]] | None:
+    """
+    화면용 사후관리 카드 목록 [(상자 클래스, 제목, 산식 줄, 오른쪽 상자 HTML)].
+    세액공제는 초록 카드, 추가납부는 빨강 카드 — 둘 다 있으면 카드 2장. None 이면 기존 단일 카드 유지.
+    base: _build_pm_formula_lines 결과 (제목, 산식 줄, …)
+    """
+    bd = _pm_breakdown(pm, elapsed, rates_legacy)
+    if not bd:
+        return None
+    title, lines = base[0], list(base[1])
+    cont = bd["credit"]["total"]
+    claw = bd["claw"]
+    if not claw:
+        return [("pos-box" if cont > 0 else "zero-box", title, lines, _brk_credit_html(bd))]
+    if cont <= 0:
+        return [("neg-box" if claw["net"] > 0 else "zero-box", title, lines, _brk_claw_html(bd))]
+    # 세액공제 + 추가납부 → 카드 2장
+    yth_r = int(rates_legacy.get("청년등", 0) or 0) * 10_000
+    gen_r = int(rates_legacy.get("청년등외", 0) or 0) * 10_000
+    ret_y = float(pm.get("retained_yth_inc") or 0.0)
+    ret_g = float(pm.get("retained_gen_inc") or 0.0)
+    nth = bd["nth"]
+    if ret_y > 0:
+        cont_ln = (f"• {nth} 연속공제 산식: (유지 청년등 {ret_y:.2f}명 × {yth_r:,}원) + "
+                   f"(유지 청년등 외 {ret_g:.2f}명 × {gen_r:,}원) = <b>{cont:,}원</b>")
+    else:
+        cont_ln = (f"• {nth} 연속공제 산식: 청년 단가 중단 → (청년 포함 {ret_g:.2f}명) × {gen_r:,}원 = <b>{cont:,}원</b>")
+    note = str(pm.get("formula_note") or "")
+    note = re.split(r"\s*/\s*연속공제", note)[0]
+    red_lines = [lines[0] if lines else "", f"• 추가납부 산식 (구 조특법 제29조의8 · 법률 제21223호 부칙 제34조): {note}"]
+    adj = claw["adj"]
+    if adj:
+        red_lines.append(
+            f"• 차감 반영: 산출 추가납부세액 {claw['raw']:,}원 - "
+            + " - ".join(f"{a[0]} {a[2]:,}원" for a in adj)
+            + f" = 당기 추가납부세액 <b>{claw['net']:,}원</b>"
+        )
+    return [
+        ("pos-box", f"{title} · 세액공제", lines[:2] + [cont_ln], _brk_credit_html(bd)),
+        ("neg-box" if claw["net"] > 0 else "zero-box", f"{title} · 추가납부", [l for l in red_lines if l], _brk_claw_html(bd)),
+    ]
+
+
+def _pm_breakdown_md_table(bd: dict | None) -> list[str]:
+    """4단계 보고서(마크다운 → PDF·워드·엑셀)용 '구분 | 청년 등 | 청년 외 | 계 | 산식' 표 줄."""
+    if not bd:
+        return []
+    c, k = bd["credit"], bd["claw"]
+    out = ["", "| 구분 | 청년 등 | 청년 외 | 계 | 산식 |", "| :--- | ---: | ---: | ---: | :--- |"]
+    c_note = " / ".join(dict.fromkeys(x for x in (c["y_sub"], c["g_sub"]) if x))
+    if c.get("ded"):
+        c_note += f" (최소고용증가인원 차감 -{c['ded']:,}원)"
+    out.append(f"| 세액공제액 (연속공제) | {c['y']:,}원 | {c['g']:,}원 | **{c['total']:,}원** | {c_note or '-'} |")
+    if k:
+        k_note = " / ".join(x for x in (k["y_sub"], k["g_sub"]) if x and x not in ("전체 유지", "해당 없음"))
+        y_txt = f"-{k['y']:,}원" if k["y"] else "0원"
+        g_txt = f"-{k['g']:,}원" if k["g"] else "0원"
+        if k["adj"]:
+            out.append(f"| 추가납부세액 (산출) | {y_txt} | {g_txt} | **-{k['raw']:,}원** | {k_note or '-'} |")
+            for lbl, sub, won in k["adj"]:
+                out.append(f"| {lbl} | - | - | +{won:,}원 | {sub or '-'} |")
+            out.append(f"| 당기 추가납부세액 | - | - | **-{k['net']:,}원** | {k['raw']:,}원 − {sum(a[2] for a in k['adj']):,}원 |")
+        else:
+            out.append(f"| 추가납부세액 | {y_txt} | {g_txt} | **-{k['net']:,}원** | {k_note or '-'} |")
+    out.append("")
+    return out
+
+
 def _build_step3_calculation_pdf_bytes(
     s: dict,
     pkg: dict,
@@ -1142,6 +1358,7 @@ def _build_step3_calculation_pdf_bytes(
         textColor=colors.HexColor("#1e3a8a"),
         spaceBefore=8,
         spaceAfter=5,
+        keepWithNext=True,
     )
     st_body = ParagraphStyle(
         "ECStep3Body",
@@ -1285,19 +1502,58 @@ def _build_step3_calculation_pdf_bytes(
     story.append(t_inc)
     story.append(Spacer(1, 5))
 
-    def _add_calc_card(sec_hdr: str, title_txt: str, lines_list: list[str], amt_lbl: str, amt_val: int, is_neg: bool = False):
-        story.append(Paragraph(_pdf_text(sec_hdr), st_sec))
+    def _brk_pdf_rows(bd_obj: dict, which: str) -> tuple[list[tuple[str, str, str]], str, int]:
+        """오른쪽 금액 칸 줄 [(라벨, 금액문자, 색)] · 합계 라벨 · 합계(원, 음수=추가납부)."""
+        if which == "credit":
+            c_ = bd_obj["credit"]
+            rows_ = [("청년 등 세액공제액", f"{c_['y']:,}원", "#0f172a"), ("청년 외 세액공제액", f"{c_['g']:,}원", "#0f172a")]
+            if c_.get("ded"):
+                rows_.append(("최소고용증가인원 차감", f"-{c_['ded']:,}원", "#dc2626"))
+            return rows_, f"{bd_obj['nth']} 세액공제 합계", c_["total"]
+        k_ = bd_obj["claw"]
+        rows_ = [
+            ("청년 등 추가납부세액", f"-{k_['y']:,}원" if k_["y"] else "0원", "#dc2626" if k_["y"] else "#94a3b8"),
+            ("청년 외 추가납부세액", f"-{k_['g']:,}원" if k_["g"] else "0원", "#dc2626" if k_["g"] else "#94a3b8"),
+        ]
+        rows_ += [(a_[0], f"+{a_[2]:,}원", "#0369a1") for a_ in k_["adj"]]
+        return rows_, f"{bd_obj['nth']} 추가납부 합계", -k_["net"]
+
+    def _add_calc_card(sec_hdr: str, title_txt: str, lines_list: list[str], amt_lbl: str, amt_val: int, is_neg: bool = False,
+                       brk: tuple[list[tuple[str, str, str]], str, int] | None = None, show_hdr: bool = True):
+        if show_hdr:
+            story.append(Paragraph(_pdf_text(sec_hdr), st_sec))
         body_html = f"<font name='{bold_font}'><b>{_pdf_text(title_txt)}</b></font><br/>" + "<br/>".join(
             _pdf_text(re.sub(r"<[^>]+>", "", ln)) for ln in lines_list
         )
+        if brk:
+            amt_lbl, amt_val = brk[1], brk[2]
+            is_neg = amt_val < 0
         amt_str = f"-{abs(amt_val):,}원" if amt_val < 0 else f"{amt_val:,}원"
         amt_color = "#dc2626" if is_neg or amt_val < 0 else ("#15803d" if amt_val > 0 else "#334155")
-        right_p = Paragraph(
-            f"<font name='{bold_font}' size='8.2' color='#475569'>{_pdf_text(amt_lbl)}</font><br/>"
-            f"<font name='{bold_font}' size='11.5' color='{amt_color}'><b>{amt_str}</b></font>",
-            ParagraphStyle("RAmt", parent=st_body, alignment=2, leading=15),
-        )
-        card_tbl = Table([[Paragraph(body_html, st_body), right_p]], colWidths=[avail_w * 0.72, avail_w * 0.28])
+        if brk:
+            st_r_l = ParagraphStyle("RBrkL", parent=st_body, fontSize=7.6, leading=10.5)
+            st_r_r = ParagraphStyle("RBrkR", parent=st_body, fontSize=7.8, leading=10.5, alignment=2)
+            r_rows = [[Paragraph(_pdf_text(l_), st_r_l), Paragraph(f"<font name='{bold_font}' color='{c_}'>{_pdf_text(v_)}</font>", st_r_r)] for l_, v_, c_ in brk[0]]
+            r_rows.append([
+                Paragraph(f"<font name='{bold_font}'>{_pdf_text(amt_lbl)}</font>", st_r_l),
+                Paragraph(f"<font name='{bold_font}' size='9.6' color='{amt_color}'><b>{amt_str}</b></font>", ParagraphStyle("RBrkT", parent=st_r_r, leading=13)),
+            ])
+            right_p = Table(r_rows, colWidths=[avail_w * 0.155, avail_w * 0.145])
+            right_p.setStyle(TableStyle([
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LINEBELOW", (0, 0), (-1, -2), 0.4, colors.HexColor("#e2e8f0")),
+                ("LINEABOVE", (0, -1), (-1, -1), 0.8, colors.HexColor(amt_color)),
+                ("TOPPADDING", (0, 0), (-1, -1), 2.5), ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+                ("LEFTPADDING", (0, 0), (-1, -1), 2), ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+            ]))
+        else:
+            right_p = Paragraph(
+                f"<font name='{bold_font}' size='8.2' color='#475569'>{_pdf_text(amt_lbl)}</font><br/>"
+                f"<font name='{bold_font}' size='11.5' color='{amt_color}'><b>{amt_str}</b></font>",
+                ParagraphStyle("RAmt", parent=st_body, alignment=2, leading=15),
+            )
+        r_w = 0.32 if brk else 0.28
+        card_tbl = Table([[Paragraph(body_html, st_body), right_p]], colWidths=[avail_w * (1 - r_w), avail_w * r_w])
         border_c = "#dc2626" if (is_neg or amt_val < 0) else ("#16a34a" if amt_val > 0 else "#94a3b8")
         bg_r = "#fef2f2" if (is_neg or amt_val < 0) else ("#f0fdf4" if amt_val > 0 else "#f8fafc")
         card_tbl.setStyle(
@@ -1312,11 +1568,25 @@ def _build_step3_calculation_pdf_bytes(
                     ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
                     ("LEFTPADDING", (0, 0), (-1, -1), 10),
                     ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+                    ("LINEBEFORE", (0, 0), (0, 0), 3.5, colors.HexColor(border_c)),
                 ]
             )
         )
         story.append(card_tbl)
         story.append(Spacer(1, 4))
+
+    def _add_pm_cards(sec_hdr: str, pm_obj: dict, el: int, rates_l: dict, base: tuple):
+        cards_ = _pm_cards(pm_obj, el, rates_l, (base[0], base[1]))
+        bd_ = _pm_breakdown(pm_obj, el, rates_l)
+        if not cards_ or not bd_:
+            _add_calc_card(sec_hdr, base[0], base[1], base[2], base[3], base[4])
+            return
+        for i_, (cls_, t_, l_, _h) in enumerate(cards_):
+            if len(cards_) == 2:
+                which_ = "credit" if i_ == 0 else "claw"
+            else:
+                which_ = "claw" if (bd_["claw"] and bd_["credit"]["total"] <= 0) else "credit"
+            _add_calc_card(sec_hdr, t_, l_, "", 0, False, brk=_brk_pdf_rows(bd_, which_), show_hdr=(i_ == 0))
 
     # 3) (2) 1차년도 세액공제액 계산
     if pkg["active_scheme"] == "new_2026":
@@ -1344,6 +1614,10 @@ def _build_step3_calculation_pdf_bytes(
             f"• 청년 등 외 상시근로자 증가: {cur_inc['non_youth_inc']:.2f}명 × {gu:,}원 = {ga:,}원",
             f"• 산식 합계: ({cur_inc['youth_inc']:.2f} × {yu:,}원) + ({cur_inc['non_youth_inc']:.2f} × {gu:,}원) = {first_won:,}원",
         ]
+    _y1_ded = ded if pkg["active_scheme"] == "new_2026" else 0
+    _y1_brk_rows = [("청년 등 세액공제액", f"{ya:,}원", "#0f172a"), ("청년 외 세액공제액", f"{ga:,}원", "#0f172a")]
+    if _y1_ded > 0:
+        _y1_brk_rows.append(("최소고용증가인원 차감", f"-{_y1_ded:,}원", "#dc2626"))
     _add_calc_card(
         f"(2) 1차년도 세액공제액 계산 ({tax_yr}년 귀속 · {R.format_corp_size_label(corp_size)}, {loc_label})",
         f"{tax_yr}년 귀속 1차년도 신규 고용증가 세액공제 (조특법 제29조의8 제1항)",
@@ -1351,6 +1625,7 @@ def _build_step3_calculation_pdf_bytes(
         "1차년도 세액공제액",
         first_won,
         False,
+        brk=(_y1_brk_rows, "1차년도 세액공제 합계", first_won),
     )
 
     # 4) (3) 2차년도 사후관리 계산
@@ -1365,13 +1640,11 @@ def _build_step3_calculation_pdf_bytes(
         cohort_is_capital=_cohort_capital(s, tax_yr - 1, is_capital),
         cur_is_capital=is_capital,
     )
-    _add_calc_card(
+    _add_pm_cards(
         f"(3) 2차년도 사후관리 계산 ({tax_yr - 1}년 귀속 · {R.format_corp_size_label(coh1_sz_pdf)} → {tax_yr}년 1차 사후관리)",
-        pm1_title,
-        pm1_lines,
-        pm1_lbl,
-        pm1_val,
-        pm1_neg,
+        pkg["pm_y1"], 1,
+        H.get_unit_rates(coh1_sz_pdf, _cohort_capital(s, tax_yr - 1, is_capital), scheme="legacy", retention_year=1),
+        (pm1_title, pm1_lines, pm1_lbl, pm1_val, pm1_neg),
     )
 
     # 5) (4) 3차년도 사후관리 계산
@@ -1386,13 +1659,11 @@ def _build_step3_calculation_pdf_bytes(
         cohort_is_capital=_cohort_capital(s, tax_yr - 2, is_capital),
         cur_is_capital=is_capital,
     )
-    _add_calc_card(
+    _add_pm_cards(
         f"(4) 3차년도 사후관리 계산 ({tax_yr - 2}년 귀속 · {R.format_corp_size_label(coh2_sz_pdf)} → {tax_yr}년 2차 사후관리)",
-        pm2_title,
-        pm2_lines,
-        pm2_lbl,
-        pm2_val,
-        pm2_neg,
+        pkg["pm_y2"], 2,
+        H.get_unit_rates(coh2_sz_pdf, _cohort_capital(s, tax_yr - 2, is_capital), scheme="legacy", retention_year=1),
+        (pm2_title, pm2_lines, pm2_lbl, pm2_val, pm2_neg),
     )
 
     # 6) 법령 근거 요약
@@ -2138,10 +2409,7 @@ def _page_calculation():
     st.markdown(
         f"<div class='ec-calc-box {y1_box_cls}'>"
         f"<div class='ec-calc-formula'>{formula_y1_html}</div>"
-        f"<div class='ec-calc-amount {y1_amt_cls}'>"
-        f"<div class='a-lbl'>1차년도 세액공제액</div>"
-        f"<div class='a-val {'pos' if first_yr_credit_won > 0 else ''}'>{first_yr_credit_won:,}원</div>"
-        f"</div>"
+        f"{_brk_rows_first_year(inc_disp['youth_inc'], y_unit_won, y_amt_won, inc_disp['non_youth_inc'], g_unit_won, g_amt_won, (ded_won if pkg['active_scheme'] == 'new_2026' else 0), first_yr_credit_won)}"
         f"</div>",
         unsafe_allow_html=True,
     )
@@ -2247,20 +2515,28 @@ def _page_calculation():
         if (pm1_cr > 0 and pm1_cl > 0)
         else ""
     )
-
-    st.markdown(
-        f"{pm1_req_bar_html}"
-        f"<div class='ec-calc-box {pm1_box_cls}'>"
-        f"<div class='ec-calc-formula'>"
-        f"<div class='f-title'>{pm1_title}</div>"
-        f"{pm1_lines_html}"
-        f"</div>"
+    pm1_amt_html = (
         f"<div class='ec-calc-amount {pm1_amt_cls}'>"
         f"<div class='a-lbl'>{pm1_amt_lbl}</div>"
         f"<div class='a-val {pm1_cls}'>{pm1_val_str}</div>"
         f"{pm1_split_html}"
         f"</div>"
-        f"</div>",
+    )
+    _cards1 = _pm_cards(
+        pkg["pm_y1"], 1,
+        H.get_unit_rates(coh1_corp_size, _cohort_capital(s, tax_yr - 1, is_capital), scheme="legacy", retention_year=1),
+        (pm1_title, pm1_lines),
+    ) or [(pm1_box_cls, pm1_title, pm1_lines, pm1_amt_html)]
+    st.markdown(
+        f"{pm1_req_bar_html}"
+        + "".join(
+            f"<div class='ec-calc-box {_cc}'>"
+            f"<div class='ec-calc-formula'>"
+            f"<div class='f-title'>{_ct}</div>"
+            + "".join(f"<div class='f-line'>{_ln}</div>" for _ln in _cl)
+            + f"</div>{_ch}</div>"
+            for _cc, _ct, _cl, _ch in _cards1
+        ),
         unsafe_allow_html=True,
     )
     _a_b2_r, _b_b2_r = float(cur_t.get("A_b2_reg", cur_s["b2_reg"])), float(cur_t.get("B_b2_reg", cur_s["b2_reg"]))
@@ -2328,20 +2604,28 @@ def _page_calculation():
         if (pm2_cr > 0 and pm2_cl > 0)
         else ""
     )
-
-    st.markdown(
-        f"{pm2_req_bar_html}"
-        f"<div class='ec-calc-box {pm2_box_cls}'>"
-        f"<div class='ec-calc-formula'>"
-        f"<div class='f-title'>{pm2_title}</div>"
-        f"{pm2_lines_html}"
-        f"</div>"
+    pm2_amt_html = (
         f"<div class='ec-calc-amount {pm2_amt_cls}'>"
         f"<div class='a-lbl'>{pm2_amt_lbl}</div>"
         f"<div class='a-val {pm2_cls}'>{pm2_val_str}</div>"
         f"{pm2_split_html}"
         f"</div>"
-        f"</div>",
+    )
+    _cards2 = _pm_cards(
+        pkg["pm_y2"], 2,
+        H.get_unit_rates(coh2_corp_size, _cohort_capital(s, tax_yr - 2, is_capital), scheme="legacy", retention_year=1),
+        (pm2_title, pm2_lines),
+    ) or [(pm2_box_cls, pm2_title, pm2_lines, pm2_amt_html)]
+    st.markdown(
+        f"{pm2_req_bar_html}"
+        + "".join(
+            f"<div class='ec-calc-box {_cc}'>"
+            f"<div class='ec-calc-formula'>"
+            f"<div class='f-title'>{_ct}</div>"
+            + "".join(f"<div class='f-line'>{_ln}</div>" for _ln in _cl)
+            + f"</div>{_ch}</div>"
+            for _cc, _ct, _cl, _ch in _cards2
+        ),
         unsafe_allow_html=True,
     )
     _a_b3_r, _b_b3_r = float(cur_t.get("A_b3_reg", cur_s["b3_reg"])), float(cur_t.get("B_b3_reg", cur_s["b3_reg"]))

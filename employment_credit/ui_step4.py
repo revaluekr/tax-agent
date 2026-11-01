@@ -684,6 +684,26 @@ def _build_report_markdown(
         c2_lbl = "수도권" if coh2_cap else "수도권 외(비수도권)"
         pm2_loc_note = f" *(※ {tax_yr-2}년 최초 공제 당시 {c2_lbl} 소재 기준 단가[청년등 1,550만원·일반 950만원] 적용 — 이후 {loc_label} 이전)*"
 
+    # (2)·(3)·(4) 청년 등 / 청년 외 구분 표 (화면의 초록·빨강 카드와 같은 내용)
+    from .ui_step3 import _pm_breakdown, _pm_breakdown_md_table
+    _bd1 = _pm_breakdown(pm1, 1, H.get_unit_rates(coh1_sz_s4, is_capital if coh1_cap is None else bool(coh1_cap), scheme="legacy", retention_year=1))
+    _bd2 = _pm_breakdown(pm2, 2, H.get_unit_rates(coh2_sz_s4, is_capital if coh2_cap is None else bool(coh2_cap), scheme="legacy", retention_year=1))
+    _tbl1 = _pm_breakdown_md_table(_bd1)
+    _tbl2 = _pm_breakdown_md_table(_bd2)
+    _y1_ya = int(round(cur_inc["youth_inc"] * yu))
+    _y1_ga = int(round(cur_inc["non_youth_inc"] * gu))
+    _y1_ded = int(pkg.get("cur_new_ded_won") or 0) if pkg["active_scheme"] == "new_2026" else 0
+    _tbl0 = [
+        "",
+        "| 구분 | 청년 등 | 청년 외 | 계 | 산식 |",
+        "| :--- | ---: | ---: | ---: | :--- |",
+        f"| 세액공제액 (1차년도) | {_y1_ya:,}원 | {_y1_ga:,}원 | **{pkg['cur_base_credit_won']:,}원** | "
+        f"{cur_inc['youth_inc']:.2f}명 × {yu // 10_000:,}만 / {cur_inc['non_youth_inc']:.2f}명 × {gu // 10_000:,}만"
+        + (f" (최소고용증가인원 차감 -{_y1_ded:,}원)" if _y1_ded > 0 else "")
+        + " |",
+        "",
+    ]
+
     if audit_body is None:
         audit_body, _, _ensured_trace = _ensure_auto_pro_audit_comment(
             s, log_tokens_fn=log_tokens_fn, room_key=room_key, return_trace=True
@@ -809,17 +829,15 @@ def _build_report_markdown(
         f"- **계산 산식**: (청년등 증가 {cur_inc['youth_inc']:.2f}명 × {yu:,}원) + (청년등 외 증가 {cur_inc['non_youth_inc']:.2f}명 × {gu:,}원)"
         + (f" − 최소고용증가인원 차감([조문:조세특례제한법 시행령 제26조의8 제3항]) {pkg['cur_new_ded_won']:,}원" if pkg.get("cur_new_ded_won", 0) > 0 else "")
         + f" = **{pkg['cur_base_credit_won']:,}원**",
-        "",
+        *_tbl0,
         f"### (3) 2차년도 사후관리 계산 ({tax_yr-1}년 귀속 · {R.format_corp_size_label(coh1_sz_s4)} → {tax_yr}년 1차 사후관리 · {R.calc_method_badge_label(tax_yr-1)}) [각주 3, 4]",
         f"- **감소 여부 판정**: 1차년도({tax_yr-1}년) 대비 전체 상시근로자 감소 여부 **{pm1_reg_dec}** ({pm1.get('init_reg', 0):.2f}명 → {cur_s['b2_reg']:.2f}명) / 청년등 상시근로자 감소 여부 **{pm1_yth_dec}** ({pm1.get('init_yth', 0):.2f}명 → {cur_s['b2_yth']:.2f}명)",
         f"- **산출 내역 ({pm1.get('case_code')})**: {_strip_all_emojis(pm1.get('formula_note', ''))}{pm1_loc_note}",
-        f"- **산출 세액**: 2차년도 연속공제액 **+{pm1.get('continued_credit_won', 0):,}원** / 1차 사후관리 추가납부세액 **-{pm1.get('clawback_net_payable_won', 0):,}원**",
-        "",
+        *(_tbl1 or [f"- **산출 세액**: 2차년도 연속공제액 **+{pm1.get('continued_credit_won', 0):,}원** / 1차 사후관리 추가납부세액 **-{pm1.get('clawback_net_payable_won', 0):,}원**", ""]),
         f"### (4) 3차년도 사후관리 계산 ({tax_yr-2}년 귀속 · {R.format_corp_size_label(coh2_sz_s4)} → {tax_yr}년 2차 사후관리 · {R.calc_method_badge_label(tax_yr-2)}{_ext_trust_note}) [각주 3, 4]",
         f"- **감소 여부 판정**: 1차년도({tax_yr-2}년) 대비 전체 상시근로자 감소 여부 **{pm2_reg_dec}** ({pm2.get('init_reg', 0):.2f}명 → {cur_s['b3_reg']:.2f}명) / 청년등 상시근로자 감소 여부 **{pm2_yth_dec}** ({pm2.get('init_yth', 0):.2f}명 → {cur_s['b3_yth']:.2f}명)",
         f"- **산출 내역 ({pm2.get('case_code')})**: {_strip_all_emojis(pm2.get('formula_note', ''))}{pm2_loc_note}",
-        f"- **산출 세액**: 3차년도 연속공제액 **+{pm2.get('continued_credit_won', 0):,}원** / 2차 사후관리 추가납부세액 **-{pm2.get('clawback_net_payable_won', 0):,}원**",
-        "",
+        *(_tbl2 or [f"- **산출 세액**: 3차년도 연속공제액 **+{pm2.get('continued_credit_won', 0):,}원** / 2차 사후관리 추가납부세액 **-{pm2.get('clawback_net_payable_won', 0):,}원**", ""]),
         "## Ⅲ. 계산근거 관련 법령 주석",
         "### (1) 기본공제·청년등 증가한도(Cap)·상시근로자 범위 및 소수점 절사 규정",
         "- **[각주 1] [조문:조세특례제한법 제29조의8 제1항]·[조문:조세특례제한법 제29조의8 제2항]·[조문:조세특례제한법 제29조의8 제4항]·[조문:조세특례제한법 제29조의8 제5항] (통합고용세액공제 기본공제 A+B+C 구조 · 청년등 증가인원 한도 Cap · 경력단절 정의 · 전환 및 복귀 추가공제)**: 소비성서비스업 등 제외 업종([조문:조세특례제한법 시행령 제26조의8 제1항]) 외의 내국인이 직전 3개 과세연도(2024.12.31. 이전 개시 과세연도 제외) 중 1개 이상 대비 상시근로자 수가 증가한 경우 1년차(A, 중소 수도권 청년등 700만·일반 400만 / 비수도권 청년등 1,000만·일반 700만), 2년차(B), 3년차(C) 유지분 금액을 합한 금액(중견 5명·대기업 10명 최소고용증가인원 차감 반영, [조문:조세특례제한법 시행령 제26조의8 제3항])을 공제한다. 이때 제1항 제1호(청년등상시근로자: 가목 중소기업·나목 중견기업·다목 그 외 기업) 및 제2호(청년등외상시근로자: 가목 중소기업·나목 중견기업, 다목 없음[일반기업 0원]) 각 목의 계산식 중 A·B·C 증가·유지 인원 수는 **전체 상시근로자의 증가 인원 수를 한도(Cap)로 하며(제1항 제1호·제2호 각 호 외의 부분 괄호)**, 제2항은 제1항 제1호의 청년등 상시근로자에 포함되는 경력단절 근로자의 요건을 규정하고, 별도 추가공제로서 제4항은 정규직 전환 추가공제(2024.12.31. 이전 전환분까지만 적용), 제5항은 육아휴직 복귀자 추가공제를 규정한다.",
@@ -1070,6 +1088,20 @@ def _build_report_pdf_bytes(s: dict, log_tokens_fn=None, room_key: str = "", md_
                     ("LEFTPADDING", (0, 0), (-1, -1), h_pad),
                     ("RIGHTPADDING", (0, 0), (-1, -1), h_pad),
                 ]
+                _hdr_plain = [re.sub(r"\*\*|`|<[^>]+>", "", str(x or "")).strip() for x in padded_rows[0]]
+                _is_brk_tbl = len(_hdr_plain) >= 3 and _hdr_plain[0] == "구분" and _hdr_plain[1] == "청년 등" and _hdr_plain[2] == "청년 외"
+                if _is_brk_tbl:
+                    for r_idx in range(1, len(padded_rows)):
+                        _fc = re.sub(r"\*\*|`|<[^>]+>", "", str(padded_rows[r_idx][0] or "")).strip()
+                        if _fc.startswith("세액공제"):
+                            _band = "#16a34a"
+                        elif _fc.startswith(("추가납부", "당기 추가납부")):
+                            _band = "#dc2626"
+                        elif "차감" in _fc or "조정" in _fc:
+                            _band = "#fca5a5"
+                        else:
+                            continue
+                        t_style.append(("LINEBEFORE", (0, r_idx), (0, r_idx), 3.2, colors.HexColor(_band)))
                 for r_idx in range(1, len(pdf_table_data)):
                     if r_idx in summary_row_indices:
                         t_style.append(("BACKGROUND", (0, r_idx), (-1, r_idx), colors.HexColor("#eff6ff")))
