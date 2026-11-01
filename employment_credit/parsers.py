@@ -200,8 +200,8 @@ def classify_file(name: str, text: str = "") -> str | None:
         for yr in range(2028, 2020, -1):
             short_yr = f"{yr % 100:02d}"
             if str(yr) in n or f"{short_yr}년" in n or f"_{short_yr}" in n:
-                return f"credit_calc_{yr}" if yr >= 2025 else "prev_filing"
-        for yr in range(2028, 2024, -1):
+                return f"credit_calc_{yr}"
+        for yr in range(2028, 2020, -1):
             if f"{yr}년" in head[:2500] or f"{yr}귀속" in head[:2500]:
                 return f"credit_calc_{yr}"
         return "prev_filing"

@@ -354,6 +354,19 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
                         _save_ec_to_disk(s)
                         st.rerun()
 
+    # 예전에 연도 없이 'prev_filing'으로 분류된 신고서 → 파일명·내용에서 연도를 다시 찾아 연도별 칸으로 옮김
+    #   (같은 '2024년 공제감면세액계산서' 행이 위·아래 두 번 나오던 문제 해결, 2023년 신고서는 2023년 행으로)
+    _moved = False
+    for name, f in s["files"].items():
+        if f.get("key") == "prev_filing":
+            _nk = P.classify_file(name, f.get("text") or "")
+            if _nk and str(_nk).startswith("credit_calc_"):
+                f["key"] = _nk
+                _moved = True
+    if _moved:
+        s["built_sig"] = None
+        _save_ec_to_disk(s)
+
     have: dict[str, list[str]] = {}
     for name, f in s["files"].items():
         if f.get("key"):

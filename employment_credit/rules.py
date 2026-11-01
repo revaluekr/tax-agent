@@ -315,10 +315,10 @@ def get_doc_types(tax_year: int = DEFAULT_TAX_YEAR) -> list[tuple[str, str, bool
             [str(t2), f"{t2 % 100}년"],
         ),
         (
-            "prev_filing",
+            f"credit_calc_{t2}",   # 연도별 키 (예전 'prev_filing'은 연도 미확인 자료용으로만 남김)
             f"{t2}년 공제감면세액계산서 · 상시근로자 명세서 · 세액공제조정명세서(3)",
             False,
-            ["상시근로자", "통합고용", "고용증대", "공제감면", "공제세액계산서", "조정명세서"],
+            [f"{t2}년 공제", f"{t2 % 100}년 공제", "상시근로자", "통합고용", "고용증대", "공제감면", "공제세액계산서", "조정명세서"],
         ),
     ]
 
@@ -336,12 +336,16 @@ def get_doc_help(tax_year: int = DEFAULT_TAX_YEAR) -> dict[str, str]:
         f"credit_calc_{t1}": f"⚠️ 원천징수부만으로는 기공제세액(추가납부 한도)과 미공제 이월세액을 알 수 없습니다. {t1}년분 연속공제·추가납부(추징) 계산 시 필수입니다.",
         "prev_credit_calc": f"{t1}년 공제감면세액계산서 (기신고 공제세액·2차공제·1년차 추가납부액·미공제 이월액 확인용)",
         f"wht_{t2}": f"{t2}년 귀속분 2차 사후관리(3차년도 연속공제·추징)의 『세법원칙 기준』 인별 재계산용 (기신고서가 있으면 생략 가능).",
-        "prev_filing": f"⚠️ {t2}년 귀속분 2차 사후관리(3차년도 연속공제·추징)의 최초 공제세액 한도·1년차 기추징액 차감·미공제 이월세액 소멸 계산에 필수입니다.",
+        f"credit_calc_{t2}": f"⚠️ {t2}년 귀속분 2차 사후관리(3차년도 연속공제·추징)의 최초 공제세액 한도·1년차 기추징액 차감·미공제 이월세액 소멸 계산에 필수입니다.",
+        "prev_filing": "공제감면세액계산서·상시근로자 명세서 (파일에서 연도를 찾지 못함 — 내용의 연도별 숫자를 자동 판독해 반영합니다. 드롭다운에서 연도를 골라 주시면 정확합니다).",
     }
     for y in range(2021, 2029):
         wk = f"wht_{y}"
         if wk not in help_map:
             help_map[wk] = f"{y}년 귀속 소득자별 근로소득원천징수부 (과거연도 비교·사후관리 검증용)"
+        ck = f"credit_calc_{y}"
+        if ck not in help_map:
+            help_map[ck] = f"{y}년 귀속 기신고 공제감면세액계산서·상시근로자 명세서 (과거 연도 비교·사후관리 기초값으로 자동 반영)"
     return help_map
 
 
@@ -354,7 +358,8 @@ def get_all_selectable_doc_labels(tax_year: int = DEFAULT_TAX_YEAR) -> dict[str,
             base[wk] = f"{y}년 소득자별 근로소득원천징수부 (추가 비교·사후관리용)"
         ck = f"credit_calc_{y}"
         if ck not in base:
-            base[ck] = f"{y}년 공제감면세액계산서 · 상시근로자 명세서 · 세액공제조정명세서(3)"
+            base[ck] = f"{y}년 공제감면세액계산서 · 상시근로자 명세서 · 세액공제조정명세서(3) (추가 비교·사후관리용)"
+    base.setdefault("prev_filing", "공제감면세액계산서 · 상시근로자 명세서 (연도 미확인)")
     return base
 
 
