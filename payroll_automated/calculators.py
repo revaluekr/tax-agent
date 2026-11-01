@@ -26,7 +26,7 @@ from .tax_tables import (
 )
 
 
-_PAYROLL_LAW_CACHE_PATH = os.path.join(".workspace_storage", "payroll_law_daily_cache.json")
+_PAYROLL_LAW_CACHE_PATH = os.path.join(".workspace_storage", "payroll_law_daily_cache_v2.json")
 _PAYROLL_LAW_MEM_CACHE: Dict[str, Any] = {}
 _LAW_FAIL_COOLDOWN_SEC: float = 600.0
 
@@ -599,8 +599,9 @@ def check_payroll_law_revisions(force_refresh: bool = False) -> List[Dict[str, s
                     item["live_prom_date"] = meta["prom_date"]
                     item["checked_at"] = today_str
                     base_no = str(item.get("baseline_prom_no") or "").strip()
+                    eff_yr = int(meta["effective_date"][:4]) if meta.get("effective_date", "")[:4].isdigit() else 0
                     if base_no and meta["prom_no"].isdigit() and base_no.isdigit():
-                        if int(meta["prom_no"]) > int(base_no):
+                        if int(meta["prom_no"]) > int(base_no) and eff_yr >= 2027:
                             item["status"] = "new_revision"
                             item["summary"] = (
                                 f"[신규 개정 감지: 제{meta['prom_no']}호 (공포 {meta['prom_date']} · 시행 {meta['effective_date']})] "

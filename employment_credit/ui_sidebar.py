@@ -1480,11 +1480,8 @@ def _render_backup_card(s: dict) -> None:
         with tab_save:
             pw1 = st.text_input("백업 비밀번호", type="password", key="ec_bk_pw1",
                                 help=f"{B.MIN_PASSWORD_LEN}자 이상. 잊으면 이 백업은 복구할 수 없습니다.")
-            pw2 = st.text_input("비밀번호 확인", type="password", key="ec_bk_pw2")
             if st.button("백업 파일 만들기", width="stretch", key="ec_bk_make"):
-                if pw1 != pw2:
-                    st.error("두 비밀번호가 다릅니다.")
-                elif not (s.get("people") or s.get("biz", {}).get("상호")):
+                if not (s.get("people") or s.get("biz", {}).get("상호")):
                     st.warning("백업할 작업 내용이 없습니다.")
                 else:
                     try:

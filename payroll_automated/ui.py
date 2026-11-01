@@ -225,7 +225,73 @@ PAYROLL_CSS = """
     box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.30);
 }
 
-/* 개정사항 카드 상태 행 */
+/* 통합고용세액공제와 동일한 사이드바 법령·예규 모니터링 3D 입체 원형 표시등 및 상태줄 */
+.ec-law-status-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 8px;
+    margin-bottom: 5px;
+    background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    box-shadow: inset 0 1px 0 #ffffff, 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+.ec-law-status-left {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.84rem;
+    font-weight: 700;
+    color: #0f172a;
+    letter-spacing: -0.2px;
+}
+.ec-law-led-3d {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+.ec-law-led-3d.green {
+    background: radial-gradient(circle at 32% 32%, #86efac 0%, #22c55e 52%, #15803d 100%);
+    border: 1px solid #15803d;
+    box-shadow: inset 0 1px 2px rgba(255,255,255,0.75), 0 0 7px rgba(34, 197, 94, 0.65);
+}
+.ec-law-led-3d.orange {
+    background: radial-gradient(circle at 32% 32%, #fdba74 0%, #f97316 52%, #c2410c 100%);
+    border: 1px solid #c2410c;
+    box-shadow: inset 0 1px 2px rgba(255,255,255,0.75), 0 0 8px rgba(249, 115, 22, 0.72);
+}
+.ec-law-led-3d.yellow {
+    background: radial-gradient(circle at 32% 32%, #fef08a 0%, #facc15 52%, #b45309 100%);
+    border: 1px solid #b45309;
+    box-shadow: inset 0 1px 2px rgba(255,255,255,0.8), 0 0 7px rgba(250, 204, 21, 0.7);
+}
+.ec-law-led-3d.gray {
+    background: radial-gradient(circle at 32% 32%, #f1f5f9 0%, #94a3b8 60%, #475569 100%);
+    border: 1px solid #64748b;
+    box-shadow: inset 0 1px 1px rgba(255,255,255,0.6);
+}
+.ec-law-badge-orange {
+    background: #fff7ed;
+    color: #c2410c;
+    border: 1px solid #fdba74;
+    font-size: 0.73rem;
+    font-weight: 800;
+    padding: 1px 7px;
+    border-radius: 999px;
+}
+.ec-law-badge-green {
+    background: #dcfce7;
+    color: #15803d;
+    border: 1px solid #86efac;
+    font-size: 0.72rem;
+    font-weight: 800;
+    padding: 1px 7px;
+    border-radius: 999px;
+}
+/* 기존 호환 클래스 유지 */
 .pay-law-row {
     display: flex;
     align-items: center;
@@ -1217,7 +1283,7 @@ def render_payroll_automated_sidebar() -> None:
                 pstate["sub_mode"] = "FREE"
                 st.rerun()
 
-    # (2) 개정사항 모니터링 카드 (Row 1: 근로기준법·소득세법 초록불 / Row 2: 시행령 별표2·4대보험 요율 노란불 분리)
+    # (2) 개정사항·신규 세법 카드 (통합고용세액공제와 동일한 3D 상태줄·아이콘 디자인 적용)
     alerts = check_payroll_law_revisions(force_refresh=False)
     row1_laws = [a for a in alerts if "별표" not in a.get("law", "") and "보험" not in a.get("law", "")]
     row2_laws = [a for a in alerts if "별표" in a.get("law", "") or "보험" in a.get("law", "")]
@@ -1225,31 +1291,41 @@ def render_payroll_automated_sidebar() -> None:
     row2_new = any(a.get("status") == "new_revision" for a in row2_laws)
     row2_upd = any(a.get("status") in ("updated", "new_revision") for a in row2_laws) or True
 
-    led_row1 = "pay-dot-red" if row1_new else "pay-dot-green"
-    led_row2 = "pay-dot-red" if row2_new else ("pay-dot-yellow" if row2_upd else "pay-dot-green")
+    led_row1 = "orange" if row1_new else "green"
+    led_row2 = "orange" if row2_new else ("yellow" if row2_upd else "green")
+    badge_row1 = (
+        "<span class='ec-law-badge-orange'>신규 개정 감지</span>"
+        if row1_new
+        else "<span class='ec-law-badge-green'>정상</span>"
+    )
     badge_row2 = (
-        "<span class='pay-law-badge-amber'>신규 개정 감지</span>"
+        "<span class='ec-law-badge-orange'>신규 개정 감지</span>"
         if row2_new
-        else "<span class='pay-law-badge-amber'>2026.03 별표2·요율 반영</span>"
+        else "<span class='ec-law-badge-orange'>2026.03 별표2·요율 반영</span>"
     )
 
     with st.container(border=True):
         st.markdown(
-            "<div class='sb-card-title'><span>개정사항 모니터링</span></div>"
-            f"<div class='pay-law-row'>"
-            f"<span><span class='pay-dot {led_row1}'></span>근로기준법 · 소득세법</span>"
-            f"<span class='pay-law-badge-green'>정상</span>"
+            "<div class='sb-card-title'><span>⚖️ 개정사항·신규 세법</span></div>"
+            f"<div class='ec-law-status-row'>"
+            f"<span class='ec-law-status-left'><span class='ec-law-led-3d {led_row1}'></span>근로기준법 · 소득세법</span>"
+            f"{badge_row1}"
             f"</div>"
-            f"<div class='pay-law-row' style='margin-bottom:8px;'>"
-            f"<span><span class='pay-dot {led_row2}'></span>시행령 별표2 · 4대보험 요율</span>"
+            f"<div class='ec-law-status-row' style='margin-bottom:8px;'>"
+            f"<span class='ec-law-status-left'><span class='ec-law-led-3d {led_row2}'></span>시행령 별표2 · 4대보험 요율</span>"
             f"{badge_row2}"
             f"</div>",
             unsafe_allow_html=True,
         )
-        if st.button("상세 보기", width="stretch", key="btn_pay_law_detail"):
+        if st.button(
+            "상세 보기",
+            width="stretch",
+            key="btn_pay_law_detail",
+            help="근로기준법·소득세법·시행령 별표2(간이세액표) 및 2026년 4대보험 고시 요율의 개정 내역과 원문을 확인합니다.",
+        ):
             _dlg_payroll_law_revisions()
 
-    # (3) 작업 초기화 버튼 카드
+    # (3) 작업 자료 관리 카드 (통합고용세액공제와 동일한 아이콘 및 버튼 디자인 적용)
     emp_cnt = len(pstate.get("employees", []))
     free_cnt = len(pstate.get("freelancers", []))
     has_data = (emp_cnt + free_cnt) > 0 or bool(pstate.get("corp_name"))
@@ -1261,22 +1337,23 @@ def render_payroll_automated_sidebar() -> None:
             else "<span class='sb-badge-amber'>초기 상태</span>"
         )
         st.markdown(
-            f"<div class='sb-card-title'><span>작업 자료 관리</span>{status_pill}</div>",
+            f"<div class='sb-card-title'><span>🧹 작업 자료 관리</span>{status_pill}</div>",
             unsafe_allow_html=True,
         )
         if not st.session_state.get("pay_confirm_reset"):
             if st.button(
-                "작업 초기화 (내용 비우기)",
+                "🔄 자료 초기화 (내용 비우기)",
                 width="stretch",
                 disabled=not has_data,
                 key="btn_pay_reset_ask",
+                help="현재 입력·업로드된 급여대장, 사업소득대장, 사업자정보를 모두 비우고 초기 상태로 되돌립니다.",
             ):
                 st.session_state["pay_confirm_reset"] = True
                 st.rerun()
         else:
-            st.caption("현재 화면의 급여대장·사업소득대장 입력 내용을 비울까요? (백업 DB는 유지됩니다)")
+            st.caption("⚠️ 현재 화면의 급여대장·사업소득대장 입력 내용을 모두 비우고 초기화할까요? (백업 DB는 유지됩니다)")
             c_y, c_n = st.columns(2)
-            if c_y.button("초기화 실행", type="primary", width="stretch", key="btn_pay_reset_yes"):
+            if c_y.button("✅ 초기화 실행", type="primary", width="stretch", key="btn_pay_reset_yes"):
                 _reset_payroll_current_work()
                 st.session_state["pay_confirm_reset"] = False
                 st.rerun()
@@ -1284,9 +1361,12 @@ def render_payroll_automated_sidebar() -> None:
                 st.session_state["pay_confirm_reset"] = False
                 st.rerun()
 
-    # (4) 사업자정보 카드 (거래처명 + 사업장 구분[본점/지점/직접입력/선택안함] + 귀속연월 + 지급일자 + [당월 검토보고] + [통합고용세액공제 계산 연동])
+    # (4) 사업자정보 카드 (통합고용세액공제와 동일한 🏢 아이콘 및 우측 끝 '직접입력' 배지 적용)
     with st.container(border=True):
-        st.markdown("<div class='sb-card-title'><span>사업자정보</span></div>", unsafe_allow_html=True)
+        st.markdown(
+            "<div class='sb-card-title'><span>🏢 사업자정보</span><span class='sb-badge-pro'>직접입력</span></div>",
+            unsafe_allow_html=True,
+        )
         prev_wp_label = _current_workplace_label(pstate)
 
         corp_val = st.text_input(
@@ -1442,25 +1522,24 @@ def render_payroll_automated_sidebar() -> None:
             # 버튼 위 말풍선 대신 버튼 아래 안내 (위쪽 [당월 검토보고] 버튼을 가리지 않도록)
             st.caption("현재 사업장 급여내역을 통합고용세액공제 1단계 원천징수부 자료로 즉시 연동합니다.")
 
-    # (5) 거래처별 월별 누적 작업 백업 (.paybak) 카드
+    # (5) 작업 백업 (내 PC) 카드 — 통합고용세액공제와 동일한 디자인·문구 및 단일 비밀번호 입력 적용
     with st.container(border=True):
+        st.markdown("<div class='sb-card-title'><span>💾 작업 백업 (내 PC)</span></div>", unsafe_allow_html=True)
+        st.caption("앱을 재시작하면 서버의 작업 내용이 사라질 수 있습니다. 비밀번호를 건 파일로 PC에 보관했다가 다시 올려 이어서 작업하세요.")
         saved_months = sorted((pstate.get("client_db") or {}).get("monthly_payroll", {}).keys())
-        m_badge = (
-            f"<span class='sb-badge-green'>누적 {len(saved_months)}개월</span>"
-            if saved_months
-            else "<span class='sb-badge-amber'>미저장</span>"
-        )
-        st.markdown(f"<div class='sb-card-title'><span>작업 백업 (월별 누적 DB)</span>{m_badge}</div>", unsafe_allow_html=True)
         if saved_months:
             cov_txt = build_year_month_coverage_notice(pstate.get("client_db", {}))
-            st.caption(f"누적 귀속월: {', '.join(saved_months)} ({cov_txt})")
-        else:
-            st.caption("본점·지점별 백업 파일(.paybak)을 생성해 두면 통합고용세액공제 1단계에 드래그앤드롭하여 복수 사업장으로 합산할 수 있습니다.")
+            st.caption(f"현재 누적 귀속월: {', '.join(saved_months)} ({cov_txt})")
 
-        tab_save, tab_load = st.tabs(["내려받기", "불러오기"])
+        tab_save, tab_load = st.tabs(["⬇️ 내려받기", "⬆️ 불러오기"])
         with tab_save:
-            bk_pw = st.text_input("백업 암호 (선택)", type="password", key="pay_bk_pw_save", placeholder="미입력 시 기본 보안키 적용")
-            if st.button("당월 내역 누적 및 백업 생성", width="stretch", key="btn_pay_make_bak"):
+            bk_pw = st.text_input(
+                "백업 비밀번호",
+                type="password",
+                key="pay_bk_pw_save",
+                help="비밀번호를 입력해 백업 파일(.paybak)을 암호화합니다. (미입력 시 기본 보안키 적용)",
+            )
+            if st.button("백업 파일 만들기", width="stretch", key="btn_pay_make_bak"):
                 pstate["client_db"] = upsert_monthly_data_into_db(
                     client_db=pstate.get("client_db", {}),
                     corp_name=pstate.get("corp_name", ""),
@@ -1479,17 +1558,19 @@ def render_payroll_automated_sidebar() -> None:
             ready_bak = st.session_state.get("pay_bak_ready")
             if ready_bak:
                 st.download_button(
-                    "백업 파일(.paybak) 다운로드",
+                    "📥 백업 파일 내려받기",
                     data=ready_bak[0],
                     file_name=ready_bak[1],
                     mime="application/octet-stream",
                     width="stretch",
                     key="btn_pay_dl_bak",
+                    on_click=lambda: st.session_state.pop("pay_bak_ready", None),
                 )
+                st.caption(f"`{ready_bak[1]}`  \n고객 자료와 같은 보안 폴더에 보관하세요. 비밀번호는 파일과 따로 관리하세요.")
         with tab_load:
-            up_bak = st.file_uploader("누적 백업 파일 (.paybak)", type=["paybak", "json"], key="pay_bk_file_up")
-            in_pw = st.text_input("백업 암호", type="password", key="pay_bk_pw_load")
-            if up_bak is not None and st.button("백업 DB 불러오기", width="stretch", key="btn_pay_load_bak"):
+            up_bak = st.file_uploader("백업 파일 (.paybak)", type=["paybak", "json"], key="pay_bk_file_up")
+            in_pw = st.text_input("백업 비밀번호", type="password", key="pay_bk_pw_load")
+            if up_bak is not None and st.button("파일 열기", width="stretch", key="btn_pay_load_bak"):
                 try:
                     loaded_db = decrypt_paybak_to_client_db(up_bak.getvalue(), password=in_pw)
                     pstate["client_db"] = loaded_db
@@ -1509,7 +1590,7 @@ def render_payroll_automated_sidebar() -> None:
                         pstate["employees"] = list(latest_pack.get("employees", []))
                         pstate["freelancers"] = list(latest_pack.get("freelancers", []))
                         pstate["grid_version"] += 1
-                    st.success(f"누적 백업 로드 완료 (총 {len(m_map)}개월분)")
+                    st.success(f"백업 파일 불러오기 완료 (총 {len(m_map)}개월분)")
                     st.rerun()
                 except Exception as e:
                     st.error(str(e))
