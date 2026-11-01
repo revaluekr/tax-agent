@@ -1238,7 +1238,7 @@ def export_freelancer_ledger_pdf(
         ("ALIGN", (0, 0), (3, -1), "CENTER"),
         ("ALIGN", (4, 2), (8, -1), "RIGHT"),
         ("ALIGN", (4, 0), (9, 1), "CENTER"),
-        ("BACKGROUND", (0, 0), (-1, 1), colors.HexColor("#EDE9FE")),
+        ("BACKGROUND", (0, 0), (-1, 1), colors.HexColor("#E2E8F0")),  # 급여대장 PDF와 같은 회색 머리글
         ("FONTNAME", (0, 0), (-1, 1), font_bold),
         ("BOX", (0, 0), (-1, -1), 0.9, colors.HexColor("#334155")),
         ("INNERGRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#CBD5E1")),
@@ -1251,7 +1251,7 @@ def export_freelancer_ledger_pdf(
             cmds.append(("SPAN", (c_span, r_start), (c_span, r_start + 1)))
 
     cmds.append(("SPAN", (0, total_r - 2), (3, total_r - 1)))
-    cmds.append(("BACKGROUND", (0, total_r - 2), (-1, total_r - 1), colors.HexColor("#F8FAFC")))
+    cmds.append(("BACKGROUND", (0, total_r - 2), (-1, total_r - 1), colors.HexColor("#F1F5F9")))
     cmds.append(("FONTNAME", (0, total_r - 2), (-1, total_r - 1), font_bold))
 
     tbl.setStyle(TableStyle(cmds))
@@ -1286,91 +1286,143 @@ def render_single_freelancer_statement_pdf(
     m_ind = re.search(r"\b(\d{6})\b", raw_ind)
     clean_ind = m_ind.group(1) if m_ind else "940909"
 
+    birth = rrn_to_birth_dot(str(fr.get("주민등록번호") or "")) or "-"
+    ind_nm = _freelancer_industry_name(clean_ind)
+    name = str(fr.get("성명", "") or "")
+    G = colors.HexColor("#D9D9D9")
+
     buf = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buf,
-        pagesize=A4,
-        leftMargin=22 * mm,
-        rightMargin=22 * mm,
-        topMargin=24 * mm,
-        bottomMargin=24 * mm,
-    )
-
+    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=22 * mm, rightMargin=22 * mm, topMargin=22 * mm, bottomMargin=22 * mm)
+    W = A4[0] - 44 * mm
     title_style = ParagraphStyle("BizSlipTitle", fontName=font_bold, fontSize=20, leading=26, alignment=1)
-    sub_style = ParagraphStyle("BizSlipSub", fontName=font_reg, fontSize=10, leading=14, alignment=1, textColor=colors.HexColor("#475569"))
-    sec_style = ParagraphStyle("BizSlipSec", fontName=font_bold, fontSize=11, leading=16, alignment=0)
-    foot_style = ParagraphStyle("BizSlipFoot", fontName=font_bold, fontSize=11, leading=16, alignment=1)
+    sub_style = ParagraphStyle("BizSlipSub", fontName=font_reg, fontSize=10, leading=14, alignment=1, textColor=colors.HexColor("#333333"))
+    sec_style = ParagraphStyle("BizSlipSec", fontName=font_bold, fontSize=10.5, leading=15, alignment=0)
+    foot_style = ParagraphStyle("BizSlipFoot", fontName=font_reg, fontSize=10.5, leading=15, alignment=1)
 
-    elements: List[Any] = []
-    elements.append(Paragraph("사 업 소 득 명 세 서", title_style))
-    elements.append(Spacer(1, 2 * mm))
-    elements.append(Paragraph(f"원천징수의무자(회사명) : {corp_name or '미입력'}", sub_style))
-    elements.append(Spacer(1, 8 * mm))
+    # 사업소득명세서 PDF (A안 · 회색 서식): 인적사항 표 → [지급 내역 | 공제 내역] 2단 표 → 차인지급액 → 계산 방법
+    el: List[Any] = [Paragraph("사 업 소 득 명 세 서", title_style), Spacer(1, 2 * mm),
+                     Paragraph(f"{yyyy}년 {mm_num:02d}월분 · 3.3% 사업소득", sub_style), Spacer(1, 6 * mm)]
+    meta = Table([[f"원천징수의무자 : {corp_name or '미입력'}", f"지급일 : {pay_dt_str}"]], colWidths=[W / 2, W / 2])
+    meta.setStyle(TableStyle([("FONTNAME", (0, 0), (-1, -1), font_reg), ("FONTSIZE", (0, 0), (-1, -1), 9.5),
+                              ("ALIGN", (1, 0), (1, 0), "RIGHT"), ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))
+    el += [meta, Spacer(1, 2 * mm)]
+    info = Table([["성명", name, "생년월일", birth],
+                  ["귀속연월", ym_kor, "업종코드", f"{clean_ind} ({ind_nm})" if ind_nm else clean_ind]],
+                 colWidths=[W * 0.16, W * 0.34, W * 0.16, W * 0.34], rowHeights=[9 * mm, 9 * mm])
+    info.setStyle(TableStyle([("FONTNAME", (0, 0), (-1, -1), font_reg), ("FONTNAME", (0, 0), (0, -1), font_bold), ("FONTNAME", (2, 0), (2, -1), font_bold),
+                              ("FONTSIZE", (0, 0), (-1, -1), 9.5), ("BACKGROUND", (0, 0), (0, -1), G), ("BACKGROUND", (2, 0), (2, -1), G),
+                              ("ALIGN", (0, 0), (0, -1), "CENTER"), ("ALIGN", (2, 0), (2, -1), "CENTER"), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                              ("LEFTPADDING", (1, 0), (1, -1), 8), ("LEFTPADDING", (3, 0), (3, -1), 8),
+                              ("BOX", (0, 0), (-1, -1), 0.7, colors.black), ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.black)]))
+    el += [info, Spacer(1, 6 * mm)]
+    sec = Table([[Paragraph("지급 및 공제 내역", sec_style), "(단위: 원)"]], colWidths=[W * 0.7, W * 0.3])
+    sec.setStyle(TableStyle([("FONTNAME", (1, 0), (1, 0), font_reg), ("FONTSIZE", (1, 0), (1, 0), 8.5), ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+                             ("TEXTCOLOR", (1, 0), (1, 0), colors.HexColor("#555555")), ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))
+    el += [sec, Spacer(1, 1.5 * mm)]
+    body = Table([["지 급 내 역", "지 급 액", "공 제 내 역", "공 제 액"],
+                  ["사업소득 지급액", f"{gross:,}", "소득세 (3%)", f"{itax:,}"],
+                  ["", "", "지방소득세 (0.3%)", f"{ltax:,}"],
+                  ["지 급 액 계", f"{gross:,}", "공 제 액 계", f"{ded_total:,}"],
+                  ["차인지급액 (실지급액)", "", "", f"{net:,}"]],
+                 colWidths=[W * 0.28, W * 0.20, W * 0.30, W * 0.22], rowHeights=[9 * mm, 9 * mm, 9 * mm, 9.5 * mm, 11 * mm])
+    body.setStyle(TableStyle([("FONTNAME", (0, 0), (-1, -1), font_reg), ("FONTNAME", (0, 0), (-1, 0), font_bold), ("FONTNAME", (0, 3), (-1, 4), font_bold),
+                              ("FONTSIZE", (0, 0), (-1, 3), 9.5), ("FONTSIZE", (0, 4), (-1, 4), 11),
+                              ("BACKGROUND", (0, 0), (-1, 0), G), ("BACKGROUND", (0, 3), (-1, 3), G), ("BACKGROUND", (0, 4), (-1, 4), colors.HexColor("#BFBFBF")),
+                              ("SPAN", (0, 4), (2, 4)), ("ALIGN", (0, 0), (-1, 0), "CENTER"), ("ALIGN", (0, 3), (0, 4), "CENTER"), ("ALIGN", (2, 3), (2, 3), "CENTER"),
+                              ("ALIGN", (1, 1), (1, -1), "RIGHT"), ("ALIGN", (3, 1), (3, -1), "RIGHT"), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                              ("LEFTPADDING", (0, 1), (0, 2), 8), ("LEFTPADDING", (2, 1), (2, 2), 8), ("RIGHTPADDING", (1, 1), (1, -1), 8), ("RIGHTPADDING", (3, 1), (3, -1), 8),
+                              ("BOX", (0, 0), (-1, -1), 0.7, colors.black), ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.black)]))
+    el += [body, Spacer(1, 6 * mm), Paragraph("계산 방법", sec_style), Spacer(1, 1.5 * mm)]
+    calc = Table([["소득세", "지급액 × 3.0% (10원 미만 절사)"], ["지방소득세", "소득세 × 10% (10원 미만 절사)"]],
+                 colWidths=[W * 0.28, W * 0.72], rowHeights=[8.5 * mm, 8.5 * mm])
+    calc.setStyle(TableStyle([("FONTNAME", (0, 0), (-1, -1), font_reg), ("FONTNAME", (0, 0), (0, -1), font_bold), ("FONTSIZE", (0, 0), (-1, -1), 9.5),
+                              ("BACKGROUND", (0, 0), (0, -1), G), ("ALIGN", (0, 0), (0, -1), "CENTER"), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                              ("LEFTPADDING", (1, 0), (1, -1), 8), ("BOX", (0, 0), (-1, -1), 0.7, colors.black), ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.black)]))
+    el += [calc, Spacer(1, 12 * mm), Paragraph("귀하의 노고에 감사드립니다.", foot_style)]
+    doc.build(el)
+    return buf.getvalue()
 
-    info_data = [
-        ["귀속연월", ym_kor, "지급연월(일자)", pay_dt_str],
-        ["근로자명(성명)", str(fr.get("성명", "")), "소득구분", f"사업소득 (3.3% / {clean_ind})"],
-    ]
-    info_tbl = Table(
-        info_data,
-        colWidths=[32 * mm, 45 * mm, 32 * mm, 57 * mm],
-        rowHeights=[10 * mm, 10 * mm],
-    )
-    info_tbl.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, -1), font_reg),
-        ("FONTNAME", (0, 0), (0, -1), font_bold),
-        ("FONTNAME", (2, 0), (2, -1), font_bold),
-        ("FONTSIZE", (0, 0), (-1, -1), 9.5),
-        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#F3E8FF")),
-        ("BACKGROUND", (2, 0), (2, -1), colors.HexColor("#F3E8FF")),
-        ("BOX", (0, 0), (-1, -1), 0.9, colors.HexColor("#4C1D95")),
-        ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#C4B5FD")),
-    ]))
-    elements.append(info_tbl)
-    elements.append(Spacer(1, 8 * mm))
 
-    elements.append(Paragraph("지급 및 원천징수 공제 내역", sec_style))
-    elements.append(Spacer(1, 2 * mm))
+def _freelancer_industry_name(code: str) -> str:
+    """업종코드 6자리 → 짧은 이름 (예: 940909 → 기타자영업)."""
+    try:
+        from .parsers import FREELANCER_INDUSTRY_CODES
+        for item in FREELANCER_INDUSTRY_CODES:
+            if item.get("code") == code:
+                return re.split(r"\s*[·(]\s*", str(item.get("name") or ""))[0].strip()
+    except Exception:
+        pass
+    return ""
 
-    itax_note = "세전금액 × 3.0% (10원 미만 절사)"
-    amt_data = [
-        ["구 분", "산출 기준", "금 액 (원)"],
-        ["세전금액 (지급총액)", "약정 사업소득 지급총액", f"{gross:,} 원"],
-        ["공제가액 - 소득세", itax_note, f"{itax:,} 원"],
-        ["공제가액 - 지방소득세", "소득세 × 10% (10원 미만 절사)", f"{ltax:,} 원"],
-        ["공제가액 합계", "총 3.3% 원천징수 세액", f"{ded_total:,} 원"],
-        ["차인지급액 (실지급액)", "세전금액 - 공제가액 합계", f"{net:,} 원"],
-    ]
-    amt_tbl = Table(
-        amt_data,
-        colWidths=[52 * mm, 64 * mm, 50 * mm],
-        rowHeights=[10 * mm, 11 * mm, 10 * mm, 10 * mm, 11 * mm, 13 * mm],
-    )
-    amt_tbl.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, -1), font_reg),
-        ("FONTNAME", (0, 0), (-1, 0), font_bold),
-        ("FONTNAME", (0, 1), (0, -1), font_bold),
-        ("FONTNAME", (0, 4), (-1, 5), font_bold),
-        ("FONTSIZE", (0, 0), (-1, 4), 10),
-        ("FONTSIZE", (0, 5), (-1, 5), 11.5),
-        ("ALIGN", (0, 0), (1, -1), "CENTER"),
-        ("ALIGN", (2, 0), (2, 0), "CENTER"),
-        ("ALIGN", (2, 1), (2, -1), "RIGHT"),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F3E8FF")),
-        ("BACKGROUND", (0, 4), (-1, 4), colors.HexColor("#F8FAFC")),
-        ("BACKGROUND", (0, 5), (-1, 5), colors.HexColor("#EDE9FE")),
-        ("BOX", (0, 0), (-1, -1), 1.0, colors.HexColor("#4C1D95")),
-        ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#CBD5E1")),
-        ("RIGHTPADDING", (2, 1), (2, -1), 10),
-    ]))
-    elements.append(amt_tbl)
-    elements.append(Spacer(1, 14 * mm))
-    elements.append(Paragraph("위와 같이 사업소득 금액 및 원천징수 세액을 명세합니다.", foot_style))
 
-    doc.build(elements)
+def render_freelancer_receipt_pdf(
+    fr: Dict[str, Any],
+    corp_name: str = "",
+    year_month: str = "",
+    pay_date: str = "",
+) -> bytes:
+    """사업소득명세서 이미지(JPG)용 C안 · 영수증형 (세로로 좁은 한 장, 파란 포인트) — JPG로 바꿔 내려받습니다."""
+    from reportlab.pdfgen import canvas as _cv
+    font_reg, font_bold = get_korean_font_names()
+    yyyy, mm_num = _parse_ym_parts(fr.get("귀속년월") or year_month)
+    pay_dt_str = str(fr.get("지급년월일") or pay_date or f"{yyyy}-{mm_num:02d}-25")
+    gross = int(fr.get("지급총액", 0) or 0)
+    itax = int(fr.get("소득세", 0) or 0)
+    ltax = int(fr.get("지방소득세", 0) or 0)
+    ded = int(fr.get("공제액계", itax + ltax) or (itax + ltax))
+    net = int(fr.get("차인지급액", gross - ded) or (gross - ded))
+    m_ind = re.search(r"\b(\d{6})\b", str(fr.get("소득구분") or "940909"))
+    code = m_ind.group(1) if m_ind else "940909"
+    ind_nm = _freelancer_industry_name(code)
+    birth = rrn_to_birth_dot(str(fr.get("주민등록번호") or "")) or "-"
+
+    W, H = 112 * mm, 138 * mm
+    blue, ink, mute, faint, line = (colors.HexColor(x) for x in ("#1D4ED8", "#0F172A", "#64748B", "#94A3B8", "#BFD0EA"))
+    buf = io.BytesIO()
+    c = _cv.Canvas(buf, pagesize=(W, H))
+    c.setFillColor(colors.white); c.rect(0, 0, W, H, stroke=0, fill=1)
+    c.setFillColor(blue); c.rect(0, H - 2.2 * mm, W, 2.2 * mm, stroke=0, fill=1)
+    pad = 9 * mm
+    y = H - 12 * mm
+
+    def center(txt, font, size, color, yy, space=0):
+        c.setFont(font, size); c.setFillColor(color)
+        if space:
+            c.saveState()   # 자간은 이 제목에만 (아래 글자에 번지지 않게)
+            t = c.beginText(); t.setFont(font, size); t.setCharSpace(space)
+            tw = c.stringWidth(txt, font, size) + space * (len(txt) - 1)
+            t.setTextOrigin((W - tw) / 2, yy); t.setFillColor(color); t.textOut(txt); t.setCharSpace(0); c.drawText(t)
+            c.restoreState()
+        else:
+            c.drawCentredString(W / 2, yy, txt)
+
+    def dash(yy):
+        c.setStrokeColor(line); c.setLineWidth(0.6); c.setDash(2, 2); c.line(pad, yy, W - pad, yy); c.setDash()
+
+    def kv(k, v, yy, bold=False, vcol=None):
+        c.setFont(font_bold if bold else font_reg, 9.2); c.setFillColor(ink if bold else mute); c.drawString(pad, yy, k)
+        c.setFont(font_bold if bold else font_reg, 9.2); c.setFillColor(vcol or ink); c.drawRightString(W - pad, yy, v)
+
+    center("PAY STATEMENT", font_bold, 7.5, blue, y, space=1.6); y -= 7.2 * mm
+    center("사업소득명세서", font_bold, 15, ink, y); y -= 5.2 * mm
+    center(corp_name or "회사명 미입력", font_reg, 8.5, mute, y); y -= 5 * mm
+    dash(y); y -= 6.5 * mm
+    for k, v in (("성명", str(fr.get("성명") or "")), ("생년월일", birth),
+                 ("업종코드", f"{code} {ind_nm}".strip()), ("귀속연월 · 지급일", f"{yyyy}년 {mm_num:02d}월 · {pay_dt_str[5:] if len(pay_dt_str) >= 10 else pay_dt_str}")):
+        kv(k, v, y); y -= 5.6 * mm
+    y += 1.2 * mm; dash(y); y -= 6.5 * mm
+    kv("사업소득 지급액", f"{gross:,}", y); y -= 5.6 * mm
+    kv("소득세 (3%)", f"- {itax:,}", y); y -= 5.6 * mm
+    kv("지방소득세 (0.3%)", f"- {ltax:,}", y); y -= 5.6 * mm
+    kv("공제액 계", f"- {ded:,}", y, bold=True); y -= 4.4 * mm
+    dash(y); y -= 7 * mm
+    center("차인지급액 (실지급액)", font_reg, 8.5, mute, y); y -= 10 * mm
+    center(f"{net:,}원", font_bold, 22, blue, y); y -= 6.5 * mm
+    dash(y); y -= 6 * mm
+    center("소득세 = 지급액 × 3.0% · 지방소득세 = 소득세 × 10%", font_reg, 7.3, faint, y); y -= 4 * mm
+    center("(각 10원 미만 절사)", font_reg, 7.3, faint, y); y -= 8 * mm
+    center("귀하의 노고에 감사드립니다.", font_reg, 9, colors.HexColor("#334155"), y)
+    c.showPage(); c.save()
     return buf.getvalue()
 
 
@@ -1442,13 +1494,13 @@ def export_freelancer_statements_jpg_zip(
             else:
                 name_tag = safe_name
 
-            pdf_bytes = render_single_freelancer_statement_pdf(
+            pdf_bytes = render_freelancer_receipt_pdf(   # 이미지는 C안 · 영수증형
                 fr=fr,
                 corp_name=corp_name,
                 year_month=year_month,
                 pay_date=pay_date,
             )
-            jpg_bytes = convert_pdf_bytes_to_jpg_bytes(pdf_bytes)
+            jpg_bytes = convert_pdf_bytes_to_jpg_bytes(pdf_bytes, scale=3.2)
             zf.writestr(f"{name_tag}_사업소득명세서_{yymm}.jpg", jpg_bytes)
     return zip_buf.getvalue()
 
@@ -1502,6 +1554,19 @@ def get_payslip_template_preview_b64(template_type: str = "근로기준1") -> st
     return b64_str
 
 
+def get_freelancer_receipt_preview_b64() -> str:
+    """사업소득명세서 이미지(C안 · 영수증형) 미리보기 JPG Base64 (캐시)."""
+    cache_key = "free_receipt_default"
+    if cache_key in _PREVIEW_B64_CACHE:
+        return _PREVIEW_B64_CACHE[cache_key]
+    sample_fr = {"코드": "0001", "성명": "홍길동", "주민등록번호": "950101-*******", "소득구분": "940909", "귀속년월": "2026-10",
+                 "지급년월일": "2026-10-25", "지급총액": 2_000_000, "소득세": 60_000, "지방소득세": 6_000, "공제액계": 66_000, "차인지급액": 1_934_000}
+    jpg_b = convert_pdf_bytes_to_jpg_bytes(render_freelancer_receipt_pdf(sample_fr, corp_name="주식회사 샘플기업", year_month="2026-10", pay_date="2026-10-25"), scale=1.6)
+    b64_str = base64.b64encode(jpg_b).decode("ascii")
+    _PREVIEW_B64_CACHE[cache_key] = b64_str
+    return b64_str
+
+
 def get_freelancer_statement_preview_b64() -> str:
     """
     사업소득명세서 세로형 양식의 샘플 미리보기 JPG 이미지를 생성하여 Base64 문자열로 캐싱 반환
@@ -1513,6 +1578,7 @@ def get_freelancer_statement_preview_b64() -> str:
     sample_fr = {
         "코드": "0001",
         "성명": "홍길동",
+        "주민등록번호": "950101-*******",
         "소득구분": "940909",
         "귀속년월": "2026-10",
         "지급년월일": "2026-10-25",
