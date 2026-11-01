@@ -1259,7 +1259,11 @@ def _parse_payroll_ledger_pdf_coords(file_bytes: bytes, effective_table: str = "
                     break
                 for left_b, right_b, field_nm in bounds:
                     if left_b <= px < right_b:
-                        rec[field_nm] = tok_clean
+                        # 성명이 글자 단위로 쪼개져 추출되는 경우(예: '김 민 준') 마지막 글자로 덮어쓰지 않고 이어 붙임
+                        if field_nm == "성명" and rec.get("성명"):
+                            rec[field_nm] = f"{rec[field_nm]}{tok_clean}"
+                        else:
+                            rec[field_nm] = tok_clean
                         break
             if skip_block:
                 break
