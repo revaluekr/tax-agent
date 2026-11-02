@@ -2517,6 +2517,17 @@ def search_customs_exchange_rate_for_gemini(aply_bgn_dt: str, imex_type: str = "
     except Exception as e:
         return f"관세청 과세환율 조회 오류: {e}"
 
+def search_bizinfo_support_for_gemini(category: str = "", hashtags: str = "", keyword: str = "") -> str:
+    """중소벤처기업부 기업마당(bizinfo.go.kr)에서 최신 정부지원사업·정책자금·R&D·고용지원금·창업·수출·바우처 공고를 실시간 조회합니다. category('금융'/'기술'/'인력'/'수출'/'내수'/'창업'/'경영'/'기타' 또는 공란), hashtags(지역명 '서울'/'경기'/'부산' 등 해시태그), keyword(세부 검색어)."""
+    _emit_live_status(f"🏛️ 1단계: 기업마당(Bizinfo) 정부지원사업 공고 실시간 조회 중 (분야:{category or '전체'} · 지역/태그:{hashtags or '전체'} · 키워드:{keyword or '전체'})...")
+    print(f"\n[시스템] 🏛️ 기업마당 정부지원사업 조회 가동: 분야='{category}' | 해시태그='{hashtags}' | 키워드='{keyword}'")
+    try:
+        if hasattr(law_api, "get_bizinfo_support_projects"):
+            return _record("detail", law_api.get_bizinfo_support_projects(category=category, hashtags=hashtags, keyword=keyword))
+        return "현재 law_api.py에 기업마당 지원사업 조회 함수가 없습니다."
+    except Exception as e:
+        return f"기업마당 지원사업 조회 오류: {e}"
+
 # ---------------------------------------------------------
 # 🛡️ 정밀 수리 계산기: AST 화이트리스트 보안 샌드박스 & 천 단위 쉼표 지능형 정제
 #    (min(100,200) 공백 없는 인자 쉼표 보호 + 음수 거듭제곱 1.05**-3 허용 + pow(a,b) 지수 한도 검증 완벽 통합)
@@ -2723,6 +2734,7 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
 - 근로복지공단 고용·산재보험 사업장 상시인원(피보험자수)·성립일·업종 확인: 'search_comwel_workplace_for_gemini' 호출.
 - 4대보험(국민연금·건강보험·노인장기요양보험·고용보험·산재보험) 전체 월별 고지보험료, 연간 보험료 고지총액 합계, 사업주(회사)/근로자 부담분, 추정 인건비(과세보수총액) 및 월별 가입자수(신규/상실) 통합 확인: 'search_nps_workplace_for_gemini' 호출 (사업자등록번호 10자리를 알고 있으면 biz_no_prefix6에 함께 넣어 산재·고용보험 업종요율까지 자동 연계할 것).
 - 관세청 수출입 주간 과세환율(관세법 제18조 · 수입세금계산서 과세표준 검증) 확인: 'search_customs_exchange_rate_for_gemini' 호출.
+- 중소기업·소상공인·창업기업 정부지원사업, 정책자금(융자·보증), R&D·기술개발, 고용·인력 지원금, 수출·내수·경영 바우처 공고 확인: 'search_bizinfo_support_for_gemini' 호출 (category에 '금융'/'기술'/'인력'/'수출'/'내수'/'창업'/'경영' 또는 공란, hashtags에 지역명 '서울'/'경기'/'부산' 등, keyword에 세부 검색어 입력).
 - 세액·공제액·수당·지분율 등 모든 숫자 계산: 반드시 'run_tax_calculator_for_gemini'를 호출하여 단 1원의 오차도 없이 정확히 계산할 것. (수식 내 숫자에는 천 단위 쉼표를 넣지 말고 `1500000 * 0.15`처럼 적으며, 함수 인자는 `min(1500000, 2000000)`처럼 쉼표+공백으로 구분할 것)
 
 1. 자료 검토 우선순위 및 기준
@@ -2769,6 +2781,7 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
   * 한국은행 경제통계시스템(ECOS) / 관세청 유니패스(과세환율): https://ecos.bok.or.kr / https://unipass.customs.go.kr
   * 국세청 홈택스(사업자상태/업종코드): https://www.hometax.go.kr
   * 4대사회보험 정보연계센터 / 국민연금·근로복지공단: https://www.4insure.or.kr / https://www.nps.or.kr / https://www.comwel.or.kr
+  * 중소벤처기업부 기업마당(정부지원사업 통합공고): https://www.bizinfo.go.kr
 """
 
 def _extract_and_strip_precheck(text: str) -> tuple[str, str]:
@@ -3442,6 +3455,7 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False, room
             search_comwel_workplace_for_gemini,
             search_nps_workplace_for_gemini,
             search_customs_exchange_rate_for_gemini,
+            search_bizinfo_support_for_gemini,
             run_tax_calculator_for_gemini
         ]
 

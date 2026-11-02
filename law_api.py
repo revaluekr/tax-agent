@@ -49,6 +49,7 @@ LAW_OPEN_API_KEY = _get_api_key("LAW_OPEN_API_KEY", ["LAW_API_OC", "OC", "LAW_OC
 BOK_API_KEY = _get_api_key("BOK_API_KEY", ["ECOS_API_KEY"])
 DART_API_KEY = _get_api_key("DART_API_KEY", ["OPENDART_API_KEY"])
 NTS_API_KEY = _get_api_key("NTS_API_KEY", ["DATA_GO_KR_KEY", "PUBLIC_DATA_KEY", "MOLIT_API_KEY"])
+BIZINFO_API_KEY = _get_api_key("BIZINFO_API_KEY", ["BIZINFO_KEY", "BIZINFO_CRTFC_KEY"])
 
 def _live_law_key() -> str:
     return _get_api_key("LAW_OPEN_API_KEY", ["LAW_API_OC", "OC", "LAW_OC", "LAW_API_KEY", "MOLEG_OC", "DRF_OC"]) or LAW_OPEN_API_KEY
@@ -61,6 +62,9 @@ def _live_dart_key() -> str:
 
 def _live_nts_key() -> str:
     return _get_api_key("NTS_API_KEY", ["DATA_GO_KR_KEY", "PUBLIC_DATA_KEY", "MOLIT_API_KEY"]) or NTS_API_KEY
+
+def _live_bizinfo_key() -> str:
+    return _get_api_key("BIZINFO_API_KEY", ["BIZINFO_KEY", "BIZINFO_CRTFC_KEY"]) or BIZINFO_API_KEY
 
 
 # ---------------------------------------------------------
@@ -2174,3 +2178,164 @@ def get_customs_exchange_rate(aply_bgn_dt: str, imex_type: str = "2", currency: 
             output.append(f"\n■ {tp_label} 조회 오류: {e}")
 
     return "\n".join(output)[:14000]
+
+
+# ---------------------------------------------------------
+# 10. 중소벤처기업부 기업마당 (Bizinfo) 정부지원사업 공고 실시간 조회
+# ---------------------------------------------------------
+_BIZINFO_LCLAS_MAP = {
+    "01": "01", "금융": "01", "정책자금": "01", "융자": "01", "보증": "01", "자금": "01",
+    "02": "02", "기술": "02", "r&d": "02", "연구개발": "02", "기술개발": "02",
+    "03": "03", "인력": "03", "고용": "03", "채용": "03", "일자리": "03", "인건비": "03",
+    "04": "04", "수출": "04", "해외": "04", "무역": "04", "글로벌": "04",
+    "05": "05", "내수": "05", "판로": "05", "마케팅": "05",
+    "06": "06", "창업": "06", "스타트업": "06", "벤처": "06", "예비창업": "06",
+    "07": "07", "경영": "07", "컨설팅": "07", "바우처": "07", "소상공인": "07",
+    "09": "09", "기타": "09",
+}
+
+def _strip_html_tags(text: str) -> str:
+    if not text:
+        return ""
+    cleaned = re.sub(r"<[^>]+>", " ", str(text))
+    cleaned = cleaned.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"').replace("&#39;", "'")
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+def get_bizinfo_support_projects(
+    category: str = "",
+    hashtags: str = "",
+    keyword: str = "",
+    search_cnt: int = 100,
+) -> str:
+    """
+    중소벤처기업부 기업마당(bizinfo.go.kr) 지원사업정보 Open API를 호출하여
+    중앙부처·지자체·공공기관의 최신 정부지원사업 공고를 조회합니다.
+    - category: 지원분야 ('금융'/'01', '기술'/'02', '인력'/'03', '수출'/'04', '내수'/'05', '창업'/'06', '경영'/'07', '기타'/'09' 또는 공란=전체)
+    - hashtags: 지역 또는 해시태그 조건 (예: '서울', '경기', '부산', '서울,기술' 등 — 공란이면 전체)
+    - keyword: 공고명·사업개요·지원대상·소관기관 내 결과 필터링 키워드 (예: '청년', '스마트공장', '소상공인', '제조')
+    - search_cnt: API 최대 조회 건수 (기본 100)
+    """
+    biz_key = _live_bizinfo_key()
+    if not biz_key:
+        return (
+            "❌ 기업마당 인증키(BIZINFO_API_KEY)가 설정되지 않았습니다. "
+            "기업마당(https://www.bizinfo.go.kr/web/lay1/program/S1T175C174/apiList.do)에서 지원사업정보 API 사용신청 후 "
+            "발급받은 인증키(crtfcKey)를 Streamlit Secrets 또는 .env의 BIZINFO_API_KEY에 등록해 주세요."
+        )
+
+    cat_raw = (category or "").strip().lower()
+    lclas_id = _BIZINFO_LCLAS_MAP.get(cat_raw, "")
+    if not lclas_id:
+        for k_map, v_code in _BIZINFO_LCLAS_MAP.items():
+            if len(k_map) >= 2 and k_map in cat_raw:
+                lclas_id = v_code
+                break
+
+    cnt_val = max(20, min(200, int(search_cnt or 100)))
+    params = {
+        "crtfcKey": biz_key,
+        "dataType": "json",
+        "searchCnt": str(cnt_val),
+    }
+    if lclas_id:
+        params["searchLclasId"] = lclas_id
+    clean_tags = ",".join(t.strip().lstrip("#") for t in re.split(r"[,\s]+", (hashtags or "").strip()) if t.strip())
+    if clean_tags:
+        params["hashtags"] = clean_tags
+
+    url = "https://www.bizinfo.go.kr/uss/rss/bizinfoApi.do?" + urllib.parse.urlencode(params)
+    try:
+        resp = requests.get(url, timeout=15)
+        if resp.status_code != 200:
+            return f"❌ 기업마당 지원사업 API 호출 실패 (HTTP {resp.status_code})"
+        raw_txt = resp.text.strip()
+        items = []
+        if raw_txt.startswith("{") or raw_txt.startswith("["):
+            data = json.loads(raw_txt)
+            if isinstance(data, dict):
+                items = data.get("jsonArray") or data.get("items") or data.get("data") or []
+                if isinstance(items, dict):
+                    items = [items]
+            elif isinstance(data, list):
+                items = data
+        else:
+            root = ET.fromstring(raw_txt)
+            for item_el in root.findall(".//item"):
+                row_d = {child.tag: (child.text or "").strip() for child in item_el}
+                items.append(row_d)
+
+        # 만약 해시태그 조건이 너무 좁아 0건이면 해시태그를 풀고 키워드로 재조회 폴백
+        if not items and clean_tags:
+            params.pop("hashtags", None)
+            url_fallback = "https://www.bizinfo.go.kr/uss/rss/bizinfoApi.do?" + urllib.parse.urlencode(params)
+            resp2 = requests.get(url_fallback, timeout=15)
+            if resp2.status_code == 200 and resp2.text.strip().startswith("{"):
+                data2 = json.loads(resp2.text.strip())
+                items = data2.get("jsonArray") or []
+                if not keyword:
+                    keyword = clean_tags.replace(",", " ")
+
+        if not items:
+            return f"🏛️ [기업마당 정부지원사업 조회] 요청하신 조건(분야={category or '전체'}, 해시태그={hashtags or '전체'}, 키워드={keyword or '없음'})에 해당하는 공고가 없습니다."
+
+        kw_tokens = [t.lower() for t in re.split(r"[,\s]+", f"{keyword or ''} {clean_tags.replace(',', ' ')}".strip()) if len(t.strip()) >= 2]
+        matched = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            title = _strip_html_tags(it.get("pblancNm") or it.get("title") or "")
+            org = _strip_html_tags(it.get("jrsdInsttNm") or it.get("author") or "")
+            exec_org = _strip_html_tags(it.get("excInsttNm") or "")
+            field_nm = _strip_html_tags(it.get("pldirSportRealmLclasCodeNm") or it.get("lcategory") or "")
+            target_nm = _strip_html_tags(it.get("trgetNm") or "")
+            period = _strip_html_tags(it.get("reqstBeginEndDe") or it.get("reqstDt") or "")
+            summary = _strip_html_tags(it.get("bsnsSumryCn") or it.get("description") or "")
+            tags_str = _strip_html_tags(it.get("hashTags") or "")
+            pb_id = str(it.get("pblancId") or it.get("seq") or "").strip()
+            pb_url = str(it.get("pblancUrl") or it.get("link") or "").strip()
+            if pb_url and pb_url.startswith("/"):
+                pb_url = f"https://www.bizinfo.go.kr{pb_url}"
+            elif not pb_url and pb_id:
+                pb_url = f"https://www.bizinfo.go.kr/web/lay1/bbs/S1T122C128/AS/74/view.do?pblancId={pb_id}"
+
+            haystack = f"{title} {org} {exec_org} {field_nm} {target_nm} {summary} {tags_str}".lower()
+            score = sum(1 for tk in kw_tokens if tk in haystack) if kw_tokens else 1
+            matched.append((score, {
+                "title": title,
+                "org": org,
+                "exec_org": exec_org,
+                "field": field_nm,
+                "target": target_nm,
+                "period": period,
+                "summary": summary[:280] + ("..." if len(summary) > 280 else ""),
+                "tags": tags_str,
+                "url": pb_url or "https://www.bizinfo.go.kr",
+                "id": pb_id,
+            }))
+
+        if kw_tokens:
+            hit_rows = [m for m in matched if m[0] > 0]
+            if hit_rows:
+                hit_rows.sort(key=lambda x: x[0], reverse=True)
+                selected = [x[1] for x in hit_rows[:20]]
+            else:
+                selected = [x[1] for x in matched[:15]]
+        else:
+            selected = [x[1] for x in matched[:20]]
+
+        out = [
+            f"🏛️ [중소벤처기업부 기업마당(Bizinfo) 정부지원사업 실시간 공고 조회 결과 | 총 {len(items)}건 중 상위 {len(selected)}건 표시]",
+            f"- 조회 조건: 분야='{category or '전체'}' (코드:{lclas_id or '전체'}) | 해시태그='{clean_tags or '전체'}' | 키워드='{keyword or '전체'}'",
+        ]
+        for idx, r in enumerate(selected, start=1):
+            org_disp = f"{r['org']} ({r['exec_org']})" if r["exec_org"] and r["exec_org"] != r["org"] else (r["org"] or "-")
+            out.append(
+                f"\n{idx}. **[{r['field'] or '지원사업'}] {r['title']}**\n"
+                f"   - 소관·수행기관: {org_disp} | 지원대상: {r['target'] or '-'}\n"
+                f"   - 신청기간: {r['period'] or '공고문 확인'} | 해시태그: {r['tags'] or '-'}\n"
+                f"   - 사업개요: {r['summary'] or '-'}\n"
+                f"   - 원문 공고 링크: {r['url']}"
+            )
+        return "\n".join(out)[:14000]
+    except Exception as e:
+        return f"❌ 기업마당 지원사업 API 조회 오류: {e}"

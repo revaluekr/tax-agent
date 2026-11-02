@@ -2461,6 +2461,7 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
     gemini_raw = _get_first_env_or_secret(["GEMINI_PAID_KEY", "GEMINI_API_KEY"])
     law_raw = _get_law_oc()
     dart_raw = _get_first_env_or_secret(["DART_API_KEY", "OPENDART_API_KEY"])
+    bizinfo_raw = _get_first_env_or_secret(["BIZINFO_API_KEY", "BIZINFO_KEY", "BIZINFO_CRTFC_KEY"])
     ind_ok = os.path.exists("industry_codes.xlsx")
 
     api_rows = [
@@ -2521,6 +2522,15 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
         "api_code": "`industry_codes.xlsx` (로컬 내장)" if ind_ok else "`파일 없음`",
         "led_status": "🟢 정상 로드됨 (상시)" if ind_ok else "🟡 파일 없음",
         "link_md": "[🔗 사이트 이동](https://www.hometax.go.kr)"
+    })
+
+    # 8번 중소벤처기업부 기업마당 (정부지원사업 조회 Open API)
+    api_rows.append({
+        "site_org": "8. 중소벤처기업부 기업마당 (Bizinfo)",
+        "api_info": "중앙부처 · 지자체 · 공공기관 중소기업·소상공인 정부지원사업 공고 실시간 조회",
+        "api_code": f"`{_format_api_code_display(bizinfo_raw, show_full_code)}`" if bizinfo_raw else "`미설정 (BIZINFO_API_KEY)`",
+        "led_status": "🟢 정상 연동 (무기한)" if bizinfo_raw else "⚪ 미설정",
+        "link_md": "[🔗 사이트 이동](https://www.bizinfo.go.kr/web/lay1/program/S1T175C174/apiList.do)"
     })
 
     # 요청하신 정확한 컬럼 순서로 마크다운 테이블 렌더링
