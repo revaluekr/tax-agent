@@ -626,6 +626,59 @@ def _reset_payroll_current_work(which: str = "ALL") -> None:
     pstate["grid_version"] = int(pstate.get("grid_version", 0)) + 1
 
 
+def _normalize_pay_date(v: str) -> str:
+    """지급일자 입력값 정리: 20261125 / 2026.11.25 / 2026-11-25 → 2026-11-25 (형식이 다르면 입력 그대로)"""
+    t = str(v or "").strip()
+    d = re.sub(r"[^0-9]", "", t)
+    if len(d) == 8:
+        return f"{d[:4]}-{d[4:6]}-{d[6:]}"
+    return t
+
+
+def _apply_period_to_rows(pstate: Dict[str, Any]) -> None:
+    """왼쪽 사업자정보의 귀속연월·지급일자를 이미 올린 사업소득 행에도 반영 (자료를 먼저 올리든 나중에 올리든 같은 결과)"""
+    ym = str(pstate.get("year_month") or "")
+    pd_v = str(pstate.get("pay_date") or "")
+    for fr in pstate.get("freelancers", []) or []:
+        if ym:
+            fr["귀속년월"] = ym
+        if pd_v:
+            fr["지급년월일"] = pd_v
+    pstate["grid_version"] = int(pstate.get("grid_version", 0)) + 1
+
+
+def _set_period_from_file(pstate: Dict[str, Any], ym: str, pay_date: str = "") -> None:
+    """업로드한 파일의 귀속연월로 맞춤 — 단, 왼쪽 사업자정보에서 직접 입력한 귀속연월·지급일자가 있으면 그 값을 우선"""
+    if pstate.get("_period_user_set") or not ym:
+        return
+    pstate["year_month"] = ym
+    pstate["pay_date"] = pay_date or f"{ym}-25"
+    pstate["effective_table"] = "2026.03" if ym >= "2026-03" else "2024.03"
+
+
+def _on_sidebar_year_month_change() -> None:
+    pstate = _get_payroll_state()
+    ym = str(st.session_state.get("pay_sb_year_month") or "").strip()
+    if not ym:
+        return
+    pstate["_period_user_set"] = True
+    pstate["year_month"] = ym
+    pstate["pay_date"] = f"{ym}-25"
+    st.session_state["pay_sb_pay_date"] = pstate["pay_date"]
+    pstate["effective_table"] = "2026.03" if ym >= "2026-03" else "2024.03"
+    _recalculate_all_employee_rows(pstate)
+    _apply_period_to_rows(pstate)
+
+
+def _on_sidebar_pay_date_change() -> None:
+    pstate = _get_payroll_state()
+    pd_v = _normalize_pay_date(st.session_state.get("pay_sb_pay_date"))
+    pstate["_period_user_set"] = True
+    pstate["pay_date"] = pd_v
+    st.session_state["pay_sb_pay_date"] = pd_v
+    _apply_period_to_rows(pstate)
+
+
 def _recalculate_all_employee_rows(pstate: Dict[str, Any]) -> None:
     eff_tbl = pstate.get("effective_table", "2026.03")
     pct = int(pstate.get("withholding_rate_pct", 100))
@@ -1435,37 +1488,39 @@ def render_payroll_automated_sidebar() -> None:
                     emp["사업장"] = new_wp_label
             pstate["grid_version"] = int(pstate.get("grid_version", 0)) + 1
 
+        # 귀속연월: 최근 월이 위로 오도록 역순(12월 → 1월, 최근 연도부터)
         ym_options = [
             f"{yr:04d}-{mo:02d}"
-            for yr in (2024, 2025, 2026, 2027)
-            for mo in range(1, 13)
+            for yr in (2027, 2026, 2025, 2024)
+            for mo in range(12, 0, -1)
         ]
-        curr_ym = pstate.get("year_month", "2026-10")
+        curr_ym = str(pstate.get("year_month") or "2026-10")
         if curr_ym not in ym_options:
             ym_options.append(curr_ym)
-            ym_options.sort()
+            ym_options.sort(reverse=True)
+        curr_pd = str(pstate.get("pay_date") or f"{curr_ym}-25")
+
+        # 저장된 값(자료 업로드로 바뀐 값 포함)을 왼쪽 입력칸에 그대로 맞춤 — 입력칸이 예전 값으로 되돌리지 않도록
+        if st.session_state.get("pay_sb_year_month") != curr_ym:
+            st.session_state["pay_sb_year_month"] = curr_ym
+        if st.session_state.get("pay_sb_pay_date") != curr_pd:
+            st.session_state["pay_sb_pay_date"] = curr_pd
 
         c_ym, c_pdt = st.columns(2)
         with c_ym:
-            sel_ym = st.selectbox(
+            st.selectbox(
                 "귀속연월",
                 options=ym_options,
-                index=ym_options.index(curr_ym),
                 key="pay_sb_year_month",
+                on_change=_on_sidebar_year_month_change,
             )
-            if sel_ym != pstate.get("year_month"):
-                pstate["year_month"] = sel_ym
-                pstate["pay_date"] = f"{sel_ym}-25"
-                pstate["effective_table"] = "2026.03" if sel_ym >= "2026-03" else "2024.03"
-                _recalculate_all_employee_rows(pstate)
         with c_pdt:
-            pay_dt_val = st.text_input(
+            st.text_input(
                 "지급일자",
-                value=pstate.get("pay_date", f"{sel_ym}-25"),
                 placeholder="YYYY-MM-DD",
                 key="pay_sb_pay_date",
+                on_change=_on_sidebar_pay_date_change,
             )
-            pstate["pay_date"] = pay_dt_val.strip()
 
         active_workers = sum(
             1 for e in pstate.get("employees", [])
@@ -1617,6 +1672,7 @@ def render_payroll_automated_sidebar() -> None:
                         latest_pack = m_map[latest_ym]
                         pstate["year_month"] = latest_ym
                         pstate["pay_date"] = latest_pack.get("pay_date", f"{latest_ym}-25")
+                        pstate["_period_user_set"] = False   # 백업 복원은 백업 당시 귀속연월 그대로
                         pstate["employees"] = list(latest_pack.get("employees", []))
                         pstate["freelancers"] = list(latest_pack.get("freelancers", []))
                         pstate["grid_version"] += 1
@@ -1736,6 +1792,8 @@ def _process_uploaded_files_and_text(
                 if parsed_fr:
                     pstate["freelancers"] = parsed_fr
                     pstate["sub_mode"] = "FREE"
+                    if pstate.get("_period_user_set"):
+                        _apply_period_to_rows(pstate)
                     pstate["chat_logs"].append(f"[엑셀 로드] '{fname}'에서 사업소득자 {len(parsed_fr)}명을 불러왔습니다.")
                     continue
 
@@ -1752,8 +1810,7 @@ def _process_uploaded_files_and_text(
                 pstate["employees"] = res_ex["employees"]
                 pstate["sub_mode"] = "EMP"
                 if res_ex["meta"].get("year_month"):
-                    pstate["year_month"] = res_ex["meta"]["year_month"]
-                    pstate["pay_date"] = f"{res_ex['meta']['year_month']}-25"
+                    _set_period_from_file(pstate, res_ex["meta"]["year_month"])
                 pstate["chat_logs"].append(
                     f"[급여 엑셀 로드] '{fname}'에서 근로자 {len(res_ex['employees'])}명 급여 내역을 추출했습니다."
                 )
@@ -1768,8 +1825,11 @@ def _process_uploaded_files_and_text(
                 pstate["sub_mode"] = "FREE"
                 if notice_res.get("corp_name") and not pstate.get("corp_name"):
                     pstate["corp_name"] = notice_res["corp_name"]
-                if notice_res.get("year_month"):
-                    pstate["year_month"] = notice_res["year_month"]
+                if pstate.get("_period_user_set"):
+                    _apply_period_to_rows(pstate)
+                elif notice_res.get("year_month"):
+                    _first_pd = str((notice_res["freelancers"][0] or {}).get("지급년월일") or "")
+                    _set_period_from_file(pstate, notice_res["year_month"], _first_pd if len(_first_pd) == 10 else "")
                 pstate["chat_logs"].append(f"[사업소득대장 PDF 로드] {notice_res.get('message')}")
             elif ntype in ("급여대장", "급여대장_PDF") and notice_res.get("employees"):
                 emps_loaded = notice_res["employees"]
@@ -1782,7 +1842,7 @@ def _process_uploaded_files_and_text(
                 if notice_res.get("corp_name") and not pstate.get("corp_name"):
                     pstate["corp_name"] = notice_res["corp_name"]
                 if notice_res.get("year_month"):
-                    pstate["year_month"] = notice_res["year_month"]
+                    _set_period_from_file(pstate, notice_res["year_month"])
                 pstate["chat_logs"].append(f"[급여대장·명세서 PDF 로드] {notice_res.get('message')}")
             elif ntype != "unknown":
                 notice_list.append(notice_res)
@@ -1822,6 +1882,7 @@ def _process_uploaded_files_and_text(
                     latest_pack = m_map[latest_ym]
                     pstate["year_month"] = latest_ym
                     pstate["pay_date"] = latest_pack.get("pay_date", f"{latest_ym}-25")
+                    pstate["_period_user_set"] = False   # 백업 복원은 백업 당시 귀속연월 그대로
                     pstate["employees"] = list(latest_pack.get("employees", []))
                     pstate["freelancers"] = list(latest_pack.get("freelancers", []))
                 pstate["chat_logs"].append(f"[백업 로드] '{fname}' 누적 백업 DB를 복원했습니다.")
@@ -2475,6 +2536,7 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
                 elif not is_emp_mode and prev_pack.get("freelancers"):
                     pstate["prev_freelancers"] = list(prev_pack["freelancers"])
                     pstate["freelancers"] = [{k: v for k, v in f.items() if k != "_수기"} for f in prev_pack["freelancers"]]
+                    _apply_period_to_rows(pstate)   # 전월 명단을 가져오되 귀속연월·지급일자는 지금 화면 기준
                     _recalculate_all_freelancer_rows(pstate)
                     pstate["grid_version"] += 1
                     st.toast(f"직전 귀속월({prev_pack.get('year_month')}) 사업소득자 {len(pstate['freelancers'])}명을 불러왔습니다.")
