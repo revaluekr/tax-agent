@@ -35,13 +35,6 @@ def _ensure_fresh_submodules() -> None:
                 except Exception:
                     pass
 
-_ensure_fresh_submodules()
-
-from .ui import (
-    render_payroll_automated_main as _render_main,
-    render_payroll_automated_sidebar as _render_sidebar,
-)
-
 def render_payroll_automated_sidebar(*args, **kwargs):
     _ensure_fresh_submodules()
     from . import ui as _ui_mod

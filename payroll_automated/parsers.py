@@ -340,22 +340,42 @@ def parse_date_str(val: Any) -> str:
     return ""
 
 
-def normalize_rrn(val: Any) -> str:
+def extract_full_rrn(val: Any) -> str:
+    """엑셀 업로드 양식(위하고) 복원용: 마스킹 전 원본 13자리 주민등록번호(YYMMDD-1234567)를 추출·보존합니다."""
     if val is None:
         return ""
     s = str(val).strip()
-    if not s or s.lower() in ("nan", "none"):
-        return ""
-    cleaned = re.sub(r"[^0-9*]", "", s)
-    if len(cleaned) == 13:
-        return f"{cleaned[:6]}-{cleaned[6:]}"
-    if len(cleaned) == 6 and cleaned.isdigit():
-        return cleaned
-    # YYMMDD-******* 형태에서 * 개수가 6~7개인 경우 정규화
-    m_mask = re.match(r"^(\d{6})[-~\s]*([1-8*][0-9*]{5,6})$", s)
-    if m_mask:
-        return f"{m_mask.group(1)}-{m_mask.group(2)[:7].ljust(7, '*')}"
+    m = re.search(r"(\d{6})\s*[-~]?\s*([1-8*][0-9*]{5,6})", s)
+    if m:
+        tail = m.group(2)
+        if len(tail) == 6 and "*" in tail:
+            tail = tail + "*"
+        return f"{m.group(1)}-{tail}"
+    digits = re.sub(r"[^0-9*]", "", s)
+    if len(digits) == 13:
+        return f"{digits[:6]}-{digits[6:]}"
+    if len(digits) == 6:
+        return digits
     return s
+
+
+def mask_rrn_front7(val: Any) -> str:
+    """화면 표시 및 개인정보 보호용: 앞 7자리(생년월일 6자리 + 성별코드 1자리)만 남기고 뒷 6자리는 ******로 마스킹합니다."""
+    full = extract_full_rrn(val)
+    if not full:
+        return ""
+    m = re.match(r"^(\d{6})-([1-8*])([0-9*]{5,6})$", full)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}******"
+    digits = re.sub(r"[^0-9*]", "", full)
+    if len(digits) >= 7:
+        return f"{digits[:6]}-{digits[6]}******"
+    return full
+
+
+def normalize_rrn(val: Any, mask_display: bool = True) -> str:
+    """기본값(mask_display=True)으로 앞 7자리만 표시('900101-1******')하며, mask_display=False일 때만 전체 번호를 반환합니다."""
+    return mask_rrn_front7(val) if mask_display else extract_full_rrn(val)
 
 
 def extract_birth_6digits(rrn_or_birth: str) -> str:
@@ -1167,9 +1187,11 @@ def parse_client_payroll_excel(
                     if d_str:
                         rec[field_name] = d_str
                 elif field_name == "주민등록번호":
-                    rrn_str = normalize_rrn(val)
+                    full_rrn = extract_full_rrn(val)
+                    rrn_str = mask_rrn_front7(val)
                     if rrn_str:
                         rec[field_name] = rrn_str
+                        rec["_raw_rrn"] = full_rrn
                 elif field_name in ("사원코드", "부서", "직급"):
                     rec[field_name] = str(val).strip()
                 elif field_name in ("연장근무시간", "휴일근무시간", "결근시간", "주근무시간", "월근무시간"):
@@ -1241,7 +1263,9 @@ def parse_client_payroll_excel(
             "사업장": default_workplace,
             "사원코드": str(emp_code).zfill(3) if str(emp_code).isdigit() else str(emp_code),
             "성명": norm_name,
-            "주민등록번호": raw_rec.get("주민등록번호", ""),
+            "주민등록번호": mask_rrn_front7(raw_rec.get("주민등록번호", "")),
+            "_raw_rrn": raw_rec.get("_raw_rrn") or extract_full_rrn(raw_rec.get("주민등록번호", "")),
+            "_base_amount": base_pay_in,
             "입사일": raw_rec.get("입사일", ""),
             "퇴사일": raw_rec.get("퇴사일", ""),
             "부서": raw_rec.get("부서", ""),
@@ -2521,9 +2545,11 @@ def parse_freelancer_excel(
         net_val = parse_number(rec.get("차인지급액"), 0)
 
         if gross_val == 0 and net_val > 0:
+            base_amt_val = net_val
             calc = solve_gross_from_net_freelancer(net_val)
             input_mode = "세후역산"
         else:
+            base_amt_val = gross_val
             calc = calculate_freelancer_row(gross_val)
             input_mode = "세전"
 
@@ -2534,11 +2560,14 @@ def parse_freelancer_excel(
         raw_ind = str(rec.get("소득구분") or "940909").strip()
         m_ind = re.search(r"\b(\d{6})\b", raw_ind)
         ind_code = m_ind.group(1) if m_ind else "940909"
+        raw_rrn_input = rec.get("주민등록번호", "")
 
         freelancers.append({
             "코드": code_val,
             "성명": norm_name,
-            "주민등록번호": normalize_rrn(rec.get("주민등록번호", "")),
+            "주민등록번호": mask_rrn_front7(raw_rrn_input),
+            "_raw_rrn": extract_full_rrn(raw_rrn_input),
+            "_base_amount": base_amt_val,
             "소득구분": ind_code,
             "귀속년월": ym_val,
             "지급년월일": pay_d_val,
@@ -2646,7 +2675,9 @@ def _fallback_parse_freelancers_from_doc(
                     scanned_fr.append({
                         "코드": f"{len(scanned_fr) + 1:04d}",
                         "성명": tk_clean,
-                        "주민등록번호": found_rrn,
+                        "주민등록번호": mask_rrn_front7(found_rrn),
+                        "_raw_rrn": extract_full_rrn(found_rrn),
+                        "_base_amount": gross_v,
                         "소득구분": found_ind,
                         "귀속년월": eff_ym,
                         "지급년월일": eff_pd,
@@ -2699,7 +2730,9 @@ def _fallback_parse_freelancers_from_doc(
                         ai_fr.append({
                             "코드": f"{idx_a:04d}",
                             "성명": nm,
-                            "주민등록번호": normalize_rrn(item.get("rrn", "")),
+                            "주민등록번호": mask_rrn_front7(item.get("rrn", "")),
+                            "_raw_rrn": extract_full_rrn(item.get("rrn", "")),
+                            "_base_amount": amt,
                             "소득구분": str(item.get("ind_code") or "940909").strip(),
                             "귀속년월": eff_ym,
                             "지급년월일": eff_pd,
@@ -2784,9 +2817,11 @@ def parse_kakao_text_instructions(
     for seg in segments:
         # 1단계: 주민등록번호(예: 950101-******* 또는 950101-1234567 또는 13자리 숫자) 최우선 추출 및 텍스트에서 제거!
         extracted_rrn = ""
+        extracted_raw_rrn = ""
         m_rrn = re.search(r"(\d{6}\s*-\s*[1-8*][0-9*]{5,6}|\b\d{13}\b)", seg)
         if m_rrn:
-            extracted_rrn = normalize_rrn(m_rrn.group(1))
+            extracted_raw_rrn = extract_full_rrn(m_rrn.group(1))
+            extracted_rrn = mask_rrn_front7(m_rrn.group(1))
             seg_wo_rrn = seg[:m_rrn.start()] + " " + seg[m_rrn.end():]
         else:
             seg_wo_rrn = seg
@@ -2853,7 +2888,9 @@ def parse_kakao_text_instructions(
             parsed_freelancers.append({
                 "코드": base_f.get("코드") or f"{len(parsed_freelancers) + 1:04d}",
                 "성명": person_name,
-                "주민등록번호": extracted_rrn or base_f.get("주민등록번호", ""),
+                "주민등록번호": mask_rrn_front7(extracted_rrn or base_f.get("주민등록번호", "")),
+                "_raw_rrn": extracted_raw_rrn or base_f.get("_raw_rrn") or extract_full_rrn(base_f.get("주민등록번호", "")),
+                "_base_amount": amount,
                 "소득구분": base_f.get("소득구분", "940909"),
                 "귀속년월": default_year_month or datetime.now().strftime("%Y-%m"),
                 "지급년월일": default_pay_date or datetime.now().strftime("%Y-%m-%d"),
@@ -2910,7 +2947,9 @@ def parse_kakao_text_instructions(
                 "사업장": base_e.get("사업장") or default_workplace,
                 "사원코드": base_e.get("사원코드") or f"{len(parsed_employees) + 1:03d}",
                 "성명": person_name,
-                "주민등록번호": extracted_rrn or base_e.get("주민등록번호", ""),
+                "주민등록번호": mask_rrn_front7(extracted_rrn or base_e.get("주민등록번호", "")),
+                "_raw_rrn": extracted_raw_rrn or base_e.get("_raw_rrn") or extract_full_rrn(base_e.get("주민등록번호", "")),
+                "_base_amount": amount,
                 "입사일": base_e.get("입사일", ""),
                 "퇴사일": base_e.get("퇴사일", ""),
                 "부서": base_e.get("부서", ""),
@@ -2970,6 +3009,7 @@ def apply_chat_modifiers_to_state(
     free_names = [normalize_korean_name(f.get("성명", "")) for f in freelancers if f.get("성명")]
 
     allowance_patterns: List[Tuple[str, str, str]] = [
+        ("기본급", r"(?:기본급|본봉)", "원"),
         ("약정연장근로수당", r"(?:약정\s*연장(?:근로)?(?:수당)?|고정\s*연장(?:근로)?(?:수당)?)", "원"),
         ("약정휴일근로수당", r"(?:약정\s*휴일(?:근로)?(?:수당)?|고정\s*휴일(?:근로)?(?:수당)?)", "원"),
         ("미사용연차수당", r"(?:미사용\s*연차(?:수당)?|연차\s*수당|연차)", "원"),
@@ -3059,44 +3099,44 @@ def apply_chat_modifiers_to_state(
                     logs.append(f"[채팅 감면율 반영] 대상 {len(target_e_idxs)}명: 소득세 감면 {red_v}% 적용 완료")
                     handled_this_line = True
 
-        # 2) "금액에 적힌 급여는 세후 급여야" / "전원 세후 기준" / "김아무개는 세후 급여야" (숫자 금액 없이 세후/세전 기준 전환 지시)
-        has_net_kw = any(k in ln for k in ("세후", "실수령", "실지급", "차인지급", "입금액 기준", "통장 찍힌"))
-        has_gross_kw = any(k in ln for k in ("세전", "액면", "지급총액 기준"))
-        # 문장에 새로운 급여 금액 숫자가 없는 순수 모드 전환 지시문인지 확인 (이미 처리된 수당 숫자 제외)
+        # 2) "근로자들의 세전을 세후로 바꿔줘" / "세후를 세전으로 바꿔줘" / "파일 내 금액은 세후 금액이야" 정밀 방향 판별
+        target_mode_Switch: Optional[str] = None
+        if re.search(r"(?:세전|지급총액)\s*[을를에서]*\s*(?:세후|실수령|실지급|차인지급)", ln):
+            target_mode_Switch = "세후역산"
+        elif re.search(r"(?:세후|실수령|실지급|차인지급)\s*[을를에서]*\s*(?:세전|지급총액)", ln):
+            target_mode_Switch = "세전"
+        elif any(k in ln for k in ("세후", "실수령", "실지급", "차인지급", "입금액 기준", "통장 찍힌")):
+            target_mode_Switch = "세후역산"
+        elif any(k in ln for k in ("세전", "액면", "지급총액 기준")):
+            target_mode_Switch = "세전"
+
         ln_for_num_check = re.sub(r"3\.3\s*%?|(?:90|70|50|100)\s*%|20\d{2}[-./년]\s*\d{1,2}|\b\d{6}\b", " ", ln)
         for _, pat_kw, _ in allowance_patterns:
             ln_for_num_check = re.sub(rf"{pat_kw}\s*[:=]?\s*\d+(?:\.\d+)?\s*(?:만\s*원|만|원)?", " ", ln_for_num_check)
         has_standalone_salary_num = bool(re.search(r"(\d{2,}(?:\.\d+)?)\s*(만\s*원|만|원)", ln_for_num_check))
 
-        if (has_net_kw or has_gross_kw) and not has_standalone_salary_num:
-            new_mode = "세후역산" if has_net_kw else "세전"
+        if target_mode_Switch and not has_standalone_salary_num:
+            new_mode = target_mode_Switch
             if sub_mode == "FREE" and freelancers:
                 t_f_idxs = matched_free_indices if matched_free_indices else list(range(len(freelancers)))
                 for idx_f in t_f_idxs:
                     fr = freelancers[idx_f]
-                    if new_mode == "세후역산":
-                        # 기존에 세전 지급총액으로 읽혔던 원래 숫자를 목표 실지급액(차인지급액)으로 삼아 3.3% 역산
-                        base_amt = int(fr.get("지급총액", 0) or fr.get("차인지급액", 0) or 0)
-                        if str(fr.get("입력기준", "세전")) == "세후역산" and int(fr.get("차인지급액", 0) or 0) > 0:
-                            base_amt = int(fr["차인지급액"])
-                        if base_amt > 0:
+                    base_amt = int(fr.get("_base_amount") or 0)
+                    if base_amt <= 0:
+                        base_amt = int(fr.get("지급총액", 0) if str(fr.get("입력기준", "세전")) == "세전" else fr.get("차인지급액", 0))
+                        fr["_base_amount"] = base_amt
+                    if base_amt > 0:
+                        if new_mode == "세후역산":
                             calc = solve_gross_from_net_freelancer(base_amt)
                             fr["입력기준"] = "세후역산"
-                            fr["지급총액"] = calc["gross_pay"]
-                            fr["소득세"] = calc["income_tax"]
-                            fr["지방소득세"] = calc["local_tax"]
-                            fr["공제액계"] = calc["total_deduction"]
-                            fr["차인지급액"] = calc["net_pay"]
-                    else:
-                        base_amt = int(fr.get("차인지급액", 0) or fr.get("지급총액", 0) or 0)
-                        if base_amt > 0:
+                        else:
                             calc = calculate_freelancer_row(base_amt)
                             fr["입력기준"] = "세전"
-                            fr["지급총액"] = calc["gross_pay"]
-                            fr["소득세"] = calc["income_tax"]
-                            fr["지방소득세"] = calc["local_tax"]
-                            fr["공제액계"] = calc["total_deduction"]
-                            fr["차인지급액"] = calc["net_pay"]
+                        fr["지급총액"] = calc["gross_pay"]
+                        fr["소득세"] = calc["income_tax"]
+                        fr["지방소득세"] = calc["local_tax"]
+                        fr["공제액계"] = calc["total_deduction"]
+                        fr["차인지급액"] = calc["net_pay"]
                 t_lbl = f"전체 사업소득자({len(t_f_idxs)}명)" if len(t_f_idxs) == len(freelancers) and len(freelancers) > 1 else ", ".join(freelancers[i]["성명"] for i in t_f_idxs)
                 logs.append(f"[채팅 기준 전환] {t_lbl}: 금액을 '{new_mode}' 기준으로 일괄 재계산했습니다.")
                 handled_this_line = True

@@ -77,7 +77,9 @@ from .parsers import (
     _call_gemini_contents,
     apply_chat_modifiers_to_state,
     apply_insurance_notices_to_employees,
+    extract_full_rrn,
     extract_universal_document_text_and_rows,
+    mask_rrn_front7,
     parse_client_payroll_excel,
     parse_freelancer_excel,
     parse_image_with_gemini_vision,
@@ -746,6 +748,13 @@ def _recalculate_all_employee_rows(pstate: Dict[str, Any]) -> None:
             income_tax_reduction_pct=float(emp.get("소득세감면율", 0) or 0),
         )
         emp.update(calc)
+        if emp.get("주민등록번호") or emp.get("_raw_rrn"):
+            raw_cand = str(emp.get("주민등록번호") or "")
+            if raw_cand and "*" not in raw_cand:
+                emp["_raw_rrn"] = extract_full_rrn(raw_cand)
+            elif not emp.get("_raw_rrn"):
+                emp["_raw_rrn"] = extract_full_rrn(raw_cand)
+            emp["주민등록번호"] = mask_rrn_front7(emp.get("_raw_rrn") or raw_cand)
         if "사업장" not in emp:
             emp["사업장"] = wp_lbl
         if not emp.get("사원코드"):
@@ -755,19 +764,41 @@ def _recalculate_all_employee_rows(pstate: Dict[str, Any]) -> None:
 
 
 def _recalculate_all_freelancer_rows(pstate: Dict[str, Any]) -> None:
+    """
+    [프리랜서 세전/세후 정밀 재계산]
+    - 파일 업로드 시점(또는 수기 수정 시점)의 기준 금액(`_base_amount`)을 보존하여,
+      1) '세전'일 때는 `_base_amount`가 그대로 '지급총액'이 되어 3.3%를 공제하고,
+      2) '세후역산'일 때는 `_base_amount`가 그대로 '차인지급액(실지급액)'이 되어 지급총액을 역산합니다.
+    """
     new_list: List[Dict[str, Any]] = []
     for idx, fr in enumerate(pstate.get("freelancers", []), start=1):
         in_mode = str(fr.get("입력기준", "세전")).strip()
-        if in_mode == "세후역산" and int(fr.get("차인지급액", 0) or 0) > 0 and int(fr.get("지급총액", 0) or 0) == 0:
-            calc = solve_gross_from_net_freelancer(int(fr["차인지급액"]))
+        base_amt = int(fr.get("_base_amount") or 0)
+        if base_amt <= 0:
+            if in_mode == "세후역산":
+                base_amt = int(fr.get("차인지급액", 0) or fr.get("지급총액", 0) or 0)
+            else:
+                base_amt = int(fr.get("지급총액", 0) or fr.get("차인지급액", 0) or 0)
+            fr["_base_amount"] = base_amt
+
+        if in_mode == "세후역산":
+            calc = solve_gross_from_net_freelancer(base_amt)
         else:
-            calc = calculate_freelancer_row(int(fr.get("지급총액", 0) or 0))
+            calc = calculate_freelancer_row(base_amt)
+
         fr["지급총액"] = calc["gross_pay"]
         fr["세율"] = 3
         fr["소득세"] = calc["income_tax"]
         fr["지방소득세"] = calc["local_tax"]
         fr["공제액계"] = calc["total_deduction"]
         fr["차인지급액"] = calc["net_pay"]
+        if fr.get("주민등록번호") or fr.get("_raw_rrn"):
+            raw_cand = str(fr.get("주민등록번호") or "")
+            if raw_cand and "*" not in raw_cand:
+                fr["_raw_rrn"] = extract_full_rrn(raw_cand)
+            elif not fr.get("_raw_rrn"):
+                fr["_raw_rrn"] = extract_full_rrn(raw_cand)
+            fr["주민등록번호"] = mask_rrn_front7(fr.get("_raw_rrn") or raw_cand)
         if not fr.get("코드"):
             fr["코드"] = f"{idx:04d}"
         if not fr.get("소득구분"):
@@ -2192,7 +2223,12 @@ def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
                     elif ctype.startswith("numeric"):
                         merged[k] = int(round(float(val or 0))) if pd.notna(val) and str(val).strip() != "" else 0
                     else:
-                        merged[k] = "" if pd.isna(val) else str(val).strip()
+                        str_v = "" if pd.isna(val) else str(val).strip()
+                        if k == "주민등록번호":
+                            if "*" not in str_v and str_v:
+                                merged["_raw_rrn"] = extract_full_rrn(str_v)
+                            str_v = mask_rrn_front7(merged.get("_raw_rrn") or str_v)
+                        merged[k] = str_v
                 new_emps.append(merged)
             if changed:
                 pstate["employees"] = new_emps
@@ -2451,11 +2487,22 @@ def _render_freelancer_aggrid(pstate: Dict[str, Any]) -> None:
                         continue
                     val = row.get(k)
                     if ctype.startswith("numeric"):
-                        merged[k] = int(round(float(val or 0))) if pd.notna(val) and str(val).strip() != "" else 0
+                        num_v = int(round(float(val or 0))) if pd.notna(val) and str(val).strip() != "" else 0
+                        merged[k] = num_v
+                        if k == "지급총액":
+                            merged["_base_amount"] = num_v
+                            merged["입력기준"] = "세전"
+                        elif k == "차인지급액":
+                            merged["_base_amount"] = num_v
+                            merged["입력기준"] = "세후역산"
                     else:
                         str_v = "" if pd.isna(val) else str(val).strip()
                         if k == "소득구분":
                             str_v = _ind_code_only(str_v)  # 화면 표시는 "940909 (기타자영업)", 저장은 코드 6자리
+                        elif k == "주민등록번호":
+                            if "*" not in str_v and str_v:
+                                merged["_raw_rrn"] = extract_full_rrn(str_v)
+                            str_v = mask_rrn_front7(merged.get("_raw_rrn") or str_v)
                         merged[k] = str_v
                 new_frees.append(merged)
             if changed:
@@ -2566,7 +2613,35 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
     if is_emp_mode:
         top_c1, top_c2, top_c3, _top_sp, top_c4, top_c5 = _tbl_card.columns([1.45, 0.85, 1.25, 1.6, 1.45, 1.25], gap="small", vertical_alignment="center")
     else:
-        top_c1, top_c2, top_c3, _top_sp, top_c4, top_c5 = _tbl_card.columns([1.6, 0.85, 1.25, 1.4, 1.35, 1.55], gap="small", vertical_alignment="center")
+        top_c1, top_c2, top_c3, _top_sp, top_c4, top_c5 = _tbl_card.columns([1.45, 0.72, 1.10, 1.85, 1.20, 1.38], gap="small", vertical_alignment="center")
+        with _top_sp:
+            frees_cur = pstate.get("freelancers", [])
+            is_all_net = bool(frees_cur) and all(str(f.get("입력기준", "세전")) == "세후역산" for f in frees_cur)
+            sw_label = "기준금액: 세전 (  ●) 세후" if is_all_net else "기준금액: 세전 (●  ) 세후"
+            sw_help = (
+                "클릭 시 프리랜서 전체의 기준금액을 [세전(지급총액 기준)] ↔ [세후(차인지급액 기준 역산)]으로 일괄 전환합니다."
+            )
+            if st.button(
+                sw_label,
+                type="primary" if is_all_net else "secondary",
+                width="stretch",
+                key="btn_free_bulk_gross_net_switch",
+                help=sw_help,
+            ):
+                target_next_mode = "세전" if is_all_net else "세후역산"
+                for f_item in frees_cur:
+                    if int(f_item.get("_base_amount") or 0) <= 0:
+                        f_item["_base_amount"] = int(
+                            f_item.get("차인지급액", 0)
+                            if str(f_item.get("입력기준", "세전")) == "세후역산"
+                            else f_item.get("지급총액", 0)
+                        )
+                    f_item["입력기준"] = target_next_mode
+                _recalculate_all_freelancer_rows(pstate)
+                pstate["grid_version"] = int(pstate.get("grid_version", 0)) + 1
+                mode_desc = "세후(파일 금액 = 차인지급액 기준 3.3% 역산)" if target_next_mode == "세후역산" else "세전(파일 금액 = 지급총액 기준 3.3% 공제)"
+                pstate["chat_logs"].append(f"[전체 스위치 전환] 프리랜서 {len(frees_cur)}명 전체를 '{mode_desc}'으로 일괄 전환했습니다.")
+                st.rerun()
 
     with top_c1:
         prev_btn_label = "전월 급여 불러오기" if is_emp_mode else "전월 사업소득 불러오기"

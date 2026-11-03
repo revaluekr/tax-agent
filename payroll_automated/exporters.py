@@ -346,7 +346,7 @@ def export_wehago_freelancer_excel(
         pay_digits = re.sub(r"[^0-9]", "", str(fr.get("지급년월일") or ""))
         pay8 = pay_digits[:8] if len(pay_digits) >= 8 else default_pay8
 
-        rrn_digits = re.sub(r"[^0-9*]", "", str(fr.get("주민등록번호") or ""))
+        rrn_digits = re.sub(r"[^0-9*]", "", str(fr.get("_raw_rrn") or fr.get("주민등록번호") or ""))
         gross = int(fr.get("지급총액", 0) or 0)
         itax = int(fr.get("소득세", 0) or 0)
         ltax = int(fr.get("지방소득세", 0) or 0)
