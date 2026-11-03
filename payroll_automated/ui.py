@@ -1795,6 +1795,7 @@ def _process_uploaded_files_and_text(
                     filename=fname,
                     default_year_month=pstate.get("year_month", ""),
                     default_pay_date=pstate.get("pay_date", ""),
+                    gemini_api_key=gemini_api_key,
                 )
                 if parsed_fr:
                     pstate["freelancers"] = parsed_fr

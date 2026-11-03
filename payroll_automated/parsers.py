@@ -706,62 +706,91 @@ def _extract_hwp5_ole_text_and_rows(file_bytes: bytes) -> Tuple[str, List[List[A
                 pass
 
     full_text = "\n".join(paragraphs) if paragraphs else prv_text
-    if prv_text and len(prv_text) > len(full_text):
-        full_text = prv_text
+    if prv_text and prv_text not in full_text:
+        full_text = (full_text + "\n" + prv_text).strip() if full_text else prv_text
 
     rows: List[List[Any]] = []
-    # PrvText의 <셀1><셀2> 표 구조 또는 탭/구분자 기반 행 추출
-    for line in (prv_text or full_text).splitlines():
-        s_ln = line.strip()
-        if not s_ln:
-            continue
-        if "<" in s_ln and ">" in s_ln:
-            cell_matches = re.findall(r"<([^<>]+)>", s_ln)
-            if len(cell_matches) >= 2:
-                rows.append([c.strip() for c in cell_matches])
-                continue
-        if "\t" in s_ln:
-            parts = [p.strip() for p in s_ln.split("\t") if p.strip()]
-            if len(parts) >= 2:
-                rows.append(parts)
-                continue
-        if "|" in s_ln:
-            parts = [p.strip() for p in s_ln.split("|") if p.strip()]
-            if len(parts) >= 2:
-                rows.append(parts)
-                continue
-        spaced = [p.strip() for p in re.split(r"\s{2,}", s_ln) if p.strip()]
-        if len(spaced) >= 2:
-            rows.append(spaced)
 
-    # HWP 표 셀들이 개별 문단(paragraphs)으로 연속 저장된 경우: 헤더 문단 패턴을 감지해 N열 그리드로 재조립
+    # 1단계: PrvText의 <셀1><셀2>... 표 구조 정밀 파싱 (빈 셀 <> 및 셀 내부 줄바꿈까지 완벽 보존)
+    if prv_text and "<" in prv_text and ">" in prv_text:
+        # 줄 단위로 먼저 보되, 닫히지 않은 '<'가 있으면 다음 줄과 이어붙임
+        logical_lines: List[str] = []
+        buf_ln = ""
+        for raw_ln in prv_text.splitlines():
+            buf_ln = (buf_ln + " " + raw_ln.strip()).strip() if buf_ln else raw_ln.strip()
+            if buf_ln.count("<") <= buf_ln.count(">"):
+                logical_lines.append(buf_ln)
+                buf_ln = ""
+        if buf_ln:
+            logical_lines.append(buf_ln)
+
+        for s_ln in logical_lines:
+            if s_ln.startswith("<") and ">" in s_ln:
+                cell_matches = re.findall(r"<([^<>]*)>", s_ln)
+                if len(cell_matches) >= 2 and any(c.strip() for c in cell_matches):
+                    rows.append([c.strip() for c in cell_matches])
+
+    # 2단계: 탭(\t) / 파이프(|) / 2칸 이상 공백 구분 줄 추출
+    if len(rows) < 2:
+        for line in full_text.splitlines():
+            s_ln = line.strip()
+            if not s_ln or (s_ln.startswith("<") and ">" in s_ln):
+                continue
+            if "\t" in s_ln:
+                parts = [p.strip() for p in s_ln.split("\t")]
+                if len(parts) >= 2 and any(parts):
+                    rows.append(parts)
+                    continue
+            if "|" in s_ln:
+                parts = [p.strip() for p in s_ln.split("|")]
+                if len(parts) >= 2 and any(parts):
+                    rows.append(parts)
+                    continue
+            spaced = [p.strip() for p in re.split(r"\s{2,}", s_ln) if p.strip()]
+            if len(spaced) >= 2:
+                rows.append(spaced)
+
+    # 3단계: HWP 표 셀들이 개별 문단(paragraphs)으로 연속 저장된 경우
+    # 헤더 키워드 위치와 첫 번째 데이터 행(인명 또는 주민번호) 사이의 거리를 계산해 정확한 열 개수(col_cnt)로 2차원 행 재조립
     if len(rows) < 2 and len(paragraphs) >= 4:
-        flat_cells = [p.replace("\n", " ").strip() for p in paragraphs if p.strip()]
-        header_tokens = {
-            "성명", "이름", "소득자명", "근로자명", "주민등록번호", "주민번호", "생년월일",
-            "기본급", "식대", "지급액", "지급총액", "지급액계", "실지급액", "차인지급액",
-            "세전", "세후", "금액", "급여", "귀속년월", "귀속연월", "지급일자", "지급년월일",
-            "업종코드", "소득구분", "사번", "코드", "사원코드", "직급", "부서", "입사일",
+        flat_cells = [re.sub(r"\s+", " ", p).strip() for p in paragraphs if p.strip()]
+        name_hdr_set = {"성명", "이름", "소득자명", "근로자명", "사원명", "성명(상호)", "대상자", "프리랜서명"}
+        other_hdr_set = {
+            "주민등록번호", "주민번호", "생년월일", "기본급", "식대", "지급액", "지급총액", "지급액계",
+            "실지급액", "차인지급액", "세전", "세후", "금액", "급여", "용역비", "수당", "보수액",
+            "귀속년월", "귀속연월", "지급일자", "지급년월일", "업종코드", "소득구분", "사번", "코드",
+            "사원코드", "직급", "부서", "입사일", "연번", "번호", "비고", "소득세", "지방소득세",
+            "은행", "계좌번호", "연락처",
         }
-        h_start = -1
+        all_hdr_set = name_hdr_set | other_hdr_set
+
         for i_c, cell_txt in enumerate(flat_cells):
             c_clean = re.sub(r"\s+", "", cell_txt)
-            if c_clean in header_tokens or _match_canonical_field(cell_txt) is not None:
-                # 연속된 헤더 셀 개수 측정
-                col_cnt = 0
-                for j_c in range(i_c, min(i_c + 20, len(flat_cells))):
+            if c_clean in name_hdr_set:
+                # 성명 헤더 앞쪽에 '연번'/'번호'/'코드'/'사번'이 있으면 그 위치를 표 시작점(h_start)으로 설정
+                h_start = i_c
+                if i_c > 0 and re.sub(r"\s+", "", flat_cells[i_c - 1]) in ("연번", "번호", "코드", "사번", "사원코드", "No", "NO", "순번"):
+                    h_start = i_c - 1
+                name_offset = i_c - h_start
+
+                # i_c 이후에서 첫 번째 실제 사람 이름(2~4자 한글, 헤더 단어 제외)이 등장하는 위치를 찾아 열 개수(col_cnt) 산출
+                detected_cols = 0
+                for j_c in range(i_c + 2, min(i_c + 25, len(flat_cells))):
                     cand_c = re.sub(r"\s+", "", flat_cells[j_c])
-                    # 데이터 행(실제 한글 2~4자 인명 또는 주민번호/날짜/금액 숫자)이 시작되면 헤더 종료
-                    if col_cnt >= 2 and (
-                        re.match(r"^\d{6}-?[1-8*]", cand_c)
-                        or (re.match(r"^[가-힣]{2,4}$", cand_c) and cand_c not in header_tokens and _match_canonical_field(cand_c) is None)
+                    if (
+                        re.match(r"^[가-힣]{2,4}$", cand_c)
+                        and cand_c not in all_hdr_set
+                        and _match_canonical_field(cand_c) is None
+                        and is_valid_person_name(cand_c)
                     ):
-                        break
-                    col_cnt += 1
-                if 2 <= col_cnt <= 18:
-                    h_start = i_c
-                    for r_pos in range(h_start, len(flat_cells), col_cnt):
-                        chunk = flat_cells[r_pos:r_pos + col_cnt]
+                        # j_c가 첫 데이터 행의 '성명' 셀이므로, 표의 열 개수는 (j_c - name_offset) - h_start = j_c - i_c
+                        cand_cols = j_c - i_c
+                        if 2 <= cand_cols <= 18:
+                            detected_cols = cand_cols
+                            break
+                if detected_cols >= 2:
+                    for r_pos in range(h_start, len(flat_cells), detected_cols):
+                        chunk = flat_cells[r_pos:r_pos + detected_cols]
                         if len(chunk) >= 2:
                             rows.append(chunk)
                     break
@@ -1234,7 +1263,8 @@ def parse_client_payroll_excel(
     if not employees and filename.lower().endswith((".hwp", ".hwpx", ".docx", ".cell", ".csv")):
         doc_txt, _ = extract_universal_document_text_and_rows(file_bytes, filename=filename)
         if doc_txt.strip():
-            slips = _parse_payroll_ledger_or_slip_pdf_text(doc_txt, effective_table=effective_table)
+            slip_res = _parse_payroll_ledger_or_slip_pdf_text(doc_txt, filename=filename, effective_table=effective_table)
+            slips = slip_res.get("employees", []) if isinstance(slip_res, dict) else (slip_res if isinstance(slip_res, list) else [])
             if not slips:
                 slips = _parse_payroll_ledger_plain_text_fallback(doc_txt, effective_table=effective_table)
             if slips:
@@ -2398,11 +2428,49 @@ def apply_insurance_notices_to_employees(
 # 3. 사업소득(3.3%) 엑셀 파서 (.xlsx / .xls 모두 호환)
 # ─────────────────────────────────────────────────────────────
 
+def _match_freelancer_header_col(raw_header: str) -> Optional[str]:
+    """괄호·단위·줄바꿈이 포함된 사업소득 표 헤더('지급액(원)', '성명(프리랜서)', '주민등록번호(생년월일)' 등)도 유연하게 매칭합니다."""
+    if not raw_header:
+        return None
+    c = re.sub(r"\s+", "", raw_header)
+    c_base = re.sub(r"\([^)]*\)|\[[^\]]*\]", "", c)
+    for target in (c, c_base):
+        if not target:
+            continue
+        if target in ("소득자명", "성명", "이름", "근로자명", "대상자", "프리랜서명", "강사명", "수령인", "수취인", "외주자", "지급대상", "계약자"):
+            return "성명"
+        if target in ("주민등록번호", "주민번호", "생년월일", "주민외국인번호", "실명번호", "신분증번호"):
+            return "주민등록번호"
+        if target in ("차인지급액", "실지급액", "세후금액", "세후", "실수령액", "실수령", "입금액", "이체금액", "실입금액", "차감지급액"):
+            return "차인지급액"
+        if target in ("지급총액", "지급액", "세전금액", "세전", "지급액계", "금액", "급여", "용역비", "수당", "보수액", "원천징수대상금액", "청구금액", "계약금액", "강사료", "원고료", "자문료"):
+            return "지급총액"
+        if target in ("귀속년월", "귀속연월", "귀속월"):
+            return "귀속년월"
+        if target in ("지급년월일", "지급연월", "지급년월", "지급일자", "지급일", "이체일", "입금일"):
+            return "지급년월일"
+        if target in ("소득구분", "업종코드", "직종", "업종"):
+            return "소득구분"
+        if target in ("코드", "사번", "사원코드", "소득자코드"):
+            return "코드"
+    # 부분 포함 매칭
+    if any(k in c for k in ("주민등록", "주민번호", "생년월일")):
+        return "주민등록번호"
+    if any(k in c for k in ("실지급", "차인지급", "실수령", "세후", "입금액", "이체금액")):
+        return "차인지급액"
+    if any(k in c for k in ("지급총액", "지급액", "세전", "용역비", "강사료", "수당", "금액", "급여")) and "세액" not in c and "소득세" not in c and "공제" not in c:
+        return "지급총액"
+    if any(k in c for k in ("소득자명", "성명", "이름", "프리랜서명", "강사명", "대상자")):
+        return "성명"
+    return None
+
+
 def parse_freelancer_excel(
     file_bytes: bytes,
     filename: str = "",
     default_year_month: str = "",
     default_pay_date: str = "",
+    gemini_api_key: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """사업소득대장 또는 위하고 사업소득 업로드 엑셀 파싱"""
     rows = _read_excel_rows_universal(file_bytes, filename=filename)
@@ -2416,45 +2484,23 @@ def parse_freelancer_excel(
             txt = re.sub(r"\s+", "", _clean_header_cell(val))
             sub_txt = re.sub(r"\s+", "", _clean_header_cell(next_row[c_i])) if c_i < len(next_row) else ""
             for cand in (txt, sub_txt):
-                if not cand:
-                    continue
-                if cand in ("소득자명", "성명", "이름", "근로자명", "성명(상호)", "대상자", "프리랜서명"):
-                    temp_map.setdefault(c_i, "성명")
-                elif cand in ("주민등록번호", "주민번호", "생년월일", "주민(외국인)번호", "실명번호"):
-                    temp_map.setdefault(c_i, "주민등록번호")
-                elif cand in ("지급총액", "지급액", "세전금액", "세전", "지급액계", "금액", "급여", "용역비", "수당", "보수액", "원천징수대상금액"):
-                    temp_map.setdefault(c_i, "지급총액")
-                elif cand in ("차인지급액", "실지급액", "세후금액", "세후", "실수령액", "실수령", "입금액", "이체금액"):
-                    temp_map.setdefault(c_i, "차인지급액")
-                elif cand in ("귀속년월", "귀속연월"):
-                    temp_map.setdefault(c_i, "귀속년월")
-                elif cand in ("지급년월일", "지급연월", "지급년월", "지급일자"):
-                    temp_map.setdefault(c_i, "지급년월일")
-                elif cand in ("소득구분", "업종코드", "직종"):
-                    temp_map.setdefault(c_i, "소득구분")
-                elif cand in ("코드", "사번", "사원코드"):
-                    temp_map.setdefault(c_i, "코드")
+                mapped_f = _match_freelancer_header_col(cand)
+                if mapped_f:
+                    temp_map.setdefault(c_i, mapped_f)
         if "성명" in temp_map.values() and len(temp_map) >= 2:
             header_idx = r_i
             col_map = temp_map
             break
 
     if header_idx < 0:
-        # 표 헤더가 없는 한글(.hwp/.hwpx)·워드(.docx)·한셀(.cell) 또는 자유 양식인 경우 텍스트 파서로 자동 폴백
-        doc_txt, _ = extract_universal_document_text_and_rows(file_bytes, filename=filename)
-        if doc_txt.strip():
-            by_pdf_txt = _parse_freelancer_ledger_pdf_text(doc_txt, default_ym=default_year_month or datetime.now().strftime("%Y-%m"))
-            if by_pdf_txt:
-                return by_pdf_txt
-            kakao_fallback = parse_kakao_text_instructions(
-                raw_text=doc_txt,
-                default_year_month=default_year_month,
-                default_pay_date=default_pay_date,
-                default_is_freelancer=True,
-            )
-            if kakao_fallback.get("freelancers"):
-                return kakao_fallback["freelancers"]
-        return []
+        return _fallback_parse_freelancers_from_doc(
+            file_bytes=file_bytes,
+            filename=filename,
+            rows=rows,
+            default_year_month=default_year_month,
+            default_pay_date=default_pay_date,
+            gemini_api_key=gemini_api_key,
+        )
 
     freelancers: List[Dict[str, Any]] = []
     for r_i in range(header_idx + 1, len(rows)):
@@ -2504,7 +2550,173 @@ def parse_freelancer_excel(
             "공제액계": calc["total_deduction"],
             "차인지급액": calc["net_pay"],
         })
+    if not freelancers:
+        return _fallback_parse_freelancers_from_doc(
+            file_bytes=file_bytes,
+            filename=filename,
+            rows=rows,
+            default_year_month=default_year_month,
+            default_pay_date=default_pay_date,
+            gemini_api_key=gemini_api_key,
+        )
     return freelancers
+
+
+def _fallback_parse_freelancers_from_doc(
+    file_bytes: bytes,
+    filename: str = "",
+    rows: Optional[List[List[Any]]] = None,
+    default_year_month: str = "",
+    default_pay_date: str = "",
+    gemini_api_key: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """한글(.hwp/.hwpx)·워드(.docx)·한셀(.cell) 등에서 정형 표 헤더 매칭이 안 될 때
+    1) 지급대장 정규식 파서 -> 2) 연속 문단(성명+주민번호+금액) 블록 스캐너 -> 3) 카톡 줄글 파서 -> 4) Gemini AI 문서 파서 순서로 추출합니다."""
+    doc_txt, doc_rows = extract_universal_document_text_and_rows(file_bytes, filename=filename)
+    eff_ym = default_year_month or datetime.now().strftime("%Y-%m")
+    eff_pd = default_pay_date or datetime.now().strftime("%Y-%m-%d")
+
+    if doc_txt.strip():
+        # 1) 사업소득 지급대장 PDF 텍스트 파서 (반환값이 Dict이므로 .get("freelancers") 추출)
+        try:
+            pdf_res = _parse_freelancer_ledger_pdf_text(doc_txt, filename=filename)
+            if isinstance(pdf_res, dict) and pdf_res.get("freelancers"):
+                return pdf_res["freelancers"]
+        except Exception:
+            pass
+
+        # 2) 한글(.hwp) 문단/셀 연속 스캐너: 문단 리스트에서 (한글 성명 2~4자) 주변에 (주민번호 또는 급여 금액)이 등장하는 패턴 추출
+        tokens = [t.strip() for t in re.split(r"[\n\t|]+", doc_txt) if t.strip()]
+        skip_words = {
+            "성명", "이름", "소득자명", "근로자명", "사원명", "주민등록번호", "주민번호", "생년월일",
+            "지급총액", "지급액", "세전금액", "세후금액", "실지급액", "차인지급액", "소득세", "지방소득세",
+            "공제액계", "귀속년월", "귀속연월", "지급년월일", "지급일자", "업종코드", "소득구분", "합계", "총계",
+            "소계", "사업소득", "프리랜서", "원천징수", "영수증", "명세서", "대장", "내역서", "비고", "연번", "번호",
+        }
+        scanned_fr: List[Dict[str, Any]] = []
+        i_tok = 0
+        while i_tok < len(tokens):
+            tk = tokens[i_tok]
+            # 한 줄에 이름 + 금액(또는 주민번호)이 함께 있는 경우는 3단계 카톡 파서가 처리하도록 넘기고,
+            # 여기서는 셀이 줄바꿈으로 쪼개진 경우(토큰 하나가 순수 이름인 경우)를 포착
+            tk_clean = re.sub(r"\s+", "", tk)
+            if (
+                re.match(r"^[가-힣]{2,4}$", tk_clean)
+                and tk_clean not in skip_words
+                and is_valid_person_name(tk_clean)
+            ):
+                window = tokens[i_tok + 1 : min(len(tokens), i_tok + 8)]
+                found_rrn = ""
+                found_amts: List[int] = []
+                found_ind = "940909"
+                consumed = 0
+                for w_idx, w_tok in enumerate(window):
+                    w_clean = re.sub(r"\s+", "", w_tok)
+                    # 다음 사람 이름이 나오면 중단
+                    if (
+                        w_idx >= 1
+                        and re.match(r"^[가-힣]{2,4}$", w_clean)
+                        and w_clean not in skip_words
+                        and is_valid_person_name(w_clean)
+                        and (found_amts or found_rrn)
+                    ):
+                        break
+                    m_r = re.search(r"(\d{6}\s*-\s*[1-8*][0-9*]{5,6}|\b\d{13}\b)", w_tok)
+                    if m_r and not found_rrn:
+                        found_rrn = normalize_rrn(m_r.group(1))
+                        consumed = w_idx + 1
+                        continue
+                    m_ic = re.search(r"\b(94\d{4})\b", w_tok)
+                    if m_ic:
+                        found_ind = m_ic.group(1)
+                        consumed = w_idx + 1
+                        continue
+                    # 금액 숫자 (10,000원 이상 ~ 5억 이하)
+                    w_no_date = re.sub(r"20\d{2}[-./년]\s*\d{1,2}(?:[-./월]\s*\d{1,2})?", " ", w_tok)
+                    for m_n in re.finditer(r"(\d{1,3}(?:,\d{3})+|\d{5,9}|\d+(?:\.\d+)?\s*만\s*원?)", w_no_date):
+                        v_n = parse_number(m_n.group(1), 0)
+                        if "만" in m_n.group(1) and v_n < 10000:
+                            v_n = int(float(re.sub(r"[^0-9.]", "", m_n.group(1))) * 10000)
+                        if 10000 <= v_n <= 500_000_000:
+                            found_amts.append(v_n)
+                            consumed = w_idx + 1
+                if found_amts:
+                    gross_v = max(found_amts)
+                    calc = calculate_freelancer_row(gross_v)
+                    scanned_fr.append({
+                        "코드": f"{len(scanned_fr) + 1:04d}",
+                        "성명": tk_clean,
+                        "주민등록번호": found_rrn,
+                        "소득구분": found_ind,
+                        "귀속년월": eff_ym,
+                        "지급년월일": eff_pd,
+                        "입력기준": "세전",
+                        "지급총액": calc["gross_pay"],
+                        "세율": 3,
+                        "소득세": calc["income_tax"],
+                        "지방소득세": calc["local_tax"],
+                        "공제액계": calc["total_deduction"],
+                        "차인지급액": calc["net_pay"],
+                    })
+                    i_tok += max(1, consumed)
+                    continue
+            i_tok += 1
+
+        if scanned_fr:
+            return scanned_fr
+
+        # 3) 한 줄 텍스트(카톡 양식) 파서 폴백
+        kakao_fallback = parse_kakao_text_instructions(
+            raw_text=doc_txt,
+            default_year_month=eff_ym,
+            default_pay_date=eff_pd,
+            default_is_freelancer=True,
+        )
+        if kakao_fallback.get("freelancers"):
+            return kakao_fallback["freelancers"]
+
+        # 4) 비정형 한글/워드/한셀 문서를 위한 Gemini AI 추출 폴백
+        try:
+            prompt = (
+                "아래 문서 텍스트에서 사업소득자(프리랜서/외주/강사 등) 지급 내역을 모두 추출해 JSON 배열로만 응답하세요.\n"
+                "출력 형식: "
+                '[{"name": "성명", "rrn": "주민등록번호(없으면 빈문자열)", "ind_code": "6자리업종코드(기본 940909)", "is_net": false, "amount": 금액_정수}]'
+                f"\n\n[문서 내용]\n{doc_txt[:12000]}"
+            )
+            raw_ai = _call_gemini_contents([prompt], prefer_pro=False, explicit_api_key=gemini_api_key)
+            if raw_ai:
+                m_arr = re.search(r"\[.*\]", raw_ai, re.DOTALL)
+                if m_arr:
+                    arr_data = json.loads(m_arr.group(0))
+                    ai_fr: List[Dict[str, Any]] = []
+                    for idx_a, item in enumerate(arr_data if isinstance(arr_data, list) else [], start=1):
+                        nm = normalize_korean_name(item.get("name", ""))
+                        amt = parse_number(item.get("amount", 0), 0)
+                        if not is_valid_person_name(nm) or amt <= 0:
+                            continue
+                        is_n = bool(item.get("is_net", False))
+                        calc = solve_gross_from_net_freelancer(amt) if is_n else calculate_freelancer_row(amt)
+                        ai_fr.append({
+                            "코드": f"{idx_a:04d}",
+                            "성명": nm,
+                            "주민등록번호": normalize_rrn(item.get("rrn", "")),
+                            "소득구분": str(item.get("ind_code") or "940909").strip(),
+                            "귀속년월": eff_ym,
+                            "지급년월일": eff_pd,
+                            "입력기준": "세후역산" if is_n else "세전",
+                            "지급총액": calc["gross_pay"],
+                            "세율": 3,
+                            "소득세": calc["income_tax"],
+                            "지방소득세": calc["local_tax"],
+                            "공제액계": calc["total_deduction"],
+                            "차인지급액": calc["net_pay"],
+                        })
+                    if ai_fr:
+                        return ai_fr
+        except Exception:
+            pass
+
+    return []
 
 
 # ─────────────────────────────────────────────────────────────

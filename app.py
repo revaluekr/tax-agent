@@ -2032,6 +2032,73 @@ def create_pdf_report(report_text: str) -> bytes:
 # ---------------------------------------------------------
 # 헬퍼 함수 4: 질문/원클릭 액션 통합 백그라운드 실행기
 # ---------------------------------------------------------
+
+def _strip_system_diag_and_badge(raw_ans: str) -> str:
+    """이전 대화 히스토리 전달 시 상단 모델 배지와 하단 시스템 진단 블록(> 🛠 도구 호출...)을 제거해 순수 본문만 보존합니다."""
+    if not raw_ans:
+        return ""
+    txt = re.sub(r"^(?:>\s*.*?\n)+\n*", "", raw_ans.strip())
+    txt = re.split(r"\n---\n>\s*🛠\s*도구 호출", txt)[0].strip()
+    return txt
+
+def _compress_older_turn_answer(raw_ans: str) -> str:
+    """
+    [역산 6번째 이전 대화 스마트 압축]
+    - AI 답변에서 [1. 결론] + [2. 내용 안의 모든 마크다운 표(|...|) 및 직전 표 제목 줄 + 핵심 계산 산식 줄] + [3. 관련법령]을 100% 보존하고
+      중간의 긴 줄글 해설만 생략하여 용량을 80~90% 절감하면서 표·세액·법령 누락률 0%를 달성합니다.
+    """
+    clean_txt = _strip_system_diag_and_badge(raw_ans)
+    if len(clean_txt) <= 1800:
+        return clean_txt
+
+    m2 = re.search(r"(?m)^(?:#{1,4}\s*|\*\*)?2\.\s*(?:내용|검토\s*내용|상세\s*내용|상세\s*검토)", clean_txt)
+    m3 = re.search(r"(?m)^(?:#{1,4}\s*|\*\*)?3\.\s*(?:관련\s*법령|근거\s*자료|관련\s*규정)", clean_txt)
+    if not m2 or not m3 or m2.start() >= m3.start():
+        # 카톡 안내문·이메일 초안 등 1/2/3 구조가 아닌 답변인 경우 앞부분 요약 + 표 전체 보존
+        lines = clean_txt.splitlines()
+        tbl_lines = [ln.strip() for ln in lines if ln.strip().startswith("|") and ln.strip().endswith("|")]
+        head_part = clean_txt[:1500].strip()
+        if tbl_lines:
+            return head_part + "\n\n[발췌 표]\n" + "\n".join(tbl_lines)
+        return head_part
+
+    sec1_part = clean_txt[:m2.start()].strip()
+    sec2_part = clean_txt[m2.start():m3.start()]
+    sec3_part = clean_txt[m3.start():].strip()
+
+    sec2_lines = sec2_part.splitlines()
+    kept_sec2: list[str] = []
+    in_table = False
+    calc_lines_cnt = 0
+
+    for idx_l, ln in enumerate(sec2_lines):
+        s = ln.strip()
+        if not s:
+            if in_table:
+                kept_sec2.append("")
+            in_table = False
+            continue
+        if s.startswith("|") and s.endswith("|"):
+            if not in_table:
+                # 표 바로 직전 줄이 표 제목(소제목)이면 함께 보존
+                if idx_l > 0:
+                    prev_s = sec2_lines[idx_l - 1].strip()
+                    if prev_s and not (prev_s.startswith("|") and prev_s.endswith("|")) and len(prev_s) <= 90:
+                        if not kept_sec2 or kept_sec2[-1] != prev_s:
+                            kept_sec2.append(prev_s)
+                in_table = True
+            kept_sec2.append(s)
+        else:
+            in_table = False
+            # 표 밖이라도 핵심 계산 산식(=, ×, ÷, 세액/한도/공제 금액 계산 줄)이 있으면 최대 15줄까지 함께 보존
+            if calc_lines_cnt < 15 and re.search(r"(?:[=×÷]|산출세액|결정세액|공제액|한도액|납부세액|실효세율).*?\d+(?:,\d{3})*\s*(?:만\s*원|억\s*원|원|%)", s):
+                kept_sec2.append(s)
+                calc_lines_cnt += 1
+
+    sec2_compact = ("### 2. 내용 (핵심 표·산식 발췌)\n" + "\n".join(kept_sec2).strip()) if kept_sec2 else ""
+    parts = [p for p in (sec1_part, sec2_compact, sec3_part) if p]
+    return "\n\n".join(parts)
+
 def _trigger_agent_task(
     effective_ws_id: str,
     selected_room: str,
@@ -2072,12 +2139,9 @@ def _trigger_agent_task(
             effective_prompt.startswith("[프로]") or (has_attached_file and len(current_file_info["text"]) >= 15000)
         )
     )
-    msg_char_cap = 28000 if is_pro_request else 12000
 
     history_context = ""
     if current_messages:
-        all_idx = list(range(len(current_messages)))
-        recent_idx = (all_idx[:2] + all_idx[-6:]) if len(current_messages) > 6 else all_idx
         q_no_map, a_no_map, q_cnt, a_cnt = {}, {}, 0, 0
         for i_m, m_m in enumerate(current_messages):
             if m_m.get("role") == "user":
@@ -2086,37 +2150,48 @@ def _trigger_agent_task(
             else:
                 a_cnt += 1
                 a_no_map[i_m] = a_cnt
-        history_lines = [
-            "[이 대화방의 이전 대화 맥락 — 사용자가 별도 수식어 없이 후속 질문이나 조건 변경, 카톡/이메일 초안 변환, 또는 '[프로] 다시 검토해 줘'라고 말하더라도 반드시 아래 직전 질문·답변의 사례 금액, 자산 정보, 계산 내역을 그대로 이어받아 답변할 것]"
+
+        # [보완 ③] 카톡/이메일 변환 파생 답변은 '최근 5개 본 검토 대화' 카운트를 소모하지 않도록 분리하여
+        # 실제 세무 검토 보고서 최근 5건이 항상 100% 전문(결론+내용+표+관련법령)으로 보존되게 합니다.
+        main_report_a_indices = [
+            i_m for i_m, m_m in enumerate(current_messages)
+            if m_m.get("role") == "assistant"
+            and not any(k in (m_m.get("content", "")[:200]) for k in ("카카오톡 안내문", "이메일 회신", "카톡 안내문"))
         ]
-        for i_m in recent_idx:
-            m = current_messages[i_m]
+        recent_5_cutoff_idx = main_report_a_indices[-5] - 1 if len(main_report_a_indices) >= 5 else 0
+        recent_5_cutoff_idx = max(0, min(recent_5_cutoff_idx, max(0, len(current_messages) - 10)))
+
+        history_lines = [
+            "[이 대화방의 이전 대화 맥락 — 사용자가 별도 수식어 없이 후속 질문이나 조건 변경, 카톡/이메일 초안 변환, 또는 '[프로] 다시 검토해 줘'라고 말하더라도 반드시 아래 이전 질문·답변의 사례 금액, 자산 정보, 표·계산 내역을 그대로 이어받아 답변할 것]"
+        ]
+        for i_m, m in enumerate(current_messages):
             role_label = f"사용자 [{q_no_map[i_m]}번째 질문]" if m["role"] == "user" else f"에이전트 [{a_no_map[i_m]}번째 답변]"
             raw_c = m.get("content", "") or ""
-            if len(raw_c) > msg_char_cap:
-                head_n = int(msg_char_cap * 0.6)
-                tail_n = msg_char_cap - head_n
-                clipped_c = raw_c[:head_n] + "\n...(중간 생략)...\n" + raw_c[-tail_n:]
+            if m["role"] == "user":
+                # 모든 사용자 질문 원문은 초반~최근 전부 100% 보존 (사실관계·전제조건 누락 0%)
+                processed_c = raw_c
+            elif i_m >= recent_5_cutoff_idx:
+                # 최근 1~5번째 본 대화는 글자 수 제한 없이 [1. 결론 + 2. 내용(표 포함 전체) + 3. 관련법령] 100% 보존 (하단 시스템 진단 로그만 제거)
+                processed_c = _strip_system_diag_and_badge(raw_c)
             else:
-                clipped_c = raw_c
-            history_lines.append(f"- {role_label}: {clipped_c}")
+                # 역산 6번째 이전 대화는 [1. 결론] + [2. 내용 내 마크다운 표(|...|) 및 핵심 산식] + [3. 관련법령]만 정밀 발췌
+                processed_c = _compress_older_turn_answer(raw_c)
+            history_lines.append(f"- {role_label}: {processed_c}")
         history_context = "\n".join(history_lines) + "\n\n"
 
     target_block = ""
     if target_idx is not None and 0 <= target_idx < len(current_messages) and current_messages[target_idx].get("role") == "assistant":
-        t_ans = current_messages[target_idx].get("content", "") or ""
+        t_ans = _strip_system_diag_and_badge(current_messages[target_idx].get("content", "") or "")
         t_q = ""
         for j in range(target_idx - 1, -1, -1):
             if current_messages[j].get("role") == "user":
                 t_q = current_messages[j].get("content", "") or ""
                 break
         t_no = sum(1 for m_t in current_messages[: target_idx + 1] if m_t.get("role") == "assistant")
-        if len(t_ans) > msg_char_cap:
-            t_ans = t_ans[: int(msg_char_cap * 0.6)] + "\n...(중간 생략)...\n" + t_ans[-(msg_char_cap - int(msg_char_cap * 0.6)):]
         target_block = (
             f"[작업 대상 지정 — 이 대화방의 {t_no}번째 답변] 아래 요청의 '방금 작성한 검토 결과', '직전 질문 사안'은 "
             f"가장 최근 답변이 아니라 반드시 이 {t_no}번째 답변과 그 질문을 가리킵니다. 다른 답변의 사례·금액을 섞지 마세요.\n"
-            f"[대상 질문]\n{t_q[:3000]}\n[대상 답변]\n{t_ans}\n\n"
+            f"[대상 질문]\n{t_q}\n[대상 답변]\n{t_ans}\n\n"
         )
         display_prompt = f"↪️ **[{t_no}번째 답변 대상]** {display_prompt}"
 

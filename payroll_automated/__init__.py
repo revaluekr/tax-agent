@@ -1,21 +1,58 @@
 # -*- coding: utf-8 -*-
-"""
-인건비 자동화 패키지 (payroll_automated)
-- 4대보험 가입 근로자 [급여명세서·급여대장] 및 3.3% 프리랜서 [사업소득명세서·사업소득지급대장] 통합 자동화
-"""
+"""인건비 자동화 패키지 초기화 및 하위 모듈 자동 핫리로드(Hot-Reload) 브릿지"""
+import importlib
+import os
+import sys
 
-from __future__ import annotations
+_SUBMODULES = [
+    "payroll_automated.tax_table_data",
+    "payroll_automated.tax_tables",
+    "payroll_automated.parsers",
+    "payroll_automated.calculators",
+    "payroll_automated.exporters",
+    "payroll_automated.backup",
+    "payroll_automated.ai_tax_review",
+    "payroll_automated.ui",
+]
+_MTIMES = {}
 
-from typing import Any
+def _ensure_fresh_submodules() -> None:
+    pkg_dir = os.path.dirname(os.path.abspath(__file__))
+    need_reload = False
+    for mod_name in _SUBMODULES:
+        short_nm = mod_name.split(".")[-1]
+        fpath = os.path.join(pkg_dir, f"{short_nm}.py")
+        if os.path.exists(fpath):
+            mtime = os.path.getmtime(fpath)
+            if _MTIMES.get(mod_name) is not None and _MTIMES[mod_name] != mtime:
+                need_reload = True
+            _MTIMES[mod_name] = mtime
+    if need_reload:
+        for mod_name in _SUBMODULES:
+            if mod_name in sys.modules:
+                try:
+                    importlib.reload(sys.modules[mod_name])
+                except Exception:
+                    pass
+
+_ensure_fresh_submodules()
+
+from .ui import (
+    render_payroll_automated_main as _render_main,
+    render_payroll_automated_sidebar as _render_sidebar,
+)
+
+def render_payroll_automated_sidebar(*args, **kwargs):
+    _ensure_fresh_submodules()
+    from . import ui as _ui_mod
+    return _ui_mod.render_payroll_automated_sidebar(*args, **kwargs)
+
+def render_payroll_automated_main(*args, **kwargs):
+    _ensure_fresh_submodules()
+    from . import ui as _ui_mod
+    return _ui_mod.render_payroll_automated_main(*args, **kwargs)
 
 __all__ = [
-    "render_payroll_automated_main",
     "render_payroll_automated_sidebar",
+    "render_payroll_automated_main",
 ]
-
-
-def __getattr__(name: str) -> Any:
-    if name in ("render_payroll_automated_main", "render_payroll_automated_sidebar"):
-        from . import ui
-        return getattr(ui, name)
-    raise AttributeError(f"module 'payroll_automated' has no attribute {name!r}")
