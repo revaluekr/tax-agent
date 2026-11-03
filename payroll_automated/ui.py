@@ -481,6 +481,93 @@ div[data-testid="stDialog"] div[role="dialog"] {
     border-radius: 6px;
     display: block;
 }
+
+/* 🔴 사업소득 상단 [기준금액: 세전 (●   ) 세후] 캡슐 토글 스위치 전용 스타일 */
+div[class*="st-key-pay_free_sw_"] {
+    display: flex !important;
+    justify-content: center !important;
+    align-items: center !important;
+}
+div[class*="st-key-pay_free_sw_"] div.stButton > button {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 2px 4px !important;
+    min-height: 36px !important;
+    height: 36px !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 8px !important;
+    cursor: pointer !important;
+}
+div[class*="st-key-pay_free_sw_"] div.stButton > button:hover,
+div[class*="st-key-pay_free_sw_"] div.stButton > button:active,
+div[class*="st-key-pay_free_sw_"] div.stButton > button:focus {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    outline: none !important;
+}
+/* 왼쪽 라벨: '기준금액: 세전' */
+.st-key-pay_free_sw_gross div.stButton > button::before {
+    content: "기준금액: 세전";
+    font-size: 0.86rem;
+    font-weight: 800;
+    color: #dc2626;
+    letter-spacing: -0.3px;
+    white-space: nowrap;
+}
+.st-key-pay_free_sw_net div.stButton > button::before {
+    content: "기준금액: 세전";
+    font-size: 0.86rem;
+    font-weight: 600;
+    color: #94a3b8;
+    letter-spacing: -0.3px;
+    white-space: nowrap;
+}
+/* 가운데 빨간색 캡슐 트랙 + 흰색 동그라미(●) 이동 */
+div[class*="st-key-pay_free_sw_"] div.stButton > button p {
+    width: 48px !important;
+    height: 24px !important;
+    border-radius: 999px !important;
+    background: linear-gradient(180deg, #ef4444 0%, #dc2626 100%) !important;
+    border: 1.5px solid #b91c1c !important;
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.22), 0 1px 2px rgba(220, 38, 38, 0.25) !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    padding: 0 3px !important;
+    margin: 0 !important;
+    color: #ffffff !important;
+    font-size: 16px !important;
+    line-height: 1 !important;
+    transition: all 0.18s ease-in-out !important;
+}
+.st-key-pay_free_sw_gross div.stButton > button p {
+    justify-content: flex-start !important;
+}
+.st-key-pay_free_sw_net div.stButton > button p {
+    justify-content: flex-end !important;
+    background: linear-gradient(180deg, #dc2626 0%, #b91c1c 100%) !important;
+}
+/* 오른쪽 라벨: '세후' */
+.st-key-pay_free_sw_gross div.stButton > button::after {
+    content: "세후";
+    font-size: 0.86rem;
+    font-weight: 600;
+    color: #94a3b8;
+    letter-spacing: -0.3px;
+    white-space: nowrap;
+}
+.st-key-pay_free_sw_net div.stButton > button::after {
+    content: "세후";
+    font-size: 0.86rem;
+    font-weight: 800;
+    color: #dc2626;
+    letter-spacing: -0.3px;
+    white-space: nowrap;
+}
+
 </style>
 """
 
@@ -2613,21 +2700,25 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
     if is_emp_mode:
         top_c1, top_c2, top_c3, _top_sp, top_c4, top_c5 = _tbl_card.columns([1.45, 0.85, 1.25, 1.6, 1.45, 1.25], gap="small", vertical_alignment="center")
     else:
-        top_c1, top_c2, top_c3, _top_sp, top_c4, top_c5 = _tbl_card.columns([1.45, 0.72, 1.10, 1.85, 1.20, 1.38], gap="small", vertical_alignment="center")
-        with _top_sp:
-            frees_cur = pstate.get("freelancers", [])
-            is_all_net = bool(frees_cur) and all(str(f.get("입력기준", "세전")) == "세후역산" for f in frees_cur)
-            sw_label = "기준금액: 세전 (  ●) 세후" if is_all_net else "기준금액: 세전 (●  ) 세후"
+        top_c1, top_c2, top_c3, _top_sp, top_c4, top_c5 = _tbl_card.columns([1.6, 0.85, 1.25, 1.4, 1.35, 1.55], gap="small", vertical_alignment="center")
+        frees_cur = pstate.get("freelancers", [])
+        if frees_cur:
+            is_all_net = all(str(f.get("입력기준", "세전")) == "세후역산" for f in frees_cur)
+            pstate["free_bulk_is_net"] = is_all_net
+        else:
+            is_all_net = bool(pstate.get("free_bulk_is_net", False))
+        sw_key_cls = "pay_free_sw_net" if is_all_net else "pay_free_sw_gross"
+        with _top_sp, st.container(key=sw_key_cls):
             sw_help = (
-                "클릭 시 프리랜서 전체의 기준금액을 [세전(지급총액 기준)] ↔ [세후(차인지급액 기준 역산)]으로 일괄 전환합니다."
+                "클릭 시 동그라미(●)가 이동하며 프리랜서 전체의 기준금액을 [세전(지급총액 기준)] ↔ [세후(차인지급액 기준 역산)]으로 일괄 전환합니다."
             )
             if st.button(
-                sw_label,
-                type="primary" if is_all_net else "secondary",
+                "●",
                 width="stretch",
                 key="btn_free_bulk_gross_net_switch",
                 help=sw_help,
             ):
+                pstate["free_bulk_is_net"] = not is_all_net
                 target_next_mode = "세전" if is_all_net else "세후역산"
                 for f_item in frees_cur:
                     if int(f_item.get("_base_amount") or 0) <= 0:
