@@ -482,15 +482,26 @@ div[data-testid="stDialog"] div[role="dialog"] {
     display: block;
 }
 
-/* 🔴 사업소득 상단 [기준금액: 세전 (●   ) 세후] 캡슐 토글 스위치 전용 스타일 */
+/* 🔴 사업소득 상단 [기준금액: 세전 (●   ) 세후] 캡슐 토글 스위치 전용 스타일 (pay_main_css 우선순위 및 stTooltipHoverTarget 완전 대응) */
+[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"],
 div[class*="st-key-pay_free_sw_"] {
     display: flex !important;
     justify-content: center !important;
     align-items: center !important;
 }
-div[class*="st-key-pay_free_sw_"] div.stButton > button {
+[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"] div[data-testid="stTooltipHoverTarget"],
+div[class*="st-key-pay_free_sw_"] div[data-testid="stTooltipHoverTarget"] {
+    display: flex !important;
+    justify-content: center !important;
+    align-items: center !important;
+    width: 100% !important;
+}
+[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"] div.stButton button:not([kind="primary"]),
+[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"] div.stButton button,
+div[class*="st-key-pay_free_sw_"] div.stButton button {
     background: transparent !important;
     border: none !important;
+    border-bottom: none !important;
     box-shadow: none !important;
     padding: 2px 4px !important;
     min-height: 36px !important;
@@ -501,33 +512,53 @@ div[class*="st-key-pay_free_sw_"] div.stButton > button {
     gap: 8px !important;
     cursor: pointer !important;
 }
-div[class*="st-key-pay_free_sw_"] div.stButton > button:hover,
-div[class*="st-key-pay_free_sw_"] div.stButton > button:active,
-div[class*="st-key-pay_free_sw_"] div.stButton > button:focus {
+[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"] div.stButton button:not([kind="primary"]):hover:not(:disabled),
+[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"] div.stButton button:hover,
+[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"] div.stButton button:active,
+[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"] div.stButton button:focus,
+div[class*="st-key-pay_free_sw_"] div.stButton button:hover,
+div[class*="st-key-pay_free_sw_"] div.stButton button:active,
+div[class*="st-key-pay_free_sw_"] div.stButton button:focus {
     background: transparent !important;
     border: none !important;
+    border-bottom: none !important;
     box-shadow: none !important;
     outline: none !important;
 }
-/* 왼쪽 라벨: '기준금액: 세전' */
-.st-key-pay_free_sw_gross div.stButton > button::before {
-    content: "기준금액: 세전";
-    font-size: 0.86rem;
-    font-weight: 800;
-    color: #dc2626;
-    letter-spacing: -0.3px;
-    white-space: nowrap;
+[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"] div.stButton button > div,
+div[class*="st-key-pay_free_sw_"] div.stButton button > div {
+    flex: 0 0 auto !important;
+    width: auto !important;
+    min-width: 0 !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    margin: 0 !important;
+    padding: 0 !important;
 }
-.st-key-pay_free_sw_net div.stButton > button::before {
-    content: "기준금액: 세전";
-    font-size: 0.86rem;
-    font-weight: 600;
-    color: #94a3b8;
-    letter-spacing: -0.3px;
-    white-space: nowrap;
+/* 왼쪽 라벨: '기준금액: 세전' */
+[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-pay_free_sw_gross div.stButton button::before,
+.st-key-pay_free_sw_gross div.stButton button::before {
+    content: "기준금액: 세전" !important;
+    font-size: 0.86rem !important;
+    font-weight: 800 !important;
+    color: #dc2626 !important;
+    letter-spacing: -0.3px !important;
+    white-space: nowrap !important;
+}
+[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-pay_free_sw_net div.stButton button::before,
+.st-key-pay_free_sw_net div.stButton button::before {
+    content: "기준금액: 세전" !important;
+    font-size: 0.86rem !important;
+    font-weight: 600 !important;
+    color: #94a3b8 !important;
+    letter-spacing: -0.3px !important;
+    white-space: nowrap !important;
 }
 /* 가운데 빨간색 캡슐 트랙 + 흰색 동그라미(●) 이동 */
-div[class*="st-key-pay_free_sw_"] div.stButton > button p {
+[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"] div.stButton button:not([kind="primary"]) p,
+[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"] div.stButton button p,
+div[class*="st-key-pay_free_sw_"] div.stButton button p {
     width: 48px !important;
     height: 24px !important;
     border-radius: 999px !important;
@@ -540,32 +571,39 @@ div[class*="st-key-pay_free_sw_"] div.stButton > button p {
     margin: 0 !important;
     color: #ffffff !important;
     font-size: 16px !important;
+    font-weight: 800 !important;
     line-height: 1 !important;
     transition: all 0.18s ease-in-out !important;
 }
-.st-key-pay_free_sw_gross div.stButton > button p {
+[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-pay_free_sw_gross div.stButton button:not([kind="primary"]) p,
+[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-pay_free_sw_gross div.stButton button p,
+.st-key-pay_free_sw_gross div.stButton button p {
     justify-content: flex-start !important;
 }
-.st-key-pay_free_sw_net div.stButton > button p {
+[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-pay_free_sw_net div.stButton button:not([kind="primary"]) p,
+[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-pay_free_sw_net div.stButton button p,
+.st-key-pay_free_sw_net div.stButton button p {
     justify-content: flex-end !important;
     background: linear-gradient(180deg, #dc2626 0%, #b91c1c 100%) !important;
 }
 /* 오른쪽 라벨: '세후' */
-.st-key-pay_free_sw_gross div.stButton > button::after {
-    content: "세후";
-    font-size: 0.86rem;
-    font-weight: 600;
-    color: #94a3b8;
-    letter-spacing: -0.3px;
-    white-space: nowrap;
+[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-pay_free_sw_gross div.stButton button::after,
+.st-key-pay_free_sw_gross div.stButton button::after {
+    content: "세후" !important;
+    font-size: 0.86rem !important;
+    font-weight: 600 !important;
+    color: #94a3b8 !important;
+    letter-spacing: -0.3px !important;
+    white-space: nowrap !important;
 }
-.st-key-pay_free_sw_net div.stButton > button::after {
-    content: "세후";
-    font-size: 0.86rem;
-    font-weight: 800;
-    color: #dc2626;
-    letter-spacing: -0.3px;
-    white-space: nowrap;
+[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-pay_free_sw_net div.stButton button::after,
+.st-key-pay_free_sw_net div.stButton button::after {
+    content: "세후" !important;
+    font-size: 0.86rem !important;
+    font-weight: 800 !important;
+    color: #dc2626 !important;
+    letter-spacing: -0.3px !important;
+    white-space: nowrap !important;
 }
 
 </style>
@@ -2654,6 +2692,7 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
     # B안: 위치 표시·꼬리표·큰 제목 → 요약 카드 → 표 카드(툴바 + 표) → 내려받기 카드 → 입력창
     import ui_theme as _ui_theme
     st.markdown(_ui_theme.pay_main_css(), unsafe_allow_html=True)
+    st.markdown(PAYROLL_CSS, unsafe_allow_html=True)
     _corp_h = pstate.get("corp_name") or "거래처 미입력"
     _wp_h = _current_workplace_label(pstate)
     _ym_h = pstate.get("year_month") or ""
