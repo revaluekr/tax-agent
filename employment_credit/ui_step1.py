@@ -38,7 +38,25 @@ def _read_upload_text(u, extract_file_fn, room_key: str = "") -> str:
     스캔 이미지 PDF처럼 글자가 거의 없으면 공용 함수(이미지 판독)로 넘깁니다.
     """
     name = str(getattr(u, "name", "") or "")
-    if name.lower().endswith(".pdf"):
+    low_nm = name.lower()
+    if low_nm.endswith((".hwp", ".hwpx", ".cell", ".docx", ".csv")):
+        try:
+            from payroll_automated.parsers import extract_universal_document_text_and_rows
+            doc_txt, rows = extract_universal_document_text_and_rows(u.getvalue(), filename=name)
+            parts = [f"[첨부 문서 파일명: {name}]"]
+            if rows:
+                parts.append("\n--- [문서 내 표(Table) 데이터] ---")
+                for r in rows[:2000]:
+                    parts.append(" | ".join(str(c).strip() for c in r if c is not None))
+            if doc_txt and doc_txt.strip():
+                parts.append("\n--- [문서 본문 텍스트] ---")
+                parts.append(doc_txt.strip())
+            joined = "\n".join(parts)
+            if len(joined.strip()) >= 20:
+                return joined
+        except Exception:
+            pass
+    if low_nm.endswith(".pdf"):
         # 1순위 pypdfium2: 글자 단위로 저장된 원천징수부도 빠르게 읽음 (300쪽 약 4초, pypdf는 약 60초)
         try:
             import pypdfium2 as pdfium
@@ -238,9 +256,9 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
     )
     with st.container(key="ec_drop"):
         ups = st.file_uploader(
-            "여기에 파일(PDF·엑셀·CSV·이미지·인건비백업 .paybak)을 끌어다 놓으세요",
+            "여기에 파일(PDF·엑셀·한셀·한글·워드·CSV·캡처이미지·인건비백업 .paybak)을 끌어다 놓으세요",
             accept_multiple_files=True,
-            type=["pdf", "xlsx", "xls", "csv", "png", "jpg", "jpeg", "paybak"],
+            type=["pdf", "xlsx", "xls", "csv", "cell", "hwp", "hwpx", "docx", "png", "jpg", "jpeg", "webp", "paybak"],
             key=f"ec_up_{s['uploader_ver']}",
             label_visibility="collapsed",
         )

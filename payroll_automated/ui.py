@@ -75,7 +75,9 @@ from .ai_tax_review import payload_hash as ai_payload_hash
 from .parsers import (
     FREELANCER_INDUSTRY_CODES,
     _call_gemini_contents,
+    apply_chat_modifiers_to_state,
     apply_insurance_notices_to_employees,
+    extract_universal_document_text_and_rows,
     parse_client_payroll_excel,
     parse_freelancer_excel,
     parse_image_with_gemini_vision,
@@ -1781,7 +1783,12 @@ def _process_uploaded_files_and_text(
         fbytes = f_obj.getvalue() if hasattr(f_obj, "getvalue") else f_obj.read()
         lower_nm = fname.lower()
 
-        if lower_nm.endswith((".xlsx", ".xls")):
+        if lower_nm.endswith((".xlsx", ".xls", ".csv", ".cell", ".hwp", ".hwpx", ".docx")):
+            fmt_label = (
+                "한글 문서" if lower_nm.endswith((".hwp", ".hwpx"))
+                else ("워드 문서" if lower_nm.endswith(".docx")
+                      else ("한셀 문서" if lower_nm.endswith(".cell") else "엑셀·CSV"))
+            )
             if "사업소득" in fname or "프리랜서" in fname or pstate.get("sub_mode") == "FREE":
                 parsed_fr = parse_freelancer_excel(
                     fbytes,
@@ -1794,7 +1801,7 @@ def _process_uploaded_files_and_text(
                     pstate["sub_mode"] = "FREE"
                     if pstate.get("_period_user_set"):
                         _apply_period_to_rows(pstate)
-                    pstate["chat_logs"].append(f"[엑셀 로드] '{fname}'에서 사업소득자 {len(parsed_fr)}명을 불러왔습니다.")
+                    pstate["chat_logs"].append(f"[{fmt_label} 로드] '{fname}'에서 사업소득자 {len(parsed_fr)}명을 불러왔습니다.")
                     continue
 
             res_ex = parse_client_payroll_excel(
@@ -1812,7 +1819,7 @@ def _process_uploaded_files_and_text(
                 if res_ex["meta"].get("year_month"):
                     _set_period_from_file(pstate, res_ex["meta"]["year_month"])
                 pstate["chat_logs"].append(
-                    f"[급여 엑셀 로드] '{fname}'에서 근로자 {len(res_ex['employees'])}명 급여 내역을 추출했습니다."
+                    f"[{fmt_label} 로드] '{fname}'에서 근로자 {len(res_ex['employees'])}명 급여 내역을 추출했습니다."
                 )
             for w_msg in res_ex.get("warnings", []):
                 pstate["chat_logs"].append(f"[안내] {w_msg}")
@@ -1853,11 +1860,30 @@ def _process_uploaded_files_and_text(
                 pstate["chat_logs"].append(notice_res.get("message", f"PDF 확인 필요: {fname}"))
 
         elif lower_nm.endswith((".png", ".jpg", ".jpeg", ".webp")):
-            mime = "image/png" if lower_nm.endswith(".png") else "image/jpeg"
+            mime = "image/png" if lower_nm.endswith(".png") else ("image/webp" if lower_nm.endswith(".webp") else "image/jpeg")
             vis_res = parse_image_with_gemini_vision(
-                fbytes, mime_type=mime, gemini_api_key=gemini_api_key
+                fbytes,
+                mime_type=mime,
+                gemini_api_key=gemini_api_key,
+                sub_mode=pstate.get("sub_mode", "EMP"),
+                default_year_month=pstate.get("year_month", ""),
+                default_pay_date=pstate.get("pay_date", ""),
+                effective_table=eff_tbl,
+                default_workplace=wp_lbl,
             )
-            if vis_res.get("type") == "ei_notice":
+            if vis_res.get("type") == "freelancer_table" and vis_res.get("freelancers"):
+                pstate["freelancers"] = vis_res["freelancers"]
+                pstate["sub_mode"] = "FREE"
+                if pstate.get("_period_user_set"):
+                    _apply_period_to_rows(pstate)
+                pstate["chat_logs"].append(vis_res.get("message", f"[캡처 로드] '{fname}' 사업소득 내역 반영 완료"))
+            elif vis_res.get("type") == "payroll_table" and vis_res.get("employees"):
+                pstate["employees"] = vis_res["employees"]
+                pstate["sub_mode"] = "EMP"
+                if vis_res.get("year_month"):
+                    _set_period_from_file(pstate, vis_res["year_month"])
+                pstate["chat_logs"].append(vis_res.get("message", f"[캡처 로드] '{fname}' 급여 내역 반영 완료"))
+            elif vis_res.get("type") == "ei_notice":
                 notice_list.append(vis_res["notice"])
                 pstate["chat_logs"].append(f"[고용보험 이미지] {vis_res['notice'].get('message')}")
             elif vis_res.get("type") == "kakao_text":
@@ -1898,6 +1924,29 @@ def _process_uploaded_files_and_text(
         pstate["employees"] = updated_emps
         pstate["notice_logs"].extend(n_logs)
         pstate["chat_logs"].extend(n_logs)
+
+    # [핵심 개선] 파일과 채팅을 동시에 올렸거나, 파일을 먼저 올린 뒤 채팅으로
+    # "모든 직원이(또는 김아무개가) 비과세식대 200,000원 반영해야해" / "금액에 적힌 급여는 세후 급여야" 등을 입력한 경우
+    # 기존 명단에 즉시 일괄/개별 반영하고 전체 세액·4대보험을 재계산합니다.
+    if chat_text and chat_text.strip():
+        mod_emps, mod_frees, mod_logs, remaining_chat = apply_chat_modifiers_to_state(
+            raw_text=chat_text,
+            employees=pstate.get("employees", []),
+            freelancers=pstate.get("freelancers", []),
+            sub_mode=pstate.get("sub_mode", "EMP"),
+            effective_table=eff_tbl,
+            withholding_rate_pct=int(pstate.get("withholding_rate_pct", 100)),
+            default_year_month=pstate.get("year_month", ""),
+            default_pay_date=pstate.get("pay_date", ""),
+            default_workplace=wp_lbl,
+        )
+        pstate["employees"] = mod_emps
+        pstate["freelancers"] = mod_frees
+        if mod_logs:
+            _recalculate_all_employee_rows(pstate)
+            _recalculate_all_freelancer_rows(pstate)
+            pstate["chat_logs"].extend(mod_logs)
+        chat_text = remaining_chat
 
     if chat_text and chat_text.strip():
         kakao_res = parse_kakao_text_instructions(
@@ -2892,9 +2941,9 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
 
     # 4. 최하단 올인원 입력창 (파일 드래그앤드롭과 내용 입력을 최하단 한 곳으로 일원화)
     bottom_placeholder = (
-        "급여대장·4대보험 고지서(엑셀·PDF·사진·.paybak)를 이 칸에 끌어다 놓거나 카톡 급여 내역(예: 홍길동 실수령 280만원)을 입력하세요"
+        "급여대장·고지서(엑셀·한셀·한글·워드·PDF·캡처·.paybak)를 끌어다 놓거나 지시사항(예: 모든 직원 비과세식대 200,000원 반영해야해 / 세후 급여야)을 입력하세요"
         if is_emp_mode
-        else "사업소득대장(엑셀·PDF·사진·.paybak)을 이 칸에 끌어다 놓거나 내역(예: 홍길동, 950101-*******, 세후 300만원)을 입력하세요"
+        else "사업소득 내역(엑셀·한셀·한글·워드·PDF·캡처·.paybak)을 끌어다 놓거나 지시사항(예: 금액에 적힌 급여는 세후 급여야 / 홍길동 세후 300만원)을 입력하세요"
     )
     _chat_sig = inspect.signature(st.chat_input).parameters
     try:
@@ -2902,7 +2951,7 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
             chat_val = st.chat_input(
                 bottom_placeholder,
                 accept_file="multiple",
-                file_type=["xlsx", "xls", "pdf", "png", "jpg", "jpeg", "paybak"],
+                file_type=["xlsx", "xls", "csv", "cell", "hwp", "hwpx", "docx", "pdf", "png", "jpg", "jpeg", "webp", "paybak"],
                 key="pay_bottom_all_in_one_input",
             )
         else:
@@ -2915,6 +2964,59 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
             bottom_placeholder,
             key="pay_bottom_all_in_one_input",
         )
+
+    # [파일 드래그앤드롭 후 Enter 키 즉시 업로드 브릿지]
+    # 윈도우 탐색기에서 파일을 끌어다 놓은 직후 입력창 밖(또는 빈 텍스트 상태)에서 Enter를 눌러도 즉시 전송 버튼(➤)이 작동하도록 연동합니다.
+    st.components.v1.html(
+        """<script>
+        (function() {
+            const doc = window.parent.document;
+            if (doc._payChatEnterBridgeBound) return;
+            doc._payChatEnterBridgeBound = true;
+
+            function hasAttachedFiles(chatInput) {
+                if (!chatInput) return false;
+                const btn = chatInput.querySelector('[data-testid="stChatInputSubmitButton"]');
+                const ta = chatInput.querySelector('textarea[data-testid="stChatInputTextArea"], textarea');
+                if (btn && !btn.disabled && (!ta || !ta.value.trim())) return true;
+                return chatInput.querySelectorAll('[data-testid*="File"], [class*="uploadedFile"], li').length > 0;
+            }
+
+            doc.addEventListener('drop', function() {
+                setTimeout(function() {
+                    const ta = doc.querySelector('[data-testid="stChatInput"] textarea');
+                    if (ta) ta.focus();
+                }, 180);
+            }, true);
+
+            doc.addEventListener('change', function(e) {
+                if (e.target && e.target.type === 'file') {
+                    setTimeout(function() {
+                        const ta = doc.querySelector('[data-testid="stChatInput"] textarea');
+                        if (ta) ta.focus();
+                    }, 180);
+                }
+            }, true);
+
+            doc.addEventListener('keydown', function(e) {
+                if (e.key !== 'Enter' || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey || e.isComposing) return;
+                const chatInput = doc.querySelector('[data-testid="stChatInput"]');
+                if (!chatInput) return;
+                const submitBtn = chatInput.querySelector('[data-testid="stChatInputSubmitButton"]');
+                if (!submitBtn || submitBtn.disabled) return;
+                const active = doc.activeElement;
+                const ta = chatInput.querySelector('textarea');
+                const isInsideChat = chatInput.contains(active) || active === doc.body || active === doc.documentElement;
+                if (isInsideChat && hasAttachedFiles(chatInput)) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    submitBtn.click();
+                }
+            }, true);
+        })();
+        </script>""",
+        height=0,
+    )
 
     if chat_val:
         in_text = ""

@@ -12,9 +12,22 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+RUNTIME_API_KEYS_FILE = os.path.join(".workspace_storage", "runtime_api_keys.json")
+
 def _get_api_key(key_name: str, fallback_keys: list[str] = None) -> str:
-    """config.py, st.secrets, 환경변수(.env 포함)에서 실시간으로 API 키를 안전하게 추출합니다."""
+    """런타임 저장소(.workspace_storage/runtime_api_keys.json), config.py, st.secrets, 환경변수(.env 포함)에서 실시간으로 API 키를 안전하게 추출합니다."""
     keys_to_check = [key_name] + (fallback_keys or [])
+    try:
+        if os.path.exists(RUNTIME_API_KEYS_FILE):
+            with open(RUNTIME_API_KEYS_FILE, "r", encoding="utf-8") as rf:
+                rdata = json.load(rf)
+            if isinstance(rdata, dict):
+                for k in keys_to_check:
+                    rval = str(rdata.get(k) or "").strip().strip('"').strip("'")
+                    if rval:
+                        return rval
+    except Exception:
+        pass
     try:
         import config
         for k in keys_to_check:

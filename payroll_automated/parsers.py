@@ -18,10 +18,15 @@
 
 from __future__ import annotations
 
+import csv
 import io
 import json
 import os
 import re
+import struct
+import zipfile
+import zlib
+import xml.etree.ElementTree as ET
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -507,15 +512,468 @@ def _match_canonical_field(header_text: str) -> Optional[str]:
     return None
 
 
-def _read_excel_rows_universal(file_bytes: bytes) -> List[List[Any]]:
-    """신형 .xlsx(openpyxl) 및 구형 .xls(pandas/xlrd) 모두 2차원 리스트로 안전하게 변환"""
+def _extract_hwp5_ole_text_and_rows(file_bytes: bytes) -> Tuple[str, List[List[Any]]]:
+    """구형 한글(.hwp 5.0 OLE2 복합문서)에서 외부 프로그램 없이 본문 텍스트와 표 행·열을 추출합니다.
+    1순위: olefile 라이브러리(설치 시), 2순위: 내장 순수 파이썬 OLE2 섹터·스트림 파서 + zlib(-15) HWPTAG_PARA_TEXT(67) 해독."""
+    streams: Dict[str, bytes] = {}
+    # 1) olefile 시도
+    try:
+        import olefile  # type: ignore
+        if olefile.isOleFile(io.BytesIO(file_bytes)):
+            ole = olefile.OleFileIO(io.BytesIO(file_bytes))
+            for entry in ole.listdir(streams=True, storages=False):
+                path_key = "/".join(entry)
+                try:
+                    streams[path_key] = ole.openstream(entry).read()
+                except Exception:
+                    pass
+            ole.close()
+    except Exception:
+        pass
+
+    # 2) 내장 순수 파이썬 OLE2 파서 폴백
+    if not streams and len(file_bytes) >= 512 and file_bytes[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
+        try:
+            sec_shift = struct.unpack_from("<H", file_bytes, 30)[0]
+            mini_shift = struct.unpack_from("<H", file_bytes, 32)[0]
+            sec_size = 1 << sec_shift
+            mini_size = 1 << mini_shift
+            num_fat_secs = struct.unpack_from("<I", file_bytes, 44)[0]
+            first_dir_sec = struct.unpack_from("<I", file_bytes, 48)[0]
+            mini_cutoff = struct.unpack_from("<I", file_bytes, 56)[0]
+            first_minifat_sec = struct.unpack_from("<I", file_bytes, 60)[0]
+            num_minifat_secs = struct.unpack_from("<I", file_bytes, 64)[0]
+            first_difat_sec = struct.unpack_from("<I", file_bytes, 68)[0]
+            num_difat_secs = struct.unpack_from("<I", file_bytes, 72)[0]
+
+            def _sec_offset(sec_id: int) -> int:
+                return (sec_id + 1) * sec_size
+
+            difat = list(struct.unpack_from("<109I", file_bytes, 76))
+            curr_dif = first_difat_sec
+            for _ in range(num_difat_secs):
+                if curr_dif >= 0xFFFFFFFE:
+                    break
+                off = _sec_offset(curr_dif)
+                if off + sec_size > len(file_bytes):
+                    break
+                cnt = (sec_size // 4) - 1
+                difat.extend(struct.unpack_from(f"<{cnt}I", file_bytes, off))
+                curr_dif = struct.unpack_from("<I", file_bytes, off + sec_size - 4)[0]
+
+            difat = [s for s in difat if s < 0xFFFFFFFE][:num_fat_secs]
+            fat: List[int] = []
+            for s in difat:
+                off = _sec_offset(s)
+                if off + sec_size <= len(file_bytes):
+                    fat.extend(struct.unpack_from(f"<{sec_size // 4}I", file_bytes, off))
+
+            def _read_chain(start_sec: int, max_len: Optional[int] = None) -> bytes:
+                out = bytearray()
+                cur = start_sec
+                visited = set()
+                while cur < 0xFFFFFFFE and cur not in visited and cur < len(fat):
+                    visited.add(cur)
+                    off = _sec_offset(cur)
+                    if off + sec_size > len(file_bytes):
+                        break
+                    out.extend(file_bytes[off:off + sec_size])
+                    if max_len is not None and len(out) >= max_len:
+                        return bytes(out[:max_len])
+                    cur = fat[cur]
+                return bytes(out if max_len is None else out[:max_len])
+
+            dir_bytes = _read_chain(first_dir_sec)
+            minifat_bytes = _read_chain(first_minifat_sec) if first_minifat_sec < 0xFFFFFFFE and num_minifat_secs > 0 else b""
+            minifat = list(struct.unpack_from(f"<{len(minifat_bytes) // 4}I", minifat_bytes)) if minifat_bytes else []
+
+            dir_entries = []
+            for pos in range(0, len(dir_bytes), 128):
+                ent = dir_bytes[pos:pos + 128]
+                if len(ent) < 128:
+                    break
+                name_len = struct.unpack_from("<H", ent, 64)[0]
+                obj_type = ent[66]
+                if obj_type == 0 or name_len < 2:
+                    dir_entries.append(None)
+                    continue
+                name = ent[:max(0, name_len - 2)].decode("utf-16le", errors="ignore")
+                start_sec = struct.unpack_from("<I", ent, 116)[0]
+                size_low = struct.unpack_from("<I", ent, 120)[0]
+                dir_entries.append({"name": name, "type": obj_type, "start": start_sec, "size": size_low})
+
+            root_entry = dir_entries[0] if dir_entries and dir_entries[0] else None
+            mini_stream = _read_chain(root_entry["start"], root_entry["size"]) if root_entry else b""
+
+            def _read_mini_chain(start_sec: int, size: int) -> bytes:
+                out = bytearray()
+                cur = start_sec
+                visited = set()
+                while cur < 0xFFFFFFFE and cur not in visited:
+                    visited.add(cur)
+                    off = cur * mini_size
+                    if off + mini_size > len(mini_stream):
+                        break
+                    out.extend(mini_stream[off:off + mini_size])
+                    if len(out) >= size:
+                        break
+                    cur = minifat[cur] if cur < len(minifat) else 0xFFFFFFFE
+                return bytes(out[:size])
+
+            for d_ent in dir_entries[1:]:
+                if not d_ent or d_ent["type"] != 2:
+                    continue
+                nm = d_ent["name"]
+                sz = d_ent["size"]
+                st_s = d_ent["start"]
+                if sz == 0:
+                    continue
+                data_b = _read_mini_chain(st_s, sz) if (sz < mini_cutoff and mini_stream) else _read_chain(st_s, sz)
+                if nm.startswith("Section"):
+                    streams[f"BodyText/{nm}"] = data_b
+                else:
+                    streams[nm] = data_b
+        except Exception:
+            pass
+
+    compressed = True
+    if "FileHeader" in streams and len(streams["FileHeader"]) >= 40:
+        flags = struct.unpack_from("<I", streams["FileHeader"], 36)[0]
+        compressed = bool(flags & 1)
+        if flags & 2:
+            return "[암호 설정된 한글(.hwp) 문서입니다. 암호를 해제한 뒤 다시 올려주세요.]", []
+
+    paragraphs: List[str] = []
+    sec_keys = sorted(k for k in streams if k.startswith("BodyText/Section") or k.startswith("Section"))
+    for sk in sec_keys:
+        raw_sec = streams[sk]
+        if compressed:
+            try:
+                raw_sec = zlib.decompress(raw_sec, -15)
+            except Exception:
+                try:
+                    raw_sec = zlib.decompress(raw_sec)
+                except Exception:
+                    pass
+        pos = 0
+        n_len = len(raw_sec)
+        while pos + 4 <= n_len:
+            hdr = struct.unpack_from("<I", raw_sec, pos)[0]
+            pos += 4
+            tag_id = hdr & 0x3FF
+            rec_len = (hdr >> 20) & 0xFFF
+            if rec_len == 0xFFF:
+                if pos + 4 > n_len:
+                    break
+                rec_len = struct.unpack_from("<I", raw_sec, pos)[0]
+                pos += 4
+            if pos + rec_len > n_len:
+                break
+            if tag_id == 67:  # HWPTAG_PARA_TEXT
+                rec_data = raw_sec[pos:pos + rec_len]
+                chars: List[str] = []
+                idx_c = 0
+                while idx_c + 1 < len(rec_data):
+                    code = struct.unpack_from("<H", rec_data, idx_c)[0]
+                    if code in (1, 2, 3, 11, 12, 14, 15, 16, 17, 18, 21, 22, 23):
+                        idx_c += 16
+                    elif code in (4, 5, 6, 7, 8, 9, 19, 20):
+                        if code == 9:
+                            chars.append("\t")
+                        idx_c += 16
+                    elif code in (0, 10, 13):
+                        if code in (10, 13):
+                            chars.append("\n")
+                        idx_c += 2
+                    elif code < 32:
+                        idx_c += 2
+                    else:
+                        chars.append(chr(code))
+                        idx_c += 2
+                txt_p = "".join(chars).strip()
+                if txt_p:
+                    paragraphs.append(txt_p)
+            pos += rec_len
+
+    # PrvText(미리보기 텍스트) 보강
+    prv_text = ""
+    for pk in ("PrvText", "/PrvText"):
+        if pk in streams and streams[pk]:
+            try:
+                prv_text = streams[pk].decode("utf-16le", errors="ignore").strip()
+                break
+            except Exception:
+                pass
+
+    full_text = "\n".join(paragraphs) if paragraphs else prv_text
+    if prv_text and len(prv_text) > len(full_text):
+        full_text = prv_text
+
+    rows: List[List[Any]] = []
+    # PrvText의 <셀1><셀2> 표 구조 또는 탭/구분자 기반 행 추출
+    for line in (prv_text or full_text).splitlines():
+        s_ln = line.strip()
+        if not s_ln:
+            continue
+        if "<" in s_ln and ">" in s_ln:
+            cell_matches = re.findall(r"<([^<>]+)>", s_ln)
+            if len(cell_matches) >= 2:
+                rows.append([c.strip() for c in cell_matches])
+                continue
+        if "\t" in s_ln:
+            parts = [p.strip() for p in s_ln.split("\t") if p.strip()]
+            if len(parts) >= 2:
+                rows.append(parts)
+                continue
+        if "|" in s_ln:
+            parts = [p.strip() for p in s_ln.split("|") if p.strip()]
+            if len(parts) >= 2:
+                rows.append(parts)
+                continue
+        spaced = [p.strip() for p in re.split(r"\s{2,}", s_ln) if p.strip()]
+        if len(spaced) >= 2:
+            rows.append(spaced)
+
+    # HWP 표 셀들이 개별 문단(paragraphs)으로 연속 저장된 경우: 헤더 문단 패턴을 감지해 N열 그리드로 재조립
+    if len(rows) < 2 and len(paragraphs) >= 4:
+        flat_cells = [p.replace("\n", " ").strip() for p in paragraphs if p.strip()]
+        header_tokens = {
+            "성명", "이름", "소득자명", "근로자명", "주민등록번호", "주민번호", "생년월일",
+            "기본급", "식대", "지급액", "지급총액", "지급액계", "실지급액", "차인지급액",
+            "세전", "세후", "금액", "급여", "귀속년월", "귀속연월", "지급일자", "지급년월일",
+            "업종코드", "소득구분", "사번", "코드", "사원코드", "직급", "부서", "입사일",
+        }
+        h_start = -1
+        for i_c, cell_txt in enumerate(flat_cells):
+            c_clean = re.sub(r"\s+", "", cell_txt)
+            if c_clean in header_tokens or _match_canonical_field(cell_txt) is not None:
+                # 연속된 헤더 셀 개수 측정
+                col_cnt = 0
+                for j_c in range(i_c, min(i_c + 20, len(flat_cells))):
+                    cand_c = re.sub(r"\s+", "", flat_cells[j_c])
+                    # 데이터 행(실제 한글 2~4자 인명 또는 주민번호/날짜/금액 숫자)이 시작되면 헤더 종료
+                    if col_cnt >= 2 and (
+                        re.match(r"^\d{6}-?[1-8*]", cand_c)
+                        or (re.match(r"^[가-힣]{2,4}$", cand_c) and cand_c not in header_tokens and _match_canonical_field(cand_c) is None)
+                    ):
+                        break
+                    col_cnt += 1
+                if 2 <= col_cnt <= 18:
+                    h_start = i_c
+                    for r_pos in range(h_start, len(flat_cells), col_cnt):
+                        chunk = flat_cells[r_pos:r_pos + col_cnt]
+                        if len(chunk) >= 2:
+                            rows.append(chunk)
+                    break
+
+    return full_text, rows
+
+
+def _extract_hwpx_text_and_rows(file_bytes: bytes) -> Tuple[str, List[List[Any]]]:
+    """신형 한글(.hwpx 개방형 XML ZIP)에서 모든 표(행·열)와 문단 텍스트를 정밀 추출합니다."""
+    rows: List[List[Any]] = []
+    paragraphs: List[str] = []
+    try:
+        with zipfile.ZipFile(io.BytesIO(file_bytes), "r") as zf:
+            sec_files = sorted(
+                n for n in zf.namelist()
+                if (n.lower().startswith("contents/section") and n.lower().endswith(".xml"))
+            )
+            for sf in sec_files:
+                xml_b = zf.read(sf)
+                root = ET.fromstring(xml_b)
+                # 1) 표(<hp:tbl> / <tbl>)에서 행(<hp:tr>) -> 셀(<hp:tc>) 2차원 리스트 추출
+                for tbl in root.iter():
+                    if tbl.tag.split("}")[-1] == "tbl":
+                        for tr in tbl:
+                            if tr.tag.split("}")[-1] == "tr":
+                                row_vals: List[str] = []
+                                for tc in tr:
+                                    if tc.tag.split("}")[-1] == "tc":
+                                        cell_texts = [
+                                            t_el.text.strip()
+                                            for t_el in tc.iter()
+                                            if t_el.tag.split("}")[-1] == "t" and t_el.text and t_el.text.strip()
+                                        ]
+                                        row_vals.append(" ".join(cell_texts))
+                                if any(v.strip() for v in row_vals):
+                                    rows.append(row_vals)
+                # 2) 전체 텍스트 추출
+                for p_el in root.iter():
+                    if p_el.tag.split("}")[-1] == "p":
+                        p_txts = [
+                            t_el.text.strip()
+                            for t_el in p_el.iter()
+                            if t_el.tag.split("}")[-1] == "t" and t_el.text and t_el.text.strip()
+                        ]
+                        if p_txts:
+                            paragraphs.append(" ".join(p_txts))
+            if not paragraphs:
+                for n in zf.namelist():
+                    if "prvtext" in n.lower():
+                        paragraphs.append(zf.read(n).decode("utf-8", errors="ignore"))
+    except Exception:
+        pass
+    return "\n".join(paragraphs), rows
+
+
+def _extract_docx_text_and_rows(file_bytes: bytes) -> Tuple[str, List[List[Any]]]:
+    """워드(.docx) 문서에서 표(tables) 2차원 행·열과 문단 텍스트를 함께 추출합니다."""
+    rows: List[List[Any]] = []
+    paragraphs: List[str] = []
+    try:
+        from docx import Document
+        doc = Document(io.BytesIO(file_bytes))
+        for p in doc.paragraphs:
+            if p.text and p.text.strip():
+                paragraphs.append(p.text.strip())
+                s_ln = p.text.strip()
+                if "\t" in s_ln:
+                    rows.append([c.strip() for c in s_ln.split("\t") if c.strip()])
+        for tbl in doc.tables:
+            for r in tbl.rows:
+                r_cells = [c.text.strip().replace("\n", " ") for c in r.cells]
+                # 병합 셀로 인해 인접 동일 텍스트가 중복되는 현상 완화
+                dedup_cells: List[str] = []
+                for idx_c, cv in enumerate(r_cells):
+                    if idx_c > 0 and cv == r_cells[idx_c - 1] and cv in ("성명", "주민등록번호", "합계", "총계"):
+                        continue
+                    dedup_cells.append(cv)
+                if any(v.strip() for v in dedup_cells):
+                    rows.append(dedup_cells)
+    except Exception:
+        pass
+    return "\n".join(paragraphs), rows
+
+
+def _extract_hansel_cell_rows(file_bytes: bytes) -> List[List[Any]]:
+    """한컴오피스 한셀(.cell) 파일(OpenXML ZIP 또는 HCell XML/바이너리)에서 2차원 시트 행·열을 추출합니다."""
+    # 1) openpyxl 직접 로드 시도 (대부분의 .cell 파일은 OpenXML .xlsx 호환 구조)
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+        sheet = wb[wb.sheetnames[0]]
+        res = [list(r) for r in sheet.iter_rows(values_only=True)]
+        if res:
+            return res
+    except Exception:
+        pass
+
+    # 2) ZIP 내부 XML(xl/sharedStrings.xml + xl/worksheets/sheet1.xml 또는 한셀 XML) 직접 파싱
+    if zipfile.is_zipfile(io.BytesIO(file_bytes)):
+        try:
+            with zipfile.ZipFile(io.BytesIO(file_bytes), "r") as zf:
+                names = zf.namelist()
+                shared_strings: List[str] = []
+                for ss_name in names:
+                    if ss_name.lower().endswith("sharedstrings.xml"):
+                        ss_root = ET.fromstring(zf.read(ss_name))
+                        for si in ss_root.iter():
+                            if si.tag.split("}")[-1] == "si":
+                                texts = [t.text or "" for t in si.iter() if t.tag.split("}")[-1] == "t"]
+                                shared_strings.append("".join(texts))
+                        break
+
+                sheet_files = sorted(
+                    n for n in names
+                    if ("worksheets/sheet" in n.lower() or "sheet" in n.lower()) and n.lower().endswith(".xml")
+                )
+                for sf in sheet_files:
+                    s_root = ET.fromstring(zf.read(sf))
+                    rows_out: List[List[Any]] = []
+                    for r_el in s_root.iter():
+                        if r_el.tag.split("}")[-1] == "row":
+                            row_vals: List[Any] = []
+                            for c_el in r_el:
+                                if c_el.tag.split("}")[-1] in ("c", "cell"):
+                                    c_type = c_el.attrib.get("t", "")
+                                    v_txt = ""
+                                    for sub in c_el.iter():
+                                        tag_short = sub.tag.split("}")[-1]
+                                        if tag_short in ("v", "t") and sub.text:
+                                            v_txt += sub.text
+                                    if c_type == "s" and v_txt.isdigit() and int(v_txt) < len(shared_strings):
+                                        v_txt = shared_strings[int(v_txt)]
+                                    row_vals.append(v_txt)
+                            if any(str(x).strip() for x in row_vals):
+                                rows_out.append(row_vals)
+                    if rows_out:
+                        return rows_out
+        except Exception:
+            pass
+
+    # 3) 구형 OLE2 기반 .cell 파일인 경우 HWP5/OLE 스트림 추출기 활용
+    _, ole_rows = _extract_hwp5_ole_text_and_rows(file_bytes)
+    return ole_rows
+
+
+def extract_universal_document_text_and_rows(file_bytes: bytes, filename: str = "") -> Tuple[str, List[List[Any]]]:
+    """한글(.hwp/.hwpx), 워드(.docx), 한셀(.cell), CSV(.csv), 엑셀(.xlsx/.xls)에서 텍스트와 2차원 표 행을 동시 추출합니다."""
+    low = (filename or "").lower()
+    if low.endswith(".hwpx"):
+        return _extract_hwpx_text_and_rows(file_bytes)
+    if low.endswith(".hwp"):
+        if zipfile.is_zipfile(io.BytesIO(file_bytes)):
+            return _extract_hwpx_text_and_rows(file_bytes)
+        return _extract_hwp5_ole_text_and_rows(file_bytes)
+    if low.endswith(".docx"):
+        return _extract_docx_text_and_rows(file_bytes)
+    if low.endswith(".cell"):
+        rows = _extract_hansel_cell_rows(file_bytes)
+        txt = "\n".join(" | ".join(str(c) for c in r if c is not None) for r in rows)
+        return txt, rows
+    if low.endswith(".csv"):
+        for enc in ("utf-8-sig", "utf-8", "cp949", "euc-kr"):
+            try:
+                decoded = file_bytes.decode(enc)
+                rows = [r for r in csv.reader(io.StringIO(decoded)) if any(c.strip() for c in r)]
+                return decoded, rows
+            except Exception:
+                continue
+    rows = _read_excel_rows_universal(file_bytes, filename=filename)
+    txt = "\n".join(" | ".join(str(c) for c in r if c is not None) for r in rows)
+    return txt, rows
+
+
+def _read_excel_rows_universal(file_bytes: bytes, filename: str = "") -> List[List[Any]]:
+    """신형 .xlsx(openpyxl), 구형 .xls(pandas/xlrd), 한셀(.cell), CSV(.csv), 한글(.hwp/.hwpx), 워드(.docx) 모두 2차원 리스트로 안전하게 변환"""
+    low = (filename or "").lower()
+    if low.endswith(".csv"):
+        for enc in ("utf-8-sig", "utf-8", "cp949", "euc-kr"):
+            try:
+                decoded = file_bytes.decode(enc)
+                return [r for r in csv.reader(io.StringIO(decoded)) if any(str(c).strip() for c in r)]
+            except Exception:
+                continue
+    if low.endswith(".hwpx"):
+        _, rows = _extract_hwpx_text_and_rows(file_bytes)
+        return rows
+    if low.endswith(".hwp"):
+        if zipfile.is_zipfile(io.BytesIO(file_bytes)):
+            _, rows = _extract_hwpx_text_and_rows(file_bytes)
+        else:
+            _, rows = _extract_hwp5_ole_text_and_rows(file_bytes)
+        return rows
+    if low.endswith(".docx"):
+        _, rows = _extract_docx_text_and_rows(file_bytes)
+        return rows
+    if low.endswith(".cell"):
+        rows = _extract_hansel_cell_rows(file_bytes)
+        if rows:
+            return rows
+
     try:
         wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
         sheet = wb[wb.sheetnames[0]]
         return [list(r) for r in sheet.iter_rows(values_only=True)]
     except Exception:
-        df = pd.read_excel(io.BytesIO(file_bytes), header=None)
-        return df.where(pd.notna(df), None).values.tolist()
+        try:
+            df = pd.read_excel(io.BytesIO(file_bytes), header=None)
+            return df.where(pd.notna(df), None).values.tolist()
+        except Exception:
+            rows = _extract_hansel_cell_rows(file_bytes)
+            if rows:
+                return rows
+            return []
 
 
 def _infer_excel_columns_with_ai(
@@ -564,7 +1022,7 @@ def parse_client_payroll_excel(
     """
     거래처 급여 엑셀 파싱 (.xlsx 및 .xls 다중 테이블 병합 + 위하고 양식 + 비정형 AI 매핑 폴백)
     """
-    all_rows = _read_excel_rows_universal(file_bytes)
+    all_rows = _read_excel_rows_universal(file_bytes, filename=filename)
 
     meta: Dict[str, Any] = {
         "corp_name": "",
@@ -772,6 +1230,29 @@ def parse_client_payroll_excel(
             "월근무시간": raw_rec.get("월근무시간", 209.0),
         }
         employees.append(emp_entry)
+
+    if not employees and filename.lower().endswith((".hwp", ".hwpx", ".docx", ".cell", ".csv")):
+        doc_txt, _ = extract_universal_document_text_and_rows(file_bytes, filename=filename)
+        if doc_txt.strip():
+            slips = _parse_payroll_ledger_or_slip_pdf_text(doc_txt, effective_table=effective_table)
+            if not slips:
+                slips = _parse_payroll_ledger_plain_text_fallback(doc_txt, effective_table=effective_table)
+            if slips:
+                for idx_s, s_emp in enumerate(slips, start=1):
+                    if not s_emp.get("사업장"):
+                        s_emp["사업장"] = default_workplace
+                    if not s_emp.get("사원코드"):
+                        s_emp["사원코드"] = f"{idx_s:03d}"
+                employees = slips
+            else:
+                k_fb = parse_kakao_text_instructions(
+                    raw_text=doc_txt,
+                    effective_table=effective_table,
+                    default_is_freelancer=False,
+                    default_workplace=default_workplace,
+                )
+                if k_fb.get("employees"):
+                    employees = k_fb["employees"]
 
     return {
         "employees": employees,
@@ -1924,7 +2405,7 @@ def parse_freelancer_excel(
     default_pay_date: str = "",
 ) -> List[Dict[str, Any]]:
     """사업소득대장 또는 위하고 사업소득 업로드 엑셀 파싱"""
-    rows = _read_excel_rows_universal(file_bytes)
+    rows = _read_excel_rows_universal(file_bytes, filename=filename)
 
     header_idx = -1
     col_map: Dict[int, str] = {}
@@ -1937,13 +2418,13 @@ def parse_freelancer_excel(
             for cand in (txt, sub_txt):
                 if not cand:
                     continue
-                if cand in ("소득자명", "성명", "이름", "근로자명"):
+                if cand in ("소득자명", "성명", "이름", "근로자명", "성명(상호)", "대상자", "프리랜서명"):
                     temp_map.setdefault(c_i, "성명")
-                elif cand in ("주민등록번호", "주민번호", "생년월일"):
+                elif cand in ("주민등록번호", "주민번호", "생년월일", "주민(외국인)번호", "실명번호"):
                     temp_map.setdefault(c_i, "주민등록번호")
-                elif cand in ("지급총액", "지급액", "세전금액", "세전", "지급액계"):
+                elif cand in ("지급총액", "지급액", "세전금액", "세전", "지급액계", "금액", "급여", "용역비", "수당", "보수액", "원천징수대상금액"):
                     temp_map.setdefault(c_i, "지급총액")
-                elif cand in ("차인지급액", "실지급액", "세후금액"):
+                elif cand in ("차인지급액", "실지급액", "세후금액", "세후", "실수령액", "실수령", "입금액", "이체금액"):
                     temp_map.setdefault(c_i, "차인지급액")
                 elif cand in ("귀속년월", "귀속연월"):
                     temp_map.setdefault(c_i, "귀속년월")
@@ -1959,6 +2440,20 @@ def parse_freelancer_excel(
             break
 
     if header_idx < 0:
+        # 표 헤더가 없는 한글(.hwp/.hwpx)·워드(.docx)·한셀(.cell) 또는 자유 양식인 경우 텍스트 파서로 자동 폴백
+        doc_txt, _ = extract_universal_document_text_and_rows(file_bytes, filename=filename)
+        if doc_txt.strip():
+            by_pdf_txt = _parse_freelancer_ledger_pdf_text(doc_txt, default_ym=default_year_month or datetime.now().strftime("%Y-%m"))
+            if by_pdf_txt:
+                return by_pdf_txt
+            kakao_fallback = parse_kakao_text_instructions(
+                raw_text=doc_txt,
+                default_year_month=default_year_month,
+                default_pay_date=default_pay_date,
+                default_is_freelancer=True,
+            )
+            if kakao_fallback.get("freelancers"):
+                return kakao_fallback["freelancers"]
         return []
 
     freelancers: List[Dict[str, Any]] = []
@@ -2231,22 +2726,232 @@ def parse_kakao_text_instructions(
     }
 
 
+def apply_chat_modifiers_to_state(
+    raw_text: str,
+    employees: List[Dict[str, Any]],
+    freelancers: List[Dict[str, Any]],
+    sub_mode: str = "EMP",
+    effective_table: str = "2026.03",
+    withholding_rate_pct: int = 100,
+    default_year_month: str = "",
+    default_pay_date: str = "",
+    default_workplace: str = "본점",
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[str], str]:
+    """
+    [파일+채팅 동시 입력 및 파일 업로드 후 채팅 일괄/개별 수정 엔진]
+    - 소득 구분(근로소득 <-> 사업소득) 강제 전환 없이 현재 탭(sub_mode)의 명단을 기준으로 작동합니다.
+    - 지원 지시문:
+      1) "모든 직원이(또는 김아무개가) 비과세식대 200,000원 반영해야해" -> 전체 또는 지정 사원의 식대·차량보조금·상여·연장수당·휴일수당·연차수당·부양가족·자녀수·소득세감면율 즉시 수정 및 재계산
+      2) "금액에 적힌 급여는 세후 급여야" / "김아무개는 세후 급여야" / "전원 세전 기준이야" -> 전체 또는 지정 인원의 입력기준을 '세후역산'(또는 '세전')으로 전환 후 세액·4대보험 즉시 역산
+      3) "지급일은 2026-11-10으로 변경" / "업종코드는 940911로 반영" -> 지급일자·업종코드 일괄/개별 반영
+    - 반환값: (updated_employees, updated_freelancers, logs, remaining_unhandled_text_for_kakao_parser)
+    """
+    if not raw_text or not raw_text.strip():
+        return employees, freelancers, [], ""
+
+    logs: List[str] = []
+    unhandled_lines: List[str] = []
+    text_clean = re.sub(r"(?<=\d),(?=\d{3}(?!\d))", "", raw_text)
+    lines = [ln.strip() for ln in re.split(r"[\n;]+", text_clean) if ln.strip()]
+
+    emp_names = [normalize_korean_name(e.get("성명", "")) for e in employees if e.get("성명")]
+    free_names = [normalize_korean_name(f.get("성명", "")) for f in freelancers if f.get("성명")]
+
+    allowance_patterns: List[Tuple[str, str, str]] = [
+        ("약정연장근로수당", r"(?:약정\s*연장(?:근로)?(?:수당)?|고정\s*연장(?:근로)?(?:수당)?)", "원"),
+        ("약정휴일근로수당", r"(?:약정\s*휴일(?:근로)?(?:수당)?|고정\s*휴일(?:근로)?(?:수당)?)", "원"),
+        ("미사용연차수당", r"(?:미사용\s*연차(?:수당)?|연차\s*수당|연차)", "원"),
+        ("자가운전보조금", r"(?:자가\s*운전(?:보조금)?|차량\s*보조금|차량\s*유지비|운전\s*보조금|차량비)", "원"),
+        ("연장근로수당", r"(?:연장\s*근로\s*수당|연장\s*수당|야근\s*수당|특근\s*수당)", "원"),
+        ("휴일근로수당", r"(?:휴일\s*근로\s*수당|휴일\s*수당)", "원"),
+        ("식대", r"(?:비과세\s*식대|식대\s*비과세|식대|중식대|식비)", "원"),
+        ("상여", r"(?:상여금|상여|보너스|명절상여)", "원"),
+        ("결근공제", r"(?:결근\s*공제|결근\s*차감)", "원"),
+        ("조정금액", r"(?:조정\s*금액|기타\s*수당|조정수당)", "원"),
+        ("학자금상환액", r"(?:학자금\s*상환액?|학자금\s*공제|학자금)", "원"),
+    ]
+
+    def _parse_krw_amount(num_str: str, unit_str: str) -> int:
+        raw_f = float(num_str)
+        u = (unit_str or "").strip()
+        if "만" in u or (0 < raw_f < 1000 and u == ""):
+            return int(round(raw_f * 10000))
+        return int(round(raw_f))
+
+    for ln in lines:
+        handled_this_line = False
+        has_all_kw = any(k in ln for k in ("모든", "전원", "전체", "모두", "전직원", "전 직원", "일괄", "적힌 급여", "적힌 금액", "파일에", "금액은"))
+
+        # 현재 줄에서 언급된 기존 사원 / 프리랜서 이름 탐색
+        matched_emp_indices = [
+            idx for idx, e in enumerate(employees)
+            if normalize_korean_name(e.get("성명", "")) and normalize_korean_name(e.get("성명", "")) in ln
+        ]
+        matched_free_indices = [
+            idx for idx, f in enumerate(freelancers)
+            if normalize_korean_name(f.get("성명", "")) and normalize_korean_name(f.get("성명", "")) in ln
+        ]
+
+        # 1) 근로소득 수당·공제·부양가족·감면율 개별/일괄 수정 지시 검사
+        if employees:
+            target_e_idxs = matched_emp_indices if matched_emp_indices else (
+                list(range(len(employees))) if (has_all_kw or not re.findall(r"[가-힣]{2,4}", re.sub(r"비과세|식대|자가운전|보조금|차량|연장|휴일|연차|수당|상여|보너스|결근|공제|조정|학자금|부양가족|자녀|감면|반영|적용|추가|변경|수정|포함|분리|모든|직원|전원|전체|모두|해야해|해줘|해주세요|원|만원", " ", ln))) else []
+            )
+
+            if target_e_idxs:
+                # 1-A) 수당·공제 항목 매칭
+                ln_work = ln
+                for field_key, pat_kw, _ in allowance_patterns:
+                    m_allow = re.search(rf"{pat_kw}\s*[:=]?\s*(\d+(?:\.\d+)?)\s*(만\s*원|만|원)?", ln_work)
+                    if m_allow:
+                        amt_val = _parse_krw_amount(m_allow.group(1), m_allow.group(2) or "")
+                        split_from_base = any(k in ln for k in ("기본급에서", "분리", "포함된", "포함기준"))
+                        for idx_e in target_e_idxs:
+                            emp = employees[idx_e]
+                            old_val = int(emp.get(field_key, 0) or 0)
+                            if split_from_base and field_key in ("식대", "자가운전보조금") and str(emp.get("입력기준", "세전")) == "세전":
+                                diff_add = max(0, amt_val - old_val)
+                                emp["기본급"] = max(0, int(emp.get("기본급", 0) or 0) - diff_add)
+                            emp[field_key] = amt_val
+                        target_label = (
+                            f"전체 직원({len(target_e_idxs)}명)"
+                            if len(target_e_idxs) == len(employees) and len(employees) > 1
+                            else ", ".join(employees[i]["성명"] for i in target_e_idxs)
+                        )
+                        logs.append(f"[채팅 수당 반영] {target_label}: {field_key} {amt_val:,}원 적용 완료")
+                        handled_this_line = True
+                        ln_work = ln_work[:m_allow.start()] + " " + ln_work[m_allow.end():]
+
+                # 1-B) 부양가족수 / 자녀수 / 소득세감면율 매칭
+                m_dep = re.search(r"부양(?:가족)?(?:수)?\s*[:=]?\s*(\d+)\s*명?", ln)
+                if m_dep:
+                    dep_v = max(1, int(m_dep.group(1)))
+                    for idx_e in target_e_idxs:
+                        employees[idx_e]["부양가족수"] = dep_v
+                    logs.append(f"[채팅 부양가족 반영] 대상 {len(target_e_idxs)}명: 부양가족 {dep_v}명 적용 완료")
+                    handled_this_line = True
+
+                m_chd = re.search(r"자녀(?:수)?\s*[:=]?\s*(\d+)\s*명?", ln)
+                if m_chd:
+                    chd_v = max(0, int(m_chd.group(1)))
+                    for idx_e in target_e_idxs:
+                        employees[idx_e]["자녀수"] = chd_v
+                    logs.append(f"[채팅 자녀수 반영] 대상 {len(target_e_idxs)}명: 자녀 {chd_v}명 적용 완료")
+                    handled_this_line = True
+
+                m_red = re.search(r"(?:소득세\s*)?감면(?:율)?\s*[:=]?\s*(90|70|50|100|0)\s*%?", ln)
+                if m_red:
+                    red_v = int(m_red.group(1))
+                    for idx_e in target_e_idxs:
+                        employees[idx_e]["소득세감면율"] = red_v
+                    logs.append(f"[채팅 감면율 반영] 대상 {len(target_e_idxs)}명: 소득세 감면 {red_v}% 적용 완료")
+                    handled_this_line = True
+
+        # 2) "금액에 적힌 급여는 세후 급여야" / "전원 세후 기준" / "김아무개는 세후 급여야" (숫자 금액 없이 세후/세전 기준 전환 지시)
+        has_net_kw = any(k in ln for k in ("세후", "실수령", "실지급", "차인지급", "입금액 기준", "통장 찍힌"))
+        has_gross_kw = any(k in ln for k in ("세전", "액면", "지급총액 기준"))
+        # 문장에 새로운 급여 금액 숫자가 없는 순수 모드 전환 지시문인지 확인 (이미 처리된 수당 숫자 제외)
+        ln_for_num_check = re.sub(r"3\.3\s*%?|(?:90|70|50|100)\s*%|20\d{2}[-./년]\s*\d{1,2}|\b\d{6}\b", " ", ln)
+        for _, pat_kw, _ in allowance_patterns:
+            ln_for_num_check = re.sub(rf"{pat_kw}\s*[:=]?\s*\d+(?:\.\d+)?\s*(?:만\s*원|만|원)?", " ", ln_for_num_check)
+        has_standalone_salary_num = bool(re.search(r"(\d{2,}(?:\.\d+)?)\s*(만\s*원|만|원)", ln_for_num_check))
+
+        if (has_net_kw or has_gross_kw) and not has_standalone_salary_num:
+            new_mode = "세후역산" if has_net_kw else "세전"
+            if sub_mode == "FREE" and freelancers:
+                t_f_idxs = matched_free_indices if matched_free_indices else list(range(len(freelancers)))
+                for idx_f in t_f_idxs:
+                    fr = freelancers[idx_f]
+                    if new_mode == "세후역산":
+                        # 기존에 세전 지급총액으로 읽혔던 원래 숫자를 목표 실지급액(차인지급액)으로 삼아 3.3% 역산
+                        base_amt = int(fr.get("지급총액", 0) or fr.get("차인지급액", 0) or 0)
+                        if str(fr.get("입력기준", "세전")) == "세후역산" and int(fr.get("차인지급액", 0) or 0) > 0:
+                            base_amt = int(fr["차인지급액"])
+                        if base_amt > 0:
+                            calc = solve_gross_from_net_freelancer(base_amt)
+                            fr["입력기준"] = "세후역산"
+                            fr["지급총액"] = calc["gross_pay"]
+                            fr["소득세"] = calc["income_tax"]
+                            fr["지방소득세"] = calc["local_tax"]
+                            fr["공제액계"] = calc["total_deduction"]
+                            fr["차인지급액"] = calc["net_pay"]
+                    else:
+                        base_amt = int(fr.get("차인지급액", 0) or fr.get("지급총액", 0) or 0)
+                        if base_amt > 0:
+                            calc = calculate_freelancer_row(base_amt)
+                            fr["입력기준"] = "세전"
+                            fr["지급총액"] = calc["gross_pay"]
+                            fr["소득세"] = calc["income_tax"]
+                            fr["지방소득세"] = calc["local_tax"]
+                            fr["공제액계"] = calc["total_deduction"]
+                            fr["차인지급액"] = calc["net_pay"]
+                t_lbl = f"전체 사업소득자({len(t_f_idxs)}명)" if len(t_f_idxs) == len(freelancers) and len(freelancers) > 1 else ", ".join(freelancers[i]["성명"] for i in t_f_idxs)
+                logs.append(f"[채팅 기준 전환] {t_lbl}: 금액을 '{new_mode}' 기준으로 일괄 재계산했습니다.")
+                handled_this_line = True
+
+            elif employees:
+                t_e_idxs = matched_emp_indices if matched_emp_indices else list(range(len(employees)))
+                for idx_e in t_e_idxs:
+                    emp = employees[idx_e]
+                    if new_mode == "세후역산":
+                        # 기존 파일에서 읽힌 지급액계(또는 기본급)를 목표실수령액으로 전환
+                        cur_target = int(emp.get("목표실수령액", 0) or 0)
+                        if cur_target <= 0:
+                            cur_target = int(emp.get("지급액계", 0) or emp.get("기본급", 0) or 0)
+                        if cur_target > 0:
+                            emp["입력기준"] = "세후역산"
+                            emp["목표실수령액"] = cur_target
+                    else:
+                        if str(emp.get("입력기준", "")) == "세후역산" and int(emp.get("목표실수령액", 0) or 0) > 0:
+                            meal_car = int(emp.get("식대", 0) or 0) + int(emp.get("자가운전보조금", 0) or 0)
+                            emp["기본급"] = max(0, int(emp["목표실수령액"]) - meal_car)
+                        emp["입력기준"] = "세전"
+                        emp["목표실수령액"] = 0
+                t_lbl = f"전체 직원({len(t_e_idxs)}명)" if len(t_e_idxs) == len(employees) and len(employees) > 1 else ", ".join(employees[i]["성명"] for i in t_e_idxs)
+                logs.append(f"[채팅 기준 전환] {t_lbl}: 급여 금액을 '{new_mode}' 기준으로 일괄 역산 반영했습니다.")
+                handled_this_line = True
+
+        # 3) 사업소득 업종코드(6자리) 변경 지시
+        m_ind = re.search(r"\b(94\d{4})\b", ln)
+        if m_ind and freelancers:
+            ind_code = m_ind.group(1)
+            t_f_idxs = matched_free_indices if matched_free_indices else list(range(len(freelancers)))
+            for idx_f in t_f_idxs:
+                freelancers[idx_f]["소득구분"] = ind_code
+            logs.append(f"[채팅 업종코드 반영] 대상 {len(t_f_idxs)}명: 업종코드 {ind_code} 적용 완료")
+            handled_this_line = True
+
+        if not handled_this_line:
+            unhandled_lines.append(ln)
+
+    return employees, freelancers, logs, "\n".join(unhandled_lines)
+
+
 def parse_image_with_gemini_vision(
     image_bytes: bytes,
     mime_type: str = "image/png",
     gemini_api_key: Optional[str] = None,
+    sub_mode: str = "EMP",
+    default_year_month: str = "",
+    default_pay_date: str = "",
+    effective_table: str = "2026.03",
+    default_workplace: str = "본점",
 ) -> Dict[str, Any]:
     try:
         from google.genai import types
 
+        mode_hint = "현재 사용자는 [사업소득(3.3% 프리랜서)] 화면에 있습니다." if sub_mode == "FREE" else "현재 사용자는 [근로소득(4대보험 급여명세서)] 화면에 있습니다."
         prompt = (
-            "이 이미지는 세무사 사무실에 전달된 (1) 고용보험 산정보험료 근로자내역 표 이미지이거나, "
-            "(2) 거래처의 급여/프리랜서 지급 요청 캡처(카카오톡 등)입니다.\n"
-            "반드시 아래 JSON 형식으로만 응답하세요:\n"
-            "1) 고용보험 근로자내역 표인 경우:\n"
-            '{"type": "ei_notice", "records": [{"name": "근로자명", "ei_fee": 근로자실업급여보험료_숫자}]}\n'
-            "2) 급여/프리랜서 지급 요청 캡처인 경우:\n"
-            '{"type": "kakao_text", "lines": ["이름, 주민등록번호(있는경우), 세전/실수령 금액 (프리랜서 여부)"]}'
+            f"이 이미지는 세무사 사무실에 전달된 인건비 관련 캡처 화면입니다. ({mode_hint})\n"
+            "이미지 내용을 정밀 판독하여 아래 4가지 유형 중 해당하는 JSON 형식으로만 응답하세요(모든 금액은 쉼표 없는 정수로 표기):\n\n"
+            "1) [사업소득/프리랜서 지급내역 표·명단·한글/엑셀 캡처] (현재 화면이 사업소득이거나 3.3%/프리랜서/사업소득 명단인 경우):\n"
+            '{"type": "freelancer_table", "records": [{"name": "성명", "rrn": "주민등록번호(없으면 빈문자열)", "ind_code": "6자리업종코드(기본 940909)", "year_month": "YYYY-MM(없으면 빈문자열)", "pay_date": "YYYY-MM-DD(없으면 빈문자열)", "is_net": false, "amount": 지급총액또는실지급액_정수, "gross_pay": 세전지급총액_정수, "net_pay": 차인지급액_정수}]}\n\n'
+            "2) [근로소득 급여대장·급여명세서 표 캡처] (기본급·식대·수당·4대보험 등이 있는 급여 표/명세서 캡처):\n"
+            '{"type": "payroll_table", "year_month": "YYYY-MM", "records": [{"name": "성명", "rrn": "주민등록번호", "hire_date": "YYYY-MM-DD", "position": "직급", "dependents": 1, "children": 0, "is_net": false, "base_pay": 기본급_정수, "meal": 식대_정수, "car": 자가운전보조금_정수, "bonus": 상여_정수, "fixed_ot": 약정연장수당_정수, "ot": 연장근로수당_정수, "holiday": 휴일수당_정수, "leave": 연차수당_정수, "gross_total": 지급액계_정수, "net_target": 목표실수령액_정수, "nps": 국민연금_정수, "nhis": 건강보험_정수, "ltc": 장기요양_정수, "ei": 고용보험_정수}]}\n\n'
+            "3) [고용보험 산정보험료 근로자내역 고지서 표 이미지]:\n"
+            '{"type": "ei_notice", "records": [{"name": "근로자명", "ei_fee": 근로자실업급여보험료_정수}]}\n\n'
+            "4) [카카오톡·문자 메시지 급여/프리랜서 지급 요청 대화 캡처]:\n"
+            '{"type": "kakao_text", "lines": ["이름, 주민등록번호(있는경우), 세전/실수령 금액, 식대 등 수당 내역"]}'
         )
         img_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
         raw_txt = _call_gemini_contents(
@@ -2278,6 +2983,143 @@ def parse_image_with_gemini_vision(
                         "message": f"고용보험 이미지에서 {len(records)}명 보험료 추출 완료",
                     },
                 }
+            if data.get("type") == "freelancer_table":
+                fr_list: List[Dict[str, Any]] = []
+                for idx_f, item in enumerate(data.get("records", []), start=1):
+                    nm = normalize_korean_name(item.get("name", ""))
+                    if not is_valid_person_name(nm):
+                        continue
+                    gross_v = parse_number(item.get("gross_pay", 0))
+                    net_v = parse_number(item.get("net_pay", 0))
+                    amt_v = parse_number(item.get("amount", 0))
+                    is_net_flag = bool(item.get("is_net", False))
+                    if is_net_flag or (gross_v == 0 and net_v > 0):
+                        target_n = net_v if net_v > 0 else amt_v
+                        calc = solve_gross_from_net_freelancer(target_n)
+                        in_mode = "세후역산"
+                    else:
+                        target_g = gross_v if gross_v > 0 else amt_v
+                        calc = calculate_freelancer_row(target_g)
+                        in_mode = "세전"
+                    ind_raw = str(item.get("ind_code") or "940909").strip()
+                    m_ic = re.search(r"\b(\d{6})\b", ind_raw)
+                    fr_list.append({
+                        "코드": f"{idx_f:04d}",
+                        "성명": nm,
+                        "주민등록번호": normalize_rrn(item.get("rrn", "")),
+                        "소득구분": m_ic.group(1) if m_ic else "940909",
+                        "귀속년월": str(item.get("year_month") or default_year_month or datetime.now().strftime("%Y-%m")).strip(),
+                        "지급년월일": str(item.get("pay_date") or default_pay_date or datetime.now().strftime("%Y-%m-%d")).strip(),
+                        "입력기준": in_mode,
+                        "지급총액": calc["gross_pay"],
+                        "세율": 3,
+                        "소득세": calc["income_tax"],
+                        "지방소득세": calc["local_tax"],
+                        "공제액계": calc["total_deduction"],
+                        "차인지급액": calc["net_pay"],
+                    })
+                if fr_list:
+                    return {
+                        "type": "freelancer_table",
+                        "freelancers": fr_list,
+                        "message": f"[캡처 이미지 판독] 사업소득자 {len(fr_list)}명 내역을 추출했습니다.",
+                    }
+
+            if data.get("type") == "payroll_table":
+                emp_list: List[Dict[str, Any]] = []
+                for idx_e, item in enumerate(data.get("records", []), start=1):
+                    nm = normalize_korean_name(item.get("name", ""))
+                    if not is_valid_person_name(nm):
+                        continue
+                    deps = max(1, parse_number(item.get("dependents", 1), 1))
+                    chd = max(0, parse_number(item.get("children", 0), 0))
+                    meal_v = parse_number(item.get("meal", 0))
+                    car_v = parse_number(item.get("car", 0))
+                    bonus_v = parse_number(item.get("bonus", 0))
+                    fot_v = parse_number(item.get("fixed_ot", 0))
+                    ot_v = parse_number(item.get("ot", 0))
+                    hol_v = parse_number(item.get("holiday", 0))
+                    lv_v = parse_number(item.get("leave", 0))
+                    base_v = parse_number(item.get("base_pay", 0))
+                    gross_tot = parse_number(item.get("gross_total", 0))
+                    net_t = parse_number(item.get("net_target", 0))
+                    is_net_flag = bool(item.get("is_net", False))
+                    pos_str = str(item.get("position") or "").strip()
+                    ceo_flag = is_ceo_position(pos_str)
+
+                    nps_v = parse_number(item.get("nps", 0))
+                    nhis_v = parse_number(item.get("nhis", 0))
+                    ltc_v = parse_number(item.get("ltc", 0))
+                    ei_v = parse_number(item.get("ei", 0))
+                    notice_ov = None
+                    if any(x > 0 for x in (nps_v, nhis_v, ltc_v, ei_v)):
+                        notice_ov = {
+                            "국민연금": nps_v, "건강보험": nhis_v, "장기요양보험료": ltc_v, "고용보험": ei_v,
+                            "건강보험료정산": 0, "장기요양보험료정산": 0, "국민연금정산": 0,
+                        }
+
+                    if is_net_flag and net_t > 0:
+                        solved = solve_gross_from_net_employee(
+                            target_net_pay=net_t,
+                            non_taxable_pay=meal_v + car_v,
+                            dependents=deps,
+                            children_8_20=chd,
+                            notice_insurance=notice_ov,
+                            effective_table=effective_table,
+                            is_ceo=ceo_flag,
+                        )
+                        base_v = solved["base_pay"]
+                        in_mode = "세후역산"
+                    else:
+                        if base_v == 0 and gross_tot > 0:
+                            base_v = max(0, gross_tot - (meal_v + car_v + bonus_v + fot_v + ot_v + hol_v + lv_v))
+                        in_mode = "세전"
+                        net_t = 0
+
+                    row_calc = calculate_employee_payroll_row(
+                        base_pay=base_v,
+                        bonus=bonus_v,
+                        meal_allowance=meal_v,
+                        car_allowance=car_v,
+                        fixed_overtime_pay=fot_v,
+                        overtime_pay=ot_v,
+                        holiday_pay=hol_v,
+                        unused_leave_pay=lv_v,
+                        dependents=deps,
+                        children_8_20=chd,
+                        notice_insurance=notice_ov,
+                        effective_table=effective_table,
+                        is_ceo=ceo_flag,
+                    )
+                    emp_list.append({
+                        "사업장": default_workplace,
+                        "사원코드": f"{idx_e:03d}",
+                        "성명": nm,
+                        "주민등록번호": normalize_rrn(item.get("rrn", "")),
+                        "입사일": parse_date_str(item.get("hire_date", "")),
+                        "퇴사일": "",
+                        "부서": "",
+                        "직급": pos_str,
+                        "부양가족수": deps,
+                        "자녀수": chd,
+                        "입력기준": in_mode,
+                        "목표실수령액": net_t,
+                        **row_calc,
+                        "약정시급": 0,
+                        "연장근무시간": 0.0,
+                        "휴일근무시간": 0.0,
+                        "결근시간": 0.0,
+                        "주근무시간": 40.0,
+                        "월근무시간": 209.0,
+                    })
+                if emp_list:
+                    return {
+                        "type": "payroll_table",
+                        "employees": emp_list,
+                        "year_month": str(data.get("year_month") or "").strip(),
+                        "message": f"[캡처 이미지 판독] 근로자 {len(emp_list)}명 급여 내역을 추출했습니다.",
+                    }
+
             if data.get("type") == "kakao_text":
                 return {
                     "type": "kakao_text",

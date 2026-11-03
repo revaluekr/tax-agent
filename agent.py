@@ -20,8 +20,20 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+RUNTIME_API_KEYS_FILE = os.path.join(".workspace_storage", "runtime_api_keys.json")
+
 def _get_secret_or_env(key_name: str) -> str:
-    """Streamlit Cloud의 st.secrets와 로컬 .env 양쪽에서 실시간으로 키를 읽어옵니다."""
+    """1순위: 모달에서 저장한 런타임 보안키(.workspace_storage/runtime_api_keys.json) -> 2순위: st.secrets -> 3순위: 환경변수(.env)에서 실시간으로 읽어옵니다."""
+    try:
+        if os.path.exists(RUNTIME_API_KEYS_FILE):
+            with open(RUNTIME_API_KEYS_FILE, "r", encoding="utf-8") as rf:
+                rdata = json.load(rf)
+            if isinstance(rdata, dict) and key_name in rdata:
+                rval = str(rdata.get(key_name) or "").strip().strip('"').strip("'")
+                if rval:
+                    return rval
+    except Exception:
+        pass
     try:
         if hasattr(st, "secrets") and key_name in st.secrets:
             val = str(st.secrets[key_name]).strip().strip('"').strip("'")
@@ -59,10 +71,20 @@ def _secret_on(key_name: str) -> bool:
     return _get_secret_or_env(key_name).lower() in ("on", "true", "1", "yes")
 
 def is_vertex_enabled() -> bool:
-    return _secret_on("GEMINI_USE_VERTEX")
+    """GEMINI_USE_VERTEX=on 이거나 GCP_SERVICE_ACCOUNT_JSON/[gcp_service_account]가 등록되어 있으면(명시적 off가 아닌 한) Vertex AI 크레딧을 자동 활성화합니다."""
+    raw_flag = _get_secret_or_env("GEMINI_USE_VERTEX").lower().strip()
+    if raw_flag in ("off", "false", "0", "no"):
+        return False
+    if raw_flag in ("on", "true", "1", "yes"):
+        return True
+    return _load_vertex_sa_info() is not None
 
 def is_vertex_fallback_enabled() -> bool:
-    return _secret_on("GEMINI_VERTEX_FALLBACK")
+    """Vertex AI 호출 실패 시 유료키(GEMINI_PAID_KEY)가 있으면 중단 없이 자동 폴백합니다(명시적 off가 아닌 한 기본 활성화)."""
+    raw_fb = _get_secret_or_env("GEMINI_VERTEX_FALLBACK").lower().strip()
+    if raw_fb in ("off", "false", "0", "no"):
+        return False
+    return True
 
 def _load_vertex_sa_info() -> dict | None:
     try:
@@ -488,8 +510,9 @@ def is_pro_budget_exceeded(room_key: str = "") -> tuple[bool, float, float]:
 _TOOL_TRACE = contextvars.ContextVar("tool_trace", default=None)
 
 def _verify_mode() -> str:
-    """기본값을 'strict'(미조회 근거·불일치 문장 즉시 삭제, 일부 불일치만 ⚠️ 표시)로 작동합니다."""
-    m = (_get_secret_or_env("VERIFY_MODE") or "strict").lower().strip()
+    """세 에이전트(범준·두리·가진) 모두 동일하게 3중 검증('strict')으로 작동하도록 통일합니다.
+    (과거 Secrets에 VERIFY_MODE="loose"가 남아 있어도 무시하며, FORCE_VERIFY_MODE가 지정된 경우에만 예외 허용)"""
+    m = (_get_secret_or_env("FORCE_VERIFY_MODE") or "strict").lower().strip()
     return m if m in ("balanced", "strict", "loose") else "strict"
 
 def _new_trace(unleash: bool = False) -> dict:
@@ -1292,7 +1315,7 @@ def _semantic_verify(api_key: str, claims: list, sources: dict, user_query: str 
     )
     client = make_genai_client(api_key, 50000)
 
-    verifier_candidates = _skip_slow_models(list(dict.fromkeys([VERIFIER_MODEL_ID, FLASH_BACKUP_ID, FLASH_LITE_ID, FLASH_FALLBACK_ID])))
+    verifier_candidates = _get_verifier_candidates()
     _VERIFY_INFO.data = {}
     _t_verify = time.time()
     used_cfg = ""
@@ -1935,21 +1958,39 @@ def compress_legal_text(raw_text: str, query_filter: str = "") -> str:
 # ---------------------------------------------------------
 # 1. 모델 설정 (1번 아르곤 직결 방식 + 2026.10 공식 Gemini API 라인업) & 대화방당 2,000원 Pro 차단기
 # ---------------------------------------------------------
-def _model_id(env_key: str, default: str) -> str:
-    return _get_secret_or_env(env_key) or default
+_DEPRECATED_FLASH_MODELS = {
+    "gemini-2.5-flash", "gemini-2.5-flash-preview", "gemini-2.0-flash",
+    "gemini-2.0-flash-exp", "gemini-1.5-flash", "gemini-1.5-pro",
+}
 
-# ⚡ Flash 고속 모드 라인업 (전원 Stable GA 정식 모델 우선 배치)
-FLASH_MODEL_ID     = _model_id("GEMINI_FLASH_MODEL", "gemini-3.8-flash")
-FLASH_BACKUP_ID    = _model_id("GEMINI_FLASH_BACKUP_MODEL", "gemini-3.6-flash")
+def _model_id(env_key: str, default: str) -> str:
+    """Secrets에 과거 구버전 모델명(예: gemini-2.5-flash)이 남아 있어도 404 지연(1~2초)이 발생하지 않도록 최신 기본 모델로 자동 치환합니다."""
+    raw = (_get_secret_or_env(env_key) or "").strip()
+    if not raw or raw.lower() in _DEPRECATED_FLASH_MODELS:
+        return default
+    return raw
+
+# ⚡ Flash 고속 모드 라인업 (범준·두리·가진 모두 첫 시도 0초 직결되는 gemini-3.6-flash 1순위 + 3.8-flash 백업)
+FLASH_MODEL_ID     = _model_id("GEMINI_FLASH_MODEL", "gemini-3.6-flash")
+FLASH_BACKUP_ID    = _model_id("GEMINI_FLASH_BACKUP_MODEL", "gemini-3.8-flash")
 FLASH_LITE_ID      = _model_id("GEMINI_FLASH_LITE_MODEL", "gemini-3.5-flash-lite")
 FLASH_FALLBACK_ID  = "gemini-2.5-flash"
 
-VERIFIER_MODEL_ID  = _model_id("GEMINI_VERIFIER_MODEL", "gemini-3.8-flash")
-SEMANTIC_VERIFY_ON = (
-    (_get_secret_or_env("SEMANTIC_VERIFY").lower() in ("on", "true", "1"))
-    if _verify_mode() == "loose"
-    else (_get_secret_or_env("SEMANTIC_VERIFY").lower() not in ("off", "false", "0"))
-)
+VERIFIER_MODEL_ID  = _model_id("GEMINI_VERIFIER_MODEL", "gemini-3.6-flash")
+# 🧪 3차 의미 검증(🧪 의미 검증 배지) 상시 활성화 (과거 Secrets에 VERIFY_MODE=loose나 SEMANTIC_VERIFY=off가 남아 있어도 강제 작동)
+SEMANTIC_VERIFY_ON = (_get_secret_or_env("FORCE_DISABLE_SEMANTIC_VERIFY").lower() not in ("on", "true", "1"))
+
+def _get_flash_candidates() -> list[str]:
+    f_main = _model_id("GEMINI_FLASH_MODEL", "gemini-3.6-flash")
+    f_back = _model_id("GEMINI_FLASH_BACKUP_MODEL", "gemini-3.8-flash")
+    f_lite = _model_id("GEMINI_FLASH_LITE_MODEL", "gemini-3.5-flash-lite")
+    return _skip_slow_models(list(dict.fromkeys([f_main, f_back, f_lite, FLASH_FALLBACK_ID])))
+
+def _get_verifier_candidates() -> list[str]:
+    v_main = _model_id("GEMINI_VERIFIER_MODEL", "gemini-3.6-flash")
+    f_back = _model_id("GEMINI_FLASH_BACKUP_MODEL", "gemini-3.8-flash")
+    f_lite = _model_id("GEMINI_FLASH_LITE_MODEL", "gemini-3.5-flash-lite")
+    return _skip_slow_models(list(dict.fromkeys([v_main, f_back, f_lite, FLASH_FALLBACK_ID])))
 
 # 👑 Pro 심층 모드: [1번 아르곤 직결 방식] gemini-4-argon (Stable GA) 1순위 기본 활성화!
 # (만약 추후 Argon을 잠그고 싶을 때만 Secrets/환경변수에 USE_ARGON_MODEL="off" 설정)
@@ -3357,7 +3398,7 @@ def run_general_agent(user_input: str, raw_query: str = "", has_file: bool = Fal
         is_pro = (tier_mode == "PRO")
         if is_pro:
             live_pool = get_pro_key_pool()
-        flash_candidates = _skip_slow_models(list(dict.fromkeys([FLASH_MODEL_ID, FLASH_BACKUP_ID, FLASH_LITE_ID, FLASH_FALLBACK_ID])))
+        flash_candidates = _get_flash_candidates()
         models = (_skip_slow_models(list(dict.fromkeys(PAID_PRO_MODEL_IDS))) + flash_candidates) if is_pro else flash_candidates
         prompt_text = clean_input.replace("[현재 사용자 질문]: [프로]", "[현재 사용자 질문]:", 1)
         if prompt_text.lstrip().startswith("[프로]"):
@@ -3466,7 +3507,7 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False, room
             types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
         ]
 
-        flash_candidates = _skip_slow_models(list(dict.fromkeys([FLASH_MODEL_ID, FLASH_BACKUP_ID, FLASH_LITE_ID, FLASH_FALLBACK_ID])))
+        flash_candidates = _get_flash_candidates()
         execution_plan = []
         for lbl, k in live_pool:
             if tier_mode == "PRO":

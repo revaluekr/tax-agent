@@ -12,3 +12,4 @@ streamlit-aggrid
 cryptography
 pypdfium2
 Pillow
+olefile

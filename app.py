@@ -538,8 +538,44 @@ _CITED_ARTICLE_TAG_RE = re.compile(
     r"\[(?:조문|부칙)(?:\s*[:：]\s*|\s*)(?=[가-힣A-Za-z0-9「])([^\]]+)\]"
 )
 
+RUNTIME_API_KEYS_FILE = os.path.join(".workspace_storage", "runtime_api_keys.json")
+
+def _load_runtime_api_keys() -> dict:
+    try:
+        if os.path.exists(RUNTIME_API_KEYS_FILE):
+            with open(RUNTIME_API_KEYS_FILE, "r", encoding="utf-8") as rf:
+                data = json.load(rf)
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+def _save_runtime_api_keys(new_entries: dict) -> None:
+    os.makedirs(".workspace_storage", exist_ok=True)
+    cur = _load_runtime_api_keys()
+    for k, v in (new_entries or {}).items():
+        if v is None:
+            continue
+        vs = str(v).strip()
+        if vs:
+            cur[k] = vs
+            os.environ[k] = vs
+    with open(RUNTIME_API_KEYS_FILE, "w", encoding="utf-8") as wf:
+        json.dump(cur, wf, ensure_ascii=False, indent=2)
+
+# 앱 구동 시 런타임 저장 키가 있으면 os.environ에도 동기화
+for _rk, _rv in _load_runtime_api_keys().items():
+    if _rv and isinstance(_rv, str):
+        os.environ[_rk] = _rv
+
 def _get_first_env_or_secret(key_names: list[str]) -> str:
-    """지정된 키 후보들 중 st.secrets 또는 환경변수에 설정된 첫 번째 실제 값을 반환합니다."""
+    """지정된 키 후보들 중 런타임 저장소(.workspace_storage/runtime_api_keys.json), st.secrets, 환경변수 순서로 첫 번째 실제 값을 반환합니다."""
+    rt_map = _load_runtime_api_keys()
+    for k in key_names:
+        rval = str(rt_map.get(k) or "").strip().strip('"').strip("'")
+        if rval:
+            return rval
     for k in key_names:
         try:
             if hasattr(st, "secrets") and k in st.secrets:
@@ -1452,8 +1488,24 @@ def extract_file_content(uploaded_file, room_key: str = "") -> str:
                         text_parts.append(" | ".join(row_cells))
             return "\n".join(text_parts)[:MAX_DOC_CHARS_PRO]
 
-        elif lower_name.endswith((".png", ".jpg", ".jpeg")):
-            mime = "image/png" if lower_name.endswith(".png") else "image/jpeg"
+        elif lower_name.endswith((".hwp", ".hwpx", ".cell")):
+            try:
+                from payroll_automated.parsers import extract_universal_document_text_and_rows
+                doc_txt, rows = extract_universal_document_text_and_rows(raw_bytes, filename=filename)
+                parts = [f"[첨부 문서 파일명: {filename}]"]
+                if rows:
+                    parts.append("\n--- [표(Table) 데이터] ---")
+                    for r in rows[:1500]:
+                        parts.append(" | ".join(str(c).strip() for c in r if c is not None))
+                if doc_txt and doc_txt.strip():
+                    parts.append("\n--- [본문 텍스트] ---")
+                    parts.append(doc_txt.strip())
+                return "\n".join(parts)[:MAX_DOC_CHARS_PRO]
+            except Exception as e_hwp:
+                return f"❌ 한글/한셀 문서 추출 오류 ({filename}): {e_hwp}"
+
+        elif lower_name.endswith((".png", ".jpg", ".jpeg", ".webp")):
+            mime = "image/png" if lower_name.endswith(".png") else ("image/webp" if lower_name.endswith(".webp") else "image/jpeg")
             return _ocr_with_gemini_flash(raw_bytes, mime, filename, room_key=room_key)[:MAX_DOC_CHARS_PRO]
 
         return "지원하지 않는 파일 형식입니다."
@@ -2548,6 +2600,78 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
         unsafe_allow_html=True
     )
 
+    with st.expander("🔐 주요 API 보안키 및 Vertex AI(크레딧) 즉시 입력·저장 (Secrets 수정 없이 바로 적용)"):
+        st.caption(
+            "Streamlit Cloud의 Settings → Secrets 화면에 들어가지 않고도, 여기서 **법제처 OC 키 · 기업마당 키 · Vertex AI 서비스 계정 JSON · Gemini 유료키**를 입력해 즉시 적용할 수 있습니다. (빈칸으로 둔 항목은 기존 설정을 그대로 유지합니다.)"
+        )
+        rt_cur = _load_runtime_api_keys()
+        with st.form("modal_runtime_api_keys_form", clear_on_submit=False):
+            c_rt1, c_rt2 = st.columns(2)
+            with c_rt1:
+                in_law_oc = st.text_input(
+                    "법제처 국가법령정보센터 OC 키 (LAW_OPEN_API_KEY)",
+                    value=rt_cur.get("LAW_OPEN_API_KEY", ""),
+                    placeholder="예: 이메일 @ 앞 아이디 (범준·두리·가진 공용 사용 가능)"
+                )
+                in_bizinfo = st.text_input(
+                    "중소벤처기업부 기업마당 API 키 (BIZINFO_API_KEY)",
+                    value=rt_cur.get("BIZINFO_API_KEY", ""),
+                    placeholder="기업마당 발급 인증키 입력"
+                )
+                in_paid_key = st.text_input(
+                    "Google AI Studio 유료키 (GEMINI_PAID_KEY, 선택)",
+                    value=rt_cur.get("GEMINI_PAID_KEY", ""),
+                    type="password",
+                    placeholder="AIzaSy..."
+                )
+            with c_rt2:
+                cur_v_on = getattr(agent, "is_vertex_enabled", lambda: False)()
+                in_use_vertex = st.selectbox(
+                    "Vertex AI 크레딧 우선 사용 (GEMINI_USE_VERTEX)",
+                    options=["자동 (서비스 계정 JSON 등록 시 자동 켜짐)", "on (강제 켜기)", "off (유료키만 사용)"],
+                    index=0
+                )
+                in_gcp_proj = st.text_input(
+                    "Google Cloud 프로젝트 ID (GCP_PROJECT_ID, 선택)",
+                    value=rt_cur.get("GCP_PROJECT_ID", ""),
+                    placeholder="비워두면 서비스 계정 JSON 내부 project_id 자동 사용"
+                )
+                in_gcp_sa = st.text_area(
+                    "Vertex AI 서비스 계정 JSON 전체 (GCP_SERVICE_ACCOUNT_JSON)",
+                    value=rt_cur.get("GCP_SERVICE_ACCOUNT_JSON", ""),
+                    height=95,
+                    placeholder='{"type": "service_account", "project_id": "...", ...}'
+                )
+            if st.form_submit_button("💾 입력한 API 보안키 및 Vertex AI 설정 즉시 저장·적용", type="primary", width="stretch"):
+                to_save = {}
+                if in_law_oc.strip():
+                    to_save["LAW_OPEN_API_KEY"] = in_law_oc.strip().split("@")[0].strip()
+                if in_bizinfo.strip():
+                    to_save["BIZINFO_API_KEY"] = in_bizinfo.strip()
+                if in_paid_key.strip():
+                    to_save["GEMINI_PAID_KEY"] = in_paid_key.strip()
+                if in_gcp_proj.strip():
+                    to_save["GCP_PROJECT_ID"] = in_gcp_proj.strip()
+                if in_gcp_sa.strip():
+                    to_save["GCP_SERVICE_ACCOUNT_JSON"] = in_gcp_sa.strip()
+                if in_use_vertex.startswith("on"):
+                    to_save["GEMINI_USE_VERTEX"] = "on"
+                elif in_use_vertex.startswith("off"):
+                    to_save["GEMINI_USE_VERTEX"] = "off"
+                elif in_gcp_sa.strip():
+                    to_save["GEMINI_USE_VERTEX"] = "on"
+                _save_runtime_api_keys(to_save)
+                if hasattr(agent, "_VERTEX_CREDS"):
+                    agent._VERTEX_CREDS = None
+                if hasattr(agent, "_LAW_MEMORY_CACHE"):
+                    agent._LAW_MEMORY_CACHE.clear()
+                try:
+                    fetch_latest_tax_law_promulgations.clear()
+                except Exception:
+                    pass
+                st.success("✅ 보안키 및 Vertex AI 설정이 즉시 적용되었습니다! 화면을 새로고침합니다.")
+                st.rerun()
+
     with st.expander("⏰ 주기적 갱신 API 만료 예정일 수정 및 저장 (브이월드 · 공공데이터포털 · 한국은행)"):
         current_expiry_map = load_api_expiry_dates()
         updated_expiry_map = {}
@@ -3248,7 +3372,7 @@ try:
             placeholder=chat_input_placeholder,
             disabled=is_current_room_running,
             accept_file="multiple",
-            file_type=["xlsx", "xls", "csv", "pdf", "docx", "png", "jpg", "jpeg"],
+            file_type=["xlsx", "xls", "csv", "cell", "hwp", "hwpx", "docx", "pdf", "png", "jpg", "jpeg", "webp"],
             key=f"chat_input_{effective_ws_id}_{selected_room}"
         )
     else:
@@ -3263,6 +3387,44 @@ except Exception:
         disabled=is_current_room_running,
         key=f"chat_input_{effective_ws_id}_{selected_room}"
     )
+
+st.components.v1.html(
+    """<script>
+    (function() {
+        const doc = window.parent.document;
+        if (doc._agentChatEnterBridgeBound) return;
+        doc._agentChatEnterBridgeBound = true;
+        function hasAttachedFiles(chatInput) {
+            if (!chatInput) return false;
+            const btn = chatInput.querySelector('[data-testid="stChatInputSubmitButton"]');
+            const ta = chatInput.querySelector('textarea');
+            if (btn && !btn.disabled && (!ta || !ta.value.trim())) return true;
+            return chatInput.querySelectorAll('[data-testid*="File"], [class*="uploadedFile"], li').length > 0;
+        }
+        doc.addEventListener('drop', function() {
+            setTimeout(function() {
+                const ta = doc.querySelector('[data-testid="stChatInput"] textarea');
+                if (ta) ta.focus();
+            }, 180);
+        }, true);
+        doc.addEventListener('keydown', function(e) {
+            if (e.key !== 'Enter' || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey || e.isComposing) return;
+            const chatInput = doc.querySelector('[data-testid="stChatInput"]');
+            if (!chatInput) return;
+            const submitBtn = chatInput.querySelector('[data-testid="stChatInputSubmitButton"]');
+            if (!submitBtn || submitBtn.disabled) return;
+            const active = doc.activeElement;
+            const isInsideChat = chatInput.contains(active) || active === doc.body || active === doc.documentElement;
+            if (isInsideChat && hasAttachedFiles(chatInput)) {
+                e.preventDefault();
+                e.stopPropagation();
+                submitBtn.click();
+            }
+        }, true);
+    })();
+    </script>""",
+    height=0,
+)
 
 if chat_val:
     if isinstance(chat_val, str):
