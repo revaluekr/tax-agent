@@ -3048,7 +3048,7 @@ def _page_calculation():
         with st.container(key="ec_btn_pdf_step3_wrap"):
             st.download_button(
                 "PDF 출력",
-                data=(lambda: _build_step3_calculation_pdf_bytes(s, pkg, matrix_cols)),
+                data=_build_step3_calculation_pdf_bytes(s, pkg, matrix_cols),
                 file_name=f"{corp_nm_fn}_{tax_yr}년귀속_통합고용세액공제_계산서.pdf",
                 mime="application/pdf",
                 width="stretch",

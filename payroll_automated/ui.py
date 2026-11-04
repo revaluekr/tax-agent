@@ -482,7 +482,7 @@ div[data-testid="stDialog"] div[role="dialog"] {
     display: block;
 }
 
-/* 🔵 사업소득 상단 [기준금액: 세전 | 세후] 토스 웹(TDS) 세그먼트 캡슐 토글 스위치 스타일 */
+/* 🔴 사업소득 상단 [기준금액: 세전 (●   ) 세후] 캡슐 토글 스위치 전용 스타일 (pay_main_css 우선순위 및 stTooltipHoverTarget 완전 대응) */
 [data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"],
 div[class*="st-key-pay_free_sw_"] {
     display: flex !important;
@@ -499,22 +499,31 @@ div[class*="st-key-pay_free_sw_"] div[data-testid="stTooltipHoverTarget"] {
 [data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"] div.stButton button:not([kind="primary"]),
 [data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"] div.stButton button,
 div[class*="st-key-pay_free_sw_"] div.stButton button {
-    background: #F2F4F6 !important;
-    border: 1px solid #E5E8EB !important;
-    border-radius: 999px !important;
+    background: transparent !important;
+    border: none !important;
+    border-bottom: none !important;
     box-shadow: none !important;
-    padding: 3px 10px !important;
-    min-height: 38px !important;
-    height: 38px !important;
+    padding: 2px 4px !important;
+    min-height: 36px !important;
+    height: 36px !important;
     display: inline-flex !important;
     align-items: center !important;
     justify-content: center !important;
     gap: 8px !important;
     cursor: pointer !important;
 }
-[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"] div.stButton button:hover {
-    background: #E8F3FF !important;
-    border-color: #90C2FF !important;
+[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"] div.stButton button:not([kind="primary"]):hover:not(:disabled),
+[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"] div.stButton button:hover,
+[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"] div.stButton button:active,
+[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"] div.stButton button:focus,
+div[class*="st-key-pay_free_sw_"] div.stButton button:hover,
+div[class*="st-key-pay_free_sw_"] div.stButton button:active,
+div[class*="st-key-pay_free_sw_"] div.stButton button:focus {
+    background: transparent !important;
+    border: none !important;
+    border-bottom: none !important;
+    box-shadow: none !important;
+    outline: none !important;
 }
 [data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"] div.stButton button > div,
 div[class*="st-key-pay_free_sw_"] div.stButton button > div {
@@ -527,59 +536,76 @@ div[class*="st-key-pay_free_sw_"] div.stButton button > div {
     margin: 0 !important;
     padding: 0 !important;
 }
-/* 왼쪽 라벨: '기준금액 : 세전' */
+/* 왼쪽 라벨: '기준금액: 세전' */
 [data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-pay_free_sw_gross div.stButton button::before,
 .st-key-pay_free_sw_gross div.stButton button::before {
-    content: "기준금액 : 세전" !important;
-    font-size: 0.84rem !important;
+    content: "기준금액: 세전" !important;
+    font-size: 0.86rem !important;
     font-weight: 800 !important;
-    color: #3182F6 !important;
-    background: #FFFFFF !important;
-    padding: 4px 10px !important;
-    border-radius: 999px !important;
-    box-shadow: 0 1px 3px rgba(0, 27, 55, 0.10) !important;
-    letter-spacing: -0.2px !important;
+    color: #dc2626 !important;
+    letter-spacing: -0.3px !important;
     white-space: nowrap !important;
 }
 [data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-pay_free_sw_net div.stButton button::before,
 .st-key-pay_free_sw_net div.stButton button::before {
-    content: "기준금액 : 세전" !important;
-    font-size: 0.84rem !important;
+    content: "기준금액: 세전" !important;
+    font-size: 0.86rem !important;
     font-weight: 600 !important;
-    color: #8B95A1 !important;
-    padding: 4px 6px !important;
-    letter-spacing: -0.2px !important;
+    color: #94a3b8 !important;
+    letter-spacing: -0.3px !important;
     white-space: nowrap !important;
 }
-/* 가운데 점(●)은 숨기고 세그먼트 알약 탭으로 표현 */
+/* 가운데 빨간색 캡슐 트랙 + 흰색 동그라미(●) 이동 */
+[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"] div.stButton button:not([kind="primary"]) p,
 [data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"] div.stButton button p,
 div[class*="st-key-pay_free_sw_"] div.stButton button p {
-    display: none !important;
+    width: 48px !important;
+    height: 24px !important;
+    border-radius: 999px !important;
+    background: linear-gradient(180deg, #ef4444 0%, #dc2626 100%) !important;
+    border: 1.5px solid #b91c1c !important;
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.22), 0 1px 2px rgba(220, 38, 38, 0.25) !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    padding: 0 3px !important;
+    margin: 0 !important;
+    color: #ffffff !important;
+    font-size: 16px !important;
+    font-weight: 800 !important;
+    line-height: 1 !important;
+    transition: all 0.18s ease-in-out !important;
+}
+[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-pay_free_sw_gross div.stButton button:not([kind="primary"]) p,
+[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-pay_free_sw_gross div.stButton button p,
+.st-key-pay_free_sw_gross div.stButton button p {
+    justify-content: flex-start !important;
+}
+[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-pay_free_sw_net div.stButton button:not([kind="primary"]) p,
+[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-pay_free_sw_net div.stButton button p,
+.st-key-pay_free_sw_net div.stButton button p {
+    justify-content: flex-end !important;
+    background: linear-gradient(180deg, #dc2626 0%, #b91c1c 100%) !important;
 }
 /* 오른쪽 라벨: '세후' */
 [data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-pay_free_sw_gross div.stButton button::after,
 .st-key-pay_free_sw_gross div.stButton button::after {
     content: "세후" !important;
-    font-size: 0.84rem !important;
+    font-size: 0.86rem !important;
     font-weight: 600 !important;
-    color: #8B95A1 !important;
-    padding: 4px 8px !important;
-    letter-spacing: -0.2px !important;
+    color: #94a3b8 !important;
+    letter-spacing: -0.3px !important;
     white-space: nowrap !important;
 }
 [data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-pay_free_sw_net div.stButton button::after,
 .st-key-pay_free_sw_net div.stButton button::after {
     content: "세후" !important;
-    font-size: 0.84rem !important;
+    font-size: 0.86rem !important;
     font-weight: 800 !important;
-    color: #3182F6 !important;
-    background: #FFFFFF !important;
-    padding: 4px 10px !important;
-    border-radius: 999px !important;
-    box-shadow: 0 1px 3px rgba(0, 27, 55, 0.10) !important;
-    letter-spacing: -0.2px !important;
+    color: #dc2626 !important;
+    letter-spacing: -0.3px !important;
     white-space: nowrap !important;
 }
+
 </style>
 """
 
@@ -661,59 +687,12 @@ def _format_yymm_4digit(ym_str: str) -> str:
     return f"{now.year % 100:02d}{now.month:02d}"
 
 
-_PA_STORAGE_DIR = ".workspace_storage"
-
-def _pa_disk_path() -> str:
-    import os as _os
-    import hashlib as _hashlib
-    _os.makedirs(_PA_STORAGE_DIR, exist_ok=True)
-    ws_id = str(st.session_state.get("loaded_workspace_id") or st.session_state.get("active_workspace_id") or "default_persistent_workspace").strip()
-    if not ws_id or ws_id.startswith("__anon_session__:"):
-        ws_id = "default_persistent_workspace"
-    h = _hashlib.md5(ws_id.encode("utf-8")).hexdigest()[:16]
-    return _os.path.join(_PA_STORAGE_DIR, f"pa_state_{h}.json")
-
-def _save_payroll_state_to_disk(pstate: Optional[Dict[str, Any]] = None) -> None:
-    import json as _json
-    try:
-        if pstate is None:
-            pstate = st.session_state.get("payroll_auto_state")
-        if not isinstance(pstate, dict):
-            return
-        persist_keys = (
-            "sub_mode", "corp_name", "workplace_mode", "workplace_custom",
-            "year_month", "pay_date", "is_5_or_more", "withholding_rate_pct",
-            "effective_table", "payslip_template", "encrypt_payslip_zip",
-            "employees", "freelancers", "prev_employees", "prev_freelancers",
-            "notice_logs", "chat_logs", "client_db", "free_bulk_is_net",
-            "_period_user_set", "ei_emp_count_manual", "ei_stability_tier_manual",
-        )
-        payload = {k: pstate.get(k) for k in persist_keys if k in pstate}
-        with open(_pa_disk_path(), "w", encoding="utf-8") as f:
-            _json.dump(payload, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
-
-def _load_payroll_state_from_disk() -> Optional[Dict[str, Any]]:
-    import os as _os
-    import json as _json
-    path = _pa_disk_path()
-    if not _os.path.exists(path):
-        return None
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = _json.load(f)
-        return data if isinstance(data, dict) else None
-    except Exception:
-        return None
-
 def _get_payroll_state() -> Dict[str, Any]:
-    cur_disk_path = _pa_disk_path()
-    if "payroll_auto_state" not in st.session_state or st.session_state.get("_pa_loaded_disk_path") != cur_disk_path:
+    if "payroll_auto_state" not in st.session_state:
         now = datetime.now()
         default_ym = now.strftime("%Y-%m")
         default_pay_dt = now.strftime("%Y-%m-25")
-        base_state: Dict[str, Any] = {
+        st.session_state.payroll_auto_state = {
             "sub_mode": "EMP",  # "EMP" (급여명세서) | "FREE" (사업소득)
             "corp_name": "",
             "workplace_mode": "본점",  # "본점" | "지점" | "직접입력" | "선택안함(거래처명 표시)"
@@ -736,13 +715,6 @@ def _get_payroll_state() -> Dict[str, Any]:
             "client_db": create_empty_client_db(""),
             "grid_version": 0,
         }
-        disk_loaded = _load_payroll_state_from_disk()
-        if disk_loaded:
-            for k, v in disk_loaded.items():
-                if v is not None:
-                    base_state[k] = v
-        st.session_state.payroll_auto_state = base_state
-        st.session_state["_pa_loaded_disk_path"] = cur_disk_path
     pstate = st.session_state.payroll_auto_state
     pstate.setdefault("workplace_mode", "본점")
     pstate.setdefault("workplace_custom", "")
@@ -767,10 +739,6 @@ def _sync_workplace_to_employees(pstate: Dict[str, Any], force_all: bool = False
             emp["사업장"] = wp_lbl
 
 
-EMP_AGGRID_KEY = "pay_emp_aggrid_fixed"
-FREE_AGGRID_KEY = "pay_free_aggrid_fixed"
-
-
 def _reset_payroll_current_work(which: str = "ALL") -> None:
     """작업 자료 초기화 — which: "EMP"(급여명세서만) / "FREE"(사업소득만) / "ALL"(둘 다).
     급여명세서와 사업소득은 서로 영향을 주지 않도록 지금 보고 있는 화면의 자료만 비웁니다."""
@@ -784,7 +752,7 @@ def _reset_payroll_current_work(which: str = "ALL") -> None:
     if which == "ALL" or not (pstate.get("employees") or pstate.get("freelancers")):
         pstate["notice_logs"] = []
         pstate["chat_logs"] = []
-    _commit_server_mutation(pstate)
+    pstate["grid_version"] = int(pstate.get("grid_version", 0)) + 1
 
 
 def _normalize_pay_date(v: str) -> str:
@@ -805,7 +773,7 @@ def _apply_period_to_rows(pstate: Dict[str, Any]) -> None:
             fr["귀속년월"] = ym
         if pd_v:
             fr["지급년월일"] = pd_v
-    _commit_server_mutation(pstate)
+    pstate["grid_version"] = int(pstate.get("grid_version", 0)) + 1
 
 
 def _set_period_from_file(pstate: Dict[str, Any], ym: str, pay_date: str = "") -> None:
@@ -815,13 +783,10 @@ def _set_period_from_file(pstate: Dict[str, Any], ym: str, pay_date: str = "") -
     pstate["year_month"] = ym
     pstate["pay_date"] = pay_date or f"{ym}-25"
     pstate["effective_table"] = "2026.03" if ym >= "2026-03" else "2024.03"
-    st.session_state["pay_sb_year_month"] = pstate["year_month"]
-    st.session_state["pay_sb_pay_date"] = pstate["pay_date"]
 
 
 def _on_sidebar_year_month_change() -> None:
     pstate = _get_payroll_state()
-    _pre_sync_payroll_grids_from_session(pstate)
     ym = str(st.session_state.get("pay_sb_year_month") or "").strip()
     if not ym:
         return
@@ -836,7 +801,6 @@ def _on_sidebar_year_month_change() -> None:
 
 def _on_sidebar_pay_date_change() -> None:
     pstate = _get_payroll_state()
-    _pre_sync_payroll_grids_from_session(pstate)
     pd_v = _normalize_pay_date(st.session_state.get("pay_sb_pay_date"))
     pstate["_period_user_set"] = True
     pstate["pay_date"] = pd_v
@@ -922,7 +886,6 @@ def _recalculate_all_employee_rows(pstate: Dict[str, Any]) -> None:
             emp["사원코드"] = f"{idx:03d}"
         new_list.append(emp)
     pstate["employees"] = new_list
-    _commit_server_mutation(pstate)
 
 
 def _recalculate_all_freelancer_rows(pstate: Dict[str, Any]) -> None:
@@ -967,7 +930,6 @@ def _recalculate_all_freelancer_rows(pstate: Dict[str, Any]) -> None:
             fr["소득구분"] = "940909"
         new_list.append(fr)
     pstate["freelancers"] = new_list
-    _commit_server_mutation(pstate)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1163,6 +1125,7 @@ def _dlg_overtime_calculator():
                         emp["연장근로수당"] = res["overtime_and_night_pay"]
                         emp["휴일근로수당"] = res["holiday_pay"]
                 _recalculate_all_employee_rows(pstate)
+                pstate["grid_version"] += 1
                 st.rerun()
     with b2:
         if st.button("닫기", width="stretch", key="btn_close_ot_dlg"):
@@ -1224,6 +1187,7 @@ def _dlg_weekly_holiday_calculator():
                         emp["월근무시간"] = float(res["monthly_total_hours"])
                         emp["기본급"] = int(res["monthly_total_pay"])
                 _recalculate_all_employee_rows(pstate)
+                pstate["grid_version"] += 1
                 st.rerun()
     with b2:
         if st.button("닫기", width="stretch", key="btn_close_wh_dlg"):
@@ -1287,7 +1251,7 @@ def _dlg_industry_code_selector():
         ):
             for i in valid_sel:
                 frees[i]["소득구분"] = chosen_code
-            _commit_server_mutation(pstate)
+            pstate["grid_version"] += 1
             st.rerun()
     with c_b2:
         if st.button(
@@ -1298,7 +1262,7 @@ def _dlg_industry_code_selector():
         ):
             for fr in frees:
                 fr["소득구분"] = chosen_code
-            _commit_server_mutation(pstate)
+            pstate["grid_version"] += 1
             st.rerun()
     with c_b3:
         if st.button("닫기", width="stretch", key="btn_ind_close"):
@@ -1533,37 +1497,9 @@ def _dlg_ai_tax_review():
 # 좌측 사이드바 렌더링 (인건비 자동화 모드)
 # ─────────────────────────────────────────────────────────────
 
-def _pre_process_pending_bottom_input(pstate: Dict[str, Any], gemini_api_key: Optional[str] = None) -> bool:
-    chat_val = st.session_state.get("pay_bottom_all_in_one_input")
-    if not chat_val:
-        return False
-    val_id = id(chat_val)
-    if st.session_state.get("_pa_processed_chat_val_id") == val_id:
-        return True
-    st.session_state["_pa_processed_chat_val_id"] = val_id
-    in_text = ""
-    in_files: List[Any] = []
-    if isinstance(chat_val, str):
-        in_text = chat_val
-    else:
-        in_text = getattr(chat_val, "text", "") or ""
-        in_files = list(getattr(chat_val, "files", []) or [])
-    if not in_text.strip() and not in_files:
-        return False
-    _process_uploaded_files_and_text(
-        pstate=pstate,
-        uploaded_files=in_files,
-        chat_text=in_text,
-        gemini_api_key=gemini_api_key or st.session_state.get("_pa_explicit_key"),
-    )
-    return True
-
-
 def render_payroll_automated_sidebar() -> None:
     st.markdown(PAYROLL_CSS, unsafe_allow_html=True)
     pstate = _get_payroll_state()
-    _pre_sync_payroll_grids_from_session(pstate)
-    _pre_process_pending_bottom_input(pstate)
     is_emp_mode = pstate.get("sub_mode", "EMP") == "EMP"
 
     # (1) 최상단 카드: 업무 화면 선택 ([급여명세서] 파스텔 블루 / [사업소득] 파스텔 퍼플 — 개정사항 모니터링보다 위에 배치)
@@ -1575,14 +1511,12 @@ def render_payroll_automated_sidebar() -> None:
             emp_key = "btn_pay_submode_emp_active" if is_emp_mode else "btn_pay_submode_emp"
             if st.button("급여명세서", key=emp_key, width="stretch"):
                 pstate["sub_mode"] = "EMP"
-                _save_payroll_state_to_disk(pstate)
                 st.session_state["pay_confirm_reset"] = False   # 화면을 바꾸면 초기화 확인창 닫기 (다른 화면 자료가 지워지지 않도록)
                 st.rerun()
         with col_free:
             free_key = "btn_pay_submode_free_active" if not is_emp_mode else "btn_pay_submode_free"
             if st.button("사업소득", key=free_key, width="stretch"):
                 pstate["sub_mode"] = "FREE"
-                _save_payroll_state_to_disk(pstate)
                 st.session_state["pay_confirm_reset"] = False   # 화면을 바꾸면 초기화 확인창 닫기 (다른 화면 자료가 지워지지 않도록)
                 st.rerun()
 
@@ -1607,9 +1541,9 @@ def render_payroll_automated_sidebar() -> None:
         else "<span class='ec-law-badge-orange'>2026.03 별표2·요율 반영</span>"
     )
 
-    law_exp_label = "개정사항·신규 세법 (신규 개정 감지)" if (row1_new or row2_new) else "개정사항·신규 세법 (정상 2건)"
-    with st.expander(law_exp_label, expanded=bool(row1_new or row2_new)):
+    with st.container(border=True):
         st.markdown(
+            _ui_theme.sb_title("book", "개정사항·신규 세법") +
             f"<div class='ec-law-status-row'>"
             f"<span class='ec-law-status-left'><span class='ec-law-led-3d {led_row1}'></span>근로기준법 · 소득세법</span>"
             f"{badge_row1}"
@@ -1628,16 +1562,24 @@ def render_payroll_automated_sidebar() -> None:
         ):
             _dlg_payroll_law_revisions()
 
-    # (3) 작업 자료 관리 (토스 스타일 접이식 아코디언으로 압축하여 아래 사업자정보 입력 카드가 한눈에 보이도록 배치)
+    # (3) 작업 자료 관리 카드 (통합고용세액공제와 동일한 아이콘 및 버튼 디자인 적용)
     emp_cnt = len(pstate.get("employees", []))
     free_cnt = len(pstate.get("freelancers", []))
     has_data = (emp_cnt + free_cnt) > 0 or bool(pstate.get("corp_name"))
     _rs_which = "EMP" if is_emp_mode else "FREE"
     _rs_name = "급여명세서(급여대장)" if is_emp_mode else "사업소득(사업소득대장)"
     _rs_has = (emp_cnt if is_emp_mode else free_cnt) > 0
-    work_status_txt = f"근로 {emp_cnt}명 · 사업 {free_cnt}명" if has_data else "초기 상태"
 
-    with st.expander(f"작업 자료 관리 ({work_status_txt})", expanded=bool(st.session_state.get("pay_confirm_reset"))):
+    with st.container(border=True):
+        status_pill = (
+            f"<span class='sb-badge-green'>근로 {emp_cnt}명 · 사업 {free_cnt}명</span>"
+            if has_data
+            else "<span class='sb-badge-amber'>초기 상태</span>"
+        )
+        st.markdown(
+            _ui_theme.sb_title("refresh", "작업 자료 관리", status_pill),
+            unsafe_allow_html=True,
+        )
         if not st.session_state.get("pay_confirm_reset"):
             if st.button(
                 "자료 초기화 (내용 비우기)",
@@ -1659,55 +1601,21 @@ def render_payroll_automated_sidebar() -> None:
                 st.session_state["pay_confirm_reset"] = False
                 st.rerun()
 
-    # (4) 사업자정보 카드 (토스 웹 스타일 입체 화이트 카드 그룹화)
-    with st.container(border=True, key="pay_sb_biz_card"):
+    # (4) 사업자정보 카드 (통합고용세액공제와 동일한 🏢 아이콘 및 우측 끝 '직접입력' 배지 적용)
+    with st.container(border=True):
         st.markdown(
             _ui_theme.sb_title("building", "사업자정보", "<span class='sb-badge-pro'>직접입력</span>"),
             unsafe_allow_html=True,
         )
         prev_wp_label = _current_workplace_label(pstate)
 
-        if "pay_sb_corp_name" not in st.session_state:
-            st.session_state["pay_sb_corp_name"] = str(pstate.get("corp_name") or "")
-        elif pstate.get("corp_name") and not st.session_state.get("pay_sb_corp_name"):
-            st.session_state["pay_sb_corp_name"] = str(pstate.get("corp_name") or "")
-
-        def _on_sb_corp_change() -> None:
-            ps = _get_payroll_state()
-            _pre_sync_payroll_grids_from_session(ps)
-            old_wp = _current_workplace_label(ps)
-            ps["corp_name"] = str(st.session_state.get("pay_sb_corp_name") or "").strip()
-            new_wp = _current_workplace_label(ps)
-            if new_wp != old_wp:
-                for emp in ps.get("employees", []):
-                    if not emp.get("사업장") or emp.get("사업장") == old_wp:
-                        emp["사업장"] = new_wp
-            _commit_server_mutation(ps)
-
-        def _on_sb_wp_change() -> None:
-            ps = _get_payroll_state()
-            _pre_sync_payroll_grids_from_session(ps)
-            old_wp = _current_workplace_label(ps)
-            if "pay_sb_wp_mode" in st.session_state:
-                ps["workplace_mode"] = st.session_state["pay_sb_wp_mode"]
-            if "pay_sb_wp_custom" in st.session_state:
-                ps["workplace_custom"] = str(st.session_state.get("pay_sb_wp_custom") or "").strip()
-            new_wp = _current_workplace_label(ps)
-            if new_wp != old_wp:
-                for emp in ps.get("employees", []):
-                    if not emp.get("사업장") or emp.get("사업장") == old_wp:
-                        emp["사업장"] = new_wp
-            _commit_server_mutation(ps)
-
         corp_val = st.text_input(
             "거래처명",
+            value=pstate.get("corp_name", ""),
             placeholder="예: 주식회사 한빛테크",
             key="pay_sb_corp_name",
-            on_change=_on_sb_corp_change,
         )
-        if corp_val.strip() != pstate.get("corp_name", ""):
-            pstate["corp_name"] = corp_val.strip()
-            _save_payroll_state_to_disk(pstate)
+        pstate["corp_name"] = corp_val.strip()
 
         wp_options = ["본점", "지점", "직접입력", "선택안함(거래처명 표시)"]
         cur_wp_mode = pstate.get("workplace_mode", "본점")
@@ -1718,7 +1626,6 @@ def render_payroll_automated_sidebar() -> None:
             options=wp_options,
             index=wp_options.index(cur_wp_mode),
             key="pay_sb_wp_mode",
-            on_change=_on_sb_wp_change,
             help="급여대장 편집기 맨 앞 '사업장' 열에 표시되며, 본점·지점 백업파일(.paybak)을 통합고용세액공제에 드래그앤드롭하여 합산할 때 구분 기준으로 사용됩니다.",
         )
         pstate["workplace_mode"] = sel_wp_mode
@@ -1729,7 +1636,6 @@ def render_payroll_automated_sidebar() -> None:
                 value=pstate.get("workplace_custom", ""),
                 placeholder="예: 강남지점 / B사업장",
                 key="pay_sb_wp_custom",
-                on_change=_on_sb_wp_change,
             )
             pstate["workplace_custom"] = wp_custom_val.strip()
 
@@ -1738,7 +1644,7 @@ def render_payroll_automated_sidebar() -> None:
             for emp in pstate.get("employees", []):
                 if not emp.get("사업장") or emp.get("사업장") == prev_wp_label:
                     emp["사업장"] = new_wp_label
-            _commit_server_mutation(pstate)
+            pstate["grid_version"] = int(pstate.get("grid_version", 0)) + 1
 
         # 귀속연월: 최근 월이 위로 오도록 역순(12월 → 1월, 최근 연도부터)
         ym_options = [
@@ -1784,9 +1690,9 @@ def render_payroll_automated_sidebar() -> None:
 
         if is_emp_mode:
             st.markdown(
-                f"<div style='background:#E8F3FF; border:none; border-radius:10px; padding:9px 12px; margin-bottom:8px; font-size:0.83rem; color:#191F28;'>"
-                f"<b style='color:#3182F6;'>상시근로자 수: {total_workers}명</b> <span style='color:#4E5968;font-size:0.78rem;'>(재직 {active_workers}명)</span><br>"
-                f"<span style='font-size:0.76rem; color:#3182F6; font-weight:600;'>적용 기준: {scale_label}</span>"
+                f"<div style='background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; padding:6px 10px; margin-bottom:8px; font-size:0.83rem; color:#1e293b;'>"
+                f"<b>상시근로자 수:</b> {total_workers}명 (재직 {active_workers}명)<br>"
+                f"<span style='font-size:0.76rem; color:#475569;'>적용 기준: {scale_label}</span>"
                 f"</div>",
                 unsafe_allow_html=True,
             )
@@ -1927,7 +1833,7 @@ def render_payroll_automated_sidebar() -> None:
                         pstate["_period_user_set"] = False   # 백업 복원은 백업 당시 귀속연월 그대로
                         pstate["employees"] = list(latest_pack.get("employees", []))
                         pstate["freelancers"] = list(latest_pack.get("freelancers", []))
-                        _commit_server_mutation(pstate)
+                        pstate["grid_version"] += 1
                     st.success(f"백업 파일 불러오기 완료 (총 {len(m_map)}개월분)")
                     st.rerun()
                 except Exception as e:
@@ -2043,8 +1949,8 @@ def _process_uploaded_files_and_text(
                 parsed_fr = parse_freelancer_excel(
                     fbytes,
                     filename=fname,
-                    default_year_month=pstate.get("year_month", "") if pstate.get("_period_user_set") else "",
-                    default_pay_date=pstate.get("pay_date", "") if pstate.get("_period_user_set") else "",
+                    default_year_month=pstate.get("year_month", ""),
+                    default_pay_date=pstate.get("pay_date", ""),
                     gemini_api_key=gemini_api_key,
                 )
                 if parsed_fr:
@@ -2052,12 +1958,6 @@ def _process_uploaded_files_and_text(
                     pstate["sub_mode"] = "FREE"
                     if pstate.get("_period_user_set"):
                         _apply_period_to_rows(pstate)
-                    else:
-                        first_ym = str((parsed_fr[0] or {}).get("귀속년월") or "")
-                        first_pd = str((parsed_fr[0] or {}).get("지급년월일") or "")
-                        if re.match(r"^20\d{2}-\d{2}$", first_ym):
-                            _set_period_from_file(pstate, first_ym, first_pd if len(first_pd) == 10 else "")
-                            _apply_period_to_rows(pstate)
                     pstate["chat_logs"].append(f"[{fmt_label} 로드] '{fname}'에서 사업소득자 {len(parsed_fr)}명을 불러왔습니다.")
                     continue
 
@@ -2236,276 +2136,7 @@ def _process_uploaded_files_and_text(
                 pstate["sub_mode"] = "FREE"
         pstate["chat_logs"].extend(kakao_res["messages"])
 
-    if pstate.get("_period_user_set") and pstate.get("freelancers"):
-        _apply_period_to_rows(pstate)
-    _commit_server_mutation(pstate)
-
-
-
-def _build_toss_empty_overlay_html(is_emp: bool = True) -> str:
-    title = "아직 등록된 급여 대상자가 없습니다" if is_emp else "아직 등록된 사업소득 대상자가 없습니다"
-    sub = (
-        "상단의 [+ 행 추가] 버튼을 누르거나 아래 AI 입력창에 급여대장·고지서 파일을 끌어다 놓으세요."
-        if is_emp
-        else "상단의 [+ 행 추가] 버튼을 누르거나 아래 AI 입력창에 사업소득 내역 파일을 끌어다 놓으세요."
-    )
-    return (
-        "<div style='padding:26px 20px;text-align:center;line-height:1.6;'>"
-        f"<div style='font-size:14.5px;font-weight:800;color:#191F28;margin-bottom:4px;'>{title}</div>"
-        f"<div style='font-size:12.5px;color:#8B95A1;font-weight:500;'>{sub}</div>"
-        "</div>"
-    )
-
-
-def _build_toss_aggrid_custom_css() -> Dict[str, Any]:
-    return {
-        ".ag-header-cell-label": {"justify-content": "center", "font-weight": "700", "font-size": "12.2px", "color": "#4E5968"},
-        ".ag-cell": {"font-size": "12.5px", "color": "#191F28"},
-        ".pay-col-min": {"padding-left": "2px !important", "padding-right": "2px !important"},
-        ".pay-col-min .ag-header-cell-text": {"white-space": "normal !important", "line-height": "1.15", "text-align": "center"},
-    }
-
-
-def _safe_parse_int(val: Any) -> int:
-    if val is None or (isinstance(val, float) and pd.isna(val)):
-        return 0
-    s = re.sub(r"[^0-9.-]", "", str(val).strip())
-    if not s or s in ("-", ".", "-."):
-        return 0
-    try:
-        return int(round(float(s)))
-    except Exception:
-        return 0
-
-
-def _build_emp_display_df(pstate: Dict[str, Any]) -> pd.DataFrame:
-    _sync_workplace_to_employees(pstate, force_all=False)
-    emps = pstate.get("employees", [])
-    wp_default = _current_workplace_label(pstate)
-    col_keys = [c[0] for c in EMP_GRID_COLUMNS]
-    if not emps:
-        return pd.DataFrame(columns=col_keys + ["_row_idx", "_manual"])
-    rows_norm = []
-    for idx, e in enumerate(emps, start=1):
-        r = {}
-        for k, _, _, _, ctype in EMP_GRID_COLUMNS:
-            if k == "사업장":
-                r[k] = str(e.get(k) if e.get(k) is not None else wp_default)
-            elif k == "사원코드":
-                r[k] = str(e.get(k) or f"{idx:03d}")
-            elif ctype == "select_red":
-                r[k] = _reduction_label(e.get(k))
-            elif ctype.startswith("numeric"):
-                r[k] = int(e.get(k, 0) or 0)
-            else:
-                r[k] = str(e.get(k, "") or "")
-        r["_row_idx"] = idx - 1
-        r["_manual"] = str(e.get("_수기") or "")
-        rows_norm.append(r)
-    return pd.DataFrame(rows_norm, columns=col_keys + ["_row_idx", "_manual"])
-
-
-def _build_free_display_df(pstate: Dict[str, Any]) -> pd.DataFrame:
-    frees = pstate.get("freelancers", [])
-    col_keys = [c[0] for c in FREE_GRID_COLUMNS]
-    if not frees:
-        return pd.DataFrame(columns=col_keys + ["_row_idx", "_manual"])
-    rows_norm = []
-    for idx, f in enumerate(frees, start=1):
-        r = {}
-        for k, _, _, _, ctype in FREE_GRID_COLUMNS:
-            if k == "코드":
-                r[k] = str(f.get(k) or f"{idx:04d}")
-            elif k == "소득구분":
-                r[k] = _ind_label(f.get(k) or "940909")
-            elif ctype.startswith("numeric"):
-                r[k] = int(f.get(k, 0) or 0)
-            else:
-                r[k] = str(f.get(k, "") or "")
-        r["_row_idx"] = idx - 1
-        r["_manual"] = str(f.get("_수기") or "")
-        rows_norm.append(r)
-    return pd.DataFrame(rows_norm, columns=col_keys + ["_row_idx", "_manual"])
-
-
-def _commit_server_mutation(pstate: Dict[str, Any]) -> None:
-    """서버 측 동작(행 추가/삭제, 세전·세후 전환, 사이드바 사업자정보 수정, 파일·채팅 반영, 초기화 등)으로
-    pstate가 변경된 직후 호출하여, 변경된 화면 기준 DataFrame 스냅샷과 현재 세션의 AgGrid 응답 서명을
-    동기화하고 디스크에 즉시 저장합니다. (AgGrid key는 고정 유지하여 iframe 재마운트 오류를 원천 방지)"""
-    _emp_edit_cols = [k for k, _, _, editable, _ct in EMP_GRID_COLUMNS if editable]
-    _free_edit_cols = [k for k, _, _, editable, _ct in FREE_GRID_COLUMNS if editable]
-
-    emp_df = _build_emp_display_df(pstate)
-    pstate["_last_sent_emp_df"] = emp_df
-    pstate["_emp_server_sig"] = _grid_resp_sig(emp_df, _emp_edit_cols)
-    emp_raw = st.session_state.get(EMP_AGGRID_KEY)
-    if isinstance(emp_raw, dict) and emp_raw.get("data") is not None:
-        u_emp = pd.DataFrame(emp_raw["data"]) if not isinstance(emp_raw["data"], pd.DataFrame) else emp_raw["data"]
-        pstate["_emp_browser_sig"] = _grid_resp_sig(u_emp, [c for c in _emp_edit_cols if c in u_emp.columns])
-    else:
-        pstate["_emp_browser_sig"] = pstate["_emp_server_sig"]
-
-    free_df = _build_free_display_df(pstate)
-    pstate["_last_sent_free_df"] = free_df
-    pstate["_free_server_sig"] = _grid_resp_sig(free_df, _free_edit_cols)
-    free_raw = st.session_state.get(FREE_AGGRID_KEY)
-    if isinstance(free_raw, dict) and free_raw.get("data") is not None:
-        u_free = pd.DataFrame(free_raw["data"]) if not isinstance(free_raw["data"], pd.DataFrame) else free_raw["data"]
-        pstate["_free_browser_sig"] = _grid_resp_sig(u_free, [c for c in _free_edit_cols if c in u_free.columns])
-    else:
-        pstate["_free_browser_sig"] = pstate["_free_server_sig"]
-
-    _save_payroll_state_to_disk(pstate)
-
-
-def _apply_emp_df_edits(pstate: Dict[str, Any], shown_df: pd.DataFrame, updated_df: pd.DataFrame) -> bool:
-    emps = pstate.get("employees", [])
-    if updated_df is None or not isinstance(updated_df, pd.DataFrame) or updated_df.empty or not emps:
-        return False
-    _edit_cols = [k for k, _, _, editable, _ct in EMP_GRID_COLUMNS if editable and k in updated_df.columns]
-    _sig = _grid_resp_sig(updated_df, _edit_cols)
-    if len(updated_df) != len(emps):
-        pstate["_emp_browser_sig"] = _sig
-        return False
-    if _sig in (pstate.get("_emp_browser_sig"), pstate.get("_emp_server_sig"), pstate.get("_emp_grid_resp_sig")):
-        return False
-    pstate["_emp_browser_sig"] = _sig
-    pstate["_emp_grid_resp_sig"] = _sig
-
-    ref_df = pstate.get("_last_sent_emp_df")
-    if not isinstance(ref_df, pd.DataFrame) or len(ref_df) != len(emps):
-        ref_df = shown_df
-
-    new_emps: List[Dict[str, Any]] = []
-    changed = False
-    for idx, row in updated_df.iterrows():
-        orig = emps[idx] if idx < len(emps) else {}
-        merged = dict(orig)
-        shown = ref_df.iloc[idx].to_dict() if idx < len(ref_df) else {}
-        hand = [k for k in _edit_cols if k in shown and not _same_cell(shown.get(k), row.get(k))]
-        if not hand:
-            new_emps.append(merged)
-            continue
-        changed = True
-        _add_manual_marks(orig, merged, hand)
-        for k, _, _, editable, ctype in EMP_GRID_COLUMNS:
-            if not editable or k not in hand:
-                continue
-            val = row.get(k)
-            if ctype == "select_red":
-                merged[k] = _reduction_value(val)
-            elif ctype.startswith("numeric"):
-                num_v = _safe_parse_int(val)
-                merged[k] = num_v
-                if k == "목표실수령액" and num_v > 0 and "입력기준" not in hand:
-                    merged["입력기준"] = "세후역산"
-                elif k == "기본급" and num_v > 0 and "입력기준" not in hand and str(merged.get("입력기준")) == "세후역산":
-                    merged["입력기준"] = "세전"
-            else:
-                str_v = "" if pd.isna(val) else str(val).strip()
-                if k == "주민등록번호":
-                    if "*" not in str_v and str_v:
-                        merged["_raw_rrn"] = extract_full_rrn(str_v)
-                    str_v = mask_rrn_front7(merged.get("_raw_rrn") or str_v)
-                merged[k] = str_v
-        new_emps.append(merged)
-    if changed:
-        pstate["employees"] = new_emps
-        _recalculate_all_employee_rows(pstate)
-        pstate["_emp_browser_sig"] = _sig
-    return changed
-
-
-def _apply_free_df_edits(pstate: Dict[str, Any], shown_df: pd.DataFrame, updated_df: pd.DataFrame) -> bool:
-    frees = pstate.get("freelancers", [])
-    if updated_df is None or not isinstance(updated_df, pd.DataFrame) or updated_df.empty or not frees:
-        return False
-    _edit_cols = [k for k, _, _, editable, _ct in FREE_GRID_COLUMNS if editable and k in updated_df.columns]
-    _sig = _grid_resp_sig(updated_df, _edit_cols)
-    if len(updated_df) != len(frees):
-        pstate["_free_browser_sig"] = _sig
-        return False
-    if _sig in (pstate.get("_free_browser_sig"), pstate.get("_free_server_sig"), pstate.get("_free_grid_resp_sig")):
-        return False
-    pstate["_free_browser_sig"] = _sig
-    pstate["_free_grid_resp_sig"] = _sig
-
-    ref_df = pstate.get("_last_sent_free_df")
-    if not isinstance(ref_df, pd.DataFrame) or len(ref_df) != len(frees):
-        ref_df = shown_df
-
-    new_frees: List[Dict[str, Any]] = []
-    changed = False
-    for idx, row in updated_df.iterrows():
-        orig = frees[idx] if idx < len(frees) else {}
-        merged = dict(orig)
-        shown = ref_df.iloc[idx].to_dict() if idx < len(ref_df) else {}
-        hand = [k for k in _edit_cols if k in shown and not _same_cell(shown.get(k), row.get(k))]
-        if not hand:
-            new_frees.append(merged)
-            continue
-        changed = True
-        _add_manual_marks(orig, merged, hand)
-        for k, _, _, editable, ctype in FREE_GRID_COLUMNS:
-            if not editable or k not in hand:
-                continue
-            val = row.get(k)
-            if ctype.startswith("numeric"):
-                num_v = _safe_parse_int(val)
-                merged[k] = num_v
-                if k == "지급총액":
-                    merged["_base_amount"] = num_v
-                    merged["입력기준"] = "세전"
-                elif k == "차인지급액":
-                    merged["_base_amount"] = num_v
-                    merged["입력기준"] = "세후역산"
-            else:
-                str_v = "" if pd.isna(val) else str(val).strip()
-                if k == "소득구분":
-                    str_v = _ind_code_only(str_v)
-                elif k == "주민등록번호":
-                    if "*" not in str_v and str_v:
-                        merged["_raw_rrn"] = extract_full_rrn(str_v)
-                    str_v = mask_rrn_front7(merged.get("_raw_rrn") or str_v)
-                elif k == "입력기준":
-                    if str_v == "세후역산" and "차인지급액" not in hand and "지급총액" not in hand:
-                        merged["_base_amount"] = int(merged.get("지급총액") or merged.get("차인지급액") or 0)
-                    elif str_v == "세전" and "지급총액" not in hand and "차인지급액" not in hand:
-                        merged["_base_amount"] = int(merged.get("차인지급액") or merged.get("지급총액") or 0)
-                merged[k] = str_v
-        new_frees.append(merged)
-    if changed:
-        pstate["freelancers"] = new_frees
-        _recalculate_all_freelancer_rows(pstate)
-        pstate["_free_browser_sig"] = _sig
-    return changed
-
-
-def _pre_sync_payroll_grids_from_session(pstate: Dict[str, Any]) -> None:
-    """
-    상단 툴바 버튼([+ 행 추가], [기준금액: 세전|세후], [선택한 행 삭제] 등)이나 사이드바 위젯이 실행되기 전에
-    st.session_state에 들어온 AgGrid의 최신 셀 편집값과 체크박스 선택 상태를 먼저 pstate에 반영하여
-    버튼 클릭 시 사용자가 표에 입력한 정보가 초기화되는 현상을 원천 차단합니다.
-    """
-    emp_raw = st.session_state.get(EMP_AGGRID_KEY)
-    if isinstance(emp_raw, dict):
-        pstate["selected_emp_indices"] = _extract_selected_row_indices(emp_raw)
-        raw_df = emp_raw.get("data")
-        if raw_df is not None:
-            upd_df = pd.DataFrame(raw_df) if not isinstance(raw_df, pd.DataFrame) else raw_df
-            if not upd_df.empty:
-                shown_df = _build_emp_display_df(pstate)
-                _apply_emp_df_edits(pstate, shown_df, upd_df)
-
-    free_raw = st.session_state.get(FREE_AGGRID_KEY)
-    if isinstance(free_raw, dict):
-        pstate["selected_free_indices"] = _extract_selected_row_indices(free_raw)
-        raw_df = free_raw.get("data")
-        if raw_df is not None:
-            upd_df = pd.DataFrame(raw_df) if not isinstance(raw_df, pd.DataFrame) else raw_df
-            if not upd_df.empty:
-                shown_df = _build_free_display_df(pstate)
-                _apply_free_df_edits(pstate, shown_df, upd_df)
+    pstate["grid_version"] = int(pstate.get("grid_version", 0)) + 1
 
 
 def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
@@ -2654,11 +2285,9 @@ def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
                 cellStyle=_manual_style(),
             )
 
-    gb.configure_grid_options(stopEditingWhenCellsLoseFocus=True)
     grid_opts = gb.build()
     grid_opts["suppressSizeToFit"] = True
     grid_opts["ensureDomOrder"] = True
-    grid_opts["stopEditingWhenCellsLoseFocus"] = True
     # 최소화한 열: 머리글을 두 줄로 접어 말줄임(…) 없이 표시
     for cdef in grid_opts.get("columnDefs", []):
         if cdef.get("field") in zero_cols:
@@ -2667,13 +2296,14 @@ def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
             cdef["headerTooltip"] = f"{cdef.get('headerName', '')} (전원 0원 — 자동 축소)"
             cdef["headerClass"] = "pay-col-min"
             cdef["minWidth"] = 30
-    grid_opts["overlayNoRowsTemplate"] = _build_toss_empty_overlay_html(is_emp=True)
     grid_height = min(520, max(230, 58 + len(df) * 36))
 
-    custom_css = _build_toss_aggrid_custom_css()
-    _emp_edit_cols = [k for k, _, _, editable, _ct in EMP_GRID_COLUMNS if editable and k in df.columns]
-    pstate["_last_sent_emp_df"] = df
-    pstate["_emp_server_sig"] = _grid_resp_sig(df, _emp_edit_cols)
+    custom_css = {
+        ".ag-header-cell-label": {"justify-content": "center", "font-weight": "700", "font-size": "12.2px"},
+        ".ag-cell": {"font-size": "12.5px"},
+        ".pay-col-min": {"padding-left": "2px !important", "padding-right": "2px !important"},
+        ".pay-col-min .ag-header-cell-text": {"white-space": "normal !important", "line-height": "1.15", "text-align": "center"},
+    }
 
     grid_resp = AgGrid(
         df,
@@ -2684,14 +2314,51 @@ def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
         allow_unsafe_jscode=True,
         custom_css=custom_css,
         theme="streamlit",
-        key=EMP_AGGRID_KEY,
+        key=f"pay_emp_aggrid_{pstate.get('grid_version', 0)}",
         server_sync_strategy="server_wins",   # 수정 후 다시 계산한 값(4대보험·세액 등)을 표를 새로 만들지 않고 그대로 반영
     )
 
     pstate["selected_emp_indices"] = _extract_selected_row_indices(grid_resp)
     updated_df = grid_resp.get("data")
-    if _apply_emp_df_edits(pstate, df, updated_df):
-        st.rerun()
+    if updated_df is not None and isinstance(updated_df, pd.DataFrame) and not updated_df.empty:
+        # 같은 응답을 두 번 처리하지 않음 (그리드를 새로 만들지 않고 값만 바꾸므로, 직전 응답이 다시 돌아와도 무시)
+        _edit_cols = [k for k, _, _, editable, _ct in EMP_GRID_COLUMNS if editable and k in updated_df.columns]
+        _sig = _grid_resp_sig(updated_df, _edit_cols)
+        if _sig != pstate.get("_emp_grid_resp_sig"):
+            pstate["_emp_grid_resp_sig"] = _sig
+            new_emps: List[Dict[str, Any]] = []
+            changed = False
+            for idx, row in updated_df.iterrows():
+                orig = emps[idx] if idx < len(emps) else {}
+                merged = dict(orig)
+                shown = df.iloc[idx].to_dict() if idx < len(df) else {}
+                hand = [k for k in _edit_cols if k in shown and not _same_cell(shown.get(k), row.get(k))]
+                if not hand:
+                    new_emps.append(merged)
+                    continue
+                changed = True
+                _add_manual_marks(orig, merged, hand)
+                # 수기 입력 칸만 반영하고 4대보험·세액 등 계산 칸은 다시 계산 (그리드에 남은 예전 계산값으로 덮어쓰지 않음)
+                for k, _, _, editable, ctype in EMP_GRID_COLUMNS:
+                    if not editable or k not in hand:
+                        continue
+                    val = row.get(k)
+                    if ctype == "select_red":
+                        merged[k] = _reduction_value(val)
+                    elif ctype.startswith("numeric"):
+                        merged[k] = int(round(float(val or 0))) if pd.notna(val) and str(val).strip() != "" else 0
+                    else:
+                        str_v = "" if pd.isna(val) else str(val).strip()
+                        if k == "주민등록번호":
+                            if "*" not in str_v and str_v:
+                                merged["_raw_rrn"] = extract_full_rrn(str_v)
+                            str_v = mask_rrn_front7(merged.get("_raw_rrn") or str_v)
+                        merged[k] = str_v
+                new_emps.append(merged)
+            if changed:
+                pstate["employees"] = new_emps
+                _recalculate_all_employee_rows(pstate)
+                st.rerun()   # 그리드 열쇠(key)는 그대로 → 표를 새로 만들지 않고 값만 갱신 (깜빡임·대기 감소)
 
 
 def _grid_resp_sig(df_resp: pd.DataFrame, cols: List[str]) -> str:
@@ -2879,7 +2546,7 @@ def _render_freelancer_aggrid(pstate: Dict[str, Any]) -> None:
             if ctype == "numeric_total":
                 cell_style = {"textAlign": "right", "fontWeight": "bold", "backgroundColor": "#f8fafc"}
             elif ctype == "numeric_net":
-                cell_style = {"textAlign": "right", "fontWeight": "bold", "backgroundColor": "#E5F9F0", "color": "#00A660"}
+                cell_style = {"textAlign": "right", "fontWeight": "bold", "backgroundColor": "#f3e8ff", "color": "#4c1d95"}
             gb.configure_column(
                 field,
                 header_name=header_name,
@@ -2905,16 +2572,9 @@ def _render_freelancer_aggrid(pstate: Dict[str, Any]) -> None:
                 cellStyle=_manual_style(),
             )
 
-    gb.configure_grid_options(stopEditingWhenCellsLoseFocus=True)
     grid_opts = gb.build()
     grid_opts["suppressSizeToFit"] = True   # 열 폭을 내용에 맞춘 값 그대로 (화면 폭에 맞춰 줄이지 않음 → 머리글·값 잘림 방지)
-    grid_opts["stopEditingWhenCellsLoseFocus"] = True
-    grid_opts["overlayNoRowsTemplate"] = _build_toss_empty_overlay_html(is_emp=False)
     grid_height = min(480, max(230, 58 + len(df) * 36))
-
-    _free_edit_cols = [k for k, _, _, editable, _ct in FREE_GRID_COLUMNS if editable and k in df.columns]
-    pstate["_last_sent_free_df"] = df
-    pstate["_free_server_sig"] = _grid_resp_sig(df, _free_edit_cols)
 
     grid_resp = AgGrid(
         df,
@@ -2923,16 +2583,57 @@ def _render_freelancer_aggrid(pstate: Dict[str, Any]) -> None:
         update_mode=GridUpdateMode.VALUE_CHANGED | GridUpdateMode.SELECTION_CHANGED,
         fit_columns_on_grid_load=False,
         allow_unsafe_jscode=True,
-        custom_css=_build_toss_aggrid_custom_css(),
         theme="streamlit",
-        key=FREE_AGGRID_KEY,
+        key=f"pay_free_aggrid_{pstate.get('grid_version', 0)}",
         server_sync_strategy="server_wins",   # 수정 후 다시 계산한 값(4대보험·세액 등)을 표를 새로 만들지 않고 그대로 반영
     )
 
     pstate["selected_free_indices"] = _extract_selected_row_indices(grid_resp)
     updated_df = grid_resp.get("data")
-    if _apply_free_df_edits(pstate, df, updated_df):
-        st.rerun()
+    if updated_df is not None and isinstance(updated_df, pd.DataFrame) and not updated_df.empty:
+        _edit_cols = [k for k, _, _, editable, _ct in FREE_GRID_COLUMNS if editable and k in updated_df.columns]
+        _sig = _grid_resp_sig(updated_df, _edit_cols)
+        if _sig != pstate.get("_free_grid_resp_sig"):
+            pstate["_free_grid_resp_sig"] = _sig
+            new_frees: List[Dict[str, Any]] = []
+            changed = False
+            for idx, row in updated_df.iterrows():
+                orig = frees[idx] if idx < len(frees) else {}
+                merged = dict(orig)
+                shown = df.iloc[idx].to_dict() if idx < len(df) else {}
+                hand = [k for k in _edit_cols if k in shown and not _same_cell(shown.get(k), row.get(k))]
+                if not hand:
+                    new_frees.append(merged)
+                    continue
+                changed = True
+                _add_manual_marks(orig, merged, hand)
+                for k, _, _, editable, ctype in FREE_GRID_COLUMNS:
+                    if not editable or k not in hand:
+                        continue
+                    val = row.get(k)
+                    if ctype.startswith("numeric"):
+                        num_v = int(round(float(val or 0))) if pd.notna(val) and str(val).strip() != "" else 0
+                        merged[k] = num_v
+                        if k == "지급총액":
+                            merged["_base_amount"] = num_v
+                            merged["입력기준"] = "세전"
+                        elif k == "차인지급액":
+                            merged["_base_amount"] = num_v
+                            merged["입력기준"] = "세후역산"
+                    else:
+                        str_v = "" if pd.isna(val) else str(val).strip()
+                        if k == "소득구분":
+                            str_v = _ind_code_only(str_v)  # 화면 표시는 "940909 (기타자영업)", 저장은 코드 6자리
+                        elif k == "주민등록번호":
+                            if "*" not in str_v and str_v:
+                                merged["_raw_rrn"] = extract_full_rrn(str_v)
+                            str_v = mask_rrn_front7(merged.get("_raw_rrn") or str_v)
+                        merged[k] = str_v
+                new_frees.append(merged)
+            if changed:
+                pstate["freelancers"] = new_frees
+                _recalculate_all_freelancer_rows(pstate)
+                st.rerun()
 
 
 def _payslip_tpl_label(tpl_name: str) -> str:
@@ -2975,7 +2676,6 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
     st.session_state["_pa_explicit_key"] = gemini_api_key or None
     st.markdown(PAYROLL_CSS, unsafe_allow_html=True)
     pstate = _get_payroll_state()
-    _pre_sync_payroll_grids_from_session(pstate)
     is_emp_mode = pstate.get("sub_mode", "EMP") == "EMP"
 
     diag = analyze_payroll_warnings(
@@ -2991,8 +2691,8 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
 
     # B안: 위치 표시·꼬리표·큰 제목 → 요약 카드 → 표 카드(툴바 + 표) → 내려받기 카드 → 입력창
     import ui_theme as _ui_theme
-    st.markdown(PAYROLL_CSS, unsafe_allow_html=True)
     st.markdown(_ui_theme.pay_main_css(), unsafe_allow_html=True)
+    st.markdown(PAYROLL_CSS, unsafe_allow_html=True)
     _corp_h = pstate.get("corp_name") or "거래처 미입력"
     _wp_h = _current_workplace_label(pstate)
     _ym_h = pstate.get("year_month") or ""
@@ -3037,9 +2737,9 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
 
     _tbl_card = st.container(key="pay_table_card")
     if is_emp_mode:
-        top_c2, top_c1, top_c3, _top_sp, top_c4, top_c5 = _tbl_card.columns([0.95, 1.45, 1.25, 1.5, 1.45, 1.25], gap="small", vertical_alignment="center")
+        top_c1, top_c2, top_c3, _top_sp, top_c4, top_c5 = _tbl_card.columns([1.45, 0.85, 1.25, 1.6, 1.45, 1.25], gap="small", vertical_alignment="center")
     else:
-        top_c2, top_c1, top_c3, _top_sp, top_c4, top_c5 = _tbl_card.columns([0.95, 1.6, 1.25, 1.4, 1.3, 1.5], gap="small", vertical_alignment="center")
+        top_c1, top_c2, top_c3, _top_sp, top_c4, top_c5 = _tbl_card.columns([1.6, 0.85, 1.25, 1.4, 1.35, 1.55], gap="small", vertical_alignment="center")
         frees_cur = pstate.get("freelancers", [])
         if frees_cur:
             is_all_net = all(str(f.get("입력기준", "세전")) == "세후역산" for f in frees_cur)
@@ -3068,9 +2768,9 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
                         )
                     f_item["입력기준"] = target_next_mode
                 _recalculate_all_freelancer_rows(pstate)
+                pstate["grid_version"] = int(pstate.get("grid_version", 0)) + 1
                 mode_desc = "세후(파일 금액 = 차인지급액 기준 3.3% 역산)" if target_next_mode == "세후역산" else "세전(파일 금액 = 지급총액 기준 3.3% 공제)"
                 pstate["chat_logs"].append(f"[전체 스위치 전환] 프리랜서 {len(frees_cur)}명 전체를 '{mode_desc}'으로 일괄 전환했습니다.")
-                _commit_server_mutation(pstate)
                 st.rerun()
 
     with top_c1:
@@ -3085,6 +2785,7 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
                     pstate["prev_employees"] = list(prev_pack["employees"])
                     pstate["employees"] = [{k: v for k, v in e.items() if k != "_수기"} for e in prev_pack["employees"]]
                     _recalculate_all_employee_rows(pstate)
+                    pstate["grid_version"] += 1
                     st.toast(f"직전 귀속월({prev_pack.get('year_month')}) 급여대장 {len(pstate['employees'])}명을 불러왔습니다.")
                     st.rerun()
                 elif not is_emp_mode and prev_pack.get("freelancers"):
@@ -3092,6 +2793,7 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
                     pstate["freelancers"] = [{k: v for k, v in f.items() if k != "_수기"} for f in prev_pack["freelancers"]]
                     _apply_period_to_rows(pstate)   # 전월 명단을 가져오되 귀속연월·지급일자는 지금 화면 기준
                     _recalculate_all_freelancer_rows(pstate)
+                    pstate["grid_version"] += 1
                     st.toast(f"직전 귀속월({prev_pack.get('year_month')}) 사업소득자 {len(pstate['freelancers'])}명을 불러왔습니다.")
                     st.rerun()
                 else:
@@ -3100,7 +2802,7 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
                 st.warning("누적 백업(.paybak) 파일에 저장된 전월 이력이 없습니다. 먼저 좌측 사이드바에서 백업 파일을 불러오거나 당월 엑셀을 업로드해 주세요.")
 
     with top_c2:
-        if st.button("+ 행 추가", width="stretch", key="btn_pay_add_row"):
+        if st.button("행 추가", width="stretch", key="btn_pay_add_row"):
             if is_emp_mode:
                 next_idx = len(pstate["employees"]) + 1
                 row_calc = calculate_employee_payroll_row(
@@ -3132,7 +2834,6 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
                     "코드": f"{next_idx:04d}",
                     "성명": f"소득자{next_idx}",
                     "주민등록번호": "",
-                    "_base_amount": 1_000_000,
                     "소득구분": "940909",
                     "귀속년월": pstate.get("year_month", ""),
                     "지급년월일": pstate.get("pay_date", ""),
@@ -3144,7 +2845,7 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
                     "공제액계": f_calc["total_deduction"],
                     "차인지급액": f_calc["net_pay"],
                 })
-            _commit_server_mutation(pstate)
+            pstate["grid_version"] += 1
             st.rerun()
 
     with top_c3:
@@ -3158,7 +2859,7 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
                         e for i, e in enumerate(pstate.get("employees", [])) if i not in drop_set
                     ]
                     pstate["selected_emp_indices"] = []
-                    _commit_server_mutation(pstate)
+                    pstate["grid_version"] += 1
                     st.rerun()
                 else:
                     st.warning("삭제할 행의 맨 왼쪽 체크박스를 먼저 선택해 주세요.")
@@ -3169,7 +2870,7 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
                         f for i, f in enumerate(pstate.get("freelancers", [])) if i not in drop_set
                     ]
                     pstate["selected_free_indices"] = []
-                    _commit_server_mutation(pstate)
+                    pstate["grid_version"] += 1
                     st.rerun()
                 else:
                     st.warning("삭제할 대상자의 맨 왼쪽 체크박스를 먼저 선택해 주세요.")
@@ -3523,8 +3224,7 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
         height=0,
     )
 
-    if chat_val and st.session_state.get("_pa_processed_chat_val_id") != id(chat_val):
-        st.session_state["_pa_processed_chat_val_id"] = id(chat_val)
+    if chat_val:
         in_text = ""
         in_files: List[Any] = []
         if isinstance(chat_val, str):

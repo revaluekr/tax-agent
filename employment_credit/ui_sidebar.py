@@ -1068,9 +1068,9 @@ def render_credit_sidebar():
     rul_badge_txt = str(rul_mon.get("badge_text") or "")
     rul_badge_html = f"<span class='ec-law-badge-green'>{rul_badge_txt}</span>" if rul_badge_txt else ""
 
-    ec_law_exp_lbl = "개정사항·신규 세법해석 (확인 필요)" if law_led_cls == "orange" else f"개정사항·신규 세법해석 ({law_badge_txt or '정상'})"
-    with st.expander(ec_law_exp_lbl, expanded=(law_led_cls == "orange")):
+    with st.container(border=True):
         st.markdown(
+            _ui_theme.sb_title("book", "개정사항·신규 세법해석") +
             f"<div class='ec-law-status-row'>"
             f"<span class='ec-law-status-left'><span class='ec-law-led-3d {law_led_cls}'></span>법령·시행령·규칙 개정</span>"
             f"{law_badge_html}"
@@ -1090,13 +1090,21 @@ def render_credit_sidebar():
             _dlg_ec_law_monitoring_detail(tax_yr)
 
 
-    # [Feature B] 통합고용세액공제 전용 자료·내용 초기화 아코디언
+    # [Feature B] 통합고용세액공제 전용 자료·내용 초기화 카드 (내 작업공간 코드 위치 대체)
     has_any_ec_data = bool(
         s.get("files") or s.get("people") or (s.get("biz") or {}).get("상호")
         or any((v or {}).get("상시") is not None or (v or {}).get("공제세액") is not None for v in (s.get("prev_summary") or {}).values() if isinstance(v, dict))
     )
-    ec_work_lbl = f"사원 {len(s.get('people') or {})}명 · 서류 {len(s.get('files') or {})}건" if has_any_ec_data else "초기 상태"
-    with st.expander(f"작업 자료 관리 ({ec_work_lbl})", expanded=bool(st.session_state.get("ec_confirm_reset"))):
+    with st.container(border=True):
+        status_pill = (
+            f"<span class='sb-badge-green'>사원 {len(s.get('people') or {})}명 · 서류 {len(s.get('files') or {})}건</span>"
+            if has_any_ec_data
+            else "<span class='sb-badge-amber'>초기 상태</span>"
+        )
+        st.markdown(
+            _ui_theme.sb_title("refresh", "작업 자료 관리", status_pill),
+            unsafe_allow_html=True,
+        )
         if not st.session_state.get("ec_confirm_reset"):
             if st.button(
                 "자료 초기화 (내용 비우기)",
@@ -1147,16 +1155,9 @@ def render_credit_sidebar():
             # 사용자가 직접 바꾼 경우에만 반영 (백업 복원·인건비 연동 등으로 연도가 바뀐 뒤 화면 기억값이 되돌리지 않도록)
             _ny = st.session_state.get("ec_sb_tax_year_select")
             if _ny and int(_ny) != int(s["tax_year"]):
-                from .ui_step2 import _sync_active_ec_grids_once, _purge_stale_ec_grid_keys
-                _sync_active_ec_grids_once(s)
-                nt = int(_ny)
-                s["tax_year"] = nt
-                if s.get("show_all_4_years"):
-                    s["manual_extra_years"] = [nt - i for i in range(4) if (nt - i) >= 2021]
-                else:
-                    s["manual_extra_years"] = []
+                s["tax_year"] = int(_ny)
+                s["manual_extra_years"] = []
                 s["built_sig"] = None
-                _purge_stale_ec_grid_keys(s)
                 _ensure_built_for_tax_year(s)
                 _save_ec_to_disk(s)
 
@@ -1170,10 +1171,6 @@ def render_credit_sidebar():
             key="ec_sb_tax_year_select",
             on_change=_on_tax_year_change,
         )
-
-    if int(s.get("step") or 1) == 2 and s.get("last_sent"):
-        from .ui_step2 import _sync_active_ec_grids_once
-        _sync_active_ec_grids_once(s)
 
     with st.container(border=True, key="ec_biz"):
         b, conf = s["biz"], set(s["biz_confirmed"])
@@ -1224,13 +1221,10 @@ def render_credit_sidebar():
             help="중소기업 유예기간(조특령 제2조) 중이면 중소기업으로 선택하세요. 기본값을 바꾸면 개별로 바꾼 적 없는 연도만 따라 바뀝니다.",
         )
         if new_sb_size != prev_tracked_sb:
-            from .ui_step2 import _sync_active_ec_grids_once, _purge_stale_ec_grid_keys
-            _sync_active_ec_grids_once(s)
             R.apply_corp_size_default_change(s, new_sb_size)
             s["yr_sz_ver"] = yr_sz_ver_sb + 1
             for y_all in _all_possible_years(s):
                 s["grid_ver"][y_all] = s["grid_ver"].get(y_all, 0) + 1
-            _purge_stale_ec_grid_keys(s)
             s.pop("_report_artifact_cache", None)
             _save_ec_to_disk(s)
             st.rerun()

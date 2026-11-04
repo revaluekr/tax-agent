@@ -67,491 +67,6 @@ MANAGER_AUTH_FILE = os.path.join(STORAGE_DIR, "_manager_google_auth.json")
 ANON_WS_PREFIX = "__anon_session__:"
 
 # ---------------------------------------------------------
-# 📚 [자율 에이전트AI 대화 영구보존 · 자동 마크다운(.md) 저장 · 법령별 카운팅 · GitHub 원격 백업 엔진]
-# ---------------------------------------------------------
-QA_ARCHIVE_PATH = os.path.join(STORAGE_DIR, "qa_dataset_archive.json")
-QA_MD_DIR = os.path.join(STORAGE_DIR, "qa_markdown")
-QA_BY_LAW_DIR = os.path.join(QA_MD_DIR, "by_law")
-GITHUB_CFG_PATH = os.path.join(STORAGE_DIR, "_github_backup_config.json")
-DEFAULT_PERSISTENT_WS_ID = "default_persistent_workspace"
-os.makedirs(QA_BY_LAW_DIR, exist_ok=True)
-
-_KNOWN_STATUTES_MAP = [
-    ("조세특례제한법", ["조세특례제한법", "조특법", "조특령", "조특규칙", "통합고용", "창업중소기업", "중소기업특별세액감면", "연구인력개발비"]),
-    ("소득세법", ["소득세법", "소득령", "소득규칙", "종합소득세", "양도소득세", "원천징수", "간이세액표", "비과세식대", "연말정산", "사업소득"]),
-    ("법인세법", ["법인세법", "법인령", "법인규칙", "각사업연도소득", "업무무관가지급금", "업무용승용차", "접대비", "기부금"]),
-    ("부가가치세법", ["부가가치세법", "부가령", "부가규칙", "부가가치세", "부가세", "세금계산서", "매입세액", "간이과세"]),
-    ("상속세 및 증여세법", ["상속세및증여세법", "상속세 및 증여세법", "상증세법", "상증법", "상증령", "가업상속", "증여재산", "상속세", "증여세"]),
-    ("국세기본법", ["국세기본법", "국기법", "국기령", "경정청구", "수정신고", "가산세", "국세부과제척기간", "조세심판"]),
-    ("지방세법", ["지방세법", "지방세특례제한법", "지방소득세", "취득세", "재산세", "주민세"]),
-    ("종합부동산세법", ["종합부동산세법", "종부세법", "종부세"]),
-    ("국제조세조정에 관한 법률", ["국제조세조정에관한법률", "국제조세조정에 관한 법률", "국조법", "이전가격", "해외금융계좌"]),
-    ("근로기준법", ["근로기준법", "근기법", "연장근로", "주휴수당", "연차수당", "퇴직금", "근로자퇴직급여", "최저임금법", "통상임금"]),
-    ("4대보험 관계법령", ["고용보험", "산업재해보상보험", "보험료징수", "국민연금법", "국민건강보험법", "노인장기요양보험", "4대보험"]),
-    ("상법 · 민법", ["상법", "민법", "자기주식", "배당", "주주총회", "임원퇴직금"]),
-]
-
-_FIVE_TAX_CATEGORIES = [
-    ("법인세·조특법·세액공제", {"조세특례제한법", "법인세법"}),
-    ("양도·상속·증여·재산세제", {"상속세 및 증여세법", "종합부동산세법", "지방세법"}),
-    ("소득세·부가가치세·사업자", {"소득세법", "부가가치세법"}),
-    ("4대보험·노무·정부지원금", {"근로기준법", "4대보험 관계법령"}),
-    ("기타·일반세무·기업공시", {"국세기본법", "국제조세조정에 관한 법률", "상법 · 민법", "기타 세법·정부지원금·일반자문"}),
-]
-
-
-def _extract_laws_from_qa_turn(question: str, answer: str, law_prom_map: dict | None = None) -> list[str]:
-    """질문과 답변 본문(및 [조문: ...] 태그)에서 인용·언급된 법령명을 추출합니다."""
-    found: list[str] = []
-    combined = f"{question or ''}\n{answer or ''}"
-    combined_nospace = re.sub(r"\s+", "", combined)
-
-    # 1) [조문: ...] 태그 기반 정확 추출
-    for m in _CITED_ARTICLE_TAG_RE.finditer(answer or ""):
-        raw_tag = m.group(1)
-        clean_tag = re.sub(r"(?:부칙|제\s*\d+\s*조|별표|별지).*", "", raw_tag).replace("「", "").replace("」", "").strip()
-        clean_nospace = clean_tag.replace(" ", "")
-        base_nospace = re.sub(r"(?:시행령|시행규칙|규칙)$", "", clean_nospace)
-        matched_canonical = ""
-        for canon_name, kw_list in _KNOWN_STATUTES_MAP:
-            if any(k.replace(" ", "") in base_nospace or base_nospace in k.replace(" ", "") for k in kw_list if len(k) >= 3):
-                matched_canonical = canon_name
-                break
-        if not matched_canonical and law_prom_map:
-            if base_nospace in law_prom_map:
-                matched_canonical = law_prom_map[base_nospace].get("law_name") or base_nospace
-            elif clean_nospace in law_prom_map:
-                matched_canonical = law_prom_map[clean_nospace].get("law_name") or clean_nospace
-        if not matched_canonical and len(base_nospace) >= 3 and base_nospace.endswith("법"):
-            matched_canonical = base_nospace
-        if matched_canonical and matched_canonical not in found:
-            found.append(matched_canonical)
-
-    # 2) 본문 키워드·법령명 매칭 보강
-    for canon_name, kw_list in _KNOWN_STATUTES_MAP:
-        if canon_name in found:
-            continue
-        for kw in kw_list:
-            if kw.replace(" ", "") in combined_nospace:
-                found.append(canon_name)
-                break
-
-    if not found:
-        found.append("기타 세법·정부지원금·일반자문")
-    return found
-
-
-def _classify_five_category(laws: list[str], question: str = "", answer: str = "") -> str:
-    txt = f"{question} {answer}"
-    if any(k in txt for k in ("양도소득", "양도세", "1세대1주택", "다주택")):
-        return "양도·상속·증여·재산세제"
-    for cat_name, law_set in _FIVE_TAX_CATEGORIES:
-        if any(l in law_set for l in laws):
-            return cat_name
-    return "기타·일반세무·기업공시"
-
-
-def _load_qa_archive() -> list[dict]:
-    if os.path.exists(QA_ARCHIVE_PATH):
-        try:
-            with open(QA_ARCHIVE_PATH, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data, list):
-                return data
-        except Exception:
-            pass
-    return []
-
-
-def _save_qa_archive(entries: list[dict]) -> None:
-    try:
-        with open(QA_ARCHIVE_PATH, "w", encoding="utf-8") as f:
-            json.dump(entries, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
-
-
-def _build_markdown_for_entries(title: str, entries: list[dict], show_law_summary: bool = True) -> str:
-    now_str = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")
-    lines = [
-        f"# {title}",
-        f"",
-        f"- **자동 생성·갱신 시각**: {now_str} (KST)",
-        f"- **수록 대화(Q&A) 건수**: 총 {len(entries)}건",
-        f"",
-    ]
-    if show_law_summary and entries:
-        law_counter: Counter = Counter()
-        for e in entries:
-            for lw in (e.get("laws") or ["기타 세법·정부지원금·일반자문"]):
-                law_counter[lw] += 1
-        lines.extend([
-            "## 1. 법령별 대화(Q&A) 카운팅 요약",
-            "",
-            "| 순위 | 법령명 | 대화 건수 | 비중(%) |",
-            "| :---: | :--- | :---: | :---: |",
-        ])
-        total_e = max(1, len(entries))
-        for idx, (lw, cnt) in enumerate(law_counter.most_common(), start=1):
-            lines.append(f"| {idx}위 | **{lw}** | {cnt}건 | {cnt * 100.0 / total_e:.1f}% |")
-        lines.append("")
-
-    lines.append("## 2. 질문·답변(Q&A) 상세 기록" if show_law_summary else "## 질문·답변(Q&A) 상세 기록")
-    lines.append("")
-    for idx, e in enumerate(entries, start=1):
-        laws_str = ", ".join(e.get("laws") or ["기타 세법·정부지원금·일반자문"])
-        cat_str = e.get("category") or "기타·일반세무·기업공시"
-        ts_str = e.get("timestamp") or "-"
-        rm_str = e.get("room") or "대화방"
-        q_txt = (e.get("question") or "").strip()
-        a_txt = _strip_system_diag_and_badge(e.get("answer") or "")
-        lines.extend([
-            f"### [{idx}] {q_txt[:60]}",
-            f"- **일시**: {ts_str} | **대화방**: {rm_str} | **세목 분류**: {cat_str}",
-            f"- **인용·관련 법령**: {laws_str}",
-            "",
-            "#### [질문]",
-            q_txt,
-            "",
-            "#### [답변]",
-            a_txt,
-            "",
-            "---",
-            "",
-        ])
-    return "\n".join(lines)
-
-
-def _write_auto_markdown_files(entries: list[dict]) -> None:
-    """대화 내역을 전체 누적(.md), 이번 달(.md), 법령별(.md) 파일로 디스크에 즉시 자동 저장합니다."""
-    try:
-        os.makedirs(QA_BY_LAW_DIR, exist_ok=True)
-        # 1) 전체 누적 .md
-        all_md = _build_markdown_for_entries("자율 에이전트AI 전체 누적 질문·답변(Q&A) 기록", entries, show_law_summary=True)
-        with open(os.path.join(QA_MD_DIR, "all_qa_dataset.md"), "w", encoding="utf-8") as f:
-            f.write(all_md)
-
-        # 2) 월별 .md (현재 월 + 기록된 모든 월)
-        cur_ym = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y_%m")
-        by_ym: dict[str, list[dict]] = {cur_ym: []}
-        for e in entries:
-            ym = str(e.get("year_month") or cur_ym).replace("-", "_")
-            by_ym.setdefault(ym, []).append(e)
-        for ym, ym_entries in by_ym.items():
-            ym_md = _build_markdown_for_entries(f"{ym.replace('_', '년 ')}월 자율 에이전트AI 질문·답변(Q&A) 기록", ym_entries, show_law_summary=True)
-            with open(os.path.join(QA_MD_DIR, f"{ym}_qa_dataset.md"), "w", encoding="utf-8") as f:
-                f.write(ym_md)
-
-        # 3) 법령별 .md
-        by_law: dict[str, list[dict]] = {}
-        for e in entries:
-            for lw in (e.get("laws") or ["기타 세법·정부지원금·일반자문"]):
-                by_law.setdefault(lw, []).append(e)
-        for lw, lw_entries in by_law.items():
-            safe_lw = re.sub(r'[\\/:*?"<>|\s·]+', "_", lw).strip("_") or "기타법령"
-            lw_md = _build_markdown_for_entries(f"[{lw}] 질문·답변(Q&A) 모음집", lw_entries, show_law_summary=False)
-            with open(os.path.join(QA_BY_LAW_DIR, f"{safe_lw}.md"), "w", encoding="utf-8") as f:
-                f.write(lw_md)
-    except Exception as e:
-        print(f"⚠️ 마크다운 자동 저장 오류: {e}")
-
-
-def _load_github_backup_config() -> dict:
-    cfg = {"token": "", "repo": "", "last_saved": ""}
-    if os.path.exists(GITHUB_CFG_PATH):
-        try:
-            with open(GITHUB_CFG_PATH, "r", encoding="utf-8") as f:
-                d = json.load(f)
-            if isinstance(d, dict):
-                cfg.update(d)
-        except Exception:
-            pass
-    env_tok = _get_first_env_or_secret(["GITHUB_BACKUP_TOKEN", "GH_BACKUP_TOKEN", "GITHUB_TOKEN"])
-    env_repo = _get_first_env_or_secret(["GITHUB_BACKUP_REPO", "GH_BACKUP_REPO"])
-    if env_tok and not cfg.get("token"):
-        cfg["token"] = env_tok
-    if env_repo and not cfg.get("repo"):
-        cfg["repo"] = env_repo
-    return cfg
-
-
-def _save_github_backup_config(token: str, repo: str, last_saved: str = "") -> None:
-    cur = _load_github_backup_config()
-    if token is not None:
-        cur["token"] = token.strip()
-    if repo is not None:
-        cur["repo"] = repo.strip()
-    if last_saved:
-        cur["last_saved"] = last_saved
-    try:
-        with open(GITHUB_CFG_PATH, "w", encoding="utf-8") as f:
-            json.dump(cur, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
-
-
-def _github_put_file(token: str, repo: str, path_in_repo: str, content_bytes: bytes, message: str) -> bool:
-    import base64 as _b64
-    if not token or not repo or "/" not in repo:
-        return False
-    api_url = f"https://api.github.com/repos/{repo.strip().strip('/')}/contents/{path_in_repo.lstrip('/')}"
-    headers = {
-        "Authorization": f"Bearer {token.strip()}",
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "tax-agent-backup",
-    }
-    sha = None
-    try:
-        req_get = urllib.request.Request(api_url, headers=headers, method="GET")
-        with urllib.request.urlopen(req_get, timeout=8) as resp:
-            old_info = json.loads(resp.read().decode("utf-8"))
-            sha = old_info.get("sha")
-    except Exception:
-        sha = None
-
-    body = {
-        "message": message,
-        "content": _b64.b64encode(content_bytes).decode("ascii"),
-    }
-    if sha:
-        body["sha"] = sha
-    try:
-        req_put = urllib.request.Request(
-            api_url,
-            data=json.dumps(body).encode("utf-8"),
-            headers={**headers, "Content-Type": "application/json"},
-            method="PUT",
-        )
-        with urllib.request.urlopen(req_put, timeout=12) as resp:
-            return resp.status in (200, 201)
-    except Exception:
-        return False
-
-
-def _github_get_file(token: str, repo: str, path_in_repo: str) -> bytes | None:
-    import base64 as _b64
-    if not token or not repo or "/" not in repo:
-        return None
-    api_url = f"https://api.github.com/repos/{repo.strip().strip('/')}/contents/{path_in_repo.lstrip('/')}"
-    headers = {
-        "Authorization": f"Bearer {token.strip()}",
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "tax-agent-backup",
-    }
-    try:
-        req_get = urllib.request.Request(api_url, headers=headers, method="GET")
-        with urllib.request.urlopen(req_get, timeout=8) as resp:
-            info = json.loads(resp.read().decode("utf-8"))
-            b64_c = info.get("content") or ""
-            if b64_c:
-                return _b64.b64decode(b64_c)
-    except Exception:
-        pass
-    return None
-
-
-def push_backup_to_github_now(ws_id: str = DEFAULT_PERSISTENT_WS_ID, async_bg: bool = True) -> bool:
-    cfg = _load_github_backup_config()
-    token = cfg.get("token", "").strip()
-    repo = cfg.get("repo", "").strip()
-    if not token or not repo:
-        return False
-
-    def _job() -> bool:
-        ok_any = False
-        now_s = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")
-        cur_ym = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y_%m")
-        try:
-            ws_path = get_storage_path(ws_id)
-            if os.path.exists(ws_path):
-                with open(ws_path, "rb") as f:
-                    if _github_put_file(token, repo, "backup/ws_default_persistent.json", f.read(), f"Auto backup workspace {now_s}"):
-                        ok_any = True
-            if os.path.exists(QA_ARCHIVE_PATH):
-                with open(QA_ARCHIVE_PATH, "rb") as f:
-                    if _github_put_file(token, repo, "backup/qa_dataset_archive.json", f.read(), f"Auto backup QA archive {now_s}"):
-                        ok_any = True
-            all_md_p = os.path.join(QA_MD_DIR, "all_qa_dataset.md")
-            if os.path.exists(all_md_p):
-                with open(all_md_p, "rb") as f:
-                    _github_put_file(token, repo, "datasets/all_qa_dataset.md", f.read(), f"Auto backup all_qa_dataset.md {now_s}")
-            ym_md_p = os.path.join(QA_MD_DIR, f"{cur_ym}_qa_dataset.md")
-            if os.path.exists(ym_md_p):
-                with open(ym_md_p, "rb") as f:
-                    _github_put_file(token, repo, f"datasets/{cur_ym}_qa_dataset.md", f.read(), f"Auto backup {cur_ym}_qa_dataset.md {now_s}")
-            if ok_any:
-                _save_github_backup_config(token, repo, last_saved=now_s)
-        except Exception:
-            pass
-        return ok_any
-
-    if async_bg:
-        threading.Thread(target=_job, daemon=True).start()
-        return True
-    return _job()
-
-
-def _restore_from_github_if_local_empty() -> None:
-    """코드 업로드(서버 재배포) 직후 로컬 디스크가 비어 있을 때 GitHub 백업 저장소에서 1~10번 대화방과 Q&A 아카이브를 자동 복원합니다."""
-    cfg = _load_github_backup_config()
-    token = cfg.get("token", "").strip()
-    repo = cfg.get("repo", "").strip()
-    if not token or not repo:
-        return
-    default_ws_path = get_storage_path(DEFAULT_PERSISTENT_WS_ID)
-    if not os.path.exists(default_ws_path):
-        raw_ws = _github_get_file(token, repo, "backup/ws_default_persistent.json")
-        if raw_ws:
-            try:
-                json.loads(raw_ws.decode("utf-8"))
-                with open(default_ws_path, "wb") as f:
-                    f.write(raw_ws)
-            except Exception:
-                pass
-    if not os.path.exists(QA_ARCHIVE_PATH):
-        raw_qa = _github_get_file(token, repo, "backup/qa_dataset_archive.json")
-        if raw_qa:
-            try:
-                entries = json.loads(raw_qa.decode("utf-8"))
-                if isinstance(entries, list):
-                    _save_qa_archive(entries)
-                    _write_auto_markdown_files(entries)
-            except Exception:
-                pass
-
-
-def record_and_sync_qa_conversations(all_rooms_dict: dict[str, list[dict]] | None = None, law_prom_map: dict | None = None, trigger_github: bool = False) -> list[dict]:
-    """
-    1~10번 대화방의 모든 질문·답변을 스캔하여 누락 없이 Q&A 아카이브(`qa_dataset_archive.json`)에 누적 기록하고,
-    전체(.md) · 이번 달(.md) · 법령별(.md) 마크다운 파일을 자동 갱신합니다.
-    (대화방 비우기를 하더라도 누적 아카이브의 .md 기록은 영구 보존됩니다.)
-    """
-    entries = _load_qa_archive()
-    seen_sigs = {f"{e.get('question', '').strip()[:120]}||{e.get('answer', '').strip()[:120]}" for e in entries}
-    changed = False
-    now_dt = datetime.now(ZoneInfo("Asia/Seoul"))
-    now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
-    cur_ym = now_dt.strftime("%Y-%m")
-
-    if all_rooms_dict:
-        for r_id, msgs in all_rooms_dict.items():
-            if not isinstance(msgs, list):
-                continue
-            i = 0
-            while i < len(msgs):
-                m = msgs[i]
-                if m.get("role") == "user":
-                    q_txt = (m.get("content") or "").strip()
-                    a_txt = ""
-                    if i + 1 < len(msgs) and msgs[i + 1].get("role") == "assistant":
-                        a_txt = (msgs[i + 1].get("content") or "").strip()
-                        i += 2
-                    else:
-                        i += 1
-                    if q_txt and a_txt and not a_txt.startswith("❌ 에이전트 실행 중 오류"):
-                        sig = f"{q_txt[:120]}||{a_txt[:120]}"
-                        if sig not in seen_sigs:
-                            laws = _extract_laws_from_qa_turn(q_txt, a_txt, law_prom_map)
-                            cat = _classify_five_category(laws, q_txt, a_txt)
-                            entries.append({
-                                "id": len(entries) + 1,
-                                "timestamp": now_str,
-                                "year_month": cur_ym,
-                                "room": r_id,
-                                "question": q_txt,
-                                "answer": a_txt,
-                                "laws": laws,
-                                "primary_law": laws[0] if laws else "기타 세법·정부지원금·일반자문",
-                                "category": cat,
-                            })
-                            seen_sigs.add(sig)
-                            changed = True
-                else:
-                    i += 1
-
-    if changed or not os.path.exists(os.path.join(QA_MD_DIR, "all_qa_dataset.md")):
-        _save_qa_archive(entries)
-        _write_auto_markdown_files(entries)
-        if changed and trigger_github:
-            push_backup_to_github_now(async_bg=True)
-    return entries
-
-
-def _build_law_markdown_zip_bytes(entries: list[dict]) -> bytes:
-    import zipfile as _zipfile
-    buf = io.BytesIO()
-    by_law: dict[str, list[dict]] = {}
-    for e in entries:
-        for lw in (e.get("laws") or ["기타 세법·정부지원금·일반자문"]):
-            by_law.setdefault(lw, []).append(e)
-    with _zipfile.ZipFile(buf, "w", _zipfile.ZIP_DEFLATED) as zf:
-        all_md = _build_markdown_for_entries("자율 에이전트AI 전체 누적 질문·답변(Q&A) 기록", entries, show_law_summary=True)
-        zf.writestr("00_전체_누적_대화록.md", all_md.encode("utf-8"))
-        for idx, (lw, lw_entries) in enumerate(sorted(by_law.items(), key=lambda x: -len(x[1])), start=1):
-            safe_lw = re.sub(r'[\\/:*?"<>|\s·]+', "_", lw).strip("_") or f"법령_{idx}"
-            md_txt = _build_markdown_for_entries(f"[{lw}] 질문·답변(Q&A) 모음 ({len(lw_entries)}건)", lw_entries, show_law_summary=False)
-            zf.writestr(f"{idx:02d}_{safe_lw}_{len(lw_entries)}건.md", md_txt.encode("utf-8"))
-    buf.seek(0)
-    return buf.getvalue()
-
-
-def _build_qa_law_stats_excel_bytes(entries: list[dict]) -> bytes:
-    buf = io.BytesIO()
-    law_counter: Counter = Counter()
-    law_cat_map: dict[str, str] = {}
-    law_last_ts: dict[str, str] = {}
-    cat_counter: Counter = Counter()
-
-    for e in entries:
-        cat = e.get("category") or "기타·일반세무·기업공시"
-        cat_counter[cat] += 1
-        for lw in (e.get("laws") or ["기타 세법·정부지원금·일반자문"]):
-            law_counter[lw] += 1
-            law_cat_map[lw] = cat
-            law_last_ts[lw] = e.get("timestamp") or "-"
-
-    total_e = max(1, len(entries))
-    law_rows = [
-        {
-            "순위": f"{idx}위",
-            "법령명": lw,
-            "대화(Q&A) 건수": cnt,
-            "비중(%)": round(cnt * 100.0 / total_e, 1),
-            "주요 세목 분류": law_cat_map.get(lw, "-"),
-            "최근 질문 일시": law_last_ts.get(lw, "-"),
-        }
-        for idx, (lw, cnt) in enumerate(law_counter.most_common(), start=1)
-    ]
-    cat_rows = [
-        {
-            "5대 세목·법령 분류": c_nm,
-            "대화 건수": cat_counter.get(c_nm, 0),
-            "비중(%)": round(cat_counter.get(c_nm, 0) * 100.0 / total_e, 1),
-        }
-        for c_nm, _ in _FIVE_TAX_CATEGORIES
-    ]
-    qa_rows = [
-        {
-            "번호": e.get("id", idx),
-            "일시": e.get("timestamp", ""),
-            "대화방": e.get("room", ""),
-            "대표 법령": e.get("primary_law", ""),
-            "전체 인용 법령": ", ".join(e.get("laws") or []),
-            "5대 세목 분류": e.get("category", ""),
-            "질문 내용": e.get("question", ""),
-            "답변 본문": _strip_system_diag_and_badge(e.get("answer", "")),
-        }
-        for idx, e in enumerate(entries, start=1)
-    ]
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        pd.DataFrame(law_rows or [{"순위": "-", "법령명": "데이터 없음", "대화(Q&A) 건수": 0, "비중(%)": 0.0, "주요 세목 분류": "-", "최근 질문 일시": "-"}]).to_excel(writer, index=False, sheet_name="1_법령별_카운팅")
-        pd.DataFrame(cat_rows).to_excel(writer, index=False, sheet_name="2_5대세목별_비중")
-        pd.DataFrame(qa_rows or [{"번호": "-", "일시": "-", "대화방": "-", "대표 법령": "-", "전체 인용 법령": "-", "5대 세목 분류": "-", "질문 내용": "저장된 대화가 없습니다.", "답변 본문": ""}]).to_excel(writer, index=False, sheet_name="3_전체_대화내역")
-    buf.seek(0)
-    return buf.getvalue()
-
-
-# ---------------------------------------------------------
 # 💎 프리미엄 UI/UX CSS (좌측 사이드바 겹침 원천 해결 + 옵션 C 오로라 로딩 LED + 우측 본문 15.5px 가독성 최적화)
 # ---------------------------------------------------------
 st.markdown("""
@@ -643,6 +158,7 @@ section[data-testid="stSidebar"] div[data-testid="stMarkdownContainer"] {
 }
 
 /* 🟢 사이드바 최상단 모드 전환 버튼 (자율 에이전트AI / 통합고용세액공제) */
+.st-key-btn_top_mode_calendar button,
 .st-key-btn_top_mode_agent button,
 .st-key-btn_top_mode_credit button,
 .st-key-btn_top_mode_payroll button {
@@ -663,16 +179,16 @@ div[data-testid="stFormSubmitButton"] > button[kind="primary"],
 .st-key-btn_top_mode_agent button[kind="primary"],
 .st-key-btn_top_mode_credit button[kind="primary"],
 .st-key-btn_top_mode_payroll button[kind="primary"] {
-    background-color: #3182F6 !important;
-    border: 1.5px solid #3182F6 !important;
+    background-color: #16a34a !important;
+    border: 1.5px solid #15803d !important;
     color: #ffffff !important;
     font-weight: 800 !important;
 }
 div.stButton > button[kind="primary"]:hover,
 div.stButton > button[data-testid="stBaseButton-primary"]:hover,
 div[data-testid="stFormSubmitButton"] > button[kind="primary"]:hover {
-    background-color: #1B64DA !important;
-    border-color: #1B64DA !important;
+    background-color: #15803d !important;
+    border-color: #166534 !important;
     color: #ffffff !important;
 }
 div.stButton > button[kind="primary"] p,
@@ -795,15 +311,15 @@ div[class*="st-key-room_btn_"][class*="_hasmsg"]:not([class*="_running"]) button
     box-shadow: 0 0 5px rgba(34, 197, 94, 0.55);
 }
 
-/* 상태 3: 현재 선택된 방 (토스 소프트 블루 #E8F3FF 강조 + 토스 그린/블루 LED) */
+/* 상태 3: 현재 선택된 방 (칸 전체 연녹색 강조 + 작성 중이 아닐 때만 우측 진초록 LED) */
 div[class*="st-key-room_btn_"][class*="_active"] button {
-    background-color: #E8F3FF !important;
-    border: none !important;
-    color: #3182F6 !important;
+    background-color: #dcfce7 !important;
+    border: 1.5px solid #16a34a !important;
+    color: #14532d !important;
     font-weight: 800 !important;
 }
 div[class*="st-key-room_btn_"][class*="_active"] button p {
-    color: #3182F6 !important;
+    color: #14532d !important;
     font-weight: 800 !important;
 }
 div[class*="st-key-room_btn_"][class*="_active"]:not([class*="_running"]) button::after {
@@ -812,11 +328,11 @@ div[class*="st-key-room_btn_"][class*="_active"]:not([class*="_running"]) button
     right: 10px !important;
     top: 50% !important;
     transform: translateY(-50%);
-    width: 8px !important;
-    height: 8px !important;
+    width: 9px !important;
+    height: 9px !important;
     border-radius: 50% !important;
-    background-color: #00C471;
-    box-shadow: 0 0 5px rgba(0, 196, 113, 0.55);
+    background-color: #16a34a;
+    box-shadow: 0 0 6px rgba(22, 163, 74, 0.7);
 }
 
 /* 상태 4: 🌌 [옵션 C] 작성 중(분석 중)인 방 — 제미나이 오로라 블루·인디고·바이올렛 회전/펄스 LED
@@ -856,134 +372,19 @@ div[class*="st-key-room_btn_"][class*="_running"] button::after {
     animation: geminiAuroraPulse 1.4s infinite ease-in-out !important;
 }
 
-/* 상단 슬림 미니 상태바 (토스 웹 스타일 + 고정 배경 #F4F6FA) */
-[data-testid="stApp"] [data-testid="stMain"],
-[data-testid="stApp"] [data-testid="stAppScrollToBottomContainer"],
-[data-testid="stApp"] [data-testid="stBottom"] > div {
-    background-color: #F4F6FA !important;
-}
+/* 상단 슬림 미니 상태바 */
 .top-mini-status-bar {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    background-color: #FFFFFF;
-    border: 1px solid #E5E8EB;
-    border-left: 4px solid #3182F6;
-    border-radius: 12px;
-    padding: 9px 16px;
-    margin-bottom: 14px;
+    background-color: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-left: 4px solid #16a34a;
+    border-radius: 8px;
+    padding: 7px 14px;
+    margin-bottom: 10px;
     font-size: 0.92rem;
-    color: #191F28;
-    box-shadow: 0 2px 8px rgba(0, 27, 55, 0.03);
-}
-/* ── 개선 3: 자율 에이전트AI 토스 웹 2x2 화이트 벤토 그리드(Bento Grid) ── */
-.toss-bento-wrap {
-    max-width: 840px;
-    margin: 28px auto 18px auto;
-    padding: 0 8px;
-}
-.toss-bento-header {
-    text-align: center;
-    margin-bottom: 24px;
-}
-.toss-bento-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    background: #E8F3FF;
-    color: #3182F6;
-    font-size: 0.82rem;
-    font-weight: 800;
-    padding: 6px 14px;
-    border-radius: 999px;
-    margin-bottom: 12px;
-    letter-spacing: -0.2px;
-}
-.toss-bento-title {
-    font-size: 2.0rem;
-    font-weight: 800;
-    color: #191F28;
-    letter-spacing: -0.8px;
-    line-height: 1.25;
-    margin-bottom: 8px;
-}
-.toss-bento-sub {
-    font-size: 0.98rem;
-    color: #4E5968;
-    font-weight: 500;
-    line-height: 1.55;
-}
-.toss-bento-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 16px;
-    margin-bottom: 12px;
-}
-.toss-bento-card {
-    cursor: pointer;
-    background: #FFFFFF;
-    border: 1px solid #E5E8EB;
-    border-radius: 20px;
-    padding: 22px 24px 18px 24px;
-    box-shadow: 0 4px 16px rgba(0, 27, 55, 0.04);
-    transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
-}
-.toss-bento-card:hover {
-    transform: translateY(-2px);
-    border-color: #90C2FF;
-    box-shadow: 0 8px 24px rgba(49, 130, 246, 0.10);
-}
-.toss-bento-top {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 14px;
-}
-.toss-bento-icon {
-    width: 46px;
-    height: 46px;
-    border-radius: 14px;
-    background: #E8F3FF;
-    color: #3182F6;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-.toss-bento-arrow {
-    width: 30px;
-    height: 30px;
-    border-radius: 50%;
-    background: #F2F4F6;
-    color: #4E5968;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 0.90rem;
-    font-weight: 700;
-}
-.toss-bento-card-title {
-    font-size: 1.15rem;
-    font-weight: 800;
-    color: #191F28;
-    letter-spacing: -0.4px;
-    margin-bottom: 6px;
-}
-.toss-bento-card-desc {
-    font-size: 0.90rem;
-    color: #4E5968;
-    line-height: 1.55;
-    word-break: keep-all;
-}
-[data-testid="stApp"] [data-testid="stBottom"] [data-testid="stChatInput"] {
-    border-radius: 16px !important;
-    border: 1.5px solid #3182F6 !important;
-    box-shadow: 0 4px 18px rgba(49, 130, 246, 0.12) !important;
-    background: #FFFFFF !important;
-}
-[data-testid="stApp"] [data-testid="stBottom"] [data-testid="stChatInput"] [data-testid="stChatInputSubmitButton"] {
-    background-color: #3182F6 !important;
-    color: #FFFFFF !important;
-    border-radius: 50% !important;
+    color: #334155;
 }
 
 /* 🤖 답변 로봇 아바타 초록색 배경(#22c55e) & 흰색 아이콘 */
@@ -1724,40 +1125,25 @@ def get_storage_path(workspace_id: str) -> str:
 
 def _cleanup_stale_anon_workspaces(max_age_sec: int = 86400) -> None:
     """
-    새로고침(F5)·브라우저 재실행·코드 재배포 시에도 대화가 사라지지 않도록
-    기존 익명 세션 파일(`ws_anon_*.json`)에 남아 있던 대화 내용을 영구 기본 작업공간(`default_persistent_workspace`)으로
-    자동 병합·복원합니다.
+    비밀번호 없이 생성된 임시 개별 세션 파일(`ws_anon_*.json`) 중 24시간 이상 경과한 파일과
+    과거 공용 임시 파일(`default_public`)을 정리하여 디스크 용량을 쾌적하게 유지합니다.
+    (비밀번호를 설정한 `ws_*.json` 파일은 절대 건드리지 않습니다.)
     """
-    _restore_from_github_if_local_empty()
-    default_path = get_storage_path(DEFAULT_PERSISTENT_WS_ID)
+    now_ts = time.time()
     try:
-        anon_files = [
-            os.path.join(STORAGE_DIR, fn)
-            for fn in os.listdir(STORAGE_DIR)
-            if fn.startswith("ws_anon_") and fn.endswith(".json")
-        ]
-        if anon_files:
-            anon_files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-            base_data = load_workspace_from_disk(DEFAULT_PERSISTENT_WS_ID)
-            merged_any = False
-            for af in anon_files:
-                try:
-                    with open(af, "r", encoding="utf-8") as f:
-                        ad = json.load(f)
-                    for r_id in ROOM_IDS:
-                        a_msgs = (ad.get("chat_rooms") or {}).get(r_id) or []
-                        b_msgs = (base_data.get("chat_rooms") or {}).get(r_id) or []
-                        if len(a_msgs) > len(b_msgs):
-                            base_data["chat_rooms"][r_id] = a_msgs
-                            a_title = (ad.get("room_titles") or {}).get(r_id)
-                            if a_title and a_title not in ("빈 대화방", "메인 대화"):
-                                base_data["room_titles"][r_id] = a_title
-                            merged_any = True
-                except Exception:
-                    pass
-            if merged_any:
-                with open(default_path, "w", encoding="utf-8") as f:
-                    json.dump(base_data, f, ensure_ascii=False, indent=2)
+        legacy_pub_hash = hashlib.sha256(b"default_public").hexdigest()[:16]
+        legacy_pub_path = os.path.join(STORAGE_DIR, f"ws_{legacy_pub_hash}.json")
+        if os.path.exists(legacy_pub_path):
+            os.remove(legacy_pub_path)
+    except Exception:
+        pass
+
+    try:
+        for fname in os.listdir(STORAGE_DIR):
+            if fname.startswith("ws_anon_") and fname.endswith(".json"):
+                fpath = os.path.join(STORAGE_DIR, fname)
+                if (now_ts - os.path.getmtime(fpath)) > max_age_sec:
+                    os.remove(fpath)
     except Exception:
         pass
 
@@ -1932,10 +1318,6 @@ def sync_all_rooms_state(workspace_id: str) -> bool:
                 path = get_storage_path(workspace_id)
                 with open(path, "w", encoding="utf-8") as f:
                     json.dump(disk_data, f, ensure_ascii=False, indent=2)
-                try:
-                    record_and_sync_qa_conversations(disk_data.get("chat_rooms"), None, trigger_github=True)
-                except Exception:
-                    pass
     except Exception as e:
         print(f"⚠️ 멀티룸 상태 동기화 오류: {e}")
     return any_updated
@@ -1998,10 +1380,6 @@ def _background_agent_worker(
                 path = get_storage_path(ws_id)
                 with open(path, "w", encoding="utf-8") as f:
                     json.dump(disk_data, f, ensure_ascii=False, indent=2)
-                try:
-                    record_and_sync_qa_conversations(disk_data.get("chat_rooms"), None, trigger_github=True)
-                except Exception:
-                    pass
             # 락(lock) 내부에서 response와 status="done"을 원자적(Atomic)으로 설정
             task_info["response"] = response_text
             task_info["status"] = "done"
@@ -3298,191 +2676,6 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
         unsafe_allow_html=True
     )
 
-
-    # ---------------------------------------------------------
-    # 📚 [신규 탑재] 자율 에이전트AI 대화 자동저장(.md) & 법령별 카운팅 대시보드
-    # ---------------------------------------------------------
-    st.markdown("---")
-    qa_entries = record_and_sync_qa_conversations(st.session_state.get("chat_rooms"), law_prom_map, trigger_github=False)
-    cur_ym_dash = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m")
-    cur_ym_file = cur_ym_dash.replace("-", "_")
-    month_entries = [e for e in qa_entries if str(e.get("year_month") or "").startswith(cur_ym_dash)]
-    gh_cfg = _load_github_backup_config()
-    gh_connected = bool(gh_cfg.get("token") and gh_cfg.get("repo"))
-
-    with st.container(border=True):
-        st.markdown(
-            f"##### 📚 AI 학습용 질문·답변(Q&A) 자동저장 데이터셋 (전체 {len(qa_entries)}건 · 이번 달 {len(month_entries)}건)"
-        )
-        if gh_connected:
-            last_sv = gh_cfg.get("last_saved") or "자동 동기화 대기"
-            st.markdown(
-                f"<div style='padding:8px 12px;background:#E5F9F0;border-radius:9px;color:#00A660;font-size:0.86rem;font-weight:700;margin-bottom:10px;'>"
-                f"🟢 GitHub 자동 백업 연결됨 — 저장소 <code>{gh_cfg.get('repo')}</code> (최근 저장: {last_sv}) · 새로고침/코드 업로드 시 자동 복원"
-                f"</div>",
-                unsafe_allow_html=True,
-            )
-        else:
-            st.markdown(
-                "<div style='padding:8px 12px;background:#E8F3FF;border-radius:9px;color:#3182F6;font-size:0.86rem;font-weight:700;margin-bottom:10px;'>"
-                "🟢 실시간 로컬 마크다운(.md) 및 영구 작업공간 자동저장 활성화됨 — 새로고침(F5)·브라우저 재실행 시 100% 자동 유지 (코드 재배포 대비 GitHub 원격 백업은 아래에서 설정 가능)"
-                "</div>",
-                unsafe_allow_html=True,
-            )
-
-        st.markdown("**이번 달 파일 및 전체 누적·법령별 구획(.md)**")
-        month_md_txt = _build_markdown_for_entries(f"{cur_ym_dash} 자율 에이전트AI 질문·답변(Q&A) 기록", month_entries, show_law_summary=True)
-        all_md_txt = _build_markdown_for_entries("자율 에이전트AI 전체 누적 질문·답변(Q&A) 기록", qa_entries, show_law_summary=True)
-        all_jsonl_txt = "\n".join(json.dumps(e, ensure_ascii=False) for e in qa_entries)
-
-        d_c1, d_c2, d_c3, d_c4, d_c5 = st.columns(5)
-        with d_c1:
-            st.download_button(
-                f"📝 {cur_ym_file}_qa.md",
-                data=month_md_txt.encode("utf-8"),
-                file_name=f"{cur_ym_file}_qa_dataset.md",
-                mime="text/markdown",
-                width="stretch",
-                key="btn_dl_qa_month_md",
-            )
-        with d_c2:
-            st.download_button(
-                "📚 전체 누적 (.md)",
-                data=all_md_txt.encode("utf-8"),
-                file_name="all_qa_dataset.md",
-                mime="text/markdown",
-                width="stretch",
-                key="btn_dl_qa_all_md",
-            )
-        with d_c3:
-            st.download_button(
-                "🗂️ 법령별 .md (.zip)",
-                data=_build_law_markdown_zip_bytes(qa_entries),
-                file_name=f"법령별_대화록_모음_{cur_ym_file}.zip",
-                mime="application/zip",
-                width="stretch",
-                key="btn_dl_qa_law_zip",
-            )
-        with d_c4:
-            st.download_button(
-                "📊 전체 통계 (.xlsx)",
-                data=_build_qa_law_stats_excel_bytes(qa_entries),
-                file_name=f"법령별_카운팅_및_QA데이터셋_{cur_ym_file}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                width="stretch",
-                key="btn_dl_qa_all_xlsx",
-            )
-        with d_c5:
-            if st.button("☁️ GitHub 즉시 저장", width="stretch", key="btn_push_gh_now"):
-                if not gh_connected:
-                    st.warning("아래 『☁️ 코드 업로드 대비 GitHub 원격 자동 백업 설정』에서 저장소와 토큰을 먼저 입력해 주세요.")
-                else:
-                    ok_gh = push_backup_to_github_now(effective_ws_id, async_bg=False)
-                    if ok_gh:
-                        st.success("GitHub 원격 저장소에 대화방 전체 및 마크다운(.md) 백업을 완료했습니다!")
-                        st.rerun()
-                    else:
-                        st.error("GitHub 저장소 연결에 실패했습니다. 토큰 권한(Contents Read/Write)과 저장소 이름을 확인해 주세요.")
-
-    # 법령별 카운팅 & 5대 세목별 비중 대시보드
-    with st.container(border=True):
-        st.markdown(f"##### 🏆 인용·질의 법령별 대화 카운팅 & 세목별 자동 구획 현황 (누적 대화 {len(qa_entries)}건)")
-        st.caption("자율 에이전트AI에서 이루어진 모든 질문·답변의 인용 조문과 세법 키워드를 분석하여 법령별·세목별로 자동 카운팅하고 개별 마크다운(.md)으로 분리 저장합니다.")
-
-        law_counter: Counter = Counter()
-        law_cat_map: dict[str, str] = {}
-        cat_counter: Counter = Counter()
-        for e in qa_entries:
-            c_nm = e.get("category") or "기타·일반세무·기업공시"
-            cat_counter[c_nm] += 1
-            for lw in (e.get("laws") or ["기타 세법·정부지원금·일반자문"]):
-                law_counter[lw] += 1
-                law_cat_map[lw] = c_nm
-
-        total_qa = max(1, len(qa_entries))
-        col_left_tbl, col_right_tbl = st.columns([1.35, 1.0])
-
-        with col_left_tbl:
-            st.markdown("**⚖️ 법령별 대화(Q&A) 카운팅 순위 TOP 10**")
-            if law_counter:
-                l_md = [
-                    "| 순위 | 핵심 인용·질의 법령명 | 대화 횟수 | 비중(%) | 주요 세목 |",
-                    "| :---: | :--- | :---: | :---: | :--- |",
-                ]
-                for rank_i, (lw_nm, cnt_v) in enumerate(law_counter.most_common(10), start=1):
-                    pct_v = cnt_v * 100.0 / total_qa
-                    l_md.append(f"| {rank_i}위 | **{lw_nm}** | {cnt_v}회 | {pct_v:.1f}% | {law_cat_map.get(lw_nm, '-')} |")
-                st.markdown("<div class='api-key-status-table-box'>\n\n" + "\n".join(l_md) + "\n\n</div>", unsafe_allow_html=True)
-            else:
-                st.info("아직 카운팅된 대화가 없습니다. 자율 에이전트AI에서 첫 질문을 입력하면 법령별로 자동 집계됩니다.")
-
-        with col_right_tbl:
-            st.markdown("**📂 5대 세목·법령 분야별 질문 비중 (자동 구획 현황)**")
-            r_md = [
-                "| 세목·법령 분류 | 질문 건수 | 비중(%) |",
-                "| :--- | :---: | :---: |",
-            ]
-            for cat_nm, _ in _FIVE_TAX_CATEGORIES:
-                c_cnt = cat_counter.get(cat_nm, 0)
-                c_pct = (c_cnt * 100.0 / total_qa) if qa_entries else 0.0
-                r_md.append(f"| **{cat_nm}** | {c_cnt}건 | {c_pct:.1f}% |")
-            st.markdown("<div class='api-key-status-table-box'>\n\n" + "\n".join(r_md) + "\n\n</div>", unsafe_allow_html=True)
-
-        if law_counter:
-            law_options = [f"{lw} ({cnt}건)" for lw, cnt in law_counter.most_common()]
-            raw_law_names = [lw for lw, _ in law_counter.most_common()]
-            c_sel_lw, c_dl_lw = st.columns([3.0, 2.0], vertical_alignment="center")
-            with c_sel_lw:
-                sel_law_idx = st.selectbox(
-                    "법령별 개별 마크다운(.md) 선택",
-                    options=range(len(law_options)),
-                    format_func=lambda idx: f"📘 {law_options[idx]} 대화록 선택",
-                    label_visibility="collapsed",
-                    key="sel_api_modal_law_md",
-                )
-            with c_dl_lw:
-                chosen_law = raw_law_names[sel_law_idx]
-                chosen_entries = [e for e in qa_entries if chosen_law in (e.get("laws") or [])]
-                chosen_md = _build_markdown_for_entries(f"[{chosen_law}] 질문·답변(Q&A) 모음 ({len(chosen_entries)}건)", chosen_entries, show_law_summary=False)
-                safe_chosen = re.sub(r'[\\/:*?"<>|\s·]+', "_", chosen_law).strip("_")
-                st.download_button(
-                    f"📥 [{chosen_law}] 전용 마크다운 (.md) 다운로드",
-                    data=chosen_md.encode("utf-8"),
-                    file_name=f"{safe_chosen}_대화록_{len(chosen_entries)}건.md",
-                    mime="text/markdown",
-                    width="stretch",
-                    key="btn_dl_single_law_md",
-                )
-
-    with st.expander("☁️ 코드 업로드(서버 재배포) 대비 GitHub 원격 자동 백업 설정 (1~10번 대화방 & .md 영구 보존)"):
-        st.caption(
-            "비공개(Private) GitHub 저장소(예: `gajintax123-png/tax-agent-qa-backup`)와 Fine-grained Token(Contents Read & Write 권한)을 등록해 두시면, "
-            "코드를 새로 업로드하거나 서버가 재시작되어도 1~10번 대화방 내용과 법령별 `.md` 데이터셋이 자동으로 백업·복원됩니다."
-        )
-        with st.form("gh_backup_cfg_form", clear_on_submit=False):
-            gh_repo_in = st.text_input(
-                "GitHub 백업 저장소 (아이디/저장소명)",
-                value=gh_cfg.get("repo") or "gajintax123-png/tax-agent-qa-backup",
-                placeholder="예: gajintax123-png/tax-agent-qa-backup",
-            )
-            gh_tok_in = st.text_input(
-                "GitHub Personal Access Token (GITHUB_BACKUP_TOKEN)",
-                value=gh_cfg.get("token") or "",
-                type="password",
-                placeholder="github_pat_... 또는 ghp_...",
-            )
-            if st.form_submit_button("💾 GitHub 원격 자동 백업 설정 저장 및 즉시 동기화", type="primary", width="stretch"):
-                _save_github_backup_config(gh_tok_in, gh_repo_in)
-                if gh_tok_in.strip() and gh_repo_in.strip():
-                    ok_sync = push_backup_to_github_now(DEFAULT_PERSISTENT_WS_ID, async_bg=False)
-                    if ok_sync:
-                        st.success("✅ GitHub 자동 백업 연결 및 최초 동기화가 완료되었습니다!")
-                    else:
-                        st.warning("설정은 저장되었으나 GitHub 저장소 접근에 실패했습니다. 저장소 존재 여부와 토큰 권한을 확인해 주세요.")
-                else:
-                    st.info("GitHub 원격 백업 설정이 초기화되었습니다.")
-                st.rerun()
-
     with st.expander("🔐 주요 API 보안키 및 Vertex AI(크레딧) 즉시 입력·저장 (Secrets 수정 없이 바로 적용)"):
         st.caption(
             "Streamlit Cloud의 Settings → Secrets 화면에 들어가지 않고도, 여기서 **법제처 OC 키 · 기업마당 키 · Vertex AI 서비스 계정 JSON · Gemini 유료키**를 입력해 즉시 적용할 수 있습니다. (빈칸으로 둔 항목은 기존 설정을 그대로 유지합니다.)"
@@ -3621,21 +2814,23 @@ budget_exceeded = False
 # 비밀번호를 입력하지 않고 접속하더라도 다른 PC나 다른 브라우저 접속자와 대화방(1~10번)이 절대 섞이지 않도록
 # 각 브라우저 세션마다 고유한 독립 작업공간 ID(`__anon_session__:<uuid>`)를 부여합니다.
 if "anon_workspace_id" not in st.session_state:
-    st.session_state.anon_workspace_id = DEFAULT_PERSISTENT_WS_ID
+    st.session_state.anon_workspace_id = f"{ANON_WS_PREFIX}{uuid.uuid4().hex[:16]}"
     _cleanup_stale_anon_workspaces(max_age_sec=86400)
 
 if "app_top_mode" not in st.session_state:
-    st.session_state.app_top_mode = "AGENT"
+    st.session_state.app_top_mode = "CALENDAR"
 
 def _detect_any_room_button_click() -> None:
     """
-    [클릭 씹힘 및 StreamlitValueAssignmentNotAllowedError 원천 방지]
-    st.button 위젯 키에 직접 False를 대입하지 않고 클릭 신호만 읽어 안전하게 current_room을 전환합니다.
+    [클릭 씹힘 원천 방지]
+    백그라운드 작업 완료로 인해 버튼 key의 접미사(_running -> _hasmsg 등)가 바뀌는 순간에
+    사용자가 대화방 버튼을 클릭하더라도, 브라우저가 보낸 이전 상태 key 클릭 신호를 100% 포착하여 즉시 방을 전환합니다.
     """
     for idx_r, r_id in enumerate(ROOM_IDS, start=1):
         for sfx in ("empty", "hasmsg", "active", "empty_running", "hasmsg_running", "active_running"):
             cand_k = f"room_btn_{idx_r}_{sfx}"
             if st.session_state.get(cand_k):
+                st.session_state[cand_k] = False
                 if st.session_state.get("current_room") != r_id:
                     st.session_state.current_room = r_id
 
@@ -3647,6 +2842,7 @@ with st.sidebar:
     st.markdown(_ui_theme.brand_html(), unsafe_allow_html=True)
     with st.container(key="sbx_nav"):
         for _lbl, _key, _mode, _ico in (
+            ("달력", "btn_top_mode_calendar", "CALENDAR", ":material/calendar_month:"),
             ("자율 에이전트AI", "btn_top_mode_agent", "AGENT", ":material/chat_bubble:"),
             ("통합고용세액공제", "btn_top_mode_credit", "CREDIT_CALC", ":material/calculate:"),
             ("인건비 자동화", "btn_top_mode_payroll", "PAYROLL_AUTO", ":material/receipt_long:"),
@@ -3749,8 +2945,11 @@ with st.sidebar:
             or st.session_state.anon_workspace_id
         )
 
-    # 📦 [통합고용세액공제 모드 전용] 귀속사업연도 · 사업자정보 (내 작업공간 바로 아래)
-    if st.session_state.app_top_mode == "CREDIT_CALC":
+    # 📦 [모드별 사이드바 카드]
+    if st.session_state.app_top_mode == "CALENDAR":
+        import calendar_todo_ui
+        calendar_todo_ui.render_calendar_sidebar_controls()
+    elif st.session_state.app_top_mode == "CREDIT_CALC":
         import employment_credit
         employment_credit.render_credit_sidebar()
     elif st.session_state.app_top_mode == "PAYROLL_AUTO":
@@ -3846,17 +3045,9 @@ with st.sidebar:
                 save_workspace_to_disk(effective_ws_id, force_overwrite_room=selected_room)
                 st.rerun()
 
-            visible_room_items = []
-            empty_room_items = []
             for idx_r, r_id in enumerate(ROOM_IDS, start=1):
                 r_title = (st.session_state.room_titles.get(r_id, "빈 대화방") or "빈 대화방").strip()
-                if r_id == selected_room and r_title == "빈 대화방":
-                    disp_title = "현재 메인 대화"
-                elif r_id != selected_room and idx_r == 1 and r_title == "메인 대화" and not st.session_state.chat_rooms.get(r_id):
-                    disp_title = "빈 대화방"
-                else:
-                    disp_title = r_title
-                short_title = disp_title[:14] + ("…" if len(disp_title) > 14 else "")
+                short_title = r_title[:14] + ("…" if len(r_title) > 14 else "")
                 r_msgs = st.session_state.chat_rooms.get(r_id, [])
                 q_cnt = (len(r_msgs) + 1) // 2
                 f_cnt = len(st.session_state.room_files[r_id].get("items", []))
@@ -3867,84 +3058,14 @@ with st.sidebar:
                 base_state = "active" if r_id == selected_room else ("hasmsg" if q_cnt > 0 else "empty")
                 run_suffix = "_running" if is_run else ""
                 btn_key = f"room_btn_{idx_r}_{base_state}{run_suffix}"
+
                 extra_badges = (" 📎" if f_cnt else "") + (" 🔄" if rev_alerts else "") + (" (작성중)" if is_run else "")
                 btn_label = f"{idx_r}. {short_title} ({q_cnt}건){extra_badges}"
 
-                item_tuple = (idx_r, r_id, btn_label, btn_key)
-                if r_id == selected_room or q_cnt > 0 or f_cnt > 0 or is_run or r_title not in ("빈 대화방", "메인 대화"):
-                    visible_room_items.append(item_tuple)
-                else:
-                    empty_room_items.append(item_tuple)
-
-            for _idx_r, r_id, btn_label, btn_key in visible_room_items:
                 if st.button(btn_label, key=btn_key, width="stretch"):
                     if r_id != selected_room:
                         st.session_state.current_room = r_id
                         st.rerun()
-
-            if empty_room_items:
-                first_empty_rid = empty_room_items[0][1]
-                empty_nums = [it[0] for it in empty_room_items]
-                range_lbl = f"{min(empty_nums)}~{max(empty_nums)}" if len(empty_nums) > 1 else f"{empty_nums[0]}"
-                with st.expander(f"빈 대화방 {range_lbl} 선택 ({len(empty_room_items)}개)", expanded=False):
-                    st.caption("선택한 대화방이 상단 메인 대화방으로 전환됩니다.")
-                    for _idx_r, r_id, btn_label, btn_key in empty_room_items:
-                        if st.button(btn_label, key=btn_key, width="stretch"):
-                            if r_id != selected_room:
-                                st.session_state.current_room = r_id
-                                st.rerun()
-                if st.button("+ 새 대화방 시작", key="btn_new_chat_room", width="stretch"):
-                    st.session_state.current_room = first_empty_rid
-                    st.rerun()
-
-        # 📦 [대화내용 백업 (내리기 / 올리기) — 코드 업로드·PC 이동 대비 1~10번 방 전체 및 .md 백업]
-        with st.expander("대화내용 백업 (내리기 / 올리기)", expanded=False):
-            st.caption("1~10번 대화방 전체 기록과 자동저장된 마크다운(.md)을 내 PC로 내려받거나 복원합니다.")
-            tb_dl, tb_ul = st.tabs(["대화내용 내리기", "대화내용 올리기"])
-            with tb_dl:
-                qa_all_now = record_and_sync_qa_conversations(st.session_state.get("chat_rooms"), law_prom_map, trigger_github=False)
-                ws_export_pack = {
-                    "chat_rooms": st.session_state.get("chat_rooms", {}),
-                    "room_titles": st.session_state.get("room_titles", {}),
-                    "room_files": st.session_state.get("room_files", {}),
-                    "qa_archive": qa_all_now,
-                    "exported_at": datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S"),
-                }
-                st.download_button(
-                    "📥 1~10번 방 전체 백업 (.json)",
-                    data=json.dumps(ws_export_pack, ensure_ascii=False, indent=2).encode("utf-8"),
-                    file_name=f"세무에이전트_전체대화백업_{datetime.now(ZoneInfo('Asia/Seoul')).strftime('%Y%m%d')}.json",
-                    mime="application/json",
-                    width="stretch",
-                    key="btn_sb_dl_ws_json",
-                )
-                st.download_button(
-                    "📝 전체 대화 마크다운 (.md)",
-                    data=_build_markdown_for_entries("자율 에이전트AI 전체 누적 대화록", qa_all_now, show_law_summary=True).encode("utf-8"),
-                    file_name=f"세무에이전트_전체대화록_{datetime.now(ZoneInfo('Asia/Seoul')).strftime('%Y%m%d')}.md",
-                    mime="text/markdown",
-                    width="stretch",
-                    key="btn_sb_dl_ws_md",
-                )
-            with tb_ul:
-                up_ws_file = st.file_uploader("백업 파일 (.json)", type=["json"], key="sb_up_ws_json", label_visibility="collapsed")
-                if up_ws_file is not None and st.button("백업 파일 복원하기", type="primary", width="stretch", key="btn_sb_restore_ws"):
-                    try:
-                        loaded_pack = json.loads(up_ws_file.getvalue().decode("utf-8"))
-                        if isinstance(loaded_pack, dict) and "chat_rooms" in loaded_pack:
-                            for r_id in ROOM_IDS:
-                                if r_id in loaded_pack["chat_rooms"]:
-                                    st.session_state.chat_rooms[r_id] = loaded_pack["chat_rooms"][r_id]
-                                if "room_titles" in loaded_pack and r_id in loaded_pack["room_titles"]:
-                                    st.session_state.room_titles[r_id] = loaded_pack["room_titles"][r_id]
-                            if isinstance(loaded_pack.get("qa_archive"), list):
-                                _save_qa_archive(loaded_pack["qa_archive"])
-                            save_workspace_to_disk(effective_ws_id)
-                            record_and_sync_qa_conversations(st.session_state.chat_rooms, law_prom_map, trigger_github=True)
-                            st.success("1~10번 대화방 및 Q&A 기록이 복원되었습니다!")
-                            st.rerun()
-                    except Exception as e:
-                        st.error(f"복원 오류: {e}")
 
     # 📦 [카드 4 — 최하단 고정: [💳 결제] 및 [🔑 API키] 버튼]
     with st.container(key="sbx_footer"):
@@ -3972,6 +3093,21 @@ current_file_info = _normalize_room_file_entry(st.session_state.room_files[selec
 current_task_key = f"{effective_ws_id}::{selected_room}"
 active_task = task_mgr["tasks"].get(current_task_key)
 is_current_room_running = bool(active_task and active_task.get("status") == "running")
+
+# 우측 하단 귀여운 얼굴 홈버튼 + 네모 말풍선 + 60% 반투명 확장 To-Do 관제판 (모든 화면 공통 주입)
+import calendar_todo_ui as _cal_todo_ui
+_cal_todo_ui.render_floating_kakao_todo_widget()
+
+if st.session_state.app_top_mode == "CALENDAR":
+    if st.session_state.get("show_inline_api_manager"):
+        with st.container(border=True):
+            st.subheader("🔑 연동 API 현황 및 보안키·만료일 통합 관리")
+            _render_api_key_manager_body(expiry_all_status, law_prom_map)
+            if st.button("✖️ API 관리창 닫기"):
+                st.session_state.show_inline_api_manager = False
+                st.rerun()
+    _cal_todo_ui.render_calendar_scheduler_main()
+    st.stop()
 
 if st.session_state.app_top_mode == "CREDIT_CALC":
     if st.session_state.get("show_inline_api_manager"):
@@ -4139,58 +3275,12 @@ if st.session_state.get("show_inline_api_manager"):
 with st.container(key=f"room_main_view_{effective_ws_id}_{selected_room}"):
     if not current_messages and not is_current_room_running:
         st.markdown(
-            """
-            <div class="toss-bento-wrap">
-              <div class="toss-bento-header">
-                <div class="toss-bento-badge">✨ 2026 최신 세법 · 예규 · 판례 실시간 연동 ↗</div>
-                <div class="toss-bento-title">무엇을 검토해 드릴까요?</div>
-                <div class="toss-bento-sub">질문을 입력하거나 검토할 파일(엑셀·PDF·한글·워드)을 업로드하면<br>즉시 세무 리스크와 공제 세액을 분석합니다.</div>
-              </div>
-              <div class="toss-bento-grid">
-                <div class="toss-bento-card toss-bento-card-1">
-                  <div class="toss-bento-top">
-                    <div class="toss-bento-icon">
-                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#3182F6" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-                    </div>
-                    <div class="toss-bento-arrow">↗</div>
-                  </div>
-                  <div class="toss-bento-card-title">경정청구 · 통합고용세액공제 진단</div>
-                  <div class="toss-bento-card-desc">원천징수이행상황신고서·기신고서 기반 공제 누락액 및 사후관리 추징 리스크 자동 계산</div>
-                </div>
-                <div class="toss-bento-card toss-bento-card-2">
-                  <div class="toss-bento-top">
-                    <div class="toss-bento-icon">
-                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#3182F6" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
-                    </div>
-                    <div class="toss-bento-arrow">↗</div>
-                  </div>
-                  <div class="toss-bento-card-title">급여 · 4대보험 · 인건비 세무 자문</div>
-                  <div class="toss-bento-card-desc">비과세 식대·차량유지비 요건, 중도입퇴사자 연말정산 및 근로기준법 수당 검토</div>
-                </div>
-                <div class="toss-bento-card toss-bento-card-3">
-                  <div class="toss-bento-top">
-                    <div class="toss-bento-icon">
-                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#3182F6" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18"/><path d="M5 7h14"/><path d="M5 7l-3 7a4 4 0 0 0 6 0z"/><path d="M19 7l-3 7a4 4 0 0 0 6 0z"/><path d="M8 21h8"/></svg>
-                    </div>
-                    <div class="toss-bento-arrow">↗</div>
-                  </div>
-                  <div class="toss-bento-card-title">최신 예규·판례 및 과세관청 소명서 작성</div>
-                  <div class="toss-bento-card-desc">조세심판원·국세청 최신 결정례 검색 및 세무조사/해명자료 제출용 소명서 초안 작성</div>
-                </div>
-                <div class="toss-bento-card toss-bento-card-4">
-                  <div class="toss-bento-top">
-                    <div class="toss-bento-icon">
-                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#3182F6" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-                    </div>
-                    <div class="toss-bento-arrow">↗</div>
-                  </div>
-                  <div class="toss-bento-card-title">신고서 · 원장 파일 즉시 업로드 분석</div>
-                  <div class="toss-bento-card-desc">엑셀·PDF·한글 파일을 끌어다 놓으면 핵심 쟁점과 오류 내역을 표로 요약</div>
-                </div>
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+            f"<div style='padding: 18px 20px; background-color: #f8fafc; border: 1px dashed #cbd5e1; "
+            f"border-radius: 10px; color: #64748b; font-size: 0.96rem; margin-bottom: 12px;'>"
+            f"✨ <b>{selected_room} [{current_room_title}]</b> — 아직 작성된 대화가 없습니다. "
+            f"아래 입력창에 새로운 질문을 입력하거나 파일을 첨부해 보세요."
+            f"</div>",
+            unsafe_allow_html=True
         )
 
     for idx, message in enumerate(current_messages):
@@ -4406,33 +3496,6 @@ st.components.v1.html(
             if (btn && !btn.disabled && (!ta || !ta.value.trim())) return true;
             return chatInput.querySelectorAll('[data-testid*="File"], [class*="uploadedFile"], li').length > 0;
         }
-        doc.addEventListener('click', function(e) {
-            const card = e.target && e.target.closest ? e.target.closest('.toss-bento-card') : null;
-            if (!card) return;
-            const chatInput = doc.querySelector('[data-testid="stChatInput"]');
-            if (!chatInput) return;
-            if (card.classList.contains('toss-bento-card-4')) {
-                const fileInput = chatInput.querySelector('input[type="file"]');
-                if (fileInput) { fileInput.click(); return; }
-            }
-            const prompts = {
-                'toss-bento-card-1': '2026년 귀속 통합고용세액공제 공제요건, 우대공제 단가 및 사후관리(2·3차년도) 추징 점검 기준을 정리해 주세요.',
-                'toss-bento-card-2': '근로소득 비과세 식대·자가운전보조금 요건과 5인 이상/미만 사업장의 연장·야간·휴일·주휴수당 계산 기준을 검토해 주세요.',
-                'toss-bento-card-3': '과세관청 해명자료(소명서) 및 경정청구 의견서 작성 시 필수 법리 구조와 최신 조세심판원 결정례 인용 방법을 알려주세요.',
-                'toss-bento-card-4': '첨부한 신고서·원장 파일의 핵심 세무 쟁점과 오류·누락 내역을 표로 요약해 주세요.'
-            };
-            let textToFill = '';
-            for (const cls in prompts) {
-                if (card.classList.contains(cls)) { textToFill = prompts[cls]; break; }
-            }
-            const ta = chatInput.querySelector('textarea');
-            if (ta && textToFill) {
-                const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-                setter.call(ta, textToFill);
-                ta.dispatchEvent(new Event('input', { bubbles: true }));
-                ta.focus();
-            }
-        }, true);
         doc.addEventListener('drop', function() {
             setTimeout(function() {
                 const ta = doc.querySelector('[data-testid="stChatInput"] textarea');

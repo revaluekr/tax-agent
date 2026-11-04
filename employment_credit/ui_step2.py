@@ -58,29 +58,6 @@ from .ui_common import (  # noqa: F401
 
 
 
-
-def _lazy_pdf_bytes(fn, *args, **kwargs):
-    """다운로드 버튼을 실제로 클릭할 때만 PDF 바이트를 생성하도록 콜백을 반환합니다 (페이지 렌더링 및 AgGrid 마운트 병목 제거)."""
-    return lambda: fn(*args, **kwargs)
-
-
-def _purge_stale_ec_grid_keys(s: dict | None = None, years: list[int] | None = None) -> None:
-    """서버 측 변경(사원 추가/삭제, 기업규모 변경, 사이드바 수정 등) 직후 현재 세션의 AgGrid 응답 서명을
-    이미 처리된 서명(_ec_browser_sig)으로 기록하여, AgGrid key를 바꾸지 않고(iframe 재마운트 없이)
-    server_sync_strategy='server_wins'로 안전하게 표를 갱신합니다."""
-    if not isinstance(s, dict):
-        return
-    b_sig_map = s.setdefault("_ec_browser_sig", {})
-    target_yrs = [int(y) for y in years] if years is not None else list(_all_possible_years(s))
-    for y in target_yrs:
-        g_key = _active_ec_grid_key(s, y)
-        v_ss = st.session_state.get(g_key)
-        if isinstance(v_ss, dict) and v_ss.get("data") is not None:
-            raw_d = v_ss["data"]
-            bdf = pd.DataFrame(raw_d) if not isinstance(raw_d, pd.DataFrame) else raw_d
-            b_sig_map[int(y)] = _ec_df_sig(bdf)
-
-
 def _build_schedule_pdf_bytes(s: dict, target_years: list[int], include_summary: bool = False) -> bytes:
     """
     선택된 연도(`target_years`)의 상시근로자 명세표(사원 계산기 + 1~12월 + 우측 3·4·5 블록 + 합산합계 행)를
@@ -423,7 +400,7 @@ def _dlg_review(items: list[tuple[str, str]], audit_payload: dict | None = None,
         with st.container(key="ec_btn_pdf_rev_only"):
             st.download_button(
                 "오류검토 PDF 다운",
-                data=_lazy_pdf_bytes(_build_review_pdf_bytes, s, items, pro_comment=""),
+                data=_build_review_pdf_bytes(s, items, pro_comment=""),
                 file_name=f"통합고용_오류검토_{corp_fn}_{tax_yr}귀속.pdf",
                 mime="application/pdf",
                 width="stretch",
@@ -444,7 +421,7 @@ def _dlg_review(items: list[tuple[str, str]], audit_payload: dict | None = None,
                     with st.container(key="ec_btn_pdf_rev_pro"):
                         st.download_button(
                             "심층진단 포함 PDF 다운",
-                            data=_lazy_pdf_bytes(_build_review_pdf_bytes, s, items, pro_comment=str(s.get("pro_audit_comment") or "")),
+                            data=_build_review_pdf_bytes(s, items, pro_comment=str(s.get("pro_audit_comment") or "")),
                             file_name=f"통합고용_심층진단_{corp_fn}_{tax_yr}귀속.pdf",
                             mime="application/pdf",
                             width="stretch",
@@ -455,18 +432,13 @@ def _dlg_review(items: list[tuple[str, str]], audit_payload: dict | None = None,
 
 
 @st.dialog("사원 추가")
-def _dlg_add_employee(default_year: int | None = None):
+def _dlg_add_employee():
     s = _S()
-    tax_yr = int(s.get("tax_year") or R.DEFAULT_TAX_YEAR)
-    four_yrs = [tax_yr - i for i in range(4) if (tax_yr - i) >= 2021]
-    target_y = int(default_year) if default_year in four_yrs else tax_yr
     shown_years = _years(s)
     sub_list = s.get("sub_biz_list") or []
     is_multi_wp = len(sub_list) > 0
 
-    st.caption(
-        f"필수(*) 항목을 입력한 뒤 [확인]을 누르면 입·퇴사 기간에 해당하는 연도 사원표({', '.join(str(y)+'년' for y in four_yrs)})에 즉시 자동 반영됩니다."
-    )
+    st.caption("필수(*) 항목을 입력한 뒤 [확인]을 누르면 사원표에 즉시 반영됩니다.")
 
     if is_multi_wp:
         default_wp = _default_workplace_label(s)
@@ -484,7 +456,7 @@ def _dlg_add_employee(default_year: int | None = None):
     c1, c2 = st.columns(2)
     with c1:
         name_in = st.text_input("성명 *", placeholder="예: 홍길동", key="dlg_add_emp_name")
-        hire_in = st.text_input("입사일 * (YYYY-MM-DD)", placeholder=f"예: {target_y}-04-01", key="dlg_add_emp_hire")
+        hire_in = st.text_input("입사일 * (YYYY-MM-DD)", placeholder="예: 2026-04-01", key="dlg_add_emp_hire")
         retire_in = st.text_input("퇴사일 (선택, YYYY-MM-DD)", placeholder="재직 중이면 비워두세요", key="dlg_add_emp_retire")
         mil_in = st.number_input(
             "병역개월 (선택, 기본 0)",
@@ -535,15 +507,12 @@ def _dlg_add_employee(default_year: int | None = None):
         st.error("입사일이 퇴사일보다 늦습니다 (입사일 > 퇴사일). 날짜를 확인해 주세요.")
         retire_order_err = True
 
-    if hire_dt and four_yrs:
-        min_yr, max_yr = min(four_yrs), max(four_yrs)
-        if hire_dt.year > max_yr:
+    if hire_dt and shown_years:
+        min_yr, max_yr = min(shown_years), max(shown_years)
+        if hire_dt.year < min_yr or hire_dt.year > max_yr:
             st.warning(
-                f"입사일({hire_dt.isoformat()})이 현재 귀속사업연도({max_yr}년) 이후입니다. 날짜를 확인해 주세요."
-            )
-        elif hire_dt.year < min_yr:
-            st.info(
-                f"입사일({hire_dt.isoformat()}) 기준 계속 재직 사원으로 {min_yr}~{max_yr}년 사원표에 자동 반영됩니다."
+                f"입사일({hire_dt.isoformat()})이 현재 표시 연도 범위({min_yr}~{max_yr}년) 밖입니다. "
+                f"(추가는 가능하며 재직 연도에 자동 반영됩니다)"
             )
 
     is_dup = False
@@ -596,13 +565,7 @@ def _dlg_add_employee(default_year: int | None = None):
             "_confirmed": [],
         }
         s["emp_quick_filter"] = "ALL"
-        extra_yrs = s.setdefault("manual_extra_years", [])
-        if target_y in four_yrs and target_y not in extra_yrs:
-            extra_yrs.append(target_y)
-        for fy in four_yrs:
-            if H.worked_in_year(s["people"][pid], fy) and fy not in extra_yrs:
-                extra_yrs.append(fy)
-        target_yrs = set(_all_possible_years(s)) | set(four_yrs) | {hire_dt.year}
+        target_yrs = set(_all_possible_years(s)) | {hire_dt.year}
         for y in target_yrs:
             yrec = P.new_year_rec()
             yrec["고용유형"] = emp_in
@@ -610,7 +573,6 @@ def _dlg_add_employee(default_year: int | None = None):
                 yrec["_user_set"] = ["고용유형"]
             s["year_recs"].setdefault(y, {})[pid] = yrec
             s["grid_ver"][y] = s["grid_ver"].get(y, 0) + 1
-        _purge_stale_ec_grid_keys(s)
         st.session_state.pop(_CALC_CACHE_KEY, None)
         s.pop("totals_snapshot", None)
         s.pop("_report_artifact_cache", None)
@@ -648,37 +610,33 @@ def _grid_options(
     show_b2: bool = True,
     show_b3: bool = True,
 ) -> dict:
-    empty_html = (
-        f"<div style='padding:18px 14px;text-align:center;color:#64748b;font-size:13px;font-weight:600;'>"
-        f"{year}년에 근무한 근로자가 없습니다. 위 <b>[+ 사원 추가]</b> 버튼을 눌러 사원을 등록하거나 {year}년 원천징수부를 업로드하세요."
-        f"</div>"
+    gb = GridOptionsBuilder.from_dataframe(df)
+    gb.configure_default_column(
+        resizable=True,
+        sortable=False,
+        filter=False,
+        suppressMenu=True,
+        suppressHeaderMenuButton=True,
+        suppressMovable=True,
+        suppressSizeToFit=True,
+        editable=JS_LOCKED,
+        cellStyle=JS_STYLE,
     )
-    go: dict = {
-        "defaultColDef": {
-            "resizable": True,
-            "sortable": False,
-            "filter": False,
-            "suppressMenu": True,
-            "suppressHeaderMenuButton": True,
-            "suppressMovable": True,
-            "suppressSizeToFit": True,
-            "editable": JS_LOCKED,
-            "cellStyle": JS_STYLE,
-        },
-        "singleClickEdit": True,
-        "stopEditingWhenCellsLoseFocus": True,
-        "rowHeight": 32,
-        "headerHeight": 32,
-        "groupHeaderHeight": 44,
-        "suppressMenuHide": True,
-        "suppressAutoSize": True,
-        "suppressRowVirtualisation": True,
-        "suppressColumnVirtualisation": True,
-        "alwaysShowHorizontalScroll": True,
-        "rowSelection": "multiple",
-        "suppressRowClickSelection": True,
-        "overlayNoRowsTemplate": empty_html,
-    }
+    gb.configure_grid_options(
+        singleClickEdit=True,
+        stopEditingWhenCellsLoseFocus=True,
+        rowHeight=32,
+        headerHeight=32,
+        groupHeaderHeight=44,
+        suppressMenuHide=True,
+        suppressAutoSize=True,
+        suppressRowVirtualisation=True,
+        suppressColumnVirtualisation=True,
+        alwaysShowHorizontalScroll=True,
+        rowSelection="multiple",
+        suppressRowClickSelection=True,
+    )
+    go = gb.build()
 
     def _blk_style(bg_hex: str, fg_hex: str = "#0f172a", bold: bool = True) -> dict:
         return {
@@ -973,54 +931,18 @@ def _norm(v) -> str:
     return str(v).strip()
 
 
-_EDITABLE_SIG_COLS = (
-    "pid", "사업장명", "성명", "생년월일", "입사일", "퇴사일",
-    "고용유형", "제외사유", "병역개월", "청년등", "상시",
-    *MONTH_COLS,
-)
-
-
-def _ec_df_sig(df: pd.DataFrame) -> str:
-    if df is None or df.empty:
-        return ""
-    cols = [c for c in _EDITABLE_SIG_COLS if c in df.columns]
-    return "|".join(
-        ",".join(f"{c}={_norm(r.get(c))}" for c in cols)
-        for _, r in df.iterrows()
-    )
-
-
 def _apply_changes(s: dict, year: int, sent: list[dict], back: pd.DataFrame) -> bool:
-    if back is None or back.empty or "pid" not in back.columns or not sent:
+    if back is None or back.empty or "pid" not in back.columns:
         return False
-    sig_map = s.setdefault("_grid_resp_sig", {})
-    b_sig_map = s.setdefault("_ec_browser_sig", {})
-    cur_sig = _ec_df_sig(back)
-    sent_pids = [str(r.get("pid")) for r in sent if r.get("pid")]
-    back_pids = [str(p) for p in back["pid"].tolist() if pd.notna(p)]
-    if len(back_pids) != len(sent_pids) or set(back_pids) != set(sent_pids):
-        b_sig_map[int(year)] = cur_sig
-        return False
-    if cur_sig and cur_sig in (sig_map.get(year), sig_map.get(int(year)), b_sig_map.get(year), b_sig_map.get(int(year))):
-        return False
-    b_sig_map[int(year)] = cur_sig
-    sig_map[int(year)] = cur_sig
-
     before = {r["pid"]: r for r in sent}
     changed = False
-    tax_yr = int(s.get("tax_year") or R.DEFAULT_TAX_YEAR)
-    four_yrs = [tax_yr - i for i in range(4) if (tax_yr - i) >= 2021]
-
     for _, nr in back.iterrows():
         pid = nr.get("pid")
         old = before.get(pid)
         if old is None or pid not in s["people"]:
             continue
-        p = s["people"][pid]
-        yrec = s["year_recs"].setdefault(year, {}).setdefault(pid, P.new_year_rec())
+        p, yrec = s["people"][pid], s["year_recs"][year][pid]
         us = yrec.setdefault("_user_set", [])
-        row_meta_changed = False
-        dates_changed = False
 
         nv_wp = _norm(nr.get("사업장명"))
         if nv_wp != _norm(old.get("사업장명")):
@@ -1030,38 +952,13 @@ def _apply_changes(s: dict, year: int, sent: list[dict], back: pd.DataFrame) -> 
 
         for f in ("성명", "생년월일", "입사일", "퇴사일"):
             nv = _norm(nr.get(f))
-            old_v = _norm(old.get(f))
-            if nv != old_v:
+            if nv != _norm(old.get(f)):
                 d = H.parse_date(nv) if f != "성명" else None
                 val_to_save = nv if f == "성명" else (d.isoformat() if d else nv)
-                old_iso = (H.parse_date(old_v).isoformat() if H.parse_date(old_v) else old_v) if f != "성명" else old_v
                 p[f] = val_to_save
-                if f == "입사일" and d is not None:
-                    cur_c_dt = H.parse_date(p.get("계약체결일"))
-                    old_h_dt = H.parse_date(old_iso)
-                    if cur_c_dt is None or cur_c_dt == old_h_dt or cur_c_dt > d:
-                        p["계약체결일"] = d.isoformat()
-                    dates_changed = True
-                    row_meta_changed = True
-                elif f == "퇴사일":
-                    if p.get("_manual") or str(pid).startswith("manual_") or not s.get("sub_biz_list"):
-                        p["연도별_퇴사일"] = {}
-                    else:
-                        p.setdefault("연도별_퇴사일", {})[str(year)] = val_to_save
-                    dates_changed = True
-                    row_meta_changed = True
-                elif f == "생년월일":
-                    row_meta_changed = True
+                if f == "퇴사일":
+                    p.setdefault("연도별_퇴사일", {})[str(year)] = val_to_save
                 changed = True
-
-        if dates_changed:
-            extra_yrs = s.setdefault("manual_extra_years", [])
-            for fy in set(_all_possible_years(s)) | set(four_yrs):
-                s["year_recs"].setdefault(fy, {}).setdefault(pid, P.new_year_rec())
-                if fy in four_yrs and H.worked_in_year(p, fy) and fy not in extra_yrs:
-                    extra_yrs.append(fy)
-            if p.get("_manual") or str(pid).startswith("manual_"):
-                yrec["월_override"] = {}
 
         nv = _norm(nr.get("병역개월"))
         if nv != _norm(old.get("병역개월")) and not _same_num(nv or "0", _norm(old.get("병역개월")) or "0"):
@@ -1070,7 +967,6 @@ def _apply_changes(s: dict, year: int, sent: list[dict], back: pd.DataFrame) -> 
             except ValueError:
                 months = 0
             p["병역개월"] = max(0, min(months, R.MILITARY_MAX_MONTHS))
-            row_meta_changed = True
             changed = True
 
         nv = _norm(nr.get("고용유형"))
@@ -1080,49 +976,47 @@ def _apply_changes(s: dict, year: int, sent: list[dict], back: pd.DataFrame) -> 
             us = yrec["_user_set"]
             if nv not in R.EMP_AUTO_EXCLUDE and float(old.get("합계") or 0.0) == 0.0:
                 yrec["월_override"] = {}
-            row_meta_changed = True
             changed = True
 
-        if not row_meta_changed:
-            nv = _norm(nr.get("제외사유"))
-            if nv == "실제근로 1년미만":
-                nv = R.EXCL_UNDER_1Y
-            old_excl = R.EXCL_UNDER_1Y if _norm(old.get("제외사유")) == "실제근로 1년미만" else _norm(old.get("제외사유"))
-            if nv and nv != old_excl:
-                yrec["제외사유"] = nv
-                yrec["_user_set"] = [x for x in us if x != "청년등"] + (["제외사유"] if "제외사유" not in us else [])
-                us = yrec["_user_set"]
-                changed = True
+        nv = _norm(nr.get("제외사유"))
+        if nv == "실제근로 1년미만":
+            nv = R.EXCL_UNDER_1Y
+        old_excl = R.EXCL_UNDER_1Y if _norm(old.get("제외사유")) == "실제근로 1년미만" else _norm(old.get("제외사유"))
+        if nv and nv != old_excl:
+            yrec["제외사유"] = nv
+            yrec["_user_set"] = [x for x in us if x != "청년등"] + (["제외사유"] if "제외사유" not in us else [])
+            us = yrec["_user_set"]
+            changed = True
 
-            nv = _norm(nr.get("청년등"))
-            if nv and nv != _norm(old.get("청년등")):
-                yrec["청년등"] = nv
-                if "청년등" not in us:
-                    us.append("청년등")
-                changed = True
+        nv = _norm(nr.get("청년등"))
+        if nv and nv != _norm(old.get("청년등")):
+            yrec["청년등"] = nv
+            if "청년등" not in us:
+                us.append("청년등")
+            changed = True
 
-            nv = _norm(nr.get("상시"))
-            if nv in ("O", "X") and nv != _norm(old.get("상시")):
-                if nv == old.get("_sauto"):
-                    yrec["상시_override"] = ""
-                else:
-                    yrec["상시_override"] = nv
-                    yrec["_unlocked"] = True
-                changed = True
+        nv = _norm(nr.get("상시"))
+        if nv in ("O", "X") and nv != _norm(old.get("상시")):
+            if nv == old.get("_sauto"):
+                yrec["상시_override"] = ""
+            else:
+                yrec["상시_override"] = nv
+                yrec["_unlocked"] = True
+            changed = True
 
-            mo = yrec.setdefault("월_override", {})
-            for i, c in enumerate(MONTH_COLS, start=1):
-                nv, ov = _norm(nr.get(c)), _norm(old.get(c))
-                if nv == ov or (nv and ov and _same_num(nv, ov)):
+        mo = yrec.setdefault("월_override", {})
+        for i, c in enumerate(MONTH_COLS, start=1):
+            nv, ov = _norm(nr.get(c)), _norm(old.get(c))
+            if nv == ov or (nv and ov and _same_num(nv, ov)):
+                continue
+            if nv == R.MONTH_AUTO or nv == "":
+                mo.pop(str(i), None)
+            else:
+                try:
+                    mo[str(i)] = float(nv)
+                except ValueError:
                     continue
-                if nv == R.MONTH_AUTO or nv == "":
-                    mo.pop(str(i), None)
-                else:
-                    try:
-                        mo[str(i)] = float(nv)
-                    except ValueError:
-                        continue
-                changed = True
+            changed = True
     return changed
 
 
@@ -1147,16 +1041,7 @@ def _year_role_description(s: dict, tax_year: int, year: int) -> str:
     if not has_y2:
         omitted.append(f"{(year-2)%100:02d}년 2차")
     omit_note = f" (미업로드 생략: {', '.join(omitted)} 사후관리)" if omitted else ""
-    if year == tax_year:
-        prefix = "당해 귀속"
-    elif year == tax_year - 1:
-        prefix = "직전 귀속"
-    elif year == tax_year - 2:
-        prefix = "전전 귀속"
-    elif year == tax_year - 3:
-        prefix = "전전전 귀속 (4차 비교연도)"
-    else:
-        prefix = f"{year}년 귀속"
+    prefix = "당해 귀속" if year == tax_year else ("직전 귀속" if year == tax_year - 1 else "전전 귀속")
     return f"{prefix} · {' · '.join(active_parts)}{omit_note}"
 
 
@@ -1210,51 +1095,6 @@ def _dlg_delete_people(year: int):
             st.rerun()
 
 
-_EMPTY_GRID_COLS = [
-    "pid", "사업장명", "성명", "생년월일", "입사일", "퇴사일", "취업연령",
-    "고용유형", "제외사유", "병역개월", "청년등", "상시",
-    *MONTH_COLS, "합계",
-    "b1_yth", "b1_gen", "b1_reg",
-    "b2_yth", "b2_gen", "b2_reg",
-    "b3_yth", "b3_gen", "b3_reg",
-    "_lock", "_yopts", "_ymask", "_inact", "_nopay", "_proj", "_movr", "_manual", "_sovr", "_class_diff",
-]
-
-_DROP_INTERNAL_DF_COLS = (
-    "A_b1_yth", "A_b1_gen", "A_b1_reg",
-    "B_b1_yth", "B_b1_gen", "B_b1_reg",
-    "b4_yth", "b4_gen", "b4_reg",
-    "_class_diff_msg",
-)
-
-
-def _active_ec_grid_key(s: dict, year: int) -> str:
-    return f"ec_grid_{int(year)}_fixed"
-
-
-def _sync_active_ec_grids_once(s: dict) -> None:
-    """버튼 클릭([+ 사원 추가], [선택한 행 삭제], [다음 단계] 등) 직전에만 현재 활성 버전의 AgGrid 상태를 동기화합니다."""
-    last_sent_map = s.get("last_sent") or {}
-    changed_any = False
-    for yr in list(last_sent_map.keys()):
-        g_key = _active_ec_grid_key(s, yr)
-        v_ss = st.session_state.get(g_key)
-        if not isinstance(v_ss, dict):
-            continue
-        sel_pids = _selected_pids(v_ss)
-        st.session_state[f"ec_sel_pids_{yr}"] = sel_pids
-        raw_data = v_ss.get("data")
-        if raw_data is not None:
-            back_df = pd.DataFrame(raw_data) if not isinstance(raw_data, pd.DataFrame) else raw_data
-            if not back_df.empty and _apply_changes(s, yr, last_sent_map[yr], back_df):
-                changed_any = True
-    if changed_any:
-        for y_all in _all_possible_years(s):
-            s["grid_ver"][y_all] = s["grid_ver"].get(y_all, 0) + 1
-        _purge_stale_ec_grid_keys(s)
-        _save_ec_to_disk(s)
-
-
 def _render_people_toolbar(s: dict, year: int) -> None:
     """사원표 바로 위 툴바: [사원 추가] [선택한 행 삭제 · N명] (+ 삭제한 사원이 있으면 [삭제 되돌리기])."""
     n_sel = len([p for p in st.session_state.get(f"ec_sel_pids_{year}", []) if p in (s.get("people") or {})])
@@ -1262,22 +1102,18 @@ def _render_people_toolbar(s: dict, year: int) -> None:
     cols = st.columns([1.15, 1.6, 1.35, 3.9] if n_del else [1.15, 1.6, 5.25], vertical_alignment="center")
     with cols[0]:
         if st.button("+ 사원 추가", width="stretch", key=f"btn_ec_add_emp_{year}"):
-            _sync_active_ec_grids_once(s)
-            _dlg_add_employee(default_year=year)
+            _dlg_add_employee()
     with cols[1]:
         with st.container(key=f"ec_btn_del_rows_{year}"):
             if st.button(f"선택한 행 삭제 · {n_sel}명" if n_sel else "선택한 행 삭제", width="stretch",
                          disabled=(n_sel == 0), key=f"btn_ec_del_rows_{year}",
                          help="표 왼쪽 선택칸으로 여러 명을 고른 뒤 누르세요."):
-                _sync_active_ec_grids_once(s)
                 _dlg_delete_people(year)
     if n_del:
         with cols[2]:
             if st.button(f"삭제 되돌리기 ({n_del}명)", width="stretch", key=f"btn_ec_restore_{year}",
                          help="삭제한 사원을 올린 파일 기준으로 다시 불러옵니다 (직접 추가했던 사원 제외)."):
-                _sync_active_ec_grids_once(s)
                 restore_deleted_people(s)
-                _purge_stale_ec_grid_keys(s)
                 st.rerun()
     with cols[-1]:
         st.caption("왼쪽 선택칸으로 여러 명을 고를 수 있습니다 (머리글 칸 = 전체 선택).")
@@ -1316,6 +1152,7 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
         f"<span style='{m_pill_style}padding:2px 8px;border-radius:999px;font-size:0.76rem;font-weight:800;margin-left:6px;'>"
         f"{m_lbl_yr}</span>"
     )
+    # 우측에 이미 연도별 기업규모 드롭다운이 있으므로 헤더 좌측에는 계산방식 배지(+기본값과 다를 때만 알림 배지)만 간결히 표시
     yr_sz_badge_html = f"{method_badge_html}{diff_pill_html}"
     c_hdr, c_sz, c_pdf = st.columns([4.90, 1.25, 0.85], vertical_alignment="center")
     with c_hdr:
@@ -1338,16 +1175,17 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
             help=(
                 f"[{year}년 귀속 기업규모 선택 — 중소기업 / 중견기업 / 일반기업(대기업)]\n"
                 f"• 1단계·사이드바의 해당 연도 기업규모와 동일한 상태를 공유합니다.\n"
-                f"• 변경 시 근로계약 체결연도({year}년) 기업규모에 따른 청년 유예기간 및 3·4단계 공제단가·사후관리 계산에 즉시 반영됩니다."
+                f"• 변경 시 근로계약 체결연도({year}년) 기업규모에 따른 청년 유예기간(2026년 이후 계약: 중소·중견 4년 / 일반 3년, "
+                f"2025년 계약: 중소·중견 3년 / 일반 2년 — 계약일로부터 유예연수가 되는 날이 속한 달부터 청년에서 제외, "
+                f"예: 2025.5.1. 일반기업 계약 → 2027년 5월부터 제외되어 2027년 1~4월 4개월 청년 인정) 인원계산과 "
+                f"3·4단계 공제단가, 최소고용증가인원(중견 5명 / 일반 10명), 공제기간(중소·중견 3년 / 일반 2년), 2년 사후관리 세액계산에 즉시 반영됩니다."
             ),
         )
         if sel_yr_sz != cur_yr_sz:
-            _sync_active_ec_grids_once(s)
             R.apply_corp_size_year_change(s, year, sel_yr_sz)
             s["yr_sz_ver"] = yr_sz_ver + 1
             for y_all in _all_possible_years(s):
                 s["grid_ver"][y_all] = s["grid_ver"].get(y_all, 0) + 1
-            _purge_stale_ec_grid_keys(s)
             s.pop("_report_artifact_cache", None)
             _save_ec_to_disk(s)
             st.rerun()
@@ -1355,7 +1193,7 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
         with st.container(key=f"ec_btn_pdf_yr_{year}"):
             st.download_button(
                 "PDF 다운",
-                data=_lazy_pdf_bytes(_build_schedule_pdf_bytes, s, [year], include_summary=False),
+                data=_build_schedule_pdf_bytes(s, [year], include_summary=False),
                 file_name=f"{corp_nm}_{year}년귀속_상시근로자명세.pdf",
                 mime="application/pdf",
                 width="stretch",
@@ -1363,8 +1201,11 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
                 help=f"{year}년 귀속 상시근로자 명세 및 사후관리 판정표(A4 가로 PDF)를 다운로드합니다.",
             )
 
-    st.session_state.setdefault(f"ec_sel_pids_{year}", [])
     _render_people_toolbar(s, year)
+
+    if not rows:
+        st.info(f"{year}년에 근무한 근로자가 없습니다. {year}년 원천징수부를 올렸는지 확인하거나 위 [사원 추가]로 입력하세요.")
+        return computed, totals
 
     for _r in rows:
         if year >= 2026 and _r.get("제외사유") == R.EXCL_UNDER_1Y:
@@ -1374,7 +1215,7 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
 
     q_filter = str(s.get("emp_quick_filter") or "ALL")
     disp_rows = rows
-    if rows and q_filter == "CHECK":
+    if q_filter == "CHECK":
         disp_rows = [
             r for r in rows
             if r.get("상시") == "X"
@@ -1383,7 +1224,7 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
             or not str(r.get("입사일") or "").strip()
             or bool(r.get("_nopay_months"))
         ]
-    elif rows and q_filter == "SAVING":
+    elif q_filter == "SAVING":
         def _is_saving_cand(r_item: dict) -> bool:
             if str(r_item.get("청년등") or "") not in ("", R.YOUTH_NONE):
                 return True
@@ -1394,7 +1235,7 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
             return (35 <= age_v <= 40) and int(r_item.get("병역개월") or 0) == 0
 
         disp_rows = [r for r in rows if _is_saving_cand(r)]
-    elif rows and q_filter == "MOVED":
+    elif q_filter == "MOVED":
         yr_prefix = f"{year}-"
         disp_rows = [
             r for r in rows
@@ -1403,22 +1244,15 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
             or ("→" in str(r.get("사업장명") or ""))
         ]
 
-    if rows and not disp_rows:
+    if not disp_rows:
         st.caption(f"ℹ️ {year}년 귀속 명세({len(rows)}명) 중 현재 선택한 필터 조건에 해당하는 사원이 없습니다. (상단 필터를 '전체 사원 보기'로 변경하면 전체 명단이 표시됩니다.)")
         return computed, totals
 
-    if disp_rows:
-        df = pd.DataFrame(disp_rows)
-        drop_cols = [c for c in _DROP_INTERNAL_DF_COLS if c in df.columns]
-        if drop_cols:
-            df = df.drop(columns=drop_cols)
-        for _mc in MONTH_COLS:
-            if _mc in df.columns:
-                df[_mc] = df[_mc].apply(lambda v: "" if (v is None or pd.isna(v) or v == "") else f"{float(v):g}")
-        s.setdefault("_grid_resp_sig", {})[year] = _ec_df_sig(df)
-    else:
-        df = pd.DataFrame(columns=_EMPTY_GRID_COLS)
-
+    df = pd.DataFrame(disp_rows)
+    for _mc in MONTH_COLS:
+        if _mc in df.columns:
+            df[_mc] = df[_mc].apply(lambda v: "" if (v is None or pd.isna(v) or v == "") else f"{float(v):g}")
+    ver = s["grid_ver"].get(year, 0)
     show_all_4 = bool(s.get("show_all_4_blocks", True))
     force_empty = bool(s.get("show_empty_pm_blocks", False))
     has_y1 = _has_year_data(s, year - 1)
@@ -1475,10 +1309,7 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
             "text-overflow": "clip !important",
             "white-space": "nowrap !important",
         },
-        ".ag-header-cell-menu-button": {
-            "display": "none !important",
-        },
-        ".ag-header-icon": {
+        ".ag-header-cell-menu-button, .ag-header-icon": {
             "display": "none !important",
         },
         ".ag-cell": {
@@ -1488,9 +1319,8 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
             "text-overflow": "clip !important",
         },
         ".ag-root-wrapper": {"border-radius": "12px !important", "border": "1px solid #E4E8F0 !important"},
+        ".ag-checkbox-input-wrapper.ag-checked::after": {"color": "#2B50B8 !important"},
     }
-    grid_key = _active_ec_grid_key(s, year)
-    grid_height = min(720, 128 + 32 * (max(1, len(rows)) + 3))
     resp = AgGrid(
         df,
         gridOptions=_grid_options(df, totals, year=year, show_b2=show_b2, show_b3=show_b3),
@@ -1498,27 +1328,25 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
         allow_unsafe_jscode=True,
         theme="balham",
         custom_css=custom_ag_css,
-        key=grid_key,
-        height=grid_height,
+        key=f"ec_grid_{year}_{ver}_{cur_yr_sz}_{int(show_b2)}_{int(show_b3)}_{int(s.get('assume_year_end', True))}_{int(s.get('include_unpaid_hire_month', True))}_{s.get('emp_quick_filter', 'ALL')}",
+        height=min(720, 128 + 32 * (len(rows) + 3)),
         fit_columns_on_grid_load=False,
-        server_sync_strategy="server_wins",
     )
+    sel_key = f"ec_sel_pids_{year}"
+    new_sel = _selected_pids(resp)
+    if new_sel != st.session_state.get(sel_key, []):
+        st.session_state[sel_key] = new_sel   # 표 위 [선택한 행 삭제 · N명] 숫자를 바로 맞추기 위해 한 번 더 그림
+        st.rerun()
     back = getattr(resp, "data", None)
     if back is None:
         try:
             back = resp["data"]
         except Exception:
             back = None
-    if rows and isinstance(back, pd.DataFrame) and _apply_changes(s, year, rows, back):
+    if isinstance(back, pd.DataFrame) and _apply_changes(s, year, rows, back):
         for y in _all_possible_years(s):
             s["grid_ver"][y] = s["grid_ver"].get(y, 0) + 1
-        _purge_stale_ec_grid_keys(s)
         _save_ec_to_disk(s)
-        st.rerun()
-    sel_key = f"ec_sel_pids_{year}"
-    new_sel = _selected_pids(resp) if rows else []
-    if list(new_sel) != list(st.session_state.get(sel_key) or []):
-        st.session_state[sel_key] = list(new_sel)   # 표 위 [선택한 행 삭제 · N명] 숫자를 바로 맞추기 위해 한 번 더 그림
         st.rerun()
 
     b3_title, b4_title, b5_title = _block_titles_for_year(year, two_line=False)
@@ -1621,135 +1449,68 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
 def _render_prev_filing_summary_card(s: dict, shown_years: list[int]):
     tax_yr = int(s["tax_year"])
     t2_year = tax_yr - 2
-    t3_year = tax_yr - 3
-    missing_past = [y for y in (t2_year, t3_year) if y >= 2021 and y not in shown_years]
-    if not missing_past:
+    if t2_year in shown_years:
         return
 
     ps = s.setdefault("prev_summary", {})
-    for py in missing_past:
-        ps.setdefault(
-            str(py),
-            {
-                "상시_총인원": None,
-                "청년등_총인원": None,
-                "상시": None,
-                "청년등": None,
-                "청년등_증가": None,
-                "청년등외_증가": None,
-                "공제세액": None,
-                "2차_공제세액": None,
-                "이월세액": None,
-                "기추징세액": None,
-            },
-        )
+    y_entry = ps.setdefault(
+        str(t2_year),
+        {
+            "상시_총인원": None,
+            "청년등_총인원": None,
+            "상시": None,
+            "청년등": None,
+            "청년등_증가": None,
+            "청년등외_증가": None,
+            "공제세액": None,
+            "2차_공제세액": None,
+            "이월세액": None,
+            "기추징세액": None,
+        },
+    )
     has_prev_doc = bool(((s.get("ext") or {}).get("prev_filing") or {}).get("연도별"))
-    miss_str = " · ".join(f"{y}년" for y in missing_past)
 
     with st.expander(
-        f"{miss_str} 귀속분(사후관리·과거 비교연도) 인원 확인 및 4개년도 사원표 열기 — 기신고 숫자로 입력하거나 사원표를 직접 열 수 있습니다",
+        f"{t2_year}년 귀속분(2차 사후관리 대상) 인원 확인 — 현재 {t2_year}년 원천징수부 미첨부로 표 생략됨 (기신고 숫자로 간편 입력 가능)",
         expanded=has_prev_doc,
     ):
         st.caption(
-            f"**{tax_yr}년 귀속 4개 과세연도({tax_yr}·{tax_yr-1}·{t2_year}·{t3_year}년)** 전체에 대해 사원등록·검증을 진행하려면 "
-            f"아래 버튼으로 **{miss_str} 사원정보 표**를 직접 열거나 기신고 상시·청년등 인원을 입력하세요."
+            f"**{t2_year}년 귀속분 2차 사후관리(3차년도 연속공제 또는 추가납부세액)** 및 **{tax_yr-1}년 고용증가 인원 검증**을 위해 "
+            f"{t2_year}년 기신고 상시·청년등 인원을 입력하거나 아래 버튼으로 {t2_year}년 사원표를 직접 열 수 있습니다."
         )
-        if t2_year in missing_past:
-            y_entry = ps[str(t2_year)]
-            c1, c2, c3 = st.columns([1.8, 1.8, 2.4])
-            with c1:
-                reg_val = st.number_input(
-                    f"{t2_year}년 기신고 전체 상시근로자 수",
-                    min_value=0.0,
-                    step=0.01,
-                    format="%.2f",
-                    value=None if y_entry.get("상시") is None else float(y_entry.get("상시")),
-                    placeholder="기신고 숫자",
-                    key=f"prev_sum_reg_{t2_year}",
-                )
-                y_entry["상시"] = reg_val
-            with c2:
-                yth_val = st.number_input(
-                    f"{t2_year}년 기신고 청년등 상시근로자 수",
-                    min_value=0.0,
-                    step=0.01,
-                    format="%.2f",
-                    value=None if y_entry.get("청년등") is None else float(y_entry.get("청년등")),
-                    placeholder="기신고 숫자",
-                    key=f"prev_sum_yth_{t2_year}",
-                )
-                y_entry["청년등"] = yth_val
-            with c3:
-                st.write("")
-                if st.button(f"{t2_year}년 사원정보 표 직접 열기", width="stretch", key=f"btn_open_yr_{t2_year}"):
-                    _sync_active_ec_grids_once(s)
-                    extra = s.setdefault("manual_extra_years", [])
-                    if t2_year not in extra:
-                        extra.append(t2_year)
-                    for pid in s["people"]:
-                        s["year_recs"].setdefault(t2_year, {}).setdefault(pid, P.new_year_rec())
-                    _save_ec_to_disk(s)
-                    st.rerun()
-
-        if t3_year in missing_past:
-            y3_entry = ps[str(t3_year)]
-            c3_1, c3_2, c3_3 = st.columns([1.8, 1.8, 2.4])
-            with c3_1:
-                reg3_val = st.number_input(
-                    f"{t3_year}년 기신고 전체 상시근로자 수",
-                    min_value=0.0,
-                    step=0.01,
-                    format="%.2f",
-                    value=None if y3_entry.get("상시") is None else float(y3_entry.get("상시")),
-                    placeholder="기신고 숫자",
-                    key=f"prev_sum_reg_{t3_year}",
-                )
-                y3_entry["상시"] = reg3_val
-            with c3_2:
-                yth3_val = st.number_input(
-                    f"{t3_year}년 기신고 청년등 상시근로자 수",
-                    min_value=0.0,
-                    step=0.01,
-                    format="%.2f",
-                    value=None if y3_entry.get("청년등") is None else float(y3_entry.get("청년등")),
-                    placeholder="기신고 숫자",
-                    key=f"prev_sum_yth_{t3_year}",
-                )
-                y3_entry["청년등"] = yth3_val
-            with c3_3:
-                st.write("")
-                if st.button(f"{t3_year}년 사원정보 표 직접 열기", width="stretch", key=f"btn_open_yr_{t3_year}"):
-                    _sync_active_ec_grids_once(s)
-                    extra = s.setdefault("manual_extra_years", [])
-                    if t3_year not in extra:
-                        extra.append(t3_year)
-                    for pid in s["people"]:
-                        s["year_recs"].setdefault(t3_year, {}).setdefault(pid, P.new_year_rec())
-                    _save_ec_to_disk(s)
-                    st.rerun()
-
-        if len(missing_past) >= 1:
-            if st.button(
-                f"{tax_yr}·{tax_yr-1}·{t2_year}·{t3_year}년 (4개년도 전체) 사원정보 표 한 번에 모두 열기",
-                type="primary",
-                width="stretch",
-                key=f"btn_open_all_4_yrs_{tax_yr}",
-            ):
-                _sync_active_ec_grids_once(s)
-                s["show_all_4_years"] = True
+        c1, c2, c3 = st.columns([1.8, 1.8, 2.4])
+        with c1:
+            reg_val = st.number_input(
+                f"{t2_year}년 기신고 전체 상시근로자 수",
+                min_value=0.0,
+                step=0.01,
+                format="%.2f",
+                value=None if y_entry.get("상시") is None else float(y_entry.get("상시")),
+                placeholder="기신고 숫자",
+                key=f"prev_sum_reg_{t2_year}",
+            )
+            y_entry["상시"] = reg_val
+        with c2:
+            yth_val = st.number_input(
+                f"{t2_year}년 기신고 청년등 상시근로자 수",
+                min_value=0.0,
+                step=0.01,
+                format="%.2f",
+                value=None if y_entry.get("청년등") is None else float(y_entry.get("청년등")),
+                placeholder="기신고 숫자",
+                key=f"prev_sum_yth_{t2_year}",
+            )
+            y_entry["청년등"] = yth_val
+        with c3:
+            st.write("")
+            if st.button(f"{t2_year}년 사원정보 표 직접 열어서 계산하기", width="stretch", key=f"btn_open_yr_{t2_year}"):
                 extra = s.setdefault("manual_extra_years", [])
-                for yy in (tax_yr, tax_yr - 1, t2_year, t3_year):
-                    if yy >= 2021 and yy not in extra:
-                        extra.append(yy)
-                    for pid in s["people"]:
-                        s["year_recs"].setdefault(yy, {}).setdefault(pid, P.new_year_rec())
+                if t2_year not in extra:
+                    extra.append(t2_year)
+                for pid in s["people"]:
+                    s["year_recs"].setdefault(t2_year, {}).setdefault(pid, P.new_year_rec())
                 _save_ec_to_disk(s)
                 st.rerun()
-
-
-def _pre_sync_ec_grids_from_session(s: dict) -> None:
-    """하위 호환용 래퍼 — 버튼 클릭 시점에만 안전하게 호출합니다."""
-    _sync_active_ec_grids_once(s)
 
 
 def _page_employees(room_key: str, log_tokens_fn=None):
@@ -1772,7 +1533,7 @@ def _page_employees(room_key: str, log_tokens_fn=None):
             st.caption("인원수가 많을 때는 아래 **『연도별 탭 보기』**를 켜면 브라우저가 훨씬 빠릅니다.")
 
     with st.container(border=True):
-        co1, co2, co3, co4, co5 = st.columns([1.35, 1.35, 1.25, 1.25, 1.4])
+        co1, co2, co3, co4 = st.columns([1.5, 1.5, 1.5, 1.5])
         with co1:
             assume_on = st.toggle(
                 "미도래 월 연말재직 가정(1 채움)",
@@ -1781,7 +1542,6 @@ def _page_employees(room_key: str, log_tokens_fn=None):
                 help="기중(예: 9월 가결산) 원천징수부 업로드 시 미도래 월(10~12월)을 연말까지 재직 가정(1 자동 채움 · 하늘색 표시)합니다.",
             )
             if assume_on != s.get("assume_year_end", True):
-                _sync_active_ec_grids_once(s)
                 s["assume_year_end"] = assume_on
                 _save_ec_to_disk(s)
                 st.rerun()
@@ -1793,7 +1553,6 @@ def _page_employees(room_key: str, log_tokens_fn=None):
                 help="입사월 급여가 다음 달에 지급되어 당월 원천징수부 급여가 0원인 경우에도 재직(1)으로 산입하고 살구색으로 표시합니다.",
             )
             if hm_on != s.get("include_unpaid_hire_month", True):
-                _sync_active_ec_grids_once(s)
                 s["include_unpaid_hire_month"] = hm_on
                 _save_ec_to_disk(s)
                 st.rerun()
@@ -1805,7 +1564,6 @@ def _page_employees(room_key: str, log_tokens_fn=None):
                 help="우측 4번(1차 사후관리)·5번(2차 사후관리) 블록을 함께 표시합니다.",
             )
             if show_4 != s.get("show_all_4_blocks", True):
-                _sync_active_ec_grids_once(s)
                 s["show_all_4_blocks"] = show_4
                 _save_ec_to_disk(s)
                 st.rerun()
@@ -1817,29 +1575,8 @@ def _page_employees(room_key: str, log_tokens_fn=None):
                 help="기본은 전 연도 연속 펼쳐보기이며, 인원이 많을 때 탭 보기로 전환하면 한 연도씩 쾌적하게 볼 수 있습니다.",
             )
             if use_tabs != s.get("use_year_tabs", False):
-                _sync_active_ec_grids_once(s)
                 s["use_year_tabs"] = use_tabs
                 s["_tabs_user_touched"] = True
-                _save_ec_to_disk(s)
-                st.rerun()
-        with co5:
-            all4_yrs_currently_on = all((tax_yr - i) in shown_years for i in range(4) if (tax_yr - i) >= 2021)
-            show_all4_yrs = st.toggle(
-                f"4개년 전체 표 표시 ({tax_yr}~{tax_yr-3}년)",
-                value=bool(s.get("show_all_4_years", False)) or all4_yrs_currently_on,
-                key=f"ec_toggle_all_4_years_{tax_yr}",
-                help=f"선택한 {tax_yr}년 귀속의 4개 과세연도({tax_yr}·{tax_yr-1}·{tax_yr-2}·{tax_yr-3}년) 사원정보 표를 한 화면에 모두 표시합니다.",
-            )
-            if show_all4_yrs != (bool(s.get("show_all_4_years", False)) or all4_yrs_currently_on):
-                _sync_active_ec_grids_once(s)
-                s["show_all_4_years"] = show_all4_yrs
-                if show_all4_yrs:
-                    extra = s.setdefault("manual_extra_years", [])
-                    for yy in (tax_yr, tax_yr - 1, tax_yr - 2, tax_yr - 3):
-                        if yy >= 2021 and yy not in extra:
-                            extra.append(yy)
-                else:
-                    s["manual_extra_years"] = []
                 _save_ec_to_disk(s)
                 st.rerun()
 
@@ -1956,7 +1693,6 @@ def _page_employees(room_key: str, log_tokens_fn=None):
     corp_nm = (s.get("biz", {}).get("상호") or "상호미입력").strip()
     c_prev, _, c_all_pdf, c_rev, c_next = st.container(key="ecx_actionbar").columns([1.2, 2.3, 1.25, 1.15, 1.3], vertical_alignment="center")
     if c_prev.button("< 이전", width="stretch"):
-        _sync_active_ec_grids_once(s)
         s["step"] = 1
         _trigger_scroll_to_top(s)
         _save_ec_to_disk(s)
@@ -1966,7 +1702,7 @@ def _page_employees(room_key: str, log_tokens_fn=None):
         with st.container(key="ec_btn_pdf_all_wrap"):
             st.download_button(
                 "전체 PDF 다운",
-                data=_lazy_pdf_bytes(_build_schedule_pdf_bytes, s, shown_years, include_summary=True),
+                data=_build_schedule_pdf_bytes(s, shown_years, include_summary=True),
                 file_name=f"{corp_nm}_{tax_yr}년귀속_전체연도_상시근로자명세.pdf",
                 mime="application/pdf",
                 width="stretch",
@@ -1975,7 +1711,6 @@ def _page_employees(room_key: str, log_tokens_fn=None):
             )
 
     if c_rev.button("오류 검토", width="stretch"):
-        _sync_active_ec_grids_once(s)
         prev = ((s.get("ext") or {}).get("prev_filing") or {}).get("연도별")
         review_items = H.review(
             s["people"],
@@ -2004,8 +1739,7 @@ def _page_employees(room_key: str, log_tokens_fn=None):
         _dlg_review(review_items, audit_payload=audit_payload, log_tokens_fn=log_tokens_fn, room_key=room_key)
 
     if c_next.button("다음(3단계)", type="primary", width="stretch"):
-        _sync_active_ec_grids_once(s)
-        s["totals_snapshot"] = _ensure_totals_snapshot(s)
+        s["totals_snapshot"] = totals_all
         s["step"] = 3
         s["max_step_reached"] = max(int(s.get("max_step_reached") or 1), 3)
         _trigger_scroll_to_top(s)

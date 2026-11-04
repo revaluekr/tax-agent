@@ -250,7 +250,7 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
     st.markdown(
         "<div class='ec-bottom-upload-label'>"
         "<span><b>파일 추가 업로드</b> (본·지점 / 양도·양수 복수 사업장 파일도 한꺼번에 끌어다 놓으세요)</span>"
-        f"<span style='color:#3182F6;font-weight:700;font-size:0.80rem;'>{tax_yr-3}·{tax_yr-2}·{tax_yr-1}·{tax_yr}년 원천징수부(100% 자체 고속파싱) · 복수 사업장 합산 지원</span>"
+        f"<span style='color:#16a34a;font-size:0.80rem;'>{tax_yr-3}·{tax_yr-2}·{tax_yr-1}·{tax_yr}년 원천징수부(100% 자체 고속파싱) · 복수 사업장 합산 지원</span>"
         "</div>",
         unsafe_allow_html=True,
     )
@@ -396,37 +396,25 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
     for key, label, required, _ in doc_types:
         on = bool(have.get(key))
         pill = "<span class='ec-req-pill'>필수</span>" if required else "<span class='ec-opt-pill'>선택</span>"
-        if on:
-            row_cls = "on"
-            status_html = "<span class='ec-status-badge done'>✓ 등록완료</span>"
-            files_html = "".join(f"<span class='ec-file-pill'>📄 {fn}</span>" for fn in have.get(key, []))
-        elif required:
-            row_cls = "req-wait"
-            status_html = "<span class='ec-status-badge req-wait'>● 필수 대기</span>"
-            files_html = "<span style='color:#D97706;font-weight:600;font-size:0.82rem;'>파일을 업로드해 주세요</span>"
-        else:
-            row_cls = ""
-            status_html = "<span class='ec-status-badge empty'>미등록</span>"
-            files_html = "<span style='color:#B0B8C1;'>-</span>"
+        files_str = ", ".join(have.get(key, [])) or "-"
         trs.append(
-            f"<tr class='{row_cls}'>"
-            f"<td class='led-cell'>{status_html}</td>"
+            f"<tr class='{'on' if on else ''}'>"
+            f"<td class='led-cell'><span class='ec-led{' on' if on else ''}'></span></td>"
             f"<td><b>{label}</b> {pill}</td>"
             f"<td class='help'>{_WARN_LEAD_RE.sub('', str(doc_help.get(key, '')))}</td>"
-            f"<td class='fname'>{files_html}</td></tr>"
+            f"<td class='fname'>{files_str}</td></tr>"
         )
 
     for extra_key, extra_files in have.items():
         if extra_key not in base_keys and extra_files:
             extra_lbl = all_labels.get(extra_key, extra_key)
             extra_help = doc_help.get(extra_key, "과거 연도 사원정보 표 생성 및 연속공제·사후관리 검증에 자동 반영됩니다.")
-            extra_files_html = "".join(f"<span class='ec-file-pill'>📄 {fn}</span>" for fn in extra_files)
             trs.append(
                 f"<tr class='extra'>"
-                f"<td class='led-cell'><span class='ec-status-badge done'>✓ 등록완료</span></td>"
+                f"<td class='led-cell'><span class='ec-led on'></span></td>"
                 f"<td><b>{extra_lbl}</b> <span class='ec-extra-pill'>추가 인식됨</span></td>"
                 f"<td class='help'>{extra_help}</td>"
-                f"<td class='fname'>{extra_files_html}</td></tr>"
+                f"<td class='fname'>{', '.join(extra_files)}</td></tr>"
             )
 
     docs_table_slot.markdown(
