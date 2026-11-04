@@ -244,6 +244,17 @@ def _call_gemini_contents(
 DUMMY_NAMES = {
     "가나다", "홍길동(예시)", "홍길동(샘플)", "샘플", "예시", "합계", "총계", "소계",
     "평균", "인원", "성명", "이름", "사원명", "근로자명", "소득자명", "구분", "비고",
+    "원천세", "소득세", "지방세", "지방소득세", "주민세", "갑근세",
+    "평일시급", "주말시급", "약정시급", "통상시급", "최저시급", "기본시급", "시급",
+    "일급", "일급여", "주급", "주급여", "주휴", "주휴시간", "주휴수당", "주휴급여",
+    "월급", "월급여", "기본급", "세전급여", "세후급여", "세전금액", "세후금액", "세전", "세후",
+    "실지급액", "차인지급액", "지급총액", "지급액", "지급액계", "공제액", "공제액계", "공제합계",
+    "날짜", "일자", "요일", "출근", "퇴근", "출근시간", "퇴근시간", "근무시간", "환산시간",
+    "연장시간", "야간시간", "휴일시간", "휴게시간", "소정근로", "근로시간",
+    "국민연금", "건강보험", "장기요양", "고용보험", "산재보험", "사대보험",
+    "식대", "상여", "상여금", "보너스", "수당", "용역비", "강사료", "수수료",
+    "귀속년월", "귀속연월", "지급년월", "지급일자", "지급일", "업종코드", "소득구분",
+    "부서", "직급", "직위", "직책", "입사일", "퇴사일", "생년월일", "주민번호", "주민등록번호",
 }
 
 SIMULATION_MARKER_PATTERNS = [
@@ -290,7 +301,14 @@ def is_valid_person_name(name: str) -> bool:
         return False
     if re.match(r"^\d", name) or not re.search(r"[가-힣A-Za-z]", name):
         return False
-    if any(k in name for k in ("합계", "총계", "소계", "근무시", "급여계산", "근로계약", "단위", "산출식")):
+    if any(
+        k in name
+        for k in (
+            "합계", "총계", "소계", "근무시", "급여계산", "근로계약", "단위", "산출식",
+            "시급", "일급", "주급", "월급", "급여", "수당", "시간", "원천세", "소득세",
+            "지방세", "공제", "지급액", "세전", "세후", "출근", "퇴근", "날짜", "주휴",
+        )
+    ):
         return False
     return True
 
@@ -979,7 +997,13 @@ def extract_universal_document_text_and_rows(file_bytes: bytes, filename: str = 
             except Exception:
                 continue
     rows = _read_excel_rows_universal(file_bytes, filename=filename)
-    txt = "\n".join(" | ".join(str(c) for c in r if c is not None) for r in rows)
+    def _fmt_cell(c: Any) -> str:
+        if isinstance(c, float):
+            if pd.isna(c):
+                return ""
+            return f"{round(c, 4):g}"
+        return str(c)
+    txt = "\n".join(" | ".join(_fmt_cell(c) for c in r if c is not None and _fmt_cell(c) != "") for r in rows)
     return txt, rows
 
 
@@ -1083,8 +1107,11 @@ def parse_client_payroll_excel(
 
     if filename:
         m_ym = re.search(r"(20\d{2})[-._년\s]*(\d{1,2})", filename)
+        m_ym2 = re.search(r"(?<!\d)(\d{2})\s*년\s*(\d{1,2})\s*월", filename)
         if m_ym:
             meta["year_month"] = f"{int(m_ym.group(1)):04d}-{int(m_ym.group(2)):02d}"
+        elif m_ym2:
+            meta["year_month"] = f"{2000 + int(m_ym2.group(1)):04d}-{int(m_ym2.group(2)):02d}"
         else:
             m_m = re.search(r"(\d{1,2})\s*월", filename)
             if m_m:
@@ -1283,6 +1310,46 @@ def parse_client_payroll_excel(
             "월근무시간": raw_rec.get("월근무시간", 209.0),
         }
         employees.append(emp_entry)
+
+    if not employees and all_rows:
+        tc_emp_rows = _parse_timecard_or_side_by_side_sheet(
+            rows=all_rows,
+            default_year_month=meta.get("year_month", ""),
+            filename=filename,
+        )
+        if tc_emp_rows:
+            for idx_tc, tc_r in enumerate(tc_emp_rows, start=1):
+                g_pay = int(tc_r.get("지급총액", 0) or 0)
+                rc = calculate_employee_payroll_row(
+                    base_pay=g_pay,
+                    dependents=1,
+                    children_8_20=0,
+                    effective_table=effective_table,
+                )
+                employees.append({
+                    "사업장": default_workplace,
+                    "사원코드": f"{idx_tc:03d}",
+                    "성명": tc_r["성명"],
+                    "주민등록번호": "",
+                    "_raw_rrn": "",
+                    "_base_amount": g_pay,
+                    "입사일": "",
+                    "퇴사일": "",
+                    "부서": "",
+                    "직급": "사원",
+                    "부양가족수": 1,
+                    "자녀수": 0,
+                    "입력기준": "세전",
+                    "목표실수령액": 0,
+                    **rc,
+                    "약정시급": 0,
+                    "연장근무시간": 0.0,
+                    "휴일근무시간": 0.0,
+                    "결근시간": 0.0,
+                    "주근무시간": 40.0,
+                    "월근무시간": 209.0,
+                })
+            warnings.append("비정형 주급·시급 계산 시트에서 인원별 세전 합계 금액을 추출했습니다.")
 
     if not employees and filename.lower().endswith((".hwp", ".hwpx", ".docx", ".cell", ".csv")):
         doc_txt, _ = extract_universal_document_text_and_rows(file_bytes, filename=filename)
@@ -2489,6 +2556,160 @@ def _match_freelancer_header_col(raw_header: str) -> Optional[str]:
     return None
 
 
+
+def _extract_ym_from_filename(filename: str) -> str:
+    if not filename:
+        return ""
+    m_ym = re.search(r"(20\d{2})[-._년\s]*(\d{1,2})", filename)
+    if m_ym and 1 <= int(m_ym.group(2)) <= 12:
+        return f"{int(m_ym.group(1)):04d}-{int(m_ym.group(2)):02d}"
+    m_ym2 = re.search(r"(?<!\d)(\d{2})\s*년\s*(\d{1,2})\s*월", filename)
+    if m_ym2 and 1 <= int(m_ym2.group(2)) <= 12:
+        return f"{2000 + int(m_ym2.group(1)):04d}-{int(m_ym2.group(2)):02d}"
+    return ""
+
+
+def _parse_timecard_or_side_by_side_sheet(
+    rows: List[List[Any]],
+    default_year_month: str = "",
+    default_pay_date: str = "",
+    filename: str = "",
+) -> List[Dict[str, Any]]:
+    """
+    비정형 주급·시급·출퇴근 계산 시트(예: 좌우 다단 카드형으로 사원명/이도현, 월 세전급여/837,100,
+    원천세/25,110, 지방소득세/2,510, 월 세후 지급액/809,480 등을 배치한 시트)에서
+    인원별 세전급여·주민등록번호·원천세·차인지급액을 정밀 추출합니다.
+    """
+    if not rows:
+        return []
+    fn_ym = _extract_ym_from_filename(filename)
+    eff_ym = default_year_month or fn_ym or datetime.now().strftime("%Y-%m")
+    eff_pd = default_pay_date or f"{eff_ym}-25"
+
+    extracted: List[Dict[str, Any]] = []
+    seen_names: set[str] = set()
+
+    # 먼저 인명 셀(r_i, c_i)의 위치를 모두 수집하여 블록 경계(col_min ~ col_max)를 판별
+    person_anchors: List[Tuple[int, int, str]] = []
+    for r_i, row in enumerate(rows):
+        if not row:
+            continue
+        for c_i, cell_val in enumerate(row):
+            if cell_val is None:
+                continue
+            s_val = str(cell_val).strip()
+            if not s_val or len(s_val) > 10:
+                continue
+            norm_nm = normalize_korean_name(s_val)
+            if re.match(r"^[가-힣]{2,4}$", norm_nm) and is_valid_person_name(norm_nm) and norm_nm not in seen_names:
+                seen_names.add(norm_nm)
+                person_anchors.append((r_i, c_i, norm_nm))
+
+    for idx_a, (r_i, c_i, norm_nm) in enumerate(person_anchors):
+        # 같은 행 또는 인접 행에 다른 인명이 있으면 그 인명의 열 직전까지를 현재 인원의 가로 블록 범위로 설정
+        next_cols = [
+            ca for (ra, ca, _) in person_anchors
+            if ca > c_i and abs(ra - r_i) <= 6
+        ]
+        col_start = max(0, c_i - 2)
+        col_end = (min(next_cols) - 1) if next_cols else (c_i + 9)
+        row_start = max(0, r_i - 5)
+        row_end = min(len(rows), r_i + 6)
+
+        gross_val = 0
+        net_val = 0
+        rrn_val = ""
+        has_tax_context = False
+
+        # 1) 블록 내부(row_start~row_end, col_start~col_end)의 라벨-값 쌍 탐색
+        for br in range(row_start, row_end):
+            b_row = rows[br]
+            for bc in range(col_start, min(len(b_row), col_end)):
+                raw_lbl = str(b_row[bc] or "").strip()
+                if not raw_lbl:
+                    continue
+                lbl_clean = re.sub(r"\s+", "", raw_lbl)
+                # 오른쪽 인접 셀(bc+1, bc+2)에서 값 탐색
+                adj_vals = [
+                    b_row[bc + off]
+                    for off in (1, 2, 3)
+                    if bc + off < min(len(b_row), col_end + 1) and b_row[bc + off] is not None and str(b_row[bc + off]).strip() != ""
+                ]
+                if not adj_vals:
+                    continue
+                first_v = adj_vals[0]
+                if any(k in lbl_clean for k in ("주민등록번호", "주민번호", "생년월일")):
+                    cand_rrn = extract_full_rrn(first_v)
+                    if cand_rrn and re.search(r"\d{6}", cand_rrn):
+                        rrn_val = cand_rrn
+                elif any(k in lbl_clean for k in ("월세전급여", "세전급여", "세전금액", "세전합계", "지급총액", "지급액계", "총급여")):
+                    v_num = parse_number(first_v, 0)
+                    if v_num >= 10_000:
+                        gross_val = v_num
+                        has_tax_context = True
+                elif any(k in lbl_clean for k in ("월세후지급액", "세후지급액", "세후급여", "세후금액", "실지급액", "차인지급액", "실수령액")):
+                    v_num = parse_number(first_v, 0)
+                    if v_num >= 10_000:
+                        net_val = v_num
+                        has_tax_context = True
+                elif any(k in lbl_clean for k in ("원천세", "소득세", "지방소득세", "시급")):
+                    has_tax_context = True
+
+        # 2) 만약 라벨 없이 성명 바로 옆에 (세전, 세후) 숫자가 나란히 적힌 경우
+        if gross_val <= 0:
+            row = rows[r_i]
+            right_nums: List[int] = []
+            for off in range(1, 5):
+                if c_i + off < min(len(row), col_end + 1):
+                    cell_txt = re.sub(r"\s+", "", str(row[c_i + off] or ""))
+                    if any(k in cell_txt for k in ("세후", "주휴", "시급", "시간")):
+                        break
+                    v_num = parse_number(row[c_i + off], 0)
+                    if 10_000 <= v_num <= 500_000_000:
+                        right_nums.append(v_num)
+            if len(right_nums) >= 2:
+                v1, v2 = right_nums[0], right_nums[1]
+                if v1 > v2 and 0.01 <= (v1 - v2) / v1 <= 0.25:
+                    gross_val, net_val = v1, v2
+                    has_tax_context = True
+            elif len(right_nums) == 1 and has_tax_context:
+                gross_val = right_nums[0]
+
+        # 3) 만약 세후 지급액만 있고 세전급여가 수식 미계산(None)인 경우 아래쪽 주차별 세전급여 합산 또는 역산
+        if gross_val <= 0 and net_val > 0:
+            col_sum = 0
+            for sub_r in range(r_i + 1, min(len(rows), r_i + 60)):
+                s_row = rows[sub_r]
+                for sub_c in range(col_start, min(len(s_row), col_end)):
+                    lbl = re.sub(r"\s+", "", str(s_row[sub_c] or ""))
+                    if lbl in ("세전급여", "주급여", "주급합계") and sub_c + 1 < len(s_row):
+                        col_sum += max(0, parse_number(s_row[sub_c + 1], 0))
+            if col_sum >= net_val:
+                gross_val = col_sum
+
+        if gross_val >= 10_000 and has_tax_context:
+            calc = calculate_freelancer_row(gross_val)
+            extracted.append({
+                "코드": f"{len(extracted) + 1:04d}",
+                "성명": norm_nm,
+                "주민등록번호": mask_rrn_front7(rrn_val),
+                "_raw_rrn": extract_full_rrn(rrn_val),
+                "_base_amount": gross_val,
+                "소득구분": "940909",
+                "귀속년월": eff_ym,
+                "지급년월일": eff_pd,
+                "입력기준": "세전",
+                "지급총액": calc["gross_pay"],
+                "세율": 3,
+                "소득세": calc["income_tax"],
+                "지방소득세": calc["local_tax"],
+                "공제액계": calc["total_deduction"],
+                "차인지급액": calc["net_pay"],
+                "_net_hint": net_val,
+            })
+
+    return extracted
+
 def parse_freelancer_excel(
     file_bytes: bytes,
     filename: str = "",
@@ -2517,6 +2738,14 @@ def parse_freelancer_excel(
             break
 
     if header_idx < 0:
+        tc_rows = _parse_timecard_or_side_by_side_sheet(
+            rows=rows,
+            default_year_month=default_year_month,
+            default_pay_date=default_pay_date,
+            filename=filename,
+        )
+        if tc_rows:
+            return [{k: v for k, v in r.items() if k != "_net_hint"} for r in tc_rows]
         return _fallback_parse_freelancers_from_doc(
             file_bytes=file_bytes,
             filename=filename,
@@ -2662,7 +2891,7 @@ def _fallback_parse_freelancers_from_doc(
                         continue
                     # 금액 숫자 (10,000원 이상 ~ 5억 이하)
                     w_no_date = re.sub(r"20\d{2}[-./년]\s*\d{1,2}(?:[-./월]\s*\d{1,2})?", " ", w_tok)
-                    for m_n in re.finditer(r"(\d{1,3}(?:,\d{3})+|\d{5,9}|\d+(?:\.\d+)?\s*만\s*원?)", w_no_date):
+                    for m_n in re.finditer(r"(?<![.\d])(\d{1,3}(?:,\d{3})+|\d{5,9}|\d+(?:\.\d+)?\s*만\s*원?)(?![.\d])", w_no_date):
                         v_n = parse_number(m_n.group(1), 0)
                         if "만" in m_n.group(1) and v_n < 10000:
                             v_n = int(float(re.sub(r"[^0-9.]", "", m_n.group(1))) * 10000)
@@ -2861,9 +3090,15 @@ def parse_kakao_text_instructions(
         else:
             seg_wo_meal = seg_wo_rrn
 
-        # 4단계: 3.3% 문구 제거 후 급여 금액 추출
-        seg_clean = re.sub(r"3\.3\s*%?", " ", seg_wo_meal)
-        m_amt = re.search(r"(\d+(?:\.\d+)?)\s*(만\s*원|만|원)?", seg_clean)
+        # 4단계: 날짜·순번·업종코드·3.3% 문구 제거 후 급여 금액 추출
+        seg_clean = re.sub(r"^\s*\d+\s*[.)]\s*", " ", seg_wo_meal)
+        seg_clean = re.sub(r"(?:20\d{2}|\d{2})\s*[-./년]\s*\d{1,2}\s*(?:[-./월]\s*\d{1,2}\s*일?)?|\b\d{1,2}\s*월(?:\s*\d{1,2}\s*일)?", " ", seg_clean)
+        seg_clean = re.sub(r"\b94\d{4}\b|3\.3\s*%?", " ", seg_clean)
+        m_amt = (
+            re.search(r"(\d+(?:\.\d+)?)\s*(만\s*원|만|원)", seg_clean)
+            or re.search(r"\b(\d{5,9})\b()", seg_clean)
+            or re.search(r"(\d+(?:\.\d+)?)\s*(만\s*원|만|원)?", seg_clean)
+        )
         if not m_amt:
             continue
         raw_num = float(m_amt.group(1))
@@ -3110,10 +3345,12 @@ def apply_chat_modifiers_to_state(
         elif any(k in ln for k in ("세전", "액면", "지급총액 기준")):
             target_mode_Switch = "세전"
 
-        ln_for_num_check = re.sub(r"3\.3\s*%?|(?:90|70|50|100)\s*%|20\d{2}[-./년]\s*\d{1,2}|\b\d{6}\b", " ", ln)
+        ln_for_num_check = re.sub(r"\d{6}\s*-\s*[1-8*][0-9*]{5,6}|\b\d{13}\b|3\.3\s*%?|(?:90|70|50|100)\s*%|20\d{2}[-./년]\s*\d{1,2}|\b94\d{4}\b", " ", ln)
         for _, pat_kw, _ in allowance_patterns:
             ln_for_num_check = re.sub(rf"{pat_kw}\s*[:=]?\s*\d+(?:\.\d+)?\s*(?:만\s*원|만|원)?", " ", ln_for_num_check)
-        has_standalone_salary_num = bool(re.search(r"(\d{2,}(?:\.\d+)?)\s*(만\s*원|만|원)", ln_for_num_check))
+        has_standalone_salary_num = bool(
+            re.search(r"(\d{2,}(?:\.\d+)?)\s*(만\s*원|만|원)|\b\d{5,9}\b", ln_for_num_check)
+        )
 
         if target_mode_Switch and not has_standalone_salary_num:
             new_mode = target_mode_Switch

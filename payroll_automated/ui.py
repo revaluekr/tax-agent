@@ -767,6 +767,10 @@ def _sync_workplace_to_employees(pstate: Dict[str, Any], force_all: bool = False
             emp["사업장"] = wp_lbl
 
 
+EMP_AGGRID_KEY = "pay_emp_aggrid_fixed"
+FREE_AGGRID_KEY = "pay_free_aggrid_fixed"
+
+
 def _reset_payroll_current_work(which: str = "ALL") -> None:
     """작업 자료 초기화 — which: "EMP"(급여명세서만) / "FREE"(사업소득만) / "ALL"(둘 다).
     급여명세서와 사업소득은 서로 영향을 주지 않도록 지금 보고 있는 화면의 자료만 비웁니다."""
@@ -780,7 +784,7 @@ def _reset_payroll_current_work(which: str = "ALL") -> None:
     if which == "ALL" or not (pstate.get("employees") or pstate.get("freelancers")):
         pstate["notice_logs"] = []
         pstate["chat_logs"] = []
-    pstate["grid_version"] = int(pstate.get("grid_version", 0)) + 1
+    _commit_server_mutation(pstate)
 
 
 def _normalize_pay_date(v: str) -> str:
@@ -801,7 +805,7 @@ def _apply_period_to_rows(pstate: Dict[str, Any]) -> None:
             fr["귀속년월"] = ym
         if pd_v:
             fr["지급년월일"] = pd_v
-    pstate["grid_version"] = int(pstate.get("grid_version", 0)) + 1
+    _commit_server_mutation(pstate)
 
 
 def _set_period_from_file(pstate: Dict[str, Any], ym: str, pay_date: str = "") -> None:
@@ -811,10 +815,13 @@ def _set_period_from_file(pstate: Dict[str, Any], ym: str, pay_date: str = "") -
     pstate["year_month"] = ym
     pstate["pay_date"] = pay_date or f"{ym}-25"
     pstate["effective_table"] = "2026.03" if ym >= "2026-03" else "2024.03"
+    st.session_state["pay_sb_year_month"] = pstate["year_month"]
+    st.session_state["pay_sb_pay_date"] = pstate["pay_date"]
 
 
 def _on_sidebar_year_month_change() -> None:
     pstate = _get_payroll_state()
+    _pre_sync_payroll_grids_from_session(pstate)
     ym = str(st.session_state.get("pay_sb_year_month") or "").strip()
     if not ym:
         return
@@ -829,6 +836,7 @@ def _on_sidebar_year_month_change() -> None:
 
 def _on_sidebar_pay_date_change() -> None:
     pstate = _get_payroll_state()
+    _pre_sync_payroll_grids_from_session(pstate)
     pd_v = _normalize_pay_date(st.session_state.get("pay_sb_pay_date"))
     pstate["_period_user_set"] = True
     pstate["pay_date"] = pd_v
@@ -914,8 +922,7 @@ def _recalculate_all_employee_rows(pstate: Dict[str, Any]) -> None:
             emp["사원코드"] = f"{idx:03d}"
         new_list.append(emp)
     pstate["employees"] = new_list
-    pstate.pop("_emp_grid_resp_sig", None)
-    _save_payroll_state_to_disk(pstate)
+    _commit_server_mutation(pstate)
 
 
 def _recalculate_all_freelancer_rows(pstate: Dict[str, Any]) -> None:
@@ -960,8 +967,7 @@ def _recalculate_all_freelancer_rows(pstate: Dict[str, Any]) -> None:
             fr["소득구분"] = "940909"
         new_list.append(fr)
     pstate["freelancers"] = new_list
-    pstate.pop("_free_grid_resp_sig", None)
-    _save_payroll_state_to_disk(pstate)
+    _commit_server_mutation(pstate)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1157,7 +1163,6 @@ def _dlg_overtime_calculator():
                         emp["연장근로수당"] = res["overtime_and_night_pay"]
                         emp["휴일근로수당"] = res["holiday_pay"]
                 _recalculate_all_employee_rows(pstate)
-                pstate["grid_version"] += 1
                 st.rerun()
     with b2:
         if st.button("닫기", width="stretch", key="btn_close_ot_dlg"):
@@ -1219,7 +1224,6 @@ def _dlg_weekly_holiday_calculator():
                         emp["월근무시간"] = float(res["monthly_total_hours"])
                         emp["기본급"] = int(res["monthly_total_pay"])
                 _recalculate_all_employee_rows(pstate)
-                pstate["grid_version"] += 1
                 st.rerun()
     with b2:
         if st.button("닫기", width="stretch", key="btn_close_wh_dlg"):
@@ -1283,7 +1287,7 @@ def _dlg_industry_code_selector():
         ):
             for i in valid_sel:
                 frees[i]["소득구분"] = chosen_code
-            pstate["grid_version"] += 1
+            _commit_server_mutation(pstate)
             st.rerun()
     with c_b2:
         if st.button(
@@ -1294,7 +1298,7 @@ def _dlg_industry_code_selector():
         ):
             for fr in frees:
                 fr["소득구분"] = chosen_code
-            pstate["grid_version"] += 1
+            _commit_server_mutation(pstate)
             st.rerun()
     with c_b3:
         if st.button("닫기", width="stretch", key="btn_ind_close"):
@@ -1529,10 +1533,37 @@ def _dlg_ai_tax_review():
 # 좌측 사이드바 렌더링 (인건비 자동화 모드)
 # ─────────────────────────────────────────────────────────────
 
+def _pre_process_pending_bottom_input(pstate: Dict[str, Any], gemini_api_key: Optional[str] = None) -> bool:
+    chat_val = st.session_state.get("pay_bottom_all_in_one_input")
+    if not chat_val:
+        return False
+    val_id = id(chat_val)
+    if st.session_state.get("_pa_processed_chat_val_id") == val_id:
+        return True
+    st.session_state["_pa_processed_chat_val_id"] = val_id
+    in_text = ""
+    in_files: List[Any] = []
+    if isinstance(chat_val, str):
+        in_text = chat_val
+    else:
+        in_text = getattr(chat_val, "text", "") or ""
+        in_files = list(getattr(chat_val, "files", []) or [])
+    if not in_text.strip() and not in_files:
+        return False
+    _process_uploaded_files_and_text(
+        pstate=pstate,
+        uploaded_files=in_files,
+        chat_text=in_text,
+        gemini_api_key=gemini_api_key or st.session_state.get("_pa_explicit_key"),
+    )
+    return True
+
+
 def render_payroll_automated_sidebar() -> None:
     st.markdown(PAYROLL_CSS, unsafe_allow_html=True)
     pstate = _get_payroll_state()
     _pre_sync_payroll_grids_from_session(pstate)
+    _pre_process_pending_bottom_input(pstate)
     is_emp_mode = pstate.get("sub_mode", "EMP") == "EMP"
 
     # (1) 최상단 카드: 업무 화면 선택 ([급여명세서] 파스텔 블루 / [사업소득] 파스텔 퍼플 — 개정사항 모니터링보다 위에 배치)
@@ -1643,8 +1674,30 @@ def render_payroll_automated_sidebar() -> None:
 
         def _on_sb_corp_change() -> None:
             ps = _get_payroll_state()
+            _pre_sync_payroll_grids_from_session(ps)
+            old_wp = _current_workplace_label(ps)
             ps["corp_name"] = str(st.session_state.get("pay_sb_corp_name") or "").strip()
-            _save_payroll_state_to_disk(ps)
+            new_wp = _current_workplace_label(ps)
+            if new_wp != old_wp:
+                for emp in ps.get("employees", []):
+                    if not emp.get("사업장") or emp.get("사업장") == old_wp:
+                        emp["사업장"] = new_wp
+            _commit_server_mutation(ps)
+
+        def _on_sb_wp_change() -> None:
+            ps = _get_payroll_state()
+            _pre_sync_payroll_grids_from_session(ps)
+            old_wp = _current_workplace_label(ps)
+            if "pay_sb_wp_mode" in st.session_state:
+                ps["workplace_mode"] = st.session_state["pay_sb_wp_mode"]
+            if "pay_sb_wp_custom" in st.session_state:
+                ps["workplace_custom"] = str(st.session_state.get("pay_sb_wp_custom") or "").strip()
+            new_wp = _current_workplace_label(ps)
+            if new_wp != old_wp:
+                for emp in ps.get("employees", []):
+                    if not emp.get("사업장") or emp.get("사업장") == old_wp:
+                        emp["사업장"] = new_wp
+            _commit_server_mutation(ps)
 
         corp_val = st.text_input(
             "거래처명",
@@ -1652,7 +1705,9 @@ def render_payroll_automated_sidebar() -> None:
             key="pay_sb_corp_name",
             on_change=_on_sb_corp_change,
         )
-        pstate["corp_name"] = corp_val.strip()
+        if corp_val.strip() != pstate.get("corp_name", ""):
+            pstate["corp_name"] = corp_val.strip()
+            _save_payroll_state_to_disk(pstate)
 
         wp_options = ["본점", "지점", "직접입력", "선택안함(거래처명 표시)"]
         cur_wp_mode = pstate.get("workplace_mode", "본점")
@@ -1663,6 +1718,7 @@ def render_payroll_automated_sidebar() -> None:
             options=wp_options,
             index=wp_options.index(cur_wp_mode),
             key="pay_sb_wp_mode",
+            on_change=_on_sb_wp_change,
             help="급여대장 편집기 맨 앞 '사업장' 열에 표시되며, 본점·지점 백업파일(.paybak)을 통합고용세액공제에 드래그앤드롭하여 합산할 때 구분 기준으로 사용됩니다.",
         )
         pstate["workplace_mode"] = sel_wp_mode
@@ -1673,6 +1729,7 @@ def render_payroll_automated_sidebar() -> None:
                 value=pstate.get("workplace_custom", ""),
                 placeholder="예: 강남지점 / B사업장",
                 key="pay_sb_wp_custom",
+                on_change=_on_sb_wp_change,
             )
             pstate["workplace_custom"] = wp_custom_val.strip()
 
@@ -1681,7 +1738,7 @@ def render_payroll_automated_sidebar() -> None:
             for emp in pstate.get("employees", []):
                 if not emp.get("사업장") or emp.get("사업장") == prev_wp_label:
                     emp["사업장"] = new_wp_label
-            pstate["grid_version"] = int(pstate.get("grid_version", 0)) + 1
+            _commit_server_mutation(pstate)
 
         # 귀속연월: 최근 월이 위로 오도록 역순(12월 → 1월, 최근 연도부터)
         ym_options = [
@@ -1870,7 +1927,7 @@ def render_payroll_automated_sidebar() -> None:
                         pstate["_period_user_set"] = False   # 백업 복원은 백업 당시 귀속연월 그대로
                         pstate["employees"] = list(latest_pack.get("employees", []))
                         pstate["freelancers"] = list(latest_pack.get("freelancers", []))
-                        pstate["grid_version"] += 1
+                        _commit_server_mutation(pstate)
                     st.success(f"백업 파일 불러오기 완료 (총 {len(m_map)}개월분)")
                     st.rerun()
                 except Exception as e:
@@ -1986,8 +2043,8 @@ def _process_uploaded_files_and_text(
                 parsed_fr = parse_freelancer_excel(
                     fbytes,
                     filename=fname,
-                    default_year_month=pstate.get("year_month", ""),
-                    default_pay_date=pstate.get("pay_date", ""),
+                    default_year_month=pstate.get("year_month", "") if pstate.get("_period_user_set") else "",
+                    default_pay_date=pstate.get("pay_date", "") if pstate.get("_period_user_set") else "",
                     gemini_api_key=gemini_api_key,
                 )
                 if parsed_fr:
@@ -1995,6 +2052,12 @@ def _process_uploaded_files_and_text(
                     pstate["sub_mode"] = "FREE"
                     if pstate.get("_period_user_set"):
                         _apply_period_to_rows(pstate)
+                    else:
+                        first_ym = str((parsed_fr[0] or {}).get("귀속년월") or "")
+                        first_pd = str((parsed_fr[0] or {}).get("지급년월일") or "")
+                        if re.match(r"^20\d{2}-\d{2}$", first_ym):
+                            _set_period_from_file(pstate, first_ym, first_pd if len(first_pd) == 10 else "")
+                            _apply_period_to_rows(pstate)
                     pstate["chat_logs"].append(f"[{fmt_label} 로드] '{fname}'에서 사업소득자 {len(parsed_fr)}명을 불러왔습니다.")
                     continue
 
@@ -2173,7 +2236,9 @@ def _process_uploaded_files_and_text(
                 pstate["sub_mode"] = "FREE"
         pstate["chat_logs"].extend(kakao_res["messages"])
 
-    pstate["grid_version"] = int(pstate.get("grid_version", 0)) + 1
+    if pstate.get("_period_user_set") and pstate.get("freelancers"):
+        _apply_period_to_rows(pstate)
+    _commit_server_mutation(pstate)
 
 
 
@@ -2263,21 +2328,60 @@ def _build_free_display_df(pstate: Dict[str, Any]) -> pd.DataFrame:
     return pd.DataFrame(rows_norm, columns=col_keys + ["_row_idx", "_manual"])
 
 
+def _commit_server_mutation(pstate: Dict[str, Any]) -> None:
+    """서버 측 동작(행 추가/삭제, 세전·세후 전환, 사이드바 사업자정보 수정, 파일·채팅 반영, 초기화 등)으로
+    pstate가 변경된 직후 호출하여, 변경된 화면 기준 DataFrame 스냅샷과 현재 세션의 AgGrid 응답 서명을
+    동기화하고 디스크에 즉시 저장합니다. (AgGrid key는 고정 유지하여 iframe 재마운트 오류를 원천 방지)"""
+    _emp_edit_cols = [k for k, _, _, editable, _ct in EMP_GRID_COLUMNS if editable]
+    _free_edit_cols = [k for k, _, _, editable, _ct in FREE_GRID_COLUMNS if editable]
+
+    emp_df = _build_emp_display_df(pstate)
+    pstate["_last_sent_emp_df"] = emp_df
+    pstate["_emp_server_sig"] = _grid_resp_sig(emp_df, _emp_edit_cols)
+    emp_raw = st.session_state.get(EMP_AGGRID_KEY)
+    if isinstance(emp_raw, dict) and emp_raw.get("data") is not None:
+        u_emp = pd.DataFrame(emp_raw["data"]) if not isinstance(emp_raw["data"], pd.DataFrame) else emp_raw["data"]
+        pstate["_emp_browser_sig"] = _grid_resp_sig(u_emp, [c for c in _emp_edit_cols if c in u_emp.columns])
+    else:
+        pstate["_emp_browser_sig"] = pstate["_emp_server_sig"]
+
+    free_df = _build_free_display_df(pstate)
+    pstate["_last_sent_free_df"] = free_df
+    pstate["_free_server_sig"] = _grid_resp_sig(free_df, _free_edit_cols)
+    free_raw = st.session_state.get(FREE_AGGRID_KEY)
+    if isinstance(free_raw, dict) and free_raw.get("data") is not None:
+        u_free = pd.DataFrame(free_raw["data"]) if not isinstance(free_raw["data"], pd.DataFrame) else free_raw["data"]
+        pstate["_free_browser_sig"] = _grid_resp_sig(u_free, [c for c in _free_edit_cols if c in u_free.columns])
+    else:
+        pstate["_free_browser_sig"] = pstate["_free_server_sig"]
+
+    _save_payroll_state_to_disk(pstate)
+
+
 def _apply_emp_df_edits(pstate: Dict[str, Any], shown_df: pd.DataFrame, updated_df: pd.DataFrame) -> bool:
     emps = pstate.get("employees", [])
     if updated_df is None or not isinstance(updated_df, pd.DataFrame) or updated_df.empty or not emps:
         return False
     _edit_cols = [k for k, _, _, editable, _ct in EMP_GRID_COLUMNS if editable and k in updated_df.columns]
     _sig = _grid_resp_sig(updated_df, _edit_cols)
-    if _sig == pstate.get("_emp_grid_resp_sig"):
+    if len(updated_df) != len(emps):
+        pstate["_emp_browser_sig"] = _sig
         return False
+    if _sig in (pstate.get("_emp_browser_sig"), pstate.get("_emp_server_sig"), pstate.get("_emp_grid_resp_sig")):
+        return False
+    pstate["_emp_browser_sig"] = _sig
     pstate["_emp_grid_resp_sig"] = _sig
+
+    ref_df = pstate.get("_last_sent_emp_df")
+    if not isinstance(ref_df, pd.DataFrame) or len(ref_df) != len(emps):
+        ref_df = shown_df
+
     new_emps: List[Dict[str, Any]] = []
     changed = False
     for idx, row in updated_df.iterrows():
         orig = emps[idx] if idx < len(emps) else {}
         merged = dict(orig)
-        shown = shown_df.iloc[idx].to_dict() if idx < len(shown_df) else {}
+        shown = ref_df.iloc[idx].to_dict() if idx < len(ref_df) else {}
         hand = [k for k in _edit_cols if k in shown and not _same_cell(shown.get(k), row.get(k))]
         if not hand:
             new_emps.append(merged)
@@ -2308,8 +2412,7 @@ def _apply_emp_df_edits(pstate: Dict[str, Any], shown_df: pd.DataFrame, updated_
     if changed:
         pstate["employees"] = new_emps
         _recalculate_all_employee_rows(pstate)
-        new_df = _build_emp_display_df(pstate)
-        pstate["_emp_grid_resp_sig"] = _grid_resp_sig(new_df, _edit_cols)
+        pstate["_emp_browser_sig"] = _sig
     return changed
 
 
@@ -2319,15 +2422,24 @@ def _apply_free_df_edits(pstate: Dict[str, Any], shown_df: pd.DataFrame, updated
         return False
     _edit_cols = [k for k, _, _, editable, _ct in FREE_GRID_COLUMNS if editable and k in updated_df.columns]
     _sig = _grid_resp_sig(updated_df, _edit_cols)
-    if _sig == pstate.get("_free_grid_resp_sig"):
+    if len(updated_df) != len(frees):
+        pstate["_free_browser_sig"] = _sig
         return False
+    if _sig in (pstate.get("_free_browser_sig"), pstate.get("_free_server_sig"), pstate.get("_free_grid_resp_sig")):
+        return False
+    pstate["_free_browser_sig"] = _sig
     pstate["_free_grid_resp_sig"] = _sig
+
+    ref_df = pstate.get("_last_sent_free_df")
+    if not isinstance(ref_df, pd.DataFrame) or len(ref_df) != len(frees):
+        ref_df = shown_df
+
     new_frees: List[Dict[str, Any]] = []
     changed = False
     for idx, row in updated_df.iterrows():
         orig = frees[idx] if idx < len(frees) else {}
         merged = dict(orig)
-        shown = shown_df.iloc[idx].to_dict() if idx < len(shown_df) else {}
+        shown = ref_df.iloc[idx].to_dict() if idx < len(ref_df) else {}
         hand = [k for k in _edit_cols if k in shown and not _same_cell(shown.get(k), row.get(k))]
         if not hand:
             new_frees.append(merged)
@@ -2365,8 +2477,7 @@ def _apply_free_df_edits(pstate: Dict[str, Any], shown_df: pd.DataFrame, updated
     if changed:
         pstate["freelancers"] = new_frees
         _recalculate_all_freelancer_rows(pstate)
-        new_df = _build_free_display_df(pstate)
-        pstate["_free_grid_resp_sig"] = _grid_resp_sig(new_df, _edit_cols)
+        pstate["_free_browser_sig"] = _sig
     return changed
 
 
@@ -2376,11 +2487,7 @@ def _pre_sync_payroll_grids_from_session(pstate: Dict[str, Any]) -> None:
     st.session_state에 들어온 AgGrid의 최신 셀 편집값과 체크박스 선택 상태를 먼저 pstate에 반영하여
     버튼 클릭 시 사용자가 표에 입력한 정보가 초기화되는 현상을 원천 차단합니다.
     """
-    ver = pstate.get("grid_version", 0)
-    emp_key = f"pay_emp_aggrid_{ver}"
-    free_key = f"pay_free_aggrid_{ver}"
-
-    emp_raw = st.session_state.get(emp_key)
+    emp_raw = st.session_state.get(EMP_AGGRID_KEY)
     if isinstance(emp_raw, dict):
         pstate["selected_emp_indices"] = _extract_selected_row_indices(emp_raw)
         raw_df = emp_raw.get("data")
@@ -2390,7 +2497,7 @@ def _pre_sync_payroll_grids_from_session(pstate: Dict[str, Any]) -> None:
                 shown_df = _build_emp_display_df(pstate)
                 _apply_emp_df_edits(pstate, shown_df, upd_df)
 
-    free_raw = st.session_state.get(free_key)
+    free_raw = st.session_state.get(FREE_AGGRID_KEY)
     if isinstance(free_raw, dict):
         pstate["selected_free_indices"] = _extract_selected_row_indices(free_raw)
         raw_df = free_raw.get("data")
@@ -2564,6 +2671,9 @@ def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
     grid_height = min(520, max(230, 58 + len(df) * 36))
 
     custom_css = _build_toss_aggrid_custom_css()
+    _emp_edit_cols = [k for k, _, _, editable, _ct in EMP_GRID_COLUMNS if editable and k in df.columns]
+    pstate["_last_sent_emp_df"] = df
+    pstate["_emp_server_sig"] = _grid_resp_sig(df, _emp_edit_cols)
 
     grid_resp = AgGrid(
         df,
@@ -2574,7 +2684,7 @@ def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
         allow_unsafe_jscode=True,
         custom_css=custom_css,
         theme="streamlit",
-        key=f"pay_emp_aggrid_{pstate.get('grid_version', 0)}",
+        key=EMP_AGGRID_KEY,
         server_sync_strategy="server_wins",   # 수정 후 다시 계산한 값(4대보험·세액 등)을 표를 새로 만들지 않고 그대로 반영
     )
 
@@ -2802,6 +2912,10 @@ def _render_freelancer_aggrid(pstate: Dict[str, Any]) -> None:
     grid_opts["overlayNoRowsTemplate"] = _build_toss_empty_overlay_html(is_emp=False)
     grid_height = min(480, max(230, 58 + len(df) * 36))
 
+    _free_edit_cols = [k for k, _, _, editable, _ct in FREE_GRID_COLUMNS if editable and k in df.columns]
+    pstate["_last_sent_free_df"] = df
+    pstate["_free_server_sig"] = _grid_resp_sig(df, _free_edit_cols)
+
     grid_resp = AgGrid(
         df,
         gridOptions=grid_opts,
@@ -2811,7 +2925,7 @@ def _render_freelancer_aggrid(pstate: Dict[str, Any]) -> None:
         allow_unsafe_jscode=True,
         custom_css=_build_toss_aggrid_custom_css(),
         theme="streamlit",
-        key=f"pay_free_aggrid_{pstate.get('grid_version', 0)}",
+        key=FREE_AGGRID_KEY,
         server_sync_strategy="server_wins",   # 수정 후 다시 계산한 값(4대보험·세액 등)을 표를 새로 만들지 않고 그대로 반영
     )
 
@@ -2954,11 +3068,9 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
                         )
                     f_item["입력기준"] = target_next_mode
                 _recalculate_all_freelancer_rows(pstate)
-                _edit_cols_sw = [k for k, _, _, editable, _ct in FREE_GRID_COLUMNS if editable]
-                pstate["_free_grid_resp_sig"] = _grid_resp_sig(_build_free_display_df(pstate), _edit_cols_sw)
                 mode_desc = "세후(파일 금액 = 차인지급액 기준 3.3% 역산)" if target_next_mode == "세후역산" else "세전(파일 금액 = 지급총액 기준 3.3% 공제)"
                 pstate["chat_logs"].append(f"[전체 스위치 전환] 프리랜서 {len(frees_cur)}명 전체를 '{mode_desc}'으로 일괄 전환했습니다.")
-                _save_payroll_state_to_disk(pstate)
+                _commit_server_mutation(pstate)
                 st.rerun()
 
     with top_c1:
@@ -2973,7 +3085,6 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
                     pstate["prev_employees"] = list(prev_pack["employees"])
                     pstate["employees"] = [{k: v for k, v in e.items() if k != "_수기"} for e in prev_pack["employees"]]
                     _recalculate_all_employee_rows(pstate)
-                    pstate["grid_version"] += 1
                     st.toast(f"직전 귀속월({prev_pack.get('year_month')}) 급여대장 {len(pstate['employees'])}명을 불러왔습니다.")
                     st.rerun()
                 elif not is_emp_mode and prev_pack.get("freelancers"):
@@ -2981,7 +3092,6 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
                     pstate["freelancers"] = [{k: v for k, v in f.items() if k != "_수기"} for f in prev_pack["freelancers"]]
                     _apply_period_to_rows(pstate)   # 전월 명단을 가져오되 귀속연월·지급일자는 지금 화면 기준
                     _recalculate_all_freelancer_rows(pstate)
-                    pstate["grid_version"] += 1
                     st.toast(f"직전 귀속월({prev_pack.get('year_month')}) 사업소득자 {len(pstate['freelancers'])}명을 불러왔습니다.")
                     st.rerun()
                 else:
@@ -3034,9 +3144,7 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
                     "공제액계": f_calc["total_deduction"],
                     "차인지급액": f_calc["net_pay"],
                 })
-            pstate.pop("_emp_grid_resp_sig", None)
-            pstate.pop("_free_grid_resp_sig", None)
-            _save_payroll_state_to_disk(pstate)
+            _commit_server_mutation(pstate)
             st.rerun()
 
     with top_c3:
@@ -3050,7 +3158,7 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
                         e for i, e in enumerate(pstate.get("employees", [])) if i not in drop_set
                     ]
                     pstate["selected_emp_indices"] = []
-                    pstate["grid_version"] += 1
+                    _commit_server_mutation(pstate)
                     st.rerun()
                 else:
                     st.warning("삭제할 행의 맨 왼쪽 체크박스를 먼저 선택해 주세요.")
@@ -3061,7 +3169,7 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
                         f for i, f in enumerate(pstate.get("freelancers", [])) if i not in drop_set
                     ]
                     pstate["selected_free_indices"] = []
-                    pstate["grid_version"] += 1
+                    _commit_server_mutation(pstate)
                     st.rerun()
                 else:
                     st.warning("삭제할 대상자의 맨 왼쪽 체크박스를 먼저 선택해 주세요.")
@@ -3415,7 +3523,8 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
         height=0,
     )
 
-    if chat_val:
+    if chat_val and st.session_state.get("_pa_processed_chat_val_id") != id(chat_val):
+        st.session_state["_pa_processed_chat_val_id"] = id(chat_val)
         in_text = ""
         in_files: List[Any] = []
         if isinstance(chat_val, str):

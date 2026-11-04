@@ -65,21 +65,20 @@ def _lazy_pdf_bytes(fn, *args, **kwargs):
 
 
 def _purge_stale_ec_grid_keys(s: dict | None = None, years: list[int] | None = None) -> None:
-    """grid_ver가 변경될 때 이전 버전의 ec_grid_* 위젯 상태를 세션에서 정리합니다."""
-    if isinstance(s, dict):
-        sig_map = s.get("_grid_resp_sig")
-        if isinstance(sig_map, dict):
-            if years is None:
-                sig_map.clear()
-            else:
-                for y in years:
-                    sig_map.pop(int(y), None)
-                    sig_map.pop(str(y), None)
-    prefixes = tuple(f"ec_grid_{int(y)}_" for y in years) if years else ("ec_grid_",)
-    for k in list(st.session_state.keys()):
-        ks = str(k)
-        if ks.startswith(prefixes):
-            st.session_state.pop(k, None)
+    """서버 측 변경(사원 추가/삭제, 기업규모 변경, 사이드바 수정 등) 직후 현재 세션의 AgGrid 응답 서명을
+    이미 처리된 서명(_ec_browser_sig)으로 기록하여, AgGrid key를 바꾸지 않고(iframe 재마운트 없이)
+    server_sync_strategy='server_wins'로 안전하게 표를 갱신합니다."""
+    if not isinstance(s, dict):
+        return
+    b_sig_map = s.setdefault("_ec_browser_sig", {})
+    target_yrs = [int(y) for y in years] if years is not None else list(_all_possible_years(s))
+    for y in target_yrs:
+        g_key = _active_ec_grid_key(s, y)
+        v_ss = st.session_state.get(g_key)
+        if isinstance(v_ss, dict) and v_ss.get("data") is not None:
+            raw_d = v_ss["data"]
+            bdf = pd.DataFrame(raw_d) if not isinstance(raw_d, pd.DataFrame) else raw_d
+            b_sig_map[int(y)] = _ec_df_sig(bdf)
 
 
 def _build_schedule_pdf_bytes(s: dict, target_years: list[int], include_summary: bool = False) -> bytes:
@@ -992,13 +991,20 @@ def _ec_df_sig(df: pd.DataFrame) -> str:
 
 
 def _apply_changes(s: dict, year: int, sent: list[dict], back: pd.DataFrame) -> bool:
-    if back is None or back.empty or "pid" not in back.columns:
+    if back is None or back.empty or "pid" not in back.columns or not sent:
         return False
     sig_map = s.setdefault("_grid_resp_sig", {})
+    b_sig_map = s.setdefault("_ec_browser_sig", {})
     cur_sig = _ec_df_sig(back)
-    if cur_sig and sig_map.get(year) == cur_sig:
+    sent_pids = [str(r.get("pid")) for r in sent if r.get("pid")]
+    back_pids = [str(p) for p in back["pid"].tolist() if pd.notna(p)]
+    if len(back_pids) != len(sent_pids) or set(back_pids) != set(sent_pids):
+        b_sig_map[int(year)] = cur_sig
         return False
-    sig_map[year] = cur_sig
+    if cur_sig and cur_sig in (sig_map.get(year), sig_map.get(int(year)), b_sig_map.get(year), b_sig_map.get(int(year))):
+        return False
+    b_sig_map[int(year)] = cur_sig
+    sig_map[int(year)] = cur_sig
 
     before = {r["pid"]: r for r in sent}
     changed = False
@@ -1223,12 +1229,7 @@ _DROP_INTERNAL_DF_COLS = (
 
 
 def _active_ec_grid_key(s: dict, year: int) -> str:
-    ver = int(s.get("grid_ver", {}).get(year, 0))
-    def_sz = R.normalize_corp_size(s.get("corp_size_default") or s.get("biz", {}).get("기업구분", "중소기업"))
-    cur_yr_sz = _cohort_corp_size(s, year, def_sz)
-    sz_code = {"중소기업": "sme", "중견기업": "mid", "일반기업": "lrg"}.get(cur_yr_sz, "sme")
-    qf = str(s.get("emp_quick_filter") or "ALL")
-    return f"ec_grid_{year}_{ver}_{sz_code}_{int(s.get('assume_year_end', True))}_{int(s.get('include_unpaid_hire_month', True))}_{qf}"
+    return f"ec_grid_{int(year)}_fixed"
 
 
 def _sync_active_ec_grids_once(s: dict) -> None:
@@ -1500,6 +1501,7 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
         key=grid_key,
         height=grid_height,
         fit_columns_on_grid_load=False,
+        server_sync_strategy="server_wins",
     )
     back = getattr(resp, "data", None)
     if back is None:

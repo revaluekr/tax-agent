@@ -1171,6 +1171,10 @@ def render_credit_sidebar():
             on_change=_on_tax_year_change,
         )
 
+    if int(s.get("step") or 1) == 2 and s.get("last_sent"):
+        from .ui_step2 import _sync_active_ec_grids_once
+        _sync_active_ec_grids_once(s)
+
     with st.container(border=True, key="ec_biz"):
         b, conf = s["biz"], set(s["biz_confirmed"])
         sub_list = s.setdefault("sub_biz_list", [])
@@ -1220,10 +1224,13 @@ def render_credit_sidebar():
             help="중소기업 유예기간(조특령 제2조) 중이면 중소기업으로 선택하세요. 기본값을 바꾸면 개별로 바꾼 적 없는 연도만 따라 바뀝니다.",
         )
         if new_sb_size != prev_tracked_sb:
+            from .ui_step2 import _sync_active_ec_grids_once, _purge_stale_ec_grid_keys
+            _sync_active_ec_grids_once(s)
             R.apply_corp_size_default_change(s, new_sb_size)
             s["yr_sz_ver"] = yr_sz_ver_sb + 1
             for y_all in _all_possible_years(s):
                 s["grid_ver"][y_all] = s["grid_ver"].get(y_all, 0) + 1
+            _purge_stale_ec_grid_keys(s)
             s.pop("_report_artifact_cache", None)
             _save_ec_to_disk(s)
             st.rerun()
