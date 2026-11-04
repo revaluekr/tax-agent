@@ -1068,9 +1068,9 @@ def render_credit_sidebar():
     rul_badge_txt = str(rul_mon.get("badge_text") or "")
     rul_badge_html = f"<span class='ec-law-badge-green'>{rul_badge_txt}</span>" if rul_badge_txt else ""
 
-    with st.container(border=True):
+    ec_law_exp_lbl = "개정사항·신규 세법해석 (확인 필요)" if law_led_cls == "orange" else f"개정사항·신규 세법해석 ({law_badge_txt or '정상'})"
+    with st.expander(ec_law_exp_lbl, expanded=(law_led_cls == "orange")):
         st.markdown(
-            _ui_theme.sb_title("book", "개정사항·신규 세법해석") +
             f"<div class='ec-law-status-row'>"
             f"<span class='ec-law-status-left'><span class='ec-law-led-3d {law_led_cls}'></span>법령·시행령·규칙 개정</span>"
             f"{law_badge_html}"
@@ -1090,21 +1090,13 @@ def render_credit_sidebar():
             _dlg_ec_law_monitoring_detail(tax_yr)
 
 
-    # [Feature B] 통합고용세액공제 전용 자료·내용 초기화 카드 (내 작업공간 코드 위치 대체)
+    # [Feature B] 통합고용세액공제 전용 자료·내용 초기화 아코디언
     has_any_ec_data = bool(
         s.get("files") or s.get("people") or (s.get("biz") or {}).get("상호")
         or any((v or {}).get("상시") is not None or (v or {}).get("공제세액") is not None for v in (s.get("prev_summary") or {}).values() if isinstance(v, dict))
     )
-    with st.container(border=True):
-        status_pill = (
-            f"<span class='sb-badge-green'>사원 {len(s.get('people') or {})}명 · 서류 {len(s.get('files') or {})}건</span>"
-            if has_any_ec_data
-            else "<span class='sb-badge-amber'>초기 상태</span>"
-        )
-        st.markdown(
-            _ui_theme.sb_title("refresh", "작업 자료 관리", status_pill),
-            unsafe_allow_html=True,
-        )
+    ec_work_lbl = f"사원 {len(s.get('people') or {})}명 · 서류 {len(s.get('files') or {})}건" if has_any_ec_data else "초기 상태"
+    with st.expander(f"작업 자료 관리 ({ec_work_lbl})", expanded=bool(st.session_state.get("ec_confirm_reset"))):
         if not st.session_state.get("ec_confirm_reset"):
             if st.button(
                 "자료 초기화 (내용 비우기)",

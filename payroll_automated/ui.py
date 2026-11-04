@@ -482,7 +482,7 @@ div[data-testid="stDialog"] div[role="dialog"] {
     display: block;
 }
 
-/* 🔴 사업소득 상단 [기준금액: 세전 (●   ) 세후] 캡슐 토글 스위치 전용 스타일 (pay_main_css 우선순위 및 stTooltipHoverTarget 완전 대응) */
+/* 🔵 사업소득 상단 [기준금액: 세전 | 세후] 토스 웹(TDS) 세그먼트 캡슐 토글 스위치 스타일 */
 [data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"],
 div[class*="st-key-pay_free_sw_"] {
     display: flex !important;
@@ -499,31 +499,22 @@ div[class*="st-key-pay_free_sw_"] div[data-testid="stTooltipHoverTarget"] {
 [data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"] div.stButton button:not([kind="primary"]),
 [data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"] div.stButton button,
 div[class*="st-key-pay_free_sw_"] div.stButton button {
-    background: transparent !important;
-    border: none !important;
-    border-bottom: none !important;
+    background: #F2F4F6 !important;
+    border: 1px solid #E5E8EB !important;
+    border-radius: 999px !important;
     box-shadow: none !important;
-    padding: 2px 4px !important;
-    min-height: 36px !important;
-    height: 36px !important;
+    padding: 3px 10px !important;
+    min-height: 38px !important;
+    height: 38px !important;
     display: inline-flex !important;
     align-items: center !important;
     justify-content: center !important;
     gap: 8px !important;
     cursor: pointer !important;
 }
-[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"] div.stButton button:not([kind="primary"]):hover:not(:disabled),
-[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"] div.stButton button:hover,
-[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"] div.stButton button:active,
-[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"] div.stButton button:focus,
-div[class*="st-key-pay_free_sw_"] div.stButton button:hover,
-div[class*="st-key-pay_free_sw_"] div.stButton button:active,
-div[class*="st-key-pay_free_sw_"] div.stButton button:focus {
-    background: transparent !important;
-    border: none !important;
-    border-bottom: none !important;
-    box-shadow: none !important;
-    outline: none !important;
+[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"] div.stButton button:hover {
+    background: #E8F3FF !important;
+    border-color: #90C2FF !important;
 }
 [data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"] div.stButton button > div,
 div[class*="st-key-pay_free_sw_"] div.stButton button > div {
@@ -536,76 +527,59 @@ div[class*="st-key-pay_free_sw_"] div.stButton button > div {
     margin: 0 !important;
     padding: 0 !important;
 }
-/* 왼쪽 라벨: '기준금액: 세전' */
+/* 왼쪽 라벨: '기준금액 : 세전' */
 [data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-pay_free_sw_gross div.stButton button::before,
 .st-key-pay_free_sw_gross div.stButton button::before {
-    content: "기준금액: 세전" !important;
-    font-size: 0.86rem !important;
+    content: "기준금액 : 세전" !important;
+    font-size: 0.84rem !important;
     font-weight: 800 !important;
-    color: #dc2626 !important;
-    letter-spacing: -0.3px !important;
+    color: #3182F6 !important;
+    background: #FFFFFF !important;
+    padding: 4px 10px !important;
+    border-radius: 999px !important;
+    box-shadow: 0 1px 3px rgba(0, 27, 55, 0.10) !important;
+    letter-spacing: -0.2px !important;
     white-space: nowrap !important;
 }
 [data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-pay_free_sw_net div.stButton button::before,
 .st-key-pay_free_sw_net div.stButton button::before {
-    content: "기준금액: 세전" !important;
-    font-size: 0.86rem !important;
+    content: "기준금액 : 세전" !important;
+    font-size: 0.84rem !important;
     font-weight: 600 !important;
-    color: #94a3b8 !important;
-    letter-spacing: -0.3px !important;
+    color: #8B95A1 !important;
+    padding: 4px 6px !important;
+    letter-spacing: -0.2px !important;
     white-space: nowrap !important;
 }
-/* 가운데 빨간색 캡슐 트랙 + 흰색 동그라미(●) 이동 */
-[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"] div.stButton button:not([kind="primary"]) p,
+/* 가운데 점(●)은 숨기고 세그먼트 알약 탭으로 표현 */
 [data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"] div.stButton button p,
 div[class*="st-key-pay_free_sw_"] div.stButton button p {
-    width: 48px !important;
-    height: 24px !important;
-    border-radius: 999px !important;
-    background: linear-gradient(180deg, #ef4444 0%, #dc2626 100%) !important;
-    border: 1.5px solid #b91c1c !important;
-    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.22), 0 1px 2px rgba(220, 38, 38, 0.25) !important;
-    display: inline-flex !important;
-    align-items: center !important;
-    padding: 0 3px !important;
-    margin: 0 !important;
-    color: #ffffff !important;
-    font-size: 16px !important;
-    font-weight: 800 !important;
-    line-height: 1 !important;
-    transition: all 0.18s ease-in-out !important;
-}
-[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-pay_free_sw_gross div.stButton button:not([kind="primary"]) p,
-[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-pay_free_sw_gross div.stButton button p,
-.st-key-pay_free_sw_gross div.stButton button p {
-    justify-content: flex-start !important;
-}
-[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-pay_free_sw_net div.stButton button:not([kind="primary"]) p,
-[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-pay_free_sw_net div.stButton button p,
-.st-key-pay_free_sw_net div.stButton button p {
-    justify-content: flex-end !important;
-    background: linear-gradient(180deg, #dc2626 0%, #b91c1c 100%) !important;
+    display: none !important;
 }
 /* 오른쪽 라벨: '세후' */
 [data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-pay_free_sw_gross div.stButton button::after,
 .st-key-pay_free_sw_gross div.stButton button::after {
     content: "세후" !important;
-    font-size: 0.86rem !important;
+    font-size: 0.84rem !important;
     font-weight: 600 !important;
-    color: #94a3b8 !important;
-    letter-spacing: -0.3px !important;
+    color: #8B95A1 !important;
+    padding: 4px 8px !important;
+    letter-spacing: -0.2px !important;
     white-space: nowrap !important;
 }
 [data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-pay_free_sw_net div.stButton button::after,
 .st-key-pay_free_sw_net div.stButton button::after {
     content: "세후" !important;
-    font-size: 0.86rem !important;
+    font-size: 0.84rem !important;
     font-weight: 800 !important;
-    color: #dc2626 !important;
-    letter-spacing: -0.3px !important;
+    color: #3182F6 !important;
+    background: #FFFFFF !important;
+    padding: 4px 10px !important;
+    border-radius: 999px !important;
+    box-shadow: 0 1px 3px rgba(0, 27, 55, 0.10) !important;
+    letter-spacing: -0.2px !important;
     white-space: nowrap !important;
 }
-
 </style>
 """
 
@@ -1541,9 +1515,9 @@ def render_payroll_automated_sidebar() -> None:
         else "<span class='ec-law-badge-orange'>2026.03 별표2·요율 반영</span>"
     )
 
-    with st.container(border=True):
+    law_exp_label = "개정사항·신규 세법 (신규 개정 감지)" if (row1_new or row2_new) else "개정사항·신규 세법 (정상 2건)"
+    with st.expander(law_exp_label, expanded=bool(row1_new or row2_new)):
         st.markdown(
-            _ui_theme.sb_title("book", "개정사항·신규 세법") +
             f"<div class='ec-law-status-row'>"
             f"<span class='ec-law-status-left'><span class='ec-law-led-3d {led_row1}'></span>근로기준법 · 소득세법</span>"
             f"{badge_row1}"
@@ -1562,24 +1536,16 @@ def render_payroll_automated_sidebar() -> None:
         ):
             _dlg_payroll_law_revisions()
 
-    # (3) 작업 자료 관리 카드 (통합고용세액공제와 동일한 아이콘 및 버튼 디자인 적용)
+    # (3) 작업 자료 관리 (토스 스타일 접이식 아코디언으로 압축하여 아래 사업자정보 입력 카드가 한눈에 보이도록 배치)
     emp_cnt = len(pstate.get("employees", []))
     free_cnt = len(pstate.get("freelancers", []))
     has_data = (emp_cnt + free_cnt) > 0 or bool(pstate.get("corp_name"))
     _rs_which = "EMP" if is_emp_mode else "FREE"
     _rs_name = "급여명세서(급여대장)" if is_emp_mode else "사업소득(사업소득대장)"
     _rs_has = (emp_cnt if is_emp_mode else free_cnt) > 0
+    work_status_txt = f"근로 {emp_cnt}명 · 사업 {free_cnt}명" if has_data else "초기 상태"
 
-    with st.container(border=True):
-        status_pill = (
-            f"<span class='sb-badge-green'>근로 {emp_cnt}명 · 사업 {free_cnt}명</span>"
-            if has_data
-            else "<span class='sb-badge-amber'>초기 상태</span>"
-        )
-        st.markdown(
-            _ui_theme.sb_title("refresh", "작업 자료 관리", status_pill),
-            unsafe_allow_html=True,
-        )
+    with st.expander(f"작업 자료 관리 ({work_status_txt})", expanded=bool(st.session_state.get("pay_confirm_reset"))):
         if not st.session_state.get("pay_confirm_reset"):
             if st.button(
                 "자료 초기화 (내용 비우기)",
@@ -1601,8 +1567,8 @@ def render_payroll_automated_sidebar() -> None:
                 st.session_state["pay_confirm_reset"] = False
                 st.rerun()
 
-    # (4) 사업자정보 카드 (통합고용세액공제와 동일한 🏢 아이콘 및 우측 끝 '직접입력' 배지 적용)
-    with st.container(border=True):
+    # (4) 사업자정보 카드 (토스 웹 스타일 입체 화이트 카드 그룹화)
+    with st.container(border=True, key="pay_sb_biz_card"):
         st.markdown(
             _ui_theme.sb_title("building", "사업자정보", "<span class='sb-badge-pro'>직접입력</span>"),
             unsafe_allow_html=True,
@@ -1690,9 +1656,9 @@ def render_payroll_automated_sidebar() -> None:
 
         if is_emp_mode:
             st.markdown(
-                f"<div style='background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; padding:6px 10px; margin-bottom:8px; font-size:0.83rem; color:#1e293b;'>"
-                f"<b>상시근로자 수:</b> {total_workers}명 (재직 {active_workers}명)<br>"
-                f"<span style='font-size:0.76rem; color:#475569;'>적용 기준: {scale_label}</span>"
+                f"<div style='background:#E8F3FF; border:none; border-radius:10px; padding:9px 12px; margin-bottom:8px; font-size:0.83rem; color:#191F28;'>"
+                f"<b style='color:#3182F6;'>상시근로자 수: {total_workers}명</b> <span style='color:#4E5968;font-size:0.78rem;'>(재직 {active_workers}명)</span><br>"
+                f"<span style='font-size:0.76rem; color:#3182F6; font-weight:600;'>적용 기준: {scale_label}</span>"
                 f"</div>",
                 unsafe_allow_html=True,
             )
@@ -2139,6 +2105,60 @@ def _process_uploaded_files_and_text(
     pstate["grid_version"] = int(pstate.get("grid_version", 0)) + 1
 
 
+
+def _build_toss_empty_overlay_html(is_emp: bool = True) -> str:
+    title = "아직 등록된 급여 대상자가 없습니다" if is_emp else "아직 등록된 사업소득 대상자가 없습니다"
+    sub = (
+        "아래 AI 입력창에 급여대장·고지서 파일을 끌어다 놓거나, 상단의 [+ 행 추가] 버튼을 눌러 시작하세요."
+        if is_emp
+        else "아래 AI 입력창에 사업소득 내역 파일을 끌어다 놓거나, 상단의 [+ 행 추가] 버튼을 눌러 시작하세요."
+    )
+    btn2 = "전월 급여 데이터 불러오기" if is_emp else "전월 사업소득 불러오기"
+    return (
+        "<div style='display:flex;flex-direction:column;align-items:center;justify-content:center;"
+        "padding:24px 28px;background:#FFFFFF;border-radius:16px;max-width:460px;margin:0 auto;'>"
+        "<div style='width:52px;height:52px;border-radius:16px;background:linear-gradient(135deg,#E8F3FF 0%,#D0E6FF 100%);"
+        "display:flex;align-items:center;justify-content:center;margin-bottom:12px;position:relative;"
+        "box-shadow:0 4px 12px rgba(49,130,246,0.14);'>"
+        "<svg width='26' height='26' viewBox='0 0 24 24' fill='none' stroke='#3182F6' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'>"
+        "<path d='M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z'></path>"
+        "<polyline points='14 2 14 8 20 8'></polyline>"
+        "<line x1='12' y1='18' x2='12' y2='12'></line>"
+        "<line x1='9' y1='15' x2='15' y2='15'></line>"
+        "</svg></div>"
+        f"<div style='font-size:15px;font-weight:800;color:#191F28;letter-spacing:-0.3px;margin-bottom:5px;'>{title}</div>"
+        f"<div style='font-size:12.5px;color:#8B95A1;line-height:1.5;text-align:center;margin-bottom:14px;'>{sub}</div>"
+        "<div style='display:flex;gap:8px;align-items:center;pointer-events:auto;'>"
+        "<span onclick=\"try{var d=window.parent.parent?window.parent.parent.document:window.parent.document;var b=d.querySelector('.st-key-btn_pay_add_row button');if(b)b.click();}catch(e){}\" "
+        "style='cursor:pointer;background:#3182F6;color:#FFFFFF;font-size:12px;font-weight:700;padding:6px 14px;border-radius:999px;"
+        "box-shadow:0 2px 6px rgba(49,130,246,0.24);'>+ 직접 행 추가하기</span>"
+        f"<span onclick=\"try{{var d=window.parent.parent?window.parent.parent.document:window.parent.document;var b=d.querySelector('.st-key-btn_pay_load_prev_month button');if(b)b.click();}}catch(e){{}}\" "
+        f"style='cursor:pointer;background:#F2F4F6;color:#4E5968;font-size:12px;font-weight:700;padding:6px 14px;border-radius:999px;'>{btn2}</span>"
+        "</div></div>"
+    )
+
+
+def _build_toss_aggrid_custom_css() -> Dict[str, Any]:
+    return {
+        ".ag-root-wrapper": {"border": "1px solid #E5E8EB !important", "border-radius": "12px !important"},
+        ".ag-header": {"background-color": "#F9FAFB !important", "border-bottom": "1px solid #E5E8EB !important"},
+        ".ag-header-cell-label": {"justify-content": "center", "font-weight": "700", "font-size": "12.2px", "color": "#4E5968"},
+        ".ag-cell": {"font-size": "12.5px", "color": "#191F28"},
+        ".pay-col-min": {"padding-left": "2px !important", "padding-right": "2px !important"},
+        ".pay-col-min .ag-header-cell-text": {"white-space": "normal !important", "line-height": "1.15", "text-align": "center"},
+        ".ag-overlay-no-rows-wrapper": {"background-color": "#FFFFFF !important", "pointer-events": "auto"},
+        ".ag-body-horizontal-scroll-viewport::-webkit-scrollbar": {"height": "6px !important"},
+        ".ag-body-vertical-scroll-viewport::-webkit-scrollbar": {"width": "6px !important"},
+        ".ag-body-horizontal-scroll-viewport::-webkit-scrollbar-thumb, .ag-body-vertical-scroll-viewport::-webkit-scrollbar-thumb": {
+            "background": "#CBD5E1 !important",
+            "border-radius": "999px !important",
+        },
+        ".ag-body-horizontal-scroll-viewport::-webkit-scrollbar-track, .ag-body-vertical-scroll-viewport::-webkit-scrollbar-track": {
+            "background": "#F9FAFB !important",
+        },
+    }
+
+
 def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
     _sync_workplace_to_employees(pstate, force_all=False)
     emps = pstate.get("employees", [])
@@ -2296,14 +2316,10 @@ def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
             cdef["headerTooltip"] = f"{cdef.get('headerName', '')} (전원 0원 — 자동 축소)"
             cdef["headerClass"] = "pay-col-min"
             cdef["minWidth"] = 30
-    grid_height = min(520, max(230, 58 + len(df) * 36))
+    grid_opts["overlayNoRowsTemplate"] = _build_toss_empty_overlay_html(is_emp=True)
+    grid_height = 268 if df.empty else min(520, max(230, 58 + len(df) * 36))
 
-    custom_css = {
-        ".ag-header-cell-label": {"justify-content": "center", "font-weight": "700", "font-size": "12.2px"},
-        ".ag-cell": {"font-size": "12.5px"},
-        ".pay-col-min": {"padding-left": "2px !important", "padding-right": "2px !important"},
-        ".pay-col-min .ag-header-cell-text": {"white-space": "normal !important", "line-height": "1.15", "text-align": "center"},
-    }
+    custom_css = _build_toss_aggrid_custom_css()
 
     grid_resp = AgGrid(
         df,
@@ -2546,7 +2562,7 @@ def _render_freelancer_aggrid(pstate: Dict[str, Any]) -> None:
             if ctype == "numeric_total":
                 cell_style = {"textAlign": "right", "fontWeight": "bold", "backgroundColor": "#f8fafc"}
             elif ctype == "numeric_net":
-                cell_style = {"textAlign": "right", "fontWeight": "bold", "backgroundColor": "#f3e8ff", "color": "#4c1d95"}
+                cell_style = {"textAlign": "right", "fontWeight": "bold", "backgroundColor": "#E5F9F0", "color": "#00A660"}
             gb.configure_column(
                 field,
                 header_name=header_name,
@@ -2574,7 +2590,8 @@ def _render_freelancer_aggrid(pstate: Dict[str, Any]) -> None:
 
     grid_opts = gb.build()
     grid_opts["suppressSizeToFit"] = True   # 열 폭을 내용에 맞춘 값 그대로 (화면 폭에 맞춰 줄이지 않음 → 머리글·값 잘림 방지)
-    grid_height = min(480, max(230, 58 + len(df) * 36))
+    grid_opts["overlayNoRowsTemplate"] = _build_toss_empty_overlay_html(is_emp=False)
+    grid_height = 268 if df.empty else min(480, max(230, 58 + len(df) * 36))
 
     grid_resp = AgGrid(
         df,
@@ -2583,6 +2600,7 @@ def _render_freelancer_aggrid(pstate: Dict[str, Any]) -> None:
         update_mode=GridUpdateMode.VALUE_CHANGED | GridUpdateMode.SELECTION_CHANGED,
         fit_columns_on_grid_load=False,
         allow_unsafe_jscode=True,
+        custom_css=_build_toss_aggrid_custom_css(),
         theme="streamlit",
         key=f"pay_free_aggrid_{pstate.get('grid_version', 0)}",
         server_sync_strategy="server_wins",   # 수정 후 다시 계산한 값(4대보험·세액 등)을 표를 새로 만들지 않고 그대로 반영
@@ -2691,8 +2709,8 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
 
     # B안: 위치 표시·꼬리표·큰 제목 → 요약 카드 → 표 카드(툴바 + 표) → 내려받기 카드 → 입력창
     import ui_theme as _ui_theme
-    st.markdown(_ui_theme.pay_main_css(), unsafe_allow_html=True)
     st.markdown(PAYROLL_CSS, unsafe_allow_html=True)
+    st.markdown(_ui_theme.pay_main_css(), unsafe_allow_html=True)
     _corp_h = pstate.get("corp_name") or "거래처 미입력"
     _wp_h = _current_workplace_label(pstate)
     _ym_h = pstate.get("year_month") or ""
@@ -2737,9 +2755,9 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
 
     _tbl_card = st.container(key="pay_table_card")
     if is_emp_mode:
-        top_c1, top_c2, top_c3, _top_sp, top_c4, top_c5 = _tbl_card.columns([1.45, 0.85, 1.25, 1.6, 1.45, 1.25], gap="small", vertical_alignment="center")
+        top_c2, top_c1, top_c3, _top_sp, top_c4, top_c5 = _tbl_card.columns([0.95, 1.45, 1.25, 1.5, 1.45, 1.25], gap="small", vertical_alignment="center")
     else:
-        top_c1, top_c2, top_c3, _top_sp, top_c4, top_c5 = _tbl_card.columns([1.6, 0.85, 1.25, 1.4, 1.35, 1.55], gap="small", vertical_alignment="center")
+        top_c2, top_c1, top_c3, _top_sp, top_c4, top_c5 = _tbl_card.columns([0.95, 1.6, 1.25, 1.4, 1.3, 1.5], gap="small", vertical_alignment="center")
         frees_cur = pstate.get("freelancers", [])
         if frees_cur:
             is_all_net = all(str(f.get("입력기준", "세전")) == "세후역산" for f in frees_cur)
@@ -2802,7 +2820,7 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
                 st.warning("누적 백업(.paybak) 파일에 저장된 전월 이력이 없습니다. 먼저 좌측 사이드바에서 백업 파일을 불러오거나 당월 엑셀을 업로드해 주세요.")
 
     with top_c2:
-        if st.button("행 추가", width="stretch", key="btn_pay_add_row"):
+        if st.button("+ 행 추가", width="stretch", key="btn_pay_add_row"):
             if is_emp_mode:
                 next_idx = len(pstate["employees"]) + 1
                 row_calc = calculate_employee_payroll_row(

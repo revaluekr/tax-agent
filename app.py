@@ -178,16 +178,16 @@ div[data-testid="stFormSubmitButton"] > button[kind="primary"],
 .st-key-btn_top_mode_agent button[kind="primary"],
 .st-key-btn_top_mode_credit button[kind="primary"],
 .st-key-btn_top_mode_payroll button[kind="primary"] {
-    background-color: #16a34a !important;
-    border: 1.5px solid #15803d !important;
+    background-color: #3182F6 !important;
+    border: 1.5px solid #3182F6 !important;
     color: #ffffff !important;
     font-weight: 800 !important;
 }
 div.stButton > button[kind="primary"]:hover,
 div.stButton > button[data-testid="stBaseButton-primary"]:hover,
 div[data-testid="stFormSubmitButton"] > button[kind="primary"]:hover {
-    background-color: #15803d !important;
-    border-color: #166534 !important;
+    background-color: #1B64DA !important;
+    border-color: #1B64DA !important;
     color: #ffffff !important;
 }
 div.stButton > button[kind="primary"] p,
@@ -310,15 +310,15 @@ div[class*="st-key-room_btn_"][class*="_hasmsg"]:not([class*="_running"]) button
     box-shadow: 0 0 5px rgba(34, 197, 94, 0.55);
 }
 
-/* 상태 3: 현재 선택된 방 (칸 전체 연녹색 강조 + 작성 중이 아닐 때만 우측 진초록 LED) */
+/* 상태 3: 현재 선택된 방 (토스 소프트 블루 #E8F3FF 강조 + 토스 그린/블루 LED) */
 div[class*="st-key-room_btn_"][class*="_active"] button {
-    background-color: #dcfce7 !important;
-    border: 1.5px solid #16a34a !important;
-    color: #14532d !important;
+    background-color: #E8F3FF !important;
+    border: none !important;
+    color: #3182F6 !important;
     font-weight: 800 !important;
 }
 div[class*="st-key-room_btn_"][class*="_active"] button p {
-    color: #14532d !important;
+    color: #3182F6 !important;
     font-weight: 800 !important;
 }
 div[class*="st-key-room_btn_"][class*="_active"]:not([class*="_running"]) button::after {
@@ -327,11 +327,11 @@ div[class*="st-key-room_btn_"][class*="_active"]:not([class*="_running"]) button
     right: 10px !important;
     top: 50% !important;
     transform: translateY(-50%);
-    width: 9px !important;
-    height: 9px !important;
+    width: 8px !important;
+    height: 8px !important;
     border-radius: 50% !important;
-    background-color: #16a34a;
-    box-shadow: 0 0 6px rgba(22, 163, 74, 0.7);
+    background-color: #00C471;
+    box-shadow: 0 0 5px rgba(0, 196, 113, 0.55);
 }
 
 /* 상태 4: 🌌 [옵션 C] 작성 중(분석 중)인 방 — 제미나이 오로라 블루·인디고·바이올렛 회전/펄스 LED
@@ -371,19 +371,134 @@ div[class*="st-key-room_btn_"][class*="_running"] button::after {
     animation: geminiAuroraPulse 1.4s infinite ease-in-out !important;
 }
 
-/* 상단 슬림 미니 상태바 */
+/* 상단 슬림 미니 상태바 (토스 웹 스타일 + 고정 배경 #F4F6FA) */
+[data-testid="stApp"] [data-testid="stMain"],
+[data-testid="stApp"] [data-testid="stAppScrollToBottomContainer"],
+[data-testid="stApp"] [data-testid="stBottom"] > div {
+    background-color: #F4F6FA !important;
+}
 .top-mini-status-bar {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    background-color: #f8fafc;
-    border: 1px solid #e2e8f0;
-    border-left: 4px solid #16a34a;
-    border-radius: 8px;
-    padding: 7px 14px;
-    margin-bottom: 10px;
+    background-color: #FFFFFF;
+    border: 1px solid #E5E8EB;
+    border-left: 4px solid #3182F6;
+    border-radius: 12px;
+    padding: 9px 16px;
+    margin-bottom: 14px;
     font-size: 0.92rem;
-    color: #334155;
+    color: #191F28;
+    box-shadow: 0 2px 8px rgba(0, 27, 55, 0.03);
+}
+/* ── 개선 3: 자율 에이전트AI 토스 웹 2x2 화이트 벤토 그리드(Bento Grid) ── */
+.toss-bento-wrap {
+    max-width: 840px;
+    margin: 28px auto 18px auto;
+    padding: 0 8px;
+}
+.toss-bento-header {
+    text-align: center;
+    margin-bottom: 24px;
+}
+.toss-bento-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: #E8F3FF;
+    color: #3182F6;
+    font-size: 0.82rem;
+    font-weight: 800;
+    padding: 6px 14px;
+    border-radius: 999px;
+    margin-bottom: 12px;
+    letter-spacing: -0.2px;
+}
+.toss-bento-title {
+    font-size: 2.0rem;
+    font-weight: 800;
+    color: #191F28;
+    letter-spacing: -0.8px;
+    line-height: 1.25;
+    margin-bottom: 8px;
+}
+.toss-bento-sub {
+    font-size: 0.98rem;
+    color: #4E5968;
+    font-weight: 500;
+    line-height: 1.55;
+}
+.toss-bento-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+    margin-bottom: 12px;
+}
+.toss-bento-card {
+    cursor: pointer;
+    background: #FFFFFF;
+    border: 1px solid #E5E8EB;
+    border-radius: 20px;
+    padding: 22px 24px 18px 24px;
+    box-shadow: 0 4px 16px rgba(0, 27, 55, 0.04);
+    transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+}
+.toss-bento-card:hover {
+    transform: translateY(-2px);
+    border-color: #90C2FF;
+    box-shadow: 0 8px 24px rgba(49, 130, 246, 0.10);
+}
+.toss-bento-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 14px;
+}
+.toss-bento-icon {
+    width: 46px;
+    height: 46px;
+    border-radius: 14px;
+    background: #E8F3FF;
+    color: #3182F6;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.toss-bento-arrow {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    background: #F2F4F6;
+    color: #4E5968;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.90rem;
+    font-weight: 700;
+}
+.toss-bento-card-title {
+    font-size: 1.15rem;
+    font-weight: 800;
+    color: #191F28;
+    letter-spacing: -0.4px;
+    margin-bottom: 6px;
+}
+.toss-bento-card-desc {
+    font-size: 0.90rem;
+    color: #4E5968;
+    line-height: 1.55;
+    word-break: keep-all;
+}
+[data-testid="stApp"] [data-testid="stBottom"] [data-testid="stChatInput"] {
+    border-radius: 16px !important;
+    border: 1.5px solid #3182F6 !important;
+    box-shadow: 0 4px 18px rgba(49, 130, 246, 0.12) !important;
+    background: #FFFFFF !important;
+}
+[data-testid="stApp"] [data-testid="stBottom"] [data-testid="stChatInput"] [data-testid="stChatInputSubmitButton"] {
+    background-color: #3182F6 !important;
+    color: #FFFFFF !important;
+    border-radius: 50% !important;
 }
 
 /* 🤖 답변 로봇 아바타 초록색 배경(#22c55e) & 흰색 아이콘 */
@@ -3040,6 +3155,8 @@ with st.sidebar:
                 save_workspace_to_disk(effective_ws_id, force_overwrite_room=selected_room)
                 st.rerun()
 
+            visible_room_items = []
+            empty_room_items = []
             for idx_r, r_id in enumerate(ROOM_IDS, start=1):
                 r_title = (st.session_state.room_titles.get(r_id, "빈 대화방") or "빈 대화방").strip()
                 short_title = r_title[:14] + ("…" if len(r_title) > 14 else "")
@@ -3053,14 +3170,34 @@ with st.sidebar:
                 base_state = "active" if r_id == selected_room else ("hasmsg" if q_cnt > 0 else "empty")
                 run_suffix = "_running" if is_run else ""
                 btn_key = f"room_btn_{idx_r}_{base_state}{run_suffix}"
-
                 extra_badges = (" 📎" if f_cnt else "") + (" 🔄" if rev_alerts else "") + (" (작성중)" if is_run else "")
                 btn_label = f"{idx_r}. {short_title} ({q_cnt}건){extra_badges}"
 
+                item_tuple = (idx_r, r_id, btn_label, btn_key)
+                if idx_r == 1 or r_id == selected_room or q_cnt > 0 or f_cnt > 0 or is_run or r_title not in ("빈 대화방", "메인 대화"):
+                    visible_room_items.append(item_tuple)
+                else:
+                    empty_room_items.append(item_tuple)
+
+            for _idx_r, r_id, btn_label, btn_key in visible_room_items:
                 if st.button(btn_label, key=btn_key, width="stretch"):
                     if r_id != selected_room:
                         st.session_state.current_room = r_id
                         st.rerun()
+
+            if empty_room_items:
+                first_empty_rid = empty_room_items[0][1]
+                empty_nums = [it[0] for it in empty_room_items]
+                range_lbl = f"{min(empty_nums)}~{max(empty_nums)}" if len(empty_nums) > 1 else f"{empty_nums[0]}"
+                with st.expander(f"빈 대화방 {range_lbl} 숨김 ({len(empty_room_items)}개)", expanded=False):
+                    for _idx_r, r_id, btn_label, btn_key in empty_room_items:
+                        if st.button(btn_label, key=btn_key, width="stretch"):
+                            if r_id != selected_room:
+                                st.session_state.current_room = r_id
+                                st.rerun()
+                if st.button("+ 새 대화방 시작", key="btn_new_chat_room", width="stretch"):
+                    st.session_state.current_room = first_empty_rid
+                    st.rerun()
 
     # 📦 [카드 4 — 최하단 고정: [💳 결제] 및 [🔑 API키] 버튼]
     with st.container(key="sbx_footer"):
@@ -3255,12 +3392,58 @@ if st.session_state.get("show_inline_api_manager"):
 with st.container(key=f"room_main_view_{effective_ws_id}_{selected_room}"):
     if not current_messages and not is_current_room_running:
         st.markdown(
-            f"<div style='padding: 18px 20px; background-color: #f8fafc; border: 1px dashed #cbd5e1; "
-            f"border-radius: 10px; color: #64748b; font-size: 0.96rem; margin-bottom: 12px;'>"
-            f"✨ <b>{selected_room} [{current_room_title}]</b> — 아직 작성된 대화가 없습니다. "
-            f"아래 입력창에 새로운 질문을 입력하거나 파일을 첨부해 보세요."
-            f"</div>",
-            unsafe_allow_html=True
+            """
+            <div class="toss-bento-wrap">
+              <div class="toss-bento-header">
+                <div class="toss-bento-badge">✨ 2026 최신 세법 · 예규 · 판례 실시간 연동 ↗</div>
+                <div class="toss-bento-title">무엇을 검토해 드릴까요?</div>
+                <div class="toss-bento-sub">질문을 입력하거나 검토할 파일(엑셀·PDF·한글·워드)을 업로드하면<br>즉시 세무 리스크와 공제 세액을 분석합니다.</div>
+              </div>
+              <div class="toss-bento-grid">
+                <div class="toss-bento-card toss-bento-card-1">
+                  <div class="toss-bento-top">
+                    <div class="toss-bento-icon">
+                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#3182F6" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+                    </div>
+                    <div class="toss-bento-arrow">↗</div>
+                  </div>
+                  <div class="toss-bento-card-title">경정청구 · 통합고용세액공제 진단</div>
+                  <div class="toss-bento-card-desc">원천징수이행상황신고서·기신고서 기반 공제 누락액 및 사후관리 추징 리스크 자동 계산</div>
+                </div>
+                <div class="toss-bento-card toss-bento-card-2">
+                  <div class="toss-bento-top">
+                    <div class="toss-bento-icon">
+                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#3182F6" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
+                    </div>
+                    <div class="toss-bento-arrow">↗</div>
+                  </div>
+                  <div class="toss-bento-card-title">급여 · 4대보험 · 인건비 세무 자문</div>
+                  <div class="toss-bento-card-desc">비과세 식대·차량유지비 요건, 중도입퇴사자 연말정산 및 근로기준법 수당 검토</div>
+                </div>
+                <div class="toss-bento-card toss-bento-card-3">
+                  <div class="toss-bento-top">
+                    <div class="toss-bento-icon">
+                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#3182F6" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18"/><path d="M5 7h14"/><path d="M5 7l-3 7a4 4 0 0 0 6 0z"/><path d="M19 7l-3 7a4 4 0 0 0 6 0z"/><path d="M8 21h8"/></svg>
+                    </div>
+                    <div class="toss-bento-arrow">↗</div>
+                  </div>
+                  <div class="toss-bento-card-title">최신 예규·판례 및 과세관청 소명서 작성</div>
+                  <div class="toss-bento-card-desc">조세심판원·국세청 최신 결정례 검색 및 세무조사/해명자료 제출용 소명서 초안 작성</div>
+                </div>
+                <div class="toss-bento-card toss-bento-card-4">
+                  <div class="toss-bento-top">
+                    <div class="toss-bento-icon">
+                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#3182F6" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                    </div>
+                    <div class="toss-bento-arrow">↗</div>
+                  </div>
+                  <div class="toss-bento-card-title">신고서 · 원장 파일 즉시 업로드 분석</div>
+                  <div class="toss-bento-card-desc">엑셀·PDF·한글 파일을 끌어다 놓으면 핵심 쟁점과 오류 내역을 표로 요약</div>
+                </div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
 
     for idx, message in enumerate(current_messages):
@@ -3476,6 +3659,33 @@ st.components.v1.html(
             if (btn && !btn.disabled && (!ta || !ta.value.trim())) return true;
             return chatInput.querySelectorAll('[data-testid*="File"], [class*="uploadedFile"], li').length > 0;
         }
+        doc.addEventListener('click', function(e) {
+            const card = e.target && e.target.closest ? e.target.closest('.toss-bento-card') : null;
+            if (!card) return;
+            const chatInput = doc.querySelector('[data-testid="stChatInput"]');
+            if (!chatInput) return;
+            if (card.classList.contains('toss-bento-card-4')) {
+                const fileInput = chatInput.querySelector('input[type="file"]');
+                if (fileInput) { fileInput.click(); return; }
+            }
+            const prompts = {
+                'toss-bento-card-1': '2026년 귀속 통합고용세액공제 공제요건, 우대공제 단가 및 사후관리(2·3차년도) 추징 점검 기준을 정리해 주세요.',
+                'toss-bento-card-2': '근로소득 비과세 식대·자가운전보조금 요건과 5인 이상/미만 사업장의 연장·야간·휴일·주휴수당 계산 기준을 검토해 주세요.',
+                'toss-bento-card-3': '과세관청 해명자료(소명서) 및 경정청구 의견서 작성 시 필수 법리 구조와 최신 조세심판원 결정례 인용 방법을 알려주세요.',
+                'toss-bento-card-4': '첨부한 신고서·원장 파일의 핵심 세무 쟁점과 오류·누락 내역을 표로 요약해 주세요.'
+            };
+            let textToFill = '';
+            for (const cls in prompts) {
+                if (card.classList.contains(cls)) { textToFill = prompts[cls]; break; }
+            }
+            const ta = chatInput.querySelector('textarea');
+            if (ta && textToFill) {
+                const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+                setter.call(ta, textToFill);
+                ta.dispatchEvent(new Event('input', { bubbles: true }));
+                ta.focus();
+            }
+        }, true);
         doc.addEventListener('drop', function() {
             setTimeout(function() {
                 const ta = doc.querySelector('[data-testid="stChatInput"] textarea');
