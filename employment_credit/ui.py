@@ -191,8 +191,6 @@ def render_credit_wizard(extract_file_fn, log_tokens_fn=None, active_room_key: s
         st.markdown(CSS, unsafe_allow_html=True)
         import ui_theme as _ui_theme
         st.markdown(_ui_theme.ec_main_css(), unsafe_allow_html=True)   # B안 본문 디자인 (기존 CSS 뒤에 넣어 우선)
-        from .ui_step2 import _pre_sync_ec_grids_from_session
-        _pre_sync_ec_grids_from_session(s)
         _top_status_bar(s)
         _progress(s["step"])
         _render_scroll_to_top_if_needed(s)

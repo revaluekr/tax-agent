@@ -60,6 +60,7 @@ _PERSIST_KEYS = (
     "use_year_tabs",
     "show_all_4_blocks",
     "show_empty_pm_blocks",
+    "show_all_4_years",
     "manual_extra_years",
     "next_pid_seq",
     "deleted_people",
@@ -212,6 +213,7 @@ def _default_state_dict() -> dict:
         "use_year_tabs": False,                 # 2단계 연도별 표 표시 방식: False=전체 연속 펼쳐보기, True=연도별 탭 보기
         "show_all_4_blocks": True,              # 우측 사후관리 블록(자료 존재하는 연도) 표시 여부
         "show_empty_pm_blocks": False,          # 자료 없는 과거 사후관리 블록(예: 23년·22년) 강제 표시 여부 (기본 False = 자동 생략)
+        "show_all_4_years": False,              # 2단계에서 4개 과세연도(당해·직전·전전·전전전) 표 전체 펼치기 여부
         "manual_extra_years": [],
         "grid_ver": {},
         "last_sent": {},
@@ -373,26 +375,28 @@ def _uploaded_wht_years(s: dict, max_year: int | None = None) -> set[int]:
 
 def _has_year_data(s: dict, year: int) -> bool:
     """
-    특정 과세연도(예: 2024년, 2023년, 2022년)의 실제 원천징수부 급여 데이터 또는
-    기신고/수기 요약 데이터가 존재하는지 확인합니다.
+    특정 과세연도(2021~2028년)의 실제 원천징수부 급여 데이터, 수기 추가 사원 재직 데이터,
+    또는 기신고/수기 요약 데이터가 존재하는지 확인합니다.
     """
-    if year in _uploaded_wht_years(s):
+    yr_i = int(year)
+    wht_yrs = _uploaded_wht_years(s)
+    if yr_i in wht_yrs:
         return True
-    if year in (s.get("manual_extra_years") or []):
+    if yr_i in (s.get("manual_extra_years") or []):
         return True
     for p in (s.get("people") or {}).values():
-        if H._has_any_pay_record((p.get("월급여") or {}).get(str(year))):
+        if H._has_any_pay_record((p.get("월급여") or {}).get(str(yr_i))):
             return True
     t = int(s.get("tax_year") or R.DEFAULT_TAX_YEAR)
-    if year in (t, t - 1):
-        if not _uploaded_wht_years(s) and any(H.worked_in_year(p, year) for p in (s.get("people") or {}).values()):
-            return True
+    if (t - 3) <= yr_i <= t:
         if any(
-            (p.get("_manual") or str(p.get("pid") or "").startswith("manual_")) and H.worked_in_year(p, year)
+            (p.get("_manual") or str(p.get("pid") or "").startswith("manual_")) and H.worked_in_year(p, yr_i)
             for p in (s.get("people") or {}).values()
         ):
             return True
-    ps_y = (s.get("prev_summary") or {}).get(str(year)) or {}
+        if not wht_yrs and any(H.worked_in_year(p, yr_i) for p in (s.get("people") or {}).values()):
+            return True
+    ps_y = (s.get("prev_summary") or {}).get(str(yr_i)) or {}
     if (ps_y.get("상시") or 0.0) > 0 or (ps_y.get("청년등") or 0.0) > 0 or (ps_y.get("공제세액") or 0) > 0:
         return True
     return False
@@ -400,31 +404,42 @@ def _has_year_data(s: dict, year: int) -> bool:
 
 def _years(s: dict) -> list[int]:
     """
-    선택된 귀속사업연도(`tax_year`)를 기준으로 표시할 연도 목록을 내림차순 반환합니다.
+    선택된 귀속사업연도(`tax_year`, 2024~2028)를 기준으로 표시할 연도 목록을 내림차순 반환합니다.
+    - 당해(`t`)와 직전(`t-1`)은 기본 표시하며,
+    - `t-2`·`t-3`(4개년도 전체) 역시 사원 등록(수기 추가·입사일 입력)이나 원천징수부/직접열기/전체표시 설정이 있으면 즉시 표시합니다.
     """
     t = int(s["tax_year"])
     active_years = {t}
 
-    if _has_year_data(s, t - 1) or not _uploaded_wht_years(s):
-        if (t - 1) >= 2022:
-            active_years.add(t - 1)
+    if (t - 1) >= 2021:
+        active_years.add(t - 1)
+
+    if bool(s.get("show_all_4_years", False)):
+        for offset in range(4):
+            if (t - offset) >= 2021:
+                active_years.add(t - offset)
 
     for wy in _uploaded_wht_years(s, max_year=t):
-        if wy <= t:
+        if 2021 <= wy <= t:
             active_years.add(wy)
 
     for p in (s.get("people") or {}).values():
         for y_str, pay_obj in (p.get("월급여") or {}).items():
             if str(y_str).isdigit() and H._has_any_pay_record(pay_obj):
                 yi = int(y_str)
-                if yi <= t:
+                if 2021 <= yi <= t:
                     active_years.add(yi)
+        # 수기 추가 사원 또는 원천징수부 미업로드 상태의 사원이 재직한 연도(t-3 ~ t)는 자동으로 사원표에 표시
+        if p.get("_manual") or str(p.get("pid") or "").startswith("manual_") or not _uploaded_wht_years(s):
+            for cand_y in (t, t - 1, t - 2, t - 3):
+                if cand_y >= 2021 and H.worked_in_year(p, cand_y):
+                    active_years.add(cand_y)
 
     for my in (s.get("manual_extra_years") or []):
-        if isinstance(my, int) and my <= t:
+        if isinstance(my, int) and 2021 <= my <= t:
             active_years.add(my)
 
-    return sorted((y for y in active_years if y <= t), reverse=True)
+    return sorted((y for y in active_years if 2021 <= y <= t), reverse=True)
 
 
 def _all_possible_years(s: dict) -> list[int]:
@@ -565,7 +580,7 @@ def _succeeded_prev_headcount_sum(s: dict) -> tuple[float, float]:
 def _ctx(s: dict, year: int) -> dict:
     b = s["biz"]
     t = int(s["tax_year"])
-    key = {t: "당해_월수", t - 1: "전년_월수", t - 2: "전전년_월수"}.get(year, "당해_월수")
+    key = {t: "당해_월수", t - 1: "전년_월수", t - 2: "전전년_월수", t - 3: "전전전년_월수"}.get(year, "전전전년_월수")
     try:
         n = int(b.get(key, 12))
     except (TypeError, ValueError):
@@ -746,10 +761,22 @@ def _carry_over_user_edits(s: dict, old_people: dict, old_recs: dict) -> None:
             for k in ("병역개월", "계약체결일"):
                 if op.get(k):
                     np_[k] = op[k]
+        fallback_emp_type = None
         for y, recs in old_recs.items():
             yi = int(y) if str(y).isdigit() else y
-            if opid in recs and yi in s["year_recs"]:
-                s["year_recs"][yi][npid] = recs[opid]
+            if isinstance(recs, dict) and opid in recs:
+                if not fallback_emp_type and recs[opid].get("고용유형"):
+                    fallback_emp_type = recs[opid].get("고용유형")
+                s["year_recs"].setdefault(yi, {})[npid] = recs[opid]
+        for yi_all in _all_possible_years(s):
+            yr_map = s["year_recs"].setdefault(yi_all, {})
+            if npid not in yr_map:
+                new_r = P.new_year_rec()
+                if fallback_emp_type:
+                    new_r["고용유형"] = fallback_emp_type
+                    if fallback_emp_type != R.EMP_REGULAR:
+                        new_r["_user_set"] = ["고용유형"]
+                yr_map[npid] = new_r
 
 
 def _person_del_key(p: dict) -> str:
@@ -892,8 +919,25 @@ def _ensure_built_for_tax_year(s: dict):
                 }
 
         s["grid_ver"], s["last_sent"] = {}, {}
+        s.pop("_grid_resp_sig", None)
         s["built_sig"] = sig
         _save_ec_to_disk(s)
+    # 파일 없이 수기 사원만 등록된 상태에서 귀속사업연도를 변경한 경우에도 4개 연도 year_recs가 모두 준비되도록 보장
+    for y_poss in _all_possible_years(s):
+        yr_map = s.setdefault("year_recs", {}).setdefault(y_poss, {})
+        for pid, p in (s.get("people") or {}).items():
+            if pid not in yr_map:
+                existing_et = None
+                for o_recs in (s.get("year_recs") or {}).values():
+                    if isinstance(o_recs, dict) and pid in o_recs and o_recs[pid].get("고용유형"):
+                        existing_et = o_recs[pid]["고용유형"]
+                        break
+                nr_rec = P.new_year_rec()
+                if existing_et:
+                    nr_rec["고용유형"] = existing_et
+                    if existing_et != R.EMP_REGULAR:
+                        nr_rec["_user_set"] = ["고용유형"]
+                yr_map[pid] = nr_rec
 
 
 # ══════════════════════════════════════════════════════════════════

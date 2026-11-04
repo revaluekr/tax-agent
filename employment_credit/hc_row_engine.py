@@ -415,7 +415,8 @@ def year_totals(computed_rows: list[dict], months_in_year: int, year: int | None
       # 확인 필요: '26.3월 국세청 안내 신뢰보호 원칙 연장 적용 (2026년 이후 평가연도에서 2024년 이하 코호트에 A를 계속 적용)
     """
     n = max(1, min(12, int(months_in_year or 12)))
-    act = set(active_months(2025, n))
+    eval_yr_act = int(year) if year is not None else int((computed_rows[0].get('_eval_year') if computed_rows else 2026) or 2026)
+    act = set(active_months(eval_yr_act, n))
 
     m_reg: list[float | None] = []
     m_yth: list[float | None] = []

@@ -1147,9 +1147,16 @@ def render_credit_sidebar():
             # 사용자가 직접 바꾼 경우에만 반영 (백업 복원·인건비 연동 등으로 연도가 바뀐 뒤 화면 기억값이 되돌리지 않도록)
             _ny = st.session_state.get("ec_sb_tax_year_select")
             if _ny and int(_ny) != int(s["tax_year"]):
-                s["tax_year"] = int(_ny)
-                s["manual_extra_years"] = []
+                from .ui_step2 import _sync_active_ec_grids_once, _purge_stale_ec_grid_keys
+                _sync_active_ec_grids_once(s)
+                nt = int(_ny)
+                s["tax_year"] = nt
+                if s.get("show_all_4_years"):
+                    s["manual_extra_years"] = [nt - i for i in range(4) if (nt - i) >= 2021]
+                else:
+                    s["manual_extra_years"] = []
                 s["built_sig"] = None
+                _purge_stale_ec_grid_keys(s)
                 _ensure_built_for_tax_year(s)
                 _save_ec_to_disk(s)
 
