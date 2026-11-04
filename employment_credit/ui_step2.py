@@ -1332,11 +1332,6 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
         height=min(720, 128 + 32 * (len(rows) + 3)),
         fit_columns_on_grid_load=False,
     )
-    sel_key = f"ec_sel_pids_{year}"
-    new_sel = _selected_pids(resp)
-    if new_sel != st.session_state.get(sel_key, []):
-        st.session_state[sel_key] = new_sel   # 표 위 [선택한 행 삭제 · N명] 숫자를 바로 맞추기 위해 한 번 더 그림
-        st.rerun()
     back = getattr(resp, "data", None)
     if back is None:
         try:
@@ -1347,6 +1342,11 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
         for y in _all_possible_years(s):
             s["grid_ver"][y] = s["grid_ver"].get(y, 0) + 1
         _save_ec_to_disk(s)
+        st.rerun()
+    sel_key = f"ec_sel_pids_{year}"
+    new_sel = _selected_pids(resp)
+    if new_sel != st.session_state.get(sel_key, []):
+        st.session_state[sel_key] = new_sel   # 표 위 [선택한 행 삭제 · N명] 숫자를 바로 맞추기 위해 한 번 더 그림
         st.rerun()
 
     b3_title, b4_title, b5_title = _block_titles_for_year(year, two_line=False)
@@ -1513,7 +1513,35 @@ def _render_prev_filing_summary_card(s: dict, shown_years: list[int]):
                 st.rerun()
 
 
+def _pre_sync_ec_grids_from_session(s: dict) -> None:
+    """상단 버튼([+ 사원 추가], [선택한 행 삭제], [기업규모 변경], [다음 단계] 등)이 실행되기 전에
+    st.session_state에 들어온 각 연도 AgGrid의 수정 데이터와 체크박스 선택을 먼저 s['people']에 반영합니다."""
+    last_sent_map = s.get("last_sent") or {}
+    changed_any = False
+    for k_ss, v_ss in list(st.session_state.items()):
+        if not str(k_ss).startswith("ec_grid_") or not isinstance(v_ss, dict):
+            continue
+        parts = str(k_ss).split("_")
+        if len(parts) < 4 or not parts[2].isdigit():
+            continue
+        yr = int(parts[2])
+        if yr not in last_sent_map:
+            continue
+        # 체크박스 선택 상태 동기화
+        sel_pids = _selected_pids(v_ss)
+        st.session_state[f"ec_sel_pids_{yr}"] = sel_pids
+        # 셀 수정 데이터 동기화
+        raw_data = v_ss.get("data")
+        if raw_data is not None:
+            back_df = pd.DataFrame(raw_data) if not isinstance(raw_data, pd.DataFrame) else raw_data
+            if not back_df.empty and _apply_changes(s, yr, last_sent_map[yr], back_df):
+                changed_any = True
+    if changed_any:
+        _save_ec_to_disk(s)
+
+
 def _page_employees(room_key: str, log_tokens_fn=None):
+    _pre_sync_ec_grids_from_session(_S())
     s = _S()
     _ensure_built_for_tax_year(s)
     _prune_manual_without_hire(s)
