@@ -4,28 +4,6 @@ import re
 import json
 import zipfile
 import threading
-from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
-
-_KST_WEEKDAYS = ("월", "화", "수", "목", "금", "토", "일")
-
-def get_kst_today_info() -> dict:
-    """대한민국 표준시(KST) 기준 당일 날짜·요일·당해 귀속연도 정보를 실시간 반환합니다."""
-    now = datetime.now(ZoneInfo("Asia/Seoul"))
-    wd = _KST_WEEKDAYS[now.weekday()]
-    return {
-        "dt": now,
-        "year": now.year,
-        "prev_year": now.year - 1,
-        "prev2_year": now.year - 2,
-        "ymd": now.strftime("%Y%m%d"),
-        "ymd_dash": now.strftime("%Y-%m-%d"),
-        "ym": now.strftime("%Y%m"),
-        "weekday_kr": f"{wd}요일",
-        "weekday_short": wd,
-        "dot_full": f"{now.strftime('%Y.%m.%d')} ({wd}요일)",
-        "kr_full": f"{now.strftime('%Y년 %m월 %d일')} ({wd}요일)",
-    }
 import urllib.parse
 import requests
 import xml.etree.ElementTree as ET
@@ -36,54 +14,28 @@ load_dotenv()
 
 RUNTIME_API_KEYS_FILE = os.path.join(".workspace_storage", "runtime_api_keys.json")
 
-_RT_KEYS_CACHE: dict = {"mtime": None, "data": {}}
-
-def _read_runtime_keys_cached() -> dict:
-    """runtime_api_keys.json을 파일이 바뀐 경우에만 다시 읽습니다 (화면 새로고침마다 수십 번 디스크를 읽지 않도록)."""
-    try:
-        mt = os.path.getmtime(RUNTIME_API_KEYS_FILE)
-    except OSError:
-        _RT_KEYS_CACHE["mtime"], _RT_KEYS_CACHE["data"] = None, {}
-        return {}
-    if _RT_KEYS_CACHE["mtime"] != mt:
-        try:
-            with open(RUNTIME_API_KEYS_FILE, "r", encoding="utf-8") as rf:
-                data = json.load(rf)
-            _RT_KEYS_CACHE["data"] = data if isinstance(data, dict) else {}
-        except Exception:
-            _RT_KEYS_CACHE["data"] = {}
-        _RT_KEYS_CACHE["mtime"] = mt
-    return _RT_KEYS_CACHE["data"]
-
-_CONFIG_MOD = None
-_CONFIG_TRIED = False
-
-def _get_config_module():
-    """config.py는 처음 한 번만 찾아봅니다 (없을 때 매번 import를 다시 시도하면 느려짐)."""
-    global _CONFIG_MOD, _CONFIG_TRIED
-    if not _CONFIG_TRIED:
-        _CONFIG_TRIED = True
-        try:
-            import config as _cfg
-            _CONFIG_MOD = _cfg
-        except ImportError:
-            _CONFIG_MOD = None
-    return _CONFIG_MOD
-
 def _get_api_key(key_name: str, fallback_keys: list[str] = None) -> str:
     """런타임 저장소(.workspace_storage/runtime_api_keys.json), config.py, st.secrets, 환경변수(.env 포함)에서 실시간으로 API 키를 안전하게 추출합니다."""
     keys_to_check = [key_name] + (fallback_keys or [])
-    rdata = _read_runtime_keys_cached()
-    for k in keys_to_check:
-        rval = str(rdata.get(k) or "").strip().strip('"').strip("'")
-        if rval:
-            return rval
-    config = _get_config_module()
-    if config is not None:
+    try:
+        if os.path.exists(RUNTIME_API_KEYS_FILE):
+            with open(RUNTIME_API_KEYS_FILE, "r", encoding="utf-8") as rf:
+                rdata = json.load(rf)
+            if isinstance(rdata, dict):
+                for k in keys_to_check:
+                    rval = str(rdata.get(k) or "").strip().strip('"').strip("'")
+                    if rval:
+                        return rval
+    except Exception:
+        pass
+    try:
+        import config
         for k in keys_to_check:
             val = getattr(config, k, None)
             if isinstance(val, str) and val.strip():
                 return val.strip().strip('"').strip("'")
+    except ImportError:
+        pass
     try:
         import streamlit as st
         if hasattr(st, "secrets"):
@@ -248,15 +200,7 @@ def _format_article(art, only_hang=None) -> str:
     text = "\n".join(lines)
     eff = re.sub(r"\D", "", art.findtext("조문시행일자") or "")
     if len(eff) == 8:
-        _today_ymd_int = int(get_kst_today_info()["ymd"])
-        _eff_int = int(eff) if eff.isdigit() else 0
-        if _eff_int > _today_ymd_int:
-            text += (
-                f"\n[조문시행일자: {eff[:4]}.{eff[4:6]}.{eff[6:]} — "
-                f"🚨 미시행(미래 시행예정) 조문 경고: 오늘({get_kst_today_info()['dot_full']}) 기준 아직 시행일이 도래하지 않았으므로 당해 연도({get_kst_today_info()['year']}년 귀속)에 즉시 적용 금지!]"
-            )
-        else:
-            text += f"\n[조문시행일자: {eff[:4]}.{eff[4:6]}.{eff[6:]} — ✅ 현재 시행 중]"
+        text += f"\n[조문시행일자: {eff[:4]}.{eff[4:6]}.{eff[6:]}]"
     return text
 
 def _fetch_xml_root(url: str, params: dict):
@@ -634,17 +578,8 @@ def get_bok_exchange_rate(start_date: str, end_date: str, currency: str = "USD")
         "CNY": "0000053"
     }
     item_code = curr_map.get(currency.upper(), "0000001")
-    kst = get_kst_today_info()
-    s_raw = (start_date or "").replace("-", "").replace(".", "").strip()
-    e_raw = (end_date or "").replace("-", "").replace(".", "").strip()
-    if not e_raw or e_raw.lower() in ("오늘", "today", "당일", "현재"):
-        e_date = kst["ymd"]
-    else:
-        e_date = e_raw
-    if not s_raw or s_raw.lower() in ("오늘", "today", "당일", "현재"):
-        s_date = (kst["dt"] - timedelta(days=7)).strftime("%Y%m%d")
-    else:
-        s_date = s_raw
+    s_date = start_date.replace("-", "").strip()
+    e_date = end_date.replace("-", "").strip()
 
     url = f"https://ecos.bok.or.kr/api/StatisticSearch/{bok_key}/json/kr/1/30/731Y001/D/{s_date}/{e_date}/{item_code}"
     try:
@@ -666,17 +601,8 @@ def get_bok_base_rate(start_date: str, end_date: str) -> str:
     if not bok_key:
         return "❌ BOK_API_KEY가 설정되지 않았습니다."
 
-    kst = get_kst_today_info()
-    s_raw = (start_date or "").replace("-", "").replace(".", "").strip()
-    e_raw = (end_date or "").replace("-", "").replace(".", "").strip()
-    if not e_raw or e_raw.lower() in ("오늘", "today", "당일", "현재"):
-        e_date = kst["ymd"]
-    else:
-        e_date = e_raw
-    if not s_raw or s_raw.lower() in ("오늘", "today", "당일", "현재"):
-        s_date = (kst["dt"] - timedelta(days=7)).strftime("%Y%m%d")
-    else:
-        s_date = s_raw
+    s_date = start_date.replace("-", "").strip()
+    e_date = end_date.replace("-", "").strip()
     url = f"https://ecos.bok.or.kr/api/StatisticSearch/{bok_key}/json/kr/1/30/722Y001/D/{s_date}/{e_date}/0101000"
     try:
         resp = requests.get(url, timeout=10).json()
@@ -783,7 +709,7 @@ def _load_dart_corp_codes() -> list[dict]:
             return []
 
 
-def get_dart_corp_info(corp_name: str, bsns_year: str = "") -> str:
+def get_dart_corp_info(corp_name: str, bsns_year: str = "2025") -> str:
     dart_key = _live_dart_key()
     if not dart_key:
         return "❌ DART_API_KEY가 설정되지 않았습니다."
@@ -840,13 +766,7 @@ def get_dart_corp_info(corp_name: str, bsns_year: str = "") -> str:
     except Exception as e:
         output.append(f"\n■ 2. 공시 목록 조회 오류: {e}")
 
-    _cur_yr = get_kst_today_info()["year"]
-    _default_yrs = [str(_cur_yr), str(_cur_yr - 1), str(_cur_yr - 2)]
-    years_to_try = (
-        list(dict.fromkeys([bsns_year.strip(), str(int(bsns_year.strip()) - 1), str(int(bsns_year.strip()) - 2)]))
-        if (bsns_year or "").strip().isdigit()
-        else _default_yrs
-    )
+    years_to_try = [bsns_year.strip(), str(int(bsns_year.strip()) - 1)] if bsns_year.strip().isdigit() else ["2025", "2024"]
     active_year = years_to_try[0]
 
     fin_found = False
@@ -1487,10 +1407,9 @@ def get_vworld_official_price(address_or_pnu: str, stdr_year: str = "") -> str:
 
         return {}, last_err
 
-    _cur_yr = get_kst_today_info()["year"]
-    _recent_vworld_yrs = [str(_cur_yr), str(_cur_yr - 1), str(_cur_yr - 2), "2020"]
     req_years = re.findall(r"(?:19|20)\d{2}", stdr_year or "")
-    target_years = list(dict.fromkeys(req_years + _recent_vworld_yrs[:3])) if req_years else _recent_vworld_yrs
+    # 브이월드 API는 stdrYear(기준연도)를 지정해야 정확히 반환하므로 요청 연도 또는 최근 연도(2025, 2024, 2020) 순회
+    target_years = list(dict.fromkeys(req_years + ["2025", "2024"])) if req_years else ["2025", "2024", "2023", "2020"]
 
     # 1) 개별공시지가 조회 (getIndvdLandPriceAttr)
     try:
@@ -1542,7 +1461,7 @@ def get_vworld_official_price(address_or_pnu: str, stdr_year: str = "") -> str:
     try:
         apt_url = "https://api.vworld.kr/ned/data/getApartHousingPriceAttr"
         a_fields = []
-        for yr in [str(_cur_yr), str(_cur_yr - 1), str(_cur_yr - 2)]:
+        for yr in ["2025", "2024"]:
             a_params = {
                 "key": vworld_key,
                 "pnu": pnu,
@@ -2208,14 +2127,9 @@ def get_customs_exchange_rate(aply_bgn_dt: str, imex_type: str = "2", currency: 
     if not nts_key:
         return "❌ NTS_API_KEY(공공데이터포털 인증키)가 설정되지 않았습니다."
 
-    _raw_aply = (aply_bgn_dt or "").strip()
-    if not _raw_aply or _raw_aply.lower() in ("오늘", "today", "당일", "현재"):
-        dt_clean = get_kst_today_info()["ymd"]
-    else:
-        dt_clean = re.sub(r"\D", "", _raw_aply)[:8]
+    dt_clean = re.sub(r"\D", "", aply_bgn_dt or "")[:8]
     if len(dt_clean) != 8:
-        _ex_ymd = get_kst_today_info()["ymd"]
-        return f"❌ 조회일자('{aply_bgn_dt}')는 'YYYYMMDD' 8자리 형식(예: '{_ex_ymd}')이어야 합니다."
+        return f"❌ 조회일자('{aply_bgn_dt}')는 'YYYYMMDD' 8자리 형식(예: '20261025')이어야 합니다."
 
     tp_raw = (imex_type or "2").lower().strip()
     if tp_raw in ("1", "수출", "export", "exp"):

@@ -250,7 +250,7 @@ def calc_new_2026_credit_abc(
             if v:
                 return R.normalize_corp_size(v, corp_size)
         if y is not None:
-            d = summaries_by_year.get(int(y)) or summaries_by_year.get(str(y)) or {}
+            d = summaries_by_year.get(int(y)) or {}
             if d.get("corp_size"):
                 return R.normalize_corp_size(d.get("corp_size"), corp_size)
         return R.normalize_corp_size(corp_size, "중소기업")
@@ -258,7 +258,7 @@ def calc_new_2026_credit_abc(
     def _s(y: int | None, is_comp: bool = False) -> dict[str, float]:
         if y is None:
             return {"reg": 0.0, "yth": 0.0, "gen": 0.0, "b2_yth": 0.0, "b3_yth": 0.0, "has_data": False}
-        d = summaries_by_year.get(int(y)) or summaries_by_year.get(str(y)) or {}
+        d = summaries_by_year.get(y) or {}
         if "regular" in d and "youth" in d and (not is_comp or d.get("_nr_applied")):
             reg = float(d.get("regular") or 0.0)
             yth = float(d.get("youth") or 0.0)
@@ -734,7 +734,7 @@ def calculate_tax_year_package(
         pf_y = pf.get(int(y)) or pf.get(str(y)) or {}
         if isinstance(pf_y, dict) and pf_y.get("corp_size"):
             return R.normalize_corp_size(pf_y.get("corp_size"), corp_size)
-        s_y = summaries.get(int(y)) or summaries.get(str(y)) or {}
+        s_y = summaries.get(int(y)) or {}
         if isinstance(s_y, dict) and s_y.get("corp_size"):
             return R.normalize_corp_size(s_y.get("corp_size"), corp_size)
         return R.normalize_corp_size(corp_size, "중소기업")
@@ -743,7 +743,7 @@ def calculate_tax_year_package(
     corp_size_map_resolved = {y_k: _sz_for(y_k) for y_k in (t - 3, t - 2, t - 1, t)}
 
     def _s(y: int, target_method: str | None = None) -> dict[str, Any]:
-        d = summaries.get(int(y)) or summaries.get(str(y)) or {}
+        d = summaries.get(y) or {}
         n_m = int(d.get("months_in_year", 12) or 12)
         use_m = target_method or calc_method_for(y, eval_year=y)
         p_b1 = _pick_summary_by_method(d, method=use_m, block="b1")
@@ -829,7 +829,7 @@ def calculate_tax_year_package(
         - 계산방식은 `cur_method = calc_method_for(t, eval_year=t)` (2025년 이후 "B")를 일관되게 적용합니다.
         - 2026년 이후 신법(t >= 2026) 비교 대상 연도(2025 <= y < t)에 nr_ 재산정 인원이 있으면 해당 방식(cur_method)의 nr_ 인원을 적용합니다.
         """
-        yd = summaries.get(int(y)) or summaries.get(str(y)) or {}
+        yd = summaries.get(y) or {}
         if t >= NEW_TENURE_RULE_FROM and (yd.get("nr_상시_평균") is not None or yd.get(f"nr_{cur_method}_상시_평균") is not None):
             p_nr = _pick_summary_by_method(yd, method=cur_method, block="nr")
             p_nr_A = _pick_summary_by_method(yd, method="A", block="nr")
@@ -911,19 +911,9 @@ def calculate_tax_year_package(
 
     # ── 2)·3) 직전·전전연도 귀속분 사후관리 (기신고 기준 / 세법원칙 기준 동시 산출) ──
     def _fv(d: dict, k: str):
-        if not isinstance(d, dict):
-            return None
         v = d.get(k)
-        if v is None or v == "" or isinstance(v, bool):
-            return None
-        if isinstance(v, str):
-            v = v.strip().replace(",", "").replace("원", "").replace(" ", "")
-            if not v or v.lower() in ("nan", "none", "null", "inf", "-inf", "-"):
-                return None
         try:
-            f = float(v)
-            import math as _m
-            return f if _m.isfinite(f) else None
+            return None if v is None or v == "" else float(v)
         except (TypeError, ValueError):
             return None
 
@@ -958,7 +948,7 @@ def calculate_tax_year_package(
         coh_method = calc_method_for(cohort)
         pm_method = calc_method_for(cohort, eval_year=t)
         blk_name = "b2" if elapsed == 1 else "b3"
-        cur_pm_pick = _pick_summary_by_method(summaries.get(t) or summaries.get(str(t)), method=pm_method, block=blk_name)
+        cur_pm_pick = _pick_summary_by_method(summaries.get(t), method=pm_method, block=blk_name)
         cur_reg, cur_yth, cur_yth_act = cur_pm_pick["reg"], cur_pm_pick["yth"], cur_pm_pick["yth_act"]
 
         s_init_coh = _s(cohort, target_method=coh_method)
@@ -975,7 +965,7 @@ def calculate_tax_year_package(
         paid = int(_fv(f, "prior_clawback_paid_won") or 0)
         extra = {}
         if elapsed == 2:
-            prev_pm_pick = _pick_summary_by_method(summaries.get(t - 1) or summaries.get(str(t - 1)), method=calc_method_for(cohort, eval_year=t - 1), block="b2")
+            prev_pm_pick = _pick_summary_by_method(summaries.get(t - 1), method=calc_method_for(cohort, eval_year=t - 1), block="b2")
             extra = dict(prev_pm_reg=prev_pm_pick["reg"] if prev_s["has_data"] else None,
                          prev_pm_yth=prev_pm_pick["yth"] if prev_s["has_data"] else None,
                          prev_pm_yth_actual=prev_pm_pick["yth_act"] if prev_s["has_data"] else None,

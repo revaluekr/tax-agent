@@ -12,8 +12,6 @@
 """
 
 from __future__ import annotations
-from zoneinfo import ZoneInfo
-_KST = ZoneInfo("Asia/Seoul")   # 한국 표준시(KST)
 
 import base64
 import hashlib
@@ -21,7 +19,7 @@ import json
 import os
 import re
 import zlib
-from datetime import date, datetime
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -81,7 +79,7 @@ def create_empty_client_db(corp_name: str = "", workplace_label: str = "본점")
     """거래처 누적 DB 초기 구조 생성"""
     return {
         "schema_version": "1.1",
-        "updated_at": datetime.now(_KST).strftime("%Y-%m-%d %H:%M:%S"),
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "corp_info": {
             "corp_name": corp_name,
             "workplace_mode": "본점",
@@ -124,7 +122,7 @@ def upsert_monthly_data_into_db(
     if not client_db or "monthly_payroll" not in client_db:
         client_db = create_empty_client_db(corp_name, wp_label)
 
-    client_db["updated_at"] = datetime.now(_KST).strftime("%Y-%m-%d %H:%M:%S")
+    client_db["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     c_info = client_db.setdefault("corp_info", {})
     if corp_name:
         c_info["corp_name"] = corp_name
@@ -161,7 +159,7 @@ def upsert_monthly_data_into_db(
                 f_entry[k] = fr[k]
         free_master[nm] = f_entry
 
-    ym_key = (year_month or datetime.now(_KST).strftime("%Y-%m")).strip()
+    ym_key = (year_month or datetime.now().strftime("%Y-%m")).strip()
     clean_emps = []
     for e in employees or []:
         ce = {k: v for k, v in e.items() if not str(k).startswith("_")}
@@ -178,29 +176,16 @@ def upsert_monthly_data_into_db(
         "year_month": ym_key,
         "pay_date": pay_date,
         "workplace_label": wp_label,
-        "saved_at": datetime.now(_KST).strftime("%Y-%m-%d %H:%M:%S"),
+        "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "employees": clean_emps,
         "freelancers": clean_frees,
     }
     return client_db
 
 
-def _json_safe_paybak(obj: Any) -> Any:
-    if isinstance(obj, float):
-        import math as _m
-        return obj if _m.isfinite(obj) else 0
-    if isinstance(obj, (datetime, date)):
-        return obj.isoformat()
-    if isinstance(obj, dict):
-        return {str(k): _json_safe_paybak(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple, set)):
-        return [_json_safe_paybak(v) for v in obj]
-    return obj
-
-
 def encrypt_client_db_to_paybak(client_db: Dict[str, Any], password: str = "") -> bytes:
     """거래처 누적 DB를 압축 후 암호화하여 .paybak 바이너리로 반환"""
-    json_bytes = json.dumps(_json_safe_paybak(client_db), ensure_ascii=False, indent=2, default=str).encode("utf-8")
+    json_bytes = json.dumps(client_db, ensure_ascii=False, indent=2).encode("utf-8")
     compressed = zlib.compress(json_bytes, level=9)
     salt = os.urandom(16)
     key = _derive_fernet_key(password, salt)
@@ -377,7 +362,7 @@ def paybak_to_wht_markdown_text(file_bytes: bytes, password: str = "") -> Tuple[
     wp_label = str(c_info.get("workplace_label") or c_info.get("corp_name") or "본점").strip()
     md_by_yr = client_db_to_wht_markdown_by_year(db, default_workplace=wp_label)
     if not md_by_yr:
-        return "", wp_label, datetime.now(_KST).year
+        return "", wp_label, datetime.now().year
     latest_yr = max(md_by_yr.keys())
     combined_md = "\n\n".join(md_by_yr[y] for y in sorted(md_by_yr.keys()))
     return combined_md, wp_label, latest_yr
@@ -421,6 +406,6 @@ def build_employment_credit_bridge_payload(
         "months_loaded": sorted(monthly_map.keys()),
         "coverage_notice": cov_notice,
         "people_count": len(emp_names),
-        "transferred_at": datetime.now(_KST).strftime("%Y-%m-%d %H:%M:%S"),
+        "transferred_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
     return bridge_data, summary_msg

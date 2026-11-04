@@ -16,15 +16,13 @@
    - 생년월일이 다른 동명이인은 절대 합치지 않으며, 복수 사업장 간 전출입자는 모든 사업장에서 퇴사하고 이후 급여가 없을 때만 퇴사로 판정합니다.
 """
 from __future__ import annotations
-from zoneinfo import ZoneInfo
-_KST = ZoneInfo("Asia/Seoul")   # 한국 표준시(KST)
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
 import re
 import time
-from datetime import date, datetime
+from datetime import date
 from typing import Any
 
 from . import rules as R
@@ -916,7 +914,7 @@ def fetch_daily_ec_law_monitoring_status(
     - 당일 성공 캐시(메모리+디스크)는 즉시 반환하며, API 연결 지연 시에도 매 화면 클릭(rerun)마다 네트워크 타임아웃이
       반복되지 않도록 10분 쿨다운을 적용합니다(사용자가 '지금 다시 조회' 클릭 시에는 force_refresh=True로 즉시 재조회).
     """
-    today_str = datetime.now(_KST).date().isoformat()
+    today_str = date.today().isoformat()
     now_ts = time.time()
 
     if not force_refresh and _LAW_MONITOR_MEM_CACHE.get("checked_date") == today_str:
@@ -1113,7 +1111,7 @@ def format_captured_baseline_code_readonly(law_status: dict[str, Any] | None) ->
         out_lines.append(f'        "공포번호": "{p_no}",')
         out_lines.append(f'        "공포일": "{p_dt}",')
         out_lines.append(f'        "시행일": "{e_dt}",')
-        out_lines.append(f'        "반영일": "{datetime.now(_KST).date().isoformat()}",')
+        out_lines.append(f'        "반영일": "{date.today().isoformat()}",')
         out_lines.append(f'        "조문해시": "{art_h}",')
         out_lines.append(f'        "세부조문해시": {json.dumps(sub_h, ensure_ascii=False)},')
         out_lines.append(f'        "특정부칙해시": {json.dumps(spec_add_h, ensure_ascii=False)},')
@@ -3460,7 +3458,7 @@ def _infer_birth(yymmdd: str, gender_digit: str = "") -> date | None:
     if gender_digit and gender_digit.isdigit():
         century = {1: 1900, 2: 1900, 5: 1900, 6: 1900, 3: 2000, 4: 2000, 7: 2000, 8: 2000, 9: 1800, 0: 1800}.get(int(gender_digit), 1900)
     else:
-        century = 2000 if (2000 + yy) <= datetime.now(_KST).date().year - 15 else 1900
+        century = 2000 if (2000 + yy) <= date.today().year - 15 else 1900
     try:
         return date(century + yy, mm, dd)
     except ValueError:

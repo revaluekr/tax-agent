@@ -7,8 +7,6 @@
 · 같은 자료로 다시 열면 저장된 결과를 그대로 보여 줍니다 (재호출 없음).
 """
 from __future__ import annotations
-from zoneinfo import ZoneInfo
-_KST = ZoneInfo("Asia/Seoul")   # 한국 표준시(KST)
 
 import hashlib
 import json
@@ -73,7 +71,7 @@ def birth_from_rrn(rrn: Any) -> Optional[datetime]:
     elif g in ("9", "0"):
         cent = 1800
     else:
-        cent = 2000 if 2000 + yy <= datetime.now(_KST).year - 15 else 1900
+        cent = 2000 if 2000 + yy <= datetime.now().year - 15 else 1900
     try:
         return datetime(cent + yy, mm, dd)
     except ValueError:
@@ -98,7 +96,7 @@ def _ref_date(ym: str) -> datetime:
     try:
         return datetime(int(str(ym)[:4]), int(str(ym)[5:7]), 1)
     except Exception:
-        return datetime.now(_KST)
+        return datetime.now()
 
 
 def _i(v: Any) -> int:
@@ -121,7 +119,7 @@ def _role(pos: Any) -> str:
 def build_emp_payload(pstate: Dict[str, Any]) -> Tuple[str, Dict[str, str]]:
     """근로소득자 자료를 번호(E01…)로 바꾼 표(텍스트)와 번호→이름 표를 돌려줍니다."""
     emps = [e for e in pstate.get("employees", []) if str(e.get("성명") or "").strip()]
-    ym = str(pstate.get("year_month") or datetime.now(_KST).strftime("%Y-%m"))
+    ym = str(pstate.get("year_month") or datetime.now().strftime("%Y-%m"))
     ref = _ref_date(ym)
     prev_names = {str(e.get("성명") or "").strip() for e in (pstate.get("prev_employees") or [])}
     id_map: Dict[str, str] = {}
@@ -148,7 +146,7 @@ def build_emp_payload(pstate: Dict[str, Any]) -> Tuple[str, Dict[str, str]]:
 
 def build_free_payload(pstate: Dict[str, Any]) -> Tuple[str, Dict[str, str]]:
     frees = [f for f in pstate.get("freelancers", []) if str(f.get("성명") or "").strip()]
-    ym = str(pstate.get("year_month") or datetime.now(_KST).strftime("%Y-%m"))
+    ym = str(pstate.get("year_month") or datetime.now().strftime("%Y-%m"))
     prev = {str(f.get("성명") or "").strip(): _i(f.get("지급총액")) for f in (pstate.get("prev_freelancers") or [])}
     id_map: Dict[str, str] = {}
     lines = ["번호|업종코드|지급총액|소득세|지방소득세|전월지급액"]

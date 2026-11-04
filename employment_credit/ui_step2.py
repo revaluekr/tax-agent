@@ -19,7 +19,6 @@ from . import headcount as H
 from . import parsers as P
 
 from .ui_common import (  # noqa: F401
-    _pdf_memo,
     JS_DATE_FMT,
     JS_DEC2_FMT,
     JS_LOCKED,
@@ -1194,7 +1193,7 @@ def _render_year(s: dict, year: int, room_key: str) -> tuple[dict, dict]:
         with st.container(key=f"ec_btn_pdf_yr_{year}"):
             st.download_button(
                 "PDF 다운",
-                data=_pdf_memo(s, f"step2_year_{year}", _build_schedule_pdf_bytes, [year], include_summary=False),
+                data=_build_schedule_pdf_bytes(s, [year], include_summary=False),
                 file_name=f"{corp_nm}_{year}년귀속_상시근로자명세.pdf",
                 mime="application/pdf",
                 width="stretch",
@@ -1703,7 +1702,7 @@ def _page_employees(room_key: str, log_tokens_fn=None):
         with st.container(key="ec_btn_pdf_all_wrap"):
             st.download_button(
                 "전체 PDF 다운",
-                data=_pdf_memo(s, "step2_all", _build_schedule_pdf_bytes, list(shown_years), include_summary=True),
+                data=_build_schedule_pdf_bytes(s, shown_years, include_summary=True),
                 file_name=f"{corp_nm}_{tax_yr}년귀속_전체연도_상시근로자명세.pdf",
                 mime="application/pdf",
                 width="stretch",

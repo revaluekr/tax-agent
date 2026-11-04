@@ -6,7 +6,6 @@
 - 향후 세법 개정 시 이 파일만 독립적으로 수정·덮어쓰기할 수 있습니다.
 """
 from __future__ import annotations
-import math
 
 from datetime import date, datetime
 from calendar import monthrange
@@ -69,14 +68,8 @@ def add_years(d: date, n: int) -> date:
 
 def full_age(birth: date | None, ref: date | None, military_months: int = 0) -> int | None:
     try:
-        if isinstance(military_months, str):
-            m_mil = re.search(r"[-+]?\d+", military_months)
-            mil = int(m_mil.group(0)) if m_mil else 0
-        elif isinstance(military_months, float) and not math.isfinite(military_months):
-            mil = 0
-        else:
-            mil = int(military_months or 0)
-    except (TypeError, ValueError, OverflowError):
+        mil = int(military_months or 0)
+    except (TypeError, ValueError):
         mil = 0
     return _full_age_cached(birth, ref, mil)
 
@@ -111,25 +104,17 @@ def month_end(year: int, month: int) -> date:
     return date(year, month, monthrange(year, month)[1])
 
 
-def trunc2(x: Fraction | float | int | None) -> float:
+def trunc2(x: Fraction | float) -> float:
     """
     소수점 셋째 자리에서 버림(절사)하여 소수점 둘째 자리까지 반환 (조특령 제26조의8 제6항).
     """
-    if x is None:
-        return 0.0
     if isinstance(x, Fraction):
         if x >= 0:
             q = (x.numerator * 100) // x.denominator
             return q / 100.0
         q = ((-x.numerator) * 100) // x.denominator
         return -(q / 100.0)
-    try:
-        fx = float(x)
-    except (TypeError, ValueError):
-        return 0.0
-    if not math.isfinite(fx):
-        return 0.0
-    d = Decimal(str(round(fx, 8)))
+    d = Decimal(str(round(float(x), 8)))
     return float(d.quantize(Decimal("0.01"), rounding=ROUND_DOWN))
 
 

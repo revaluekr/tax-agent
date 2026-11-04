@@ -8,19 +8,15 @@
 """
 
 from __future__ import annotations
-from zoneinfo import ZoneInfo
-_KST = ZoneInfo("Asia/Seoul")   # 한국 표준시(KST)
 
 import json
 import os
 import re
 import time
-from datetime import date, datetime
+from datetime import date
 from typing import Any, Dict, List, Optional
 
 from .tax_tables import (
-    _safe_float,
-    _safe_int,
     MINIMUM_HOURLY_WAGE,
     MINIMUM_MONTHLY_WAGE_209H,
     NON_TAXABLE_LIMITS,
@@ -131,17 +127,6 @@ def calculate_overtime_night_holiday_allowance(
     - 상시근로자 5인 미만 (근로기준법 제11조·제56조 적용 제외):
       * 연장·휴일근로 가산수당(0.5배/1.0배) 미적용 -> 1.0배 기본 시급만 산출, 야간가산 0원
     """
-    ordinary_hourly_wage = max(0, _safe_int(ordinary_hourly_wage, 0))
-    monthly_ordinary_wage = max(0, _safe_int(monthly_ordinary_wage, 0))
-    monthly_contract_hours = _safe_float(monthly_contract_hours, 209.0)
-    if monthly_contract_hours <= 0:
-        monthly_contract_hours = 209.0
-    overtime_hours = max(0.0, _safe_float(overtime_hours, 0.0))
-    night_hours = max(0.0, _safe_float(night_hours, 0.0))
-    holiday_hours_within_8 = max(0.0, _safe_float(holiday_hours_within_8, 0.0))
-    holiday_hours_over_8 = max(0.0, _safe_float(holiday_hours_over_8, 0.0))
-    year = _safe_int(year, 2026)
-
     if ordinary_hourly_wage <= 0 and monthly_ordinary_wage > 0 and monthly_contract_hours > 0:
         hourly = int(round(monthly_ordinary_wage / monthly_contract_hours))
     else:
@@ -239,12 +224,8 @@ def calculate_weekly_holiday_allowance(
     - 1주 주휴수당 = 1주 주휴시간 × 약정시급
     - 월 환산 주휴수당(4.345주 기준) 및 주급/월급 합산액 동시 산출
     """
-    hourly_wage = max(0, _safe_int(hourly_wage, 0))
-    weekly_contract_hours = max(0.0, _safe_float(weekly_contract_hours, 0.0))
-    weeks_in_month = _safe_float(weeks_in_month, 4.345)
-    year = _safe_int(year, 2026)
     min_wage = MINIMUM_HOURLY_WAGE.get(year, 10_320)
-    eligible = weekly_contract_hours >= 15.0 and bool(full_attendance)
+    eligible = weekly_contract_hours >= 15.0 and full_attendance
 
     if eligible:
         capped_hours = min(float(weekly_contract_hours), 40.0)
@@ -336,7 +317,6 @@ def analyze_payroll_warnings(
     year: int = 2026,
 ) -> Dict[str, Any]:
     items: List[Dict[str, str]] = []
-    year = _safe_int(year, 2026)
     min_hourly = MINIMUM_HOURLY_WAGE.get(year, 10_320)
     min_monthly_209 = MINIMUM_MONTHLY_WAGE_209H.get(year, 2_156_880)
 
@@ -345,14 +325,10 @@ def analyze_payroll_warnings(
     pay_changes: List[str] = []
 
     prev_emp_map = {
-        str(e.get("성명", "")).strip(): e
-        for e in (prev_employees or [])
-        if isinstance(e, dict) and str(e.get("성명") or "").strip()
+        str(e.get("성명", "")).strip(): e for e in (prev_employees or []) if e.get("성명")
     }
     curr_emp_map = {
-        str(e.get("성명", "")).strip(): e
-        for e in (employees or [])
-        if isinstance(e, dict) and str(e.get("성명") or "").strip()
+        str(e.get("성명", "")).strip(): e for e in (employees or []) if e.get("성명")
     }
 
     if prev_emp_map:
@@ -367,8 +343,8 @@ def analyze_payroll_warnings(
                     "law": "고용보험 및 산업재해보상보험의 보험료징수 등에 관한 법률 / 국민건강보험법(입사일 다음달 15일 이내 신고)",
                 })
             else:
-                prev_gross = _safe_int(prev_emp_map[name].get("지급액계", 0), 0)
-                curr_gross = _safe_int(emp.get("지급액계", 0), 0)
+                prev_gross = int(prev_emp_map[name].get("지급액계", 0))
+                curr_gross = int(emp.get("지급액계", 0))
                 if prev_gross > 0:
                     diff_ratio = (curr_gross - prev_gross) / prev_gross
                     if abs(diff_ratio) >= 0.20:
@@ -394,9 +370,7 @@ def analyze_payroll_warnings(
                 })
 
     for emp in employees or []:
-        if not isinstance(emp, dict):
-            continue
-        name = str(emp.get("성명") or "").strip()
+        name = str(emp.get("성명", "")).strip()
         if not name:
             continue
 
@@ -411,10 +385,10 @@ def analyze_payroll_warnings(
                 "law": "소득세법 제137조(중도퇴직자 연말정산) 및 4대보험 자격상실 규정",
             })
 
-        base_pay = _safe_int(emp.get("기본급", 0), 0)
-        hourly_wage = _safe_int(emp.get("약정시급", 0), 0)
-        monthly_hours = _safe_float(emp.get("월근무시간", 209.0), 209.0) or 209.0
-        absence_ded = _safe_int(emp.get("결근공제", 0), 0)
+        base_pay = int(emp.get("기본급", 0))
+        hourly_wage = int(emp.get("약정시급", 0))
+        monthly_hours = float(emp.get("월근무시간", 209.0) or 209.0)
+        absence_ded = int(emp.get("결근공제", 0))
 
         if hourly_wage > 0 and hourly_wage < min_hourly:
             items.append({
@@ -433,8 +407,8 @@ def analyze_payroll_warnings(
                 "law": "최저임금법 제6조",
             })
 
-        meal = _safe_int(emp.get("식대", 0), 0)
-        car = _safe_int(emp.get("자가운전보조금", 0), 0)
+        meal = int(emp.get("식대", 0))
+        car = int(emp.get("자가운전보조금", 0))
         if meal > NON_TAXABLE_LIMITS["식대"]:
             excess = meal - NON_TAXABLE_LIMITS["식대"]
             items.append({
@@ -454,10 +428,10 @@ def analyze_payroll_warnings(
                 "law": "소득세법 시행령 제12조 제3호 (자가운전보조금 월 20만원 한도)",
             })
 
-        taxable = _safe_int(emp.get("과세급여"), max(0, _safe_int(emp.get("지급액계", 0), 0) - meal - car))
+        taxable = int(emp.get("과세급여", max(0, int(emp.get("지급액계", 0)) - meal - car)))
         if taxable > 0 and str(emp.get("보험적용구분", "")).startswith("고지"):
             expected_hi = floor_10won(taxable * RATES_2026["health_insurance_employee"])
-            actual_hi = _safe_int(emp.get("건강보험", 0), 0)
+            actual_hi = int(emp.get("건강보험", 0))
             if expected_hi > 0 and actual_hi > 0:
                 gap_ratio = abs(actual_hi - expected_hi) / expected_hi
                 if gap_ratio >= 0.15:
@@ -488,14 +462,10 @@ def analyze_payroll_warnings(
             })
 
     prev_free_map = {
-        str(f.get("성명", "")).strip(): f
-        for f in (prev_freelancers or [])
-        if isinstance(f, dict) and str(f.get("성명") or "").strip()
+        str(f.get("성명", "")).strip(): f for f in (prev_freelancers or []) if f.get("성명")
     }
     for fr in freelancers or []:
-        if not isinstance(fr, dict):
-            continue
-        fname = str(fr.get("성명") or "").strip()
+        fname = str(fr.get("성명", "")).strip()
         if not fname:
             continue
         if not str(fr.get("주민등록번호", "")).strip():
@@ -507,8 +477,8 @@ def analyze_payroll_warnings(
                 "law": "소득세법 제164조의3 (거주자의 사업소득 간이지급명세서 제출)",
             })
         if fname in prev_free_map:
-            prev_amt = _safe_int(prev_free_map[fname].get("지급총액", 0), 0)
-            curr_amt = _safe_int(fr.get("지급총액", 0), 0)
+            prev_amt = int(prev_free_map[fname].get("지급총액", 0))
+            curr_amt = int(fr.get("지급총액", 0))
             if prev_amt > 0 and prev_amt == curr_amt:
                 items.append({
                     "level": "주의",
@@ -597,7 +567,7 @@ def _parse_law_search_first_meta(raw_search_txt: Any, target_law_name: str) -> D
 
 def check_payroll_law_revisions(force_refresh: bool = False) -> List[Dict[str, str]]:
     base_alerts = get_simplified_tax_revision_alerts()
-    today_str = datetime.now(_KST).date().isoformat()
+    today_str = date.today().isoformat()
     now_ts = time.time()
 
     if not force_refresh and _PAYROLL_LAW_MEM_CACHE.get("checked_date") == today_str:
