@@ -516,6 +516,63 @@ div[data-testid="stChatMessageContent"] blockquote {
 }
 
 footer {visibility: hidden;}
+
+    /* ─── [1번 개선] 상단 슬림 캡슐형 상태바 & 토스 벤토 그리드 초기 화면 ─── */
+    .top-mini-status-bar {
+        display: flex; align-items: center; justify-content: space-between;
+        flex-wrap: wrap; gap: 8px;
+        background: #FFFFFF !important; border: 1px solid #E5E8EB !important;
+        border-radius: 999px !important; padding: 6px 16px !important;
+        margin: 0 0 12px 0 !important;
+        box-shadow: 0 1px 4px rgba(15, 23, 42, 0.03) !important;
+        font-size: 0.78rem !important; color: #4E5968 !important;
+    }
+    .toss-bento-wrap {
+        max-width: 780px; margin: 18px auto 12px; padding: 8px 4px;
+    }
+    .toss-bento-hero {
+        text-align: center; margin-bottom: 20px;
+    }
+    .toss-bento-badge {
+        display: inline-flex; align-items: center; gap: 6px;
+        background: #E8F3FF; color: #3182F6;
+        font-size: 0.76rem; font-weight: 700;
+        padding: 5px 12px; border-radius: 999px; margin-bottom: 10px;
+    }
+    .toss-bento-title {
+        font-size: 1.55rem; font-weight: 800; color: #191F28;
+        letter-spacing: -0.5px; margin: 0 0 6px;
+    }
+    .toss-bento-sub {
+        font-size: 0.90rem; color: #4E5968; margin: 0;
+    }
+    .toss-bento-grid {
+        display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px;
+    }
+    .toss-bento-card {
+        background: #FFFFFF; border: 1px solid #E5E8EB;
+        border-radius: 16px; padding: 16px 18px;
+        box-shadow: 0 2px 8px rgba(15, 23, 42, 0.03);
+        transition: all 0.16s ease;
+    }
+    .toss-bento-card:hover {
+        border-color: #3182F6;
+        transform: translateY(-2px);
+        box-shadow: 0 6px 16px rgba(49, 130, 246, 0.10);
+    }
+    .toss-bento-card .b-cat {
+        display: inline-block; font-size: 0.72rem; font-weight: 700;
+        color: #3182F6; background: #E8F3FF;
+        padding: 3px 8px; border-radius: 6px; margin-bottom: 8px;
+    }
+    .toss-bento-card .b-ttl {
+        font-size: 0.95rem; font-weight: 800; color: #191F28;
+        margin-bottom: 4px; letter-spacing: -0.2px;
+    }
+    .toss-bento-card .b-desc {
+        font-size: 0.80rem; color: #8B95A1; line-height: 1.45;
+    }
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -3308,11 +3365,37 @@ if st.session_state.get("show_inline_api_manager"):
 with st.container(key=f"room_main_view_{effective_ws_id}_{selected_room}"):
     if not current_messages and not is_current_room_running:
         st.markdown(
-            f"<div style='padding: 18px 20px; background-color: #f8fafc; border: 1px dashed #cbd5e1; "
-            f"border-radius: 10px; color: #64748b; font-size: 0.96rem; margin-bottom: 12px;'>"
-            f"✨ <b>{selected_room} [{current_room_title}]</b> — 아직 작성된 대화가 없습니다. "
-            f"아래 입력창에 새로운 질문을 입력하거나 파일을 첨부해 보세요."
-            f"</div>",
+            f"""
+            <div class="toss-bento-wrap">
+                <div class="toss-bento-hero">
+                    <div class="toss-bento-badge">✨ {selected_room} [{current_room_title}] · 실시간 법제처 3단 대조</div>
+                    <div class="toss-bento-title">무엇을 검토해 드릴까요?</div>
+                    <p class="toss-bento-sub">아래 입력창에 질문이나 문서를 올려주시면 법령·시행령·시행규칙과 예규를 대조해 답변합니다.</p>
+                </div>
+                <div class="toss-bento-grid">
+                    <div class="toss-bento-card">
+                        <span class="b-cat">조세특례제한법 · 세액공제</span>
+                        <div class="b-ttl">통합고용세액공제 상시근로자 요건 검토</div>
+                        <div class="b-desc">청년 등 상시근로자 증가 인원 산정, 사후관리 추징 배제 요건 및 2026년 귀속 개정사항 비교</div>
+                    </div>
+                    <div class="toss-bento-card">
+                        <span class="b-cat">소득세법 · 원천징수</span>
+                        <div class="b-ttl">근로·사업·기타소득 원천징수 및 비과세 한도</div>
+                        <div class="b-desc">식대·자가운전보조금 비과세 요건, 프리랜서 3.3% 원천징수 및 간이지급명세서 제출 기한 검토</div>
+                    </div>
+                    <div class="toss-bento-card">
+                        <span class="b-cat">법인세 · 부가가치세</span>
+                        <div class="b-ttl">가지급금 인정이자 및 업무용승용차 손금불산입</div>
+                        <div class="b-desc">특수관계인 대여금 가중평균차입이자율 적용, 임직원 전용보험 및 운행기록부 작성 기준 확인</div>
+                    </div>
+                    <div class="toss-bento-card">
+                        <span class="b-cat">상속·증여 · 양도소득세</span>
+                        <div class="b-ttl">가업승계 증여세 과세특례 및 1세대 1주택 비과세</div>
+                        <div class="b-desc">최신 예규·심판례 기반 양도소득세 중과 배제 요건 및 창업자금·가업승계 사후관리 점검</div>
+                    </div>
+                </div>
+            </div>
+            """,
             unsafe_allow_html=True
         )
 
@@ -3653,3 +3736,8 @@ elif ws_has_running_init:
         _render_live_task_monitor(effective_ws_id, selected_room)
         time.sleep(1.0)
         st.rerun()
+try:
+    import calendar_scheduler as _cs_overlay
+    _cs_overlay.render_floating_kakao_todo_overlay()
+except Exception:
+    pass

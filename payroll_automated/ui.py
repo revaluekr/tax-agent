@@ -1544,9 +1544,8 @@ def render_payroll_automated_sidebar() -> None:
         else "<span class='ec-law-badge-orange'>2026.03 별표2·요율 반영</span>"
     )
 
-    with st.container(border=True):
+    with st.expander("개정사항 · 신규 세법 (2026 법령 반영)", expanded=False):
         st.markdown(
-            _ui_theme.sb_title("book", "개정사항·신규 세법") +
             f"<div class='ec-law-status-row'>"
             f"<span class='ec-law-status-left'><span class='ec-law-led-3d {led_row1}'></span>근로기준법 · 소득세법</span>"
             f"{badge_row1}"
@@ -1573,7 +1572,7 @@ def render_payroll_automated_sidebar() -> None:
     _rs_name = "급여명세서(급여대장)" if is_emp_mode else "사업소득(사업소득대장)"
     _rs_has = (emp_cnt if is_emp_mode else free_cnt) > 0
 
-    with st.container(border=True):
+    with st.expander("작업 자료 관리 (초기화 · 백업)", expanded=False):
         status_pill = (
             f"<span class='sb-badge-green'>근로 {emp_cnt}명 · 사업 {free_cnt}명</span>"
             if has_data
@@ -1605,7 +1604,7 @@ def render_payroll_automated_sidebar() -> None:
                 st.rerun()
 
     # (4) 사업자정보 카드 (통합고용세액공제와 동일한 🏢 아이콘 및 우측 끝 '직접입력' 배지 적용)
-    with st.container(border=True):
+    with st.container(border=True, key="pay_sb_biz_card"):
         st.markdown(
             _ui_theme.sb_title("building", "사업자정보", "<span class='sb-badge-pro'>직접입력</span>"),
             unsafe_allow_html=True,
@@ -2267,8 +2266,8 @@ def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
                 cell_style = {
                     "textAlign": "right",
                     "fontWeight": "bold",
-                    "backgroundColor": "#f0fdf4",
-                    "color": "#15803d",
+                    "backgroundColor": "#E5F9F0",
+                    "color": "#00A660",
                     "paddingLeft": "4px",
                     "paddingRight": "6px",
                 }
@@ -2301,6 +2300,7 @@ def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
     grid_opts["suppressSizeToFit"] = True
     grid_opts["ensureDomOrder"] = True
     grid_opts["stopEditingWhenCellsLoseFocus"] = True
+    grid_opts["overlayNoRowsTemplate"] = "<div style='padding:26px 32px;background:#FFFFFF;border:1px dashed #D1D6DB;border-radius:14px;color:#4E5968;font-size:0.86rem;font-weight:600;box-shadow:0 2px 8px rgba(15,23,42,0.03);line-height:1.6;'>📋 아직 등록된 대상자가 없습니다.<br><span style='color:#3182F6;font-weight:700;'>상단 [행 추가]</span> 버튼을 누르거나 <span style='color:#3182F6;font-weight:700;'>급여·인건비 자료 파일</span>을 업로드해 주세요.</div>"
     # 최소화한 열: 머리글을 두 줄로 접어 말줄임(…) 없이 표시
     for cdef in grid_opts.get("columnDefs", []):
         if cdef.get("field") in zero_cols:
@@ -2588,7 +2588,8 @@ def _render_freelancer_aggrid(pstate: Dict[str, Any]) -> None:
             )
 
     grid_opts = gb.build()
-    grid_opts["suppressSizeToFit"] = True   # 열 폭을 내용에 맞춘 값 그대로 (화면 폭에 맞춰 줄이지 않음 → 머리글·값 잘림 방지)
+    grid_opts["suppressSizeToFit"] = True
+    grid_opts["overlayNoRowsTemplate"] = "<div style='padding:26px 32px;background:#FFFFFF;border:1px dashed #D1D6DB;border-radius:14px;color:#4E5968;font-size:0.86rem;font-weight:600;box-shadow:0 2px 8px rgba(15,23,42,0.03);line-height:1.6;'>📋 아직 등록된 대상자가 없습니다.<br><span style='color:#3182F6;font-weight:700;'>상단 [행 추가]</span> 버튼을 누르거나 <span style='color:#3182F6;font-weight:700;'>급여·인건비 자료 파일</span>을 업로드해 주세요.</div>"
     grid_height = min(480, max(230, 58 + len(df) * 36))
 
     grid_resp = AgGrid(

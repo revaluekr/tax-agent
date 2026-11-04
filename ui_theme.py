@@ -178,6 +178,18 @@ def ec_main_css() -> str:
 
 EC_MAIN_CSS = """
 <style>
+/* 4번 개선사항: Step 1 서류 체크리스트 토스 파스텔 뱃지 & 파일명 알약 태그 */
+.ec-s1-tbl{width:100%;border-collapse:separate;border-spacing:0;font-size:.92rem;background:#FFFFFF;border:1px solid #E5E8EB;border-radius:14px;overflow:hidden;margin:4px 0 8px;}
+.ec-s1-tbl th{background:#F9FAFB;color:#4E5968;font-weight:700;font-size:.82rem;padding:11px 14px;border-bottom:1px solid #E5E8EB;text-align:left;}
+.ec-s1-tbl td{padding:12px 14px;border-bottom:1px solid #F2F4F6;color:#191F28;vertical-align:middle;}
+.ec-s1-tbl tr:last-child td{border-bottom:none;}
+.ec-s1-tbl tr:hover td{background:#F9FAFB;}
+.s1-badge{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:999px;font-size:.76rem;font-weight:700;white-space:nowrap;}
+.s1-badge.done{background:#E5F9F0;color:#00A660;}
+.s1-badge.req{background:#FFF5E5;color:#D97706;}
+.s1-badge.opt{background:#F2F4F6;color:#8B95A1;}
+.s1-file-pill{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:8px;background:#F2F4F6;color:#333D4B;font-size:.80rem;font-weight:600;margin:2px 4px 2px 0;}
+
 [data-testid="stApp"] [data-testid="stMain"],[data-testid="stApp"] [data-testid="stAppScrollToBottomContainer"],[data-testid="stApp"] [data-testid="stBottom"] > div{background:#F4F6FA !important;}
 /* 머리: 위치 표시 + 꼬리표 + 큰 제목 */
 .ecx-top{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 6px;}
@@ -275,13 +287,24 @@ def page_header(crumbs: list, chips_html: str, title: str, sub: str) -> str:
 
 
 def kpi_row(items: list) -> str:
-    """요약 카드 한 줄: [(라벨, 값, 보조, 'money'|'money biz'|'')] — 마지막 money 카드는 진한 네이비(사업소득은 진보라)."""
-    n = len(items)
+    """요약 카드 한 줄: 튜플 (라벨, 값, 보조, cls) 및 dict {'label', 'value', 'sub', 'money'} 양쪽 완벽 호환"""
+    n = max(1, len(items))
     cols = " ".join(["1fr"] * (n - 1) + ["1.3fr"])
-    cells = "".join(
-        f"<div class='ecx-kpi {cls}'><div class='l'>{l}</div><div class='v'>{v}</div>" + (f"<div class='s'>{sub}</div>" if sub else "") + "</div>"
-        for (l, v, sub, cls) in items
-    )
+    cells_list = []
+    for it in items:
+        if isinstance(it, dict):
+            l = it.get("label", "")
+            v = it.get("value", "")
+            sub = it.get("sub", "")
+            cls = "money" if it.get("money") else ""
+        else:
+            l, v, sub, cls = it
+        cells_list.append(
+            f"<div class='ecx-kpi {cls}'><div class='l'>{l}</div><div class='v'>{v}</div>"
+            + (f"<div class='s'>{sub}</div>" if sub else "")
+            + "</div>"
+        )
+    cells = "".join(cells_list)
     return f"<div class='ecx-kpis' style='display:grid;grid-template-columns:{cols};gap:12px;margin:2px 0 14px;'>{cells}</div>"
 
 
@@ -291,6 +314,12 @@ def pay_main_css() -> str:
 
 PAY_MAIN_CSS = """
 <style>
+/* 3번 개선사항: 급여 툴바 토스 세그먼트 알약(Pill) 스위치 */
+[data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-pay_basis_pill_wrap{background:#F2F4F6 !important;border:1px solid #E5E8EB !important;border-radius:12px !important;padding:4px 8px !important;}
+[data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-pay_basis_pill_wrap div.stButton > button{min-height:32px !important;border-radius:8px !important;font-size:0.84rem !important;font-weight:700 !important;padding:2px 10px !important;border:none !important;background:transparent !important;color:#4E5968 !important;box-shadow:none !important;}
+[data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-pay_basis_pill_wrap div.stButton > button[kind="primary"]{background:#FFFFFF !important;color:#3182F6 !important;box-shadow:0 1px 4px rgba(15,23,42,0.08) !important;}
+[data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-pay_basis_pill_wrap div.stButton > button[kind="primary"] p{color:#3182F6 !important;font-weight:800 !important;}
+
 [data-testid="stApp"] [data-testid="stMain"],[data-testid="stApp"] [data-testid="stAppScrollToBottomContainer"],[data-testid="stApp"] [data-testid="stBottom"] > div{background:#F4F6FA !important;}
 .ecx-top{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 6px;}
 .ecx-crumb{font-size:.86rem;color:#64748B;font-weight:500;} .ecx-crumb .sep{color:#94A3B8;margin:0 4px;}

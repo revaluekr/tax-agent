@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""통합고용세액공제 패키지 초기화 및 하위 모듈 자동 핫리로드(Hot-Reload) 브릿지"""
-from __future__ import annotations
-
+"""통합고용세액공제 계산기 패키지 (조특법 제29조의8) — 하위 모듈 핫리로드 브릿지 포함"""
 import importlib
 import os
 import sys
+
+from . import rules, headcount, parsers, backup  # noqa: F401
 
 _SUBMODULES = [
     "employment_credit.rules",
@@ -23,7 +23,7 @@ _SUBMODULES = [
     "employment_credit.ui_step4",
     "employment_credit.ui",
 ]
-_MTIMES: dict[str, float] = {}
+_MTIMES = {}
 
 
 def _ensure_fresh_submodules() -> None:
@@ -58,14 +58,11 @@ def render_credit_wizard(*args, **kwargs):
     return _ui_mod.render_credit_wizard(*args, **kwargs)
 
 
-def reset_credit_all_state(*args, **kwargs):
-    _ensure_fresh_submodules()
-    from . import ui_common as _uc_mod
-    return _uc_mod.reset_credit_all_state(*args, **kwargs)
-
-
 __all__ = [
+    "rules",
+    "headcount",
+    "parsers",
+    "backup",
     "render_credit_sidebar",
     "render_credit_wizard",
-    "reset_credit_all_state",
 ]

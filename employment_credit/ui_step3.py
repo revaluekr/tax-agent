@@ -182,12 +182,12 @@ def _build_top_kpi_cards_html(pkg: dict, tax_yr: int) -> str:
     c_cont = int(pkg.get("total_continued_credit_won") or 0)
     c_add = int(pkg.get("additional_credit_won") or 0)
 
-    neg_col = "#DC2626" if (claw_net + rural_won) > 0 else "#334155"
+    neg_col = "#F04452" if (claw_net + rural_won) > 0 else "#4E5968"
     return (
         "<div class='ecx-kpis' style='display:grid;grid-template-columns:1fr 1fr 1.15fr;gap:12px;margin-bottom:14px;'>"
         "<div class='ecx-kpi'>"
         f"<div class='l'>① {tax_yr}년 총 공제세액 (확정)</div>"
-        f"<div class='v' style='color:#1D4ED8;'>+{tot_gross:,}원</div>"
+        f"<div class='v' style='color:#3182F6;'>+{tot_gross:,}원</div>"
         f"<div class='s'>1차 {c1_won:,} + 연속 {c_cont:,}" + (f" + 추가 {c_add:,}" if c_add > 0 else "") + "</div></div>"
         "<div class='ecx-kpi'>"
         "<div class='l'>② 추가납부(추징) · 농특세 20%</div>"
