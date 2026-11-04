@@ -1557,12 +1557,12 @@ div[class*="st-key-ec_step_nav_wait_"] button p {
 .ec-agent-report-wrap h2 {
     font-size: 1.35rem !important;
     font-weight: 900 !important;
-    color: #1e3a8a !important;
+    color: #191F28 !important;
     margin-top: 32px !important;
     margin-bottom: 16px !important;
     padding: 11px 18px !important;
-    background: linear-gradient(90deg, #eff6ff 0%, #f8fafc 70%, #ffffff 100%) !important;
-    border-left: 6px solid #1d4ed8 !important;
+    background: linear-gradient(90deg, #E8F3FF 0%, #F5F9FF 72%, #FFFFFF 100%) !important;
+    border-left: 5px solid #3182F6 !important;
     border-radius: 8px !important;
     letter-spacing: -0.3px !important;
 }
@@ -1625,39 +1625,49 @@ div[class*="st-key-ec_step_nav_wait_"] button p {
 .ec-agent-report-wrap a:hover {
     background: #dbeafe !important;
     border-color: #60a5fa !important;
-    color: #1e3a8a !important;
+    color: #191F28 !important;
     text-decoration: underline !important;
 }
-/* 보고서 내 표 (th 내부 strong이 검은색으로 덮이지 않도록 #ffffff 강제 고정) */
+/* [3번 시안] 통합고용 4단계 보고서 표 — 토스 라이트 블루그레이 헤더(#F2F6FC) & 라운드 카드 */
 .ec-agent-report-wrap table {
     width: 100% !important;
-    border-collapse: collapse !important;
-    margin: 10px 0 20px 0 !important;
-    font-size: 1.08rem !important;
-    border-top: 2px solid #1e293b !important;
-    border-bottom: 2px solid #1e293b !important;
+    border-collapse: separate !important;
+    border-spacing: 0 !important;
+    margin: 12px 0 20px 0 !important;
+    font-size: 1.04rem !important;
+    border: 1px solid #E5E8EB !important;
+    border-top: 2.5px solid #3182F6 !important;
+    border-radius: 14px !important;
+    overflow: hidden !important;
+    background: #FFFFFF !important;
+    box-shadow: 0 2px 10px rgba(0, 27, 55, 0.04) !important;
 }
 .ec-agent-report-wrap th,
 .ec-agent-report-wrap th strong,
 .ec-agent-report-wrap th b {
-    background: #1e293b !important;
-    color: #ffffff !important;
+    background: #F2F6FC !important;
+    color: #333D4B !important;
     font-weight: 800 !important;
-    font-size: 1.08rem !important;
+    font-size: 1.02rem !important;
     padding: 12px 14px !important;
-    border: 1px solid #334155 !important;
+    border: none !important;
+    border-bottom: 1px solid #E5E8EB !important;
+    border-right: 1px solid #E5E8EB !important;
     text-align: center !important;
 }
 .ec-agent-report-wrap td {
     padding: 11px 14px !important;
-    border: 1px solid #cbd5e1 !important;
-    font-size: 1.08rem !important;
-    color: #1e293b !important;
+    border: none !important;
+    border-bottom: 1px solid #F2F4F6 !important;
+    border-right: 1px solid #F2F4F6 !important;
+    font-size: 1.04rem !important;
+    color: #191F28 !important;
+    background: #FFFFFF !important;
     font-weight: 600 !important;
     vertical-align: middle !important;
 }
-.ec-agent-report-wrap tr:nth-child(even) td {
-    background: #f8fafc !important;
+.ec-agent-report-wrap tr:hover td {
+    background: #F8FBFF !important;
 }
 /* 보고서 내 산식/요약 카드 박스 */
 .ec-rep-card {
@@ -1941,7 +1951,7 @@ div[class*="st-key-ec_step_nav_wait_"] button p {
     background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%) !important;
     border-color: #3b82f6 !important;
     border-bottom-color: #1d4ed8 !important;
-    color: #1e3a8a !important;
+    color: #191F28 !important;
     transform: translateY(-1px) !important;
 }
 .st-key-btn_ec_sidebar_reset_ask button:hover:not(:disabled) {

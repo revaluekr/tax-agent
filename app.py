@@ -386,11 +386,12 @@ div[class*="st-key-room_btn_"][class*="_running"] button::after {
     color: #334155;
 }
 
-/* 🤖 답변 로봇 아바타 초록색 배경(#22c55e) & 흰색 아이콘 */
+/* 🤖 답변 아바타 토스 블루(#3898FF) & 흰색 아이콘 */
 [data-testid="chatAvatarIcon-assistant"],
 div[data-testid="stChatMessageAvatarAssistant"] {
-    background-color: #22c55e !important;
+    background-color: #3898FF !important;
     color: #ffffff !important;
+    border-radius: 10px !important;
 }
 [data-testid="chatAvatarIcon-assistant"] svg,
 div[data-testid="stChatMessageAvatarAssistant"] svg {
@@ -398,34 +399,37 @@ div[data-testid="stChatMessageAvatarAssistant"] svg {
     color: #ffffff !important;
 }
 
-/* 📖 우측 보고서 본문 폰트 가독성 확대 (15.5px / 줄간격 1.68) */
+/* 📖 우측 보고서 본문 폰트 가독성 (글자 나열 및 줄간격 100% 보존 + 토스 타이포 컬러 #191F28) */
 div[data-testid="stChatMessageContent"] p,
 div[data-testid="stChatMessageContent"] li {
-    font-size: 1.12rem !important;
-    line-height: 1.68 !important;
-    color: #1e293b !important;
+    font-size: 1.10rem !important;
+    line-height: 1.72 !important;
+    color: #191F28 !important;
 }
 
-/* 보고서 대제목 (### 1. 결론, ### 2. 내용, ### 3. 관련법령) */
+/* [3번 시안] 보고서 대구분 헤더 (### 1. 결론, ### 2. 내용, ### 3. 관련법령) — 토스 소프트 블루 그라데이션 & #3182F6 포인트 바 */
 div[data-testid="stChatMessageContent"] h3 {
-    color: #1e3a8a !important;
-    background: linear-gradient(90deg, #f1f5f9 0%, #ffffff 100%);
-    border-left: 5px solid #1e3a8a;
-    padding: 8px 14px !important;
-    border-radius: 0 6px 6px 0;
-    margin-top: 20px !important;
-    margin-bottom: 10px !important;
-    font-size: 1.28rem !important;
+    color: #191F28 !important;
+    background: linear-gradient(90deg, #E8F3FF 0%, #F5F9FF 72%, #FFFFFF 100%) !important;
+    border-left: 4.5px solid #3182F6 !important;
+    padding: 10px 16px !important;
+    border-radius: 10px !important;
+    margin-top: 22px !important;
+    margin-bottom: 12px !important;
+    font-size: 1.26rem !important;
     font-weight: 800 !important;
+    letter-spacing: -0.3px !important;
+    box-shadow: 0 1px 4px rgba(49, 130, 246, 0.06) !important;
 }
 
 /* 보고서 소제목 (#### (1) 상세 법리 등) */
 div[data-testid="stChatMessageContent"] h4 {
-    color: #1e40af !important;
-    margin-top: 14px !important;
-    margin-bottom: 6px !important;
-    font-size: 1.14rem !important;
-    font-weight: 700 !important;
+    color: #191F28 !important;
+    margin-top: 16px !important;
+    margin-bottom: 8px !important;
+    font-size: 1.12rem !important;
+    font-weight: 800 !important;
+    letter-spacing: -0.2px !important;
 }
 
 /* 3. 관련법령 전용 조밀한 줄간격 컨테이너 */
@@ -436,83 +440,118 @@ div[data-testid="stChatMessageContent"] h4 {
 }
 .related-laws-compact-box li {
     font-size: 1.04rem !important;
-    line-height: 1.42 !important;
-    margin-bottom: 2px !important;
+    line-height: 1.45 !important;
+    margin-bottom: 3px !important;
 }
 
-/* 본문 근거 태그 및 3. 관련법령 조문 직링크 스타일 */
+/* [3번 시안] 본문 근거 태그([조문: ...]) 토스 블루 알약 배지 스타일 */
 div[data-testid="stChatMessageContent"] a {
-    color: #1d4ed8 !important;
-    font-weight: 600 !important;
+    display: inline-block;
+    background-color: #E8F3FF !important;
+    color: #3182F6 !important;
+    border: 1px solid #C9E2FF !important;
+    border-radius: 6px !important;
+    padding: 0px 7px !important;
+    margin: 0 1px !important;
+    font-size: 0.94em !important;
+    font-weight: 700 !important;
+    line-height: 1.5 !important;
     text-decoration: none !important;
+    transition: all 0.14s ease !important;
 }
 div[data-testid="stChatMessageContent"] a:hover {
-    text-decoration: underline !important;
-    color: #15803d !important;
+    background-color: #D6E8FF !important;
+    border-color: #3182F6 !important;
+    color: #1B64DA !important;
+    text-decoration: none !important;
 }
 
-/* 마크다운 표(Table) 엔터프라이즈 네이비 스타일링 */
+/* [3번 시안] 마크다운 비교표(Table) — 토스 라이트 블루그레이 헤더(#F2F6FC) + 라운드 카드 + 현행 개정 열 소프트 하이라이트 */
 div[data-testid="stChatMessageContent"] table,
 .law-diff-banner-box table,
 .api-key-status-table-box table {
-    width: 100%;
-    border-collapse: collapse;
-    margin: 10px 0 14px 0;
-    font-size: 0.98rem !important;
-    border-radius: 8px;
-    overflow: hidden;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    width: 100% !important;
+    border-collapse: separate !important;
+    border-spacing: 0 !important;
+    margin: 12px 0 16px 0 !important;
+    font-size: 0.97rem !important;
+    border: 1px solid #E5E8EB !important;
+    border-top: 2.5px solid #3182F6 !important;
+    border-radius: 14px !important;
+    overflow: hidden !important;
+    background-color: #FFFFFF !important;
+    box-shadow: 0 2px 10px rgba(0, 27, 55, 0.04) !important;
 }
 div[data-testid="stChatMessageContent"] th,
 .law-diff-banner-box th,
 .api-key-status-table-box th {
-    background-color: #1e293b !important;
-    color: #ffffff !important;
-    font-weight: 700 !important;
-    padding: 9px 12px !important;
-    border: 1px solid #334155 !important;
+    background-color: #F2F6FC !important;
+    color: #333D4B !important;
+    font-weight: 800 !important;
+    padding: 11px 14px !important;
+    border: none !important;
+    border-bottom: 1px solid #E5E8EB !important;
+    border-right: 1px solid #E5E8EB !important;
     text-align: left !important;
+}
+div[data-testid="stChatMessageContent"] th:last-child,
+.law-diff-banner-box th:last-child,
+.api-key-status-table-box th:last-child {
+    border-right: none !important;
 }
 div[data-testid="stChatMessageContent"] td,
 .law-diff-banner-box td,
 .api-key-status-table-box td {
-    padding: 8px 12px !important;
-    border: 1px solid #cbd5e1 !important;
-    color: #1e293b;
-    background-color: #ffffff;
-    line-height: 1.5 !important;
+    padding: 10px 14px !important;
+    border: none !important;
+    border-bottom: 1px solid #F2F4F6 !important;
+    border-right: 1px solid #F2F4F6 !important;
+    color: #191F28 !important;
+    background-color: #FFFFFF !important;
+    line-height: 1.55 !important;
     vertical-align: middle !important;
 }
-div[data-testid="stChatMessageContent"] tr:nth-child(even) td,
-.law-diff-banner-box tr:nth-child(even) td,
-.api-key-status-table-box tr:nth-child(even) td {
-    background-color: #f8fafc;
+div[data-testid="stChatMessageContent"] td:last-child,
+.law-diff-banner-box td:last-child,
+.api-key-status-table-box td:last-child {
+    border-right: none !important;
+}
+div[data-testid="stChatMessageContent"] tr:last-child td,
+.law-diff-banner-box tr:last-child td,
+.api-key-status-table-box tr:last-child td {
+    border-bottom: none !important;
+}
+/* 비교표 3번째 열(현행 개정 규정 열) 은은한 소프트 블루 하이라이트 */
+div[data-testid="stChatMessageContent"] td:nth-child(3),
+.law-diff-banner-box td:nth-child(3) {
+    background-color: #F8FBFF !important;
+}
+div[data-testid="stChatMessageContent"] tr:hover td,
+.law-diff-banner-box tr:hover td {
+    background-color: #F4F8FF !important;
 }
 .api-key-status-table-box a {
     display: inline-block;
-    background-color: #eff6ff;
-    color: #1d4ed8 !important;
-    border: 1px solid #bfdbfe;
+    background-color: #E8F3FF !important;
+    color: #3182F6 !important;
+    border: 1px solid #C9E2FF !important;
     padding: 3px 10px;
     border-radius: 6px;
     font-weight: 700 !important;
     font-size: 0.85rem !important;
     text-decoration: none !important;
 }
-.api-key-status-table-box a:hover {
-    background-color: #dbeafe;
-    color: #1e40af !important;
-}
 
 /* 상단 모드 안내 인용구 박스 (> ⚡ / > 🧠) */
 div[data-testid="stChatMessageContent"] blockquote {
-    background-color: #f8fafc;
-    border-left: 4px solid #22c55e;
-    padding: 7px 13px;
-    border-radius: 6px;
-    color: #334155;
-    font-size: 0.95rem !important;
-    margin-bottom: 10px;
+    background: linear-gradient(90deg, #F5F9FF 0%, #FFFFFF 100%) !important;
+    border: 1px solid #E5E8EB !important;
+    border-left: 4px solid #3182F6 !important;
+    padding: 9px 14px !important;
+    border-radius: 10px !important;
+    color: #333D4B !important;
+    font-size: 0.92rem !important;
+    margin-bottom: 12px !important;
 }
 
 footer {visibility: hidden;}

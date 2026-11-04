@@ -1498,8 +1498,8 @@ def render_floating_kakao_todo_overlay() -> None:
 
                 #tds-kakao-floating-root {{
                     position: fixed;
-                    right: 24px;
-                    bottom: 24px;
+                    right: 20px;
+                    bottom: 60px;
                     z-index: 999990;
                     font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
                     letter-spacing: -0.02em;
@@ -1527,8 +1527,8 @@ def render_floating_kakao_todo_overlay() -> None:
                 /* 60% 확장 To-Do 오버레이 패널 (to_do.html .todo-overlay-panel) */
                 #tds-kakao-todo-panel {{
                     position: fixed;
-                    right: 24px;
-                    bottom: 98px;
+                    right: 20px;
+                    bottom: 136px;
                     width: min(60vw, 920px);
                     height: min(64vh, 640px);
                     min-width: 340px;

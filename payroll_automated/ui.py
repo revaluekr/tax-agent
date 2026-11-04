@@ -367,15 +367,15 @@ div[data-testid="stDialog"] div[role="dialog"] {
     letter-spacing: -0.2px !important;
 }
 .pa-agent-report-box h3 {
-    font-size: 1.20rem !important;
+    font-size: 1.22rem !important;
     font-weight: 800 !important;
-    color: #0f172a !important;
-    background: linear-gradient(90deg, #f1f5f9 0%, #ffffff 100%);
-    border-left: 4px solid #1e3a8a;
-    padding: 6px 12px !important;
+    color: #191F28 !important;
+    background: linear-gradient(90deg, #E8F3FF 0%, #F5F9FF 72%, #FFFFFF 100%) !important;
+    border-left: 4.5px solid #3182F6 !important;
+    padding: 9px 14px !important;
     margin-top: 1.4rem !important;
     margin-bottom: 0.75rem !important;
-    border-radius: 0 6px 6px 0;
+    border-radius: 10px !important;
     line-height: 1.4 !important;
 }
 .pa-agent-report-box h4 {

@@ -44,9 +44,20 @@ def sb_title(icon_name: str, text: str, pill: str = "") -> str:
 
 
 def brand_html() -> str:
+    cat_svg = (
+        "<svg width='24' height='24' viewBox='0 0 32 32' fill='none' xmlns='http://www.w3.org/2000/svg' "
+        "style='flex:none;display:block;'>"
+        "<path d='M6.5 15.5 L7.5 6.2 C7.6 5.3 8.7 5.0 9.3 5.6 L13.2 9.5 C14.1 9.2 15.0 9.1 16.0 9.1 "
+        "C17.0 9.1 17.9 9.2 18.8 9.5 L22.7 5.6 C23.3 5.0 24.4 5.3 24.5 6.2 L25.5 15.5 "
+        "C26.0 17.0 26.2 18.6 25.8 20.3 C24.8 24.5 20.9 27.0 16.0 27.0 C11.1 27.0 7.2 24.5 6.2 20.3 "
+        "C5.8 18.6 6.0 17.0 6.5 15.5 Z' stroke='#FFFFFF' stroke-width='2.8' stroke-linecap='round' stroke-linejoin='round'/>"
+        "</svg>"
+    )
     return (
-        "<div class='sbx-brand'><div class='sbx-logo'>" + icon("scale", 18, "#ffffff") + "</div>"
-        "<div><div class='sbx-brand-t'>세무 에이전트</div><div class='sbx-brand-s'>세무사 사무실 업무 도구</div></div></div>"
+        "<div class='sbx-brand'>"
+        f"<div class='sbx-logo'>{cat_svg}</div>"
+        "<div class='sbx-brand-t'>세무 <span style='color:#3182F6;'>AI</span> 에이전트</div>"
+        "</div>"
     )
 
 
@@ -114,16 +125,16 @@ SIDEBAR_CSS = """
 [data-testid="stApp"] section[data-testid="stSidebar"] .ec-law-badge-orange{background:#FFF5E5 !important;color:#D97706 !important;}
 [data-testid="stApp"] section[data-testid="stSidebar"] .sb-badge-pro{background:#E8F3FF !important;color:#3182F6 !important;}
 
-/* 최상단 브랜드 영역 (.sbx-brand): 36x36px 토스 블루 스쿼클 로고 */
-.sbx-brand{display:flex;align-items:center;gap:10px;padding:2px 2px 10px;}
+/* 최상단 브랜드 영역 (.sbx-brand): 홈버튼과 동일한 파란 스쿼클(#3898FF) + 굵은 흰선 고양이 실루엣 + '세무 AI 에이전트' */
+.sbx-brand{display:flex;align-items:center;gap:11px;padding:4px 2px 12px;}
 .sbx-logo{
-  width:36px;height:36px;border-radius:11px;
-  background:linear-gradient(135deg,#3182F6,#1B64DA);
+  width:38px;height:38px;border-radius:13px;
+  background:#3898FF;
   display:flex;align-items:center;justify-content:center;
-  box-shadow:0 2px 8px rgba(49,130,246,.24);
+  box-shadow:0 4px 12px rgba(49,130,246,.28), inset 0 1px 1px rgba(255,255,255,.35);
+  flex:none;
 }
-.sbx-brand-t{font-size:1.06rem;font-weight:800;color:#191F28;letter-spacing:-.3px;line-height:1.2;}
-.sbx-brand-s{font-size:.76rem;color:#8B95A1;font-weight:500;}
+.sbx-brand-t{font-size:1.12rem;font-weight:800;color:#191F28;letter-spacing:-.4px;line-height:1.2;white-space:nowrap;}
 
 /* 최상단 메뉴 네비게이션: 모든 활성 메뉴를 소프트 블루(#E8F3FF) + 토스 블루(#3182F6, 800)로 단일 통일 */
 [data-testid="stApp"] section[data-testid="stSidebar"] [class*="st-key-btn_top_mode_"] div.stButton button{
@@ -539,34 +550,52 @@ PAY_MAIN_CSS = EC_MAIN_CSS + """
 [data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-pay_warnchip_gray div.stButton button{background:#E5F9F0 !important;border:none !important;border-radius:10px !important;}
 [data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-pay_warnchip_gray div.stButton button p,[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-pay_warnchip_gray div.stButton button span{color:#00A660 !important;font-weight:700 !important;}
 
-/* [4]-2 사업소득 [기준금액 : 세전 | 세후] 세그먼트 캡슐 스위치 (::before '기준금액 : 세전' / ::after '세후' 흰색 알약 전환) */
+/* [1번 시안] 급여명세서·사업소득 공통: '기준금액 [ 세전 | 세후 ]' 컴팩트 1줄 토스 세그먼트 알약 스위치 */
+[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"],
+[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"] div[data-testid="stTooltipHoverTarget"],
+[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"] div.stButton{
+  display:flex !important;align-items:center !important;justify-content:center !important;
+  width:auto !important;white-space:nowrap !important;gap:0 !important;
+}
+[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"] div.stButton::before{
+  content:"기준금액" !important;
+  font-size:.85rem !important;font-weight:800 !important;color:#191F28 !important;
+  margin-right:8px !important;white-space:nowrap !important;flex:none !important;letter-spacing:-.2px !important;
+}
 [data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"] div.stButton button{
   background:#F2F4F6 !important;border:1px solid #E5E8EB !important;border-radius:999px !important;
-  height:38px !important;min-height:38px !important;padding:3px 6px !important;gap:4px !important;
-  display:inline-flex !important;align-items:center !important;justify-content:center !important;box-shadow:none !important;
+  width:auto !important;min-width:118px !important;max-width:132px !important;
+  height:36px !important;min-height:36px !important;padding:3px !important;gap:2px !important;
+  display:inline-flex !important;align-items:center !important;justify-content:center !important;
+  box-shadow:none !important;flex:none !important;white-space:nowrap !important;
 }
+[data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"] div.stButton button > div,
 [data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] div[class*="st-key-pay_free_sw_"] div.stButton button p{
   display:none !important;
 }
 [data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-pay_free_sw_gross div.stButton button::before{
-  content:"기준금액 : 세전" !important;
+  content:"세전" !important;
   background:#FFFFFF !important;color:#3182F6 !important;font-size:.82rem !important;font-weight:800 !important;
-  padding:5px 12px !important;border-radius:999px !important;box-shadow:0 1px 3px rgba(0,27,55,.10) !important;
+  padding:5px 13px !important;border-radius:999px !important;box-shadow:0 1px 3px rgba(0,27,55,.10) !important;
+  white-space:nowrap !important;line-height:1.15 !important;
 }
 [data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-pay_free_sw_gross div.stButton button::after{
   content:"세후" !important;
-  background:transparent !important;color:#8B95A1 !important;font-size:.82rem !important;font-weight:600 !important;
-  padding:5px 12px !important;border-radius:999px !important;
+  background:transparent !important;color:#8B95A1 !important;font-size:.82rem !important;font-weight:700 !important;
+  padding:5px 13px !important;border-radius:999px !important;
+  white-space:nowrap !important;line-height:1.15 !important;
 }
 [data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-pay_free_sw_net div.stButton button::before{
-  content:"기준금액 : 세전" !important;
-  background:transparent !important;color:#8B95A1 !important;font-size:.82rem !important;font-weight:600 !important;
-  padding:5px 12px !important;border-radius:999px !important;
+  content:"세전" !important;
+  background:transparent !important;color:#8B95A1 !important;font-size:.82rem !important;font-weight:700 !important;
+  padding:5px 13px !important;border-radius:999px !important;
+  white-space:nowrap !important;line-height:1.15 !important;
 }
 [data-testid="stApp"][data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-pay_free_sw_net div.stButton button::after{
   content:"세후" !important;
   background:#FFFFFF !important;color:#3182F6 !important;font-size:.82rem !important;font-weight:800 !important;
-  padding:5px 12px !important;border-radius:999px !important;box-shadow:0 1px 3px rgba(0,27,55,.10) !important;
+  padding:5px 13px !important;border-radius:999px !important;box-shadow:0 1px 3px rgba(0,27,55,.10) !important;
+  white-space:nowrap !important;line-height:1.15 !important;
 }
 
 /* [6]-3 내려받기 파일 포맷 배지 (PDF #F04452, JPG #3182F6, XLSX #00C471) */
