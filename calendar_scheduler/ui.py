@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-달력 스케줄러 + 카톡 백그라운드 시뮬레이터 + 우측 하단 미소 얼굴 홈버튼 + 60% 확장 To-Do 오버레이 (calendar_scheduler/ui.py)
+달력 스케줄러 + 카톡 백그라운드 시뮬레이터 + 드래그 가능한 우측 하단 미소 얼굴 홈버튼 + 60% 확장 To-Do 오버레이 (calendar_scheduler/ui.py)
 
 [Part 1: 라이브러리 Import + 스타일/CSS 정의 + 핵심 비즈니스 로직/함수부]
 [Part 2: 상태 초기화 + UI 레이아웃 렌더링 및 이벤트 연결부]
@@ -37,7 +37,7 @@ def get_kst_today() -> date:
 def _default_schedules_for_month(year: int, month: int, today_d: date) -> Dict[int, List[Dict[str, Any]]]:
     """
     당해 연월의 기본 세무 일정 및 카카오톡 백그라운드 자동화 연계 일정을 생성합니다.
-    - to_do.html의 3색 범례(TAX: 세무기한 🔴 / MY: 내 스케줄 🔵 / DONE: 카톡 승인완료 🟢)와
+    - 3색 구분(TAX: 세무기한 / MY: 내 스케줄 / DONE: 카톡 승인완료)과
       기존 v3 ai_status 필드를 동시에 100% 호환합니다.
     """
     focus_day = today_d.day if (today_d.year == year and today_d.month == month) else 4
@@ -160,7 +160,7 @@ def _default_schedules_for_month(year: int, month: int, today_d: date) -> Dict[i
 
 def _default_kakao_todos(today_d: date) -> List[Dict[str, Any]]:
     """
-    우측 하단 60% 확장 패널에 표시할 카카오톡 백그라운드 자동화 To-Do 리스트 초기값 (to_do.html 6개 시나리오 완벽 반영)
+    우측 하단 60% 확장 패널에 표시할 카카오톡 백그라운드 자동화 To-Do 리스트 초기값 (6개 시나리오 완벽 반영)
     """
     yr = today_d.year
     mo = today_d.month
@@ -226,7 +226,7 @@ def _default_kakao_todos(today_d: date) -> List[Dict[str, Any]]:
             "time_ago": "8분 전",
             "bubble_msg": "범준님, (주)한빛디자인 카톡 인건비 자료를 사업소득 화면에 자동 작성했습니다",
             "title": "(주)한빛디자인 — 프리랜서 김지훈(150만 원) 사업소득 화면 자동 드래그&드롭 완료",
-            "kakao_original": "[카톡 수신] 외주 디자이너 김지훈(920315-1******) 세전 150만 원 이체했습니다. 사업소득 신고 부탁드려요.",
+            "kakao_original": "[카톡 수신] 외주 디자이너 김지훈([RRN Omitted]) 세전 150만 원 이체했습니다. 사업소득 신고 부탁드려요.",
             "ai_result": (
                 "✅ 에이전트AI [인건비 자동화 > 사업소득] 화면에 자동 입력 완료\n"
                 "• 지급총액: 1,500,000원 / 소득세: 45,000원 / 지방세: 4,500원 / 실지급액: 1,450,500원"
@@ -298,7 +298,7 @@ def _default_kakao_todos(today_d: date) -> List[Dict[str, Any]]:
 
 
 def _get_status_counts(cstate: Dict[str, Any]) -> Dict[str, int]:
-    """달력 상단 3대 KPI 카드 및 오버레이 필터 탭용 건수 집계"""
+    """오버레이 필터 탭 및 일정 건수 집계"""
     ym_key = f"{int(cstate['year']):04d}-{int(cstate['month']):02d}"
     month_map = cstate["schedules_by_ym"].get(ym_key, {})
     sel_day = int(cstate.get("selected_day", 1))
@@ -491,7 +491,7 @@ def _trigger_kakao_simulator(sim_no: int, cstate: Dict[str, Any]) -> str:
         return "⚖️ 우측 하단 네모 말풍선에 (주)모 세법 검토 완료 알림이 떴어요!"
 
     if sim_no == 4:
-        _push_kakao_biz_income_to_payroll("(주)스타마케팅", "강민호", "940722-1******", 2500000, is_net=False)
+        _push_kakao_biz_income_to_payroll("(주)스타마케팅", "강민호", "[RRN Omitted]", 2500000, is_net=False)
         cstate["kakao_todos"].insert(0, {
             "id": f"sim_{int(datetime.now().timestamp() * 1000)}",
             "status_code": "READY",
@@ -502,7 +502,7 @@ def _trigger_kakao_simulator(sim_no: int, cstate: Dict[str, Any]) -> str:
             "time_ago": "방금 전",
             "bubble_msg": "범준님, (주)스타마케팅 카톡 인건비를 사업소득 화면에 자동 작성했습니다",
             "title": "(주)스타마케팅 — 프리랜서 강민호(세전 250만 원) 사업소득 자동 입력 완료",
-            "kakao_original": "[카톡 수신] 강민호 940722-1****** 이번 달 외주비 세전 250만 원 지급했습니다. 사업소득 신고 부탁드려요!",
+            "kakao_original": "[카톡 수신] 강민호 [RRN Omitted] 이번 달 외주비 세전 250만 원 지급했습니다. 사업소득 신고 부탁드려요!",
             "ai_result": (
                 "✅ 에이전트AI [사업소득] 화면에 자동 드래그&드롭 입력 완료!\n"
                 "• 세전 2,500,000원 / 소득세 75,000원 / 지방세 7,500원 / 차인지급액 2,417,500원"
@@ -554,7 +554,7 @@ def _trigger_kakao_simulator(sim_no: int, cstate: Dict[str, Any]) -> str:
 
 CALENDAR_MAIN_CSS = """
 <style>
-/* ═════════ Toss Web TDS & to_do.html 달력·백그라운드 To-Do 전용 스타일 ═════════ */
+/* ═════════ Toss Web TDS 달력 (확장형 풀사이즈 레이아웃) & 백그라운드 To-Do 전용 스타일 ═════════ */
 [data-testid="stApp"] [data-testid="stMain"],
 [data-testid="stApp"] [data-testid="stAppScrollToBottomContainer"],
 [data-testid="stApp"] [data-testid="stBottom"] > div {
@@ -574,7 +574,7 @@ CALENDAR_MAIN_CSS = """
     border: 1px solid rgba(255, 255, 255, 0.90);
     border-radius: 16px;
     padding: 10px 18px;
-    margin-bottom: 18px;
+    margin-bottom: 14px;
     box-shadow: 0 2px 10px rgba(25, 31, 40, 0.04);
     font-size: 0.85rem;
     color: #333D4B;
@@ -612,71 +612,13 @@ CALENDAR_MAIN_CSS = """
     border-radius: 999px;
 }
 
-/* 2. 달력 상단 3대 KPI 카드 (좌측 2/3, 높이 74px 고정) */
-.tds-top-status-row {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 12px;
-    height: 74px;
-    margin-bottom: 14px;
-}
-.tds-stat-card {
-    background: rgba(255, 255, 255, 0.82);
-    backdrop-filter: blur(16px);
-    border: 1px solid rgba(255, 255, 255, 0.92);
-    border-radius: 22px;
-    padding: 13px 18px;
-    height: 74px;
-    box-sizing: border-box;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    box-shadow: 0 8px 24px -6px rgba(25, 31, 40, 0.05);
-    transition: transform 0.16s ease, border-color 0.16s ease;
-}
-.tds-stat-card:hover {
-    border-color: #3182F6;
-    transform: translateY(-1px);
-}
-.tds-stat-label {
-    font-size: 0.78rem;
-    font-weight: 700;
-    color: #6B7684;
-    line-height: 1.2;
-}
-.tds-stat-val {
-    font-size: 1.48rem;
-    font-weight: 800;
-    color: #191F28;
-    margin-top: 2px;
-    letter-spacing: -0.5px;
-    line-height: 1.15;
-    font-variant-numeric: tabular-nums;
-}
-.tds-stat-val.amber { color: #F59E0B; }
-.tds-stat-val.red { color: #F04452; }
-.tds-stat-icon {
-    width: 36px;
-    height: 36px;
-    border-radius: 14px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 0.95rem;
-    font-weight: 800;
-    flex: none;
-}
-.tds-stat-icon.blue { background: #E8F3FF; color: #3182F6; }
-.tds-stat-icon.amber { background: #FFF4E5; color: #D97706; }
-.tds-stat-icon.red { background: #FFF0F0; color: #F04452; }
-
-/* 3. 달력 상단 우측 '11월' 초대형 텍스트 & '＋ 일정 추가하기' (높이 74px 라인 일치) */
+/* 2. 우측 상단 '11월' 초대형 텍스트 & '＋ 일정 추가하기' (높이 66px 정렬) */
 .tds-month-heading-box {
     display: flex;
     align-items: center;
     justify-content: flex-start;
-    height: 74px;
-    margin-bottom: 14px;
+    height: 66px;
+    margin-bottom: 12px;
     padding-left: 4px;
     box-sizing: border-box;
     user-select: none;
@@ -693,8 +635,8 @@ CALENDAR_MAIN_CSS = """
     display: flex !important;
     align-items: center !important;
     justify-content: flex-end !important;
-    height: 74px !important;
-    margin-bottom: 14px !important;
+    height: 66px !important;
+    margin-bottom: 12px !important;
 }
 [data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-cal_add_btn_wrap div.stButton {
     display: flex !important;
@@ -718,8 +660,20 @@ CALENDAR_MAIN_CSS = """
     border-color: #1B64DA !important;
 }
 
-/* 4. 30% 반투명 글래스모피즘 달력 본체 & 우측 할 일 글래스 카드 */
-[data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-cal_glass_surface,
+/* 3. 좌측 30% 반투명 글래스모피즘 달력 본체 (최상단부터 하단까지 풀사이즈 확장) */
+[data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-cal_glass_surface {
+    background: rgba(255, 255, 255, 0.30) !important;
+    backdrop-filter: blur(22px) saturate(180%) !important;
+    -webkit-backdrop-filter: blur(22px) saturate(180%) !important;
+    border: 1px solid rgba(255, 255, 255, 0.68) !important;
+    box-shadow: 0 12px 34px -8px rgba(25, 31, 40, 0.06) !important;
+    border-radius: 28px !important;
+    padding: 18px 20px 22px 20px !important;
+    min-height: 730px !important;
+    box-sizing: border-box !important;
+}
+
+/* 우측 '선택한 날짜의 할 일' 글래스 카드 (달력 하단 끝선과 높이 일치하도록 확장) */
 [data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-cal_right_todo_card {
     background: rgba(255, 255, 255, 0.30) !important;
     backdrop-filter: blur(22px) saturate(180%) !important;
@@ -727,114 +681,71 @@ CALENDAR_MAIN_CSS = """
     border: 1px solid rgba(255, 255, 255, 0.68) !important;
     box-shadow: 0 12px 34px -8px rgba(25, 31, 40, 0.06) !important;
     border-radius: 28px !important;
-    padding: 20px !important;
+    padding: 22px !important;
+    min-height: 652px !important;
+    display: flex !important;
+    flex-direction: column !important;
+    justify-content: space-between !important;
+    box-sizing: border-box !important;
 }
 
-.tds-cal-card-hdr {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    margin-bottom: 14px;
-    padding-bottom: 12px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.55);
-}
-.tds-cal-card-hdr-l {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-}
-.tds-cal-ym-title {
-    font-size: 1.12rem;
-    font-weight: 800;
-    color: #191F28;
-}
-.tds-cal-glass-pill {
-    font-size: 0.72rem;
-    font-weight: 800;
-    background: rgba(255, 255, 255, 0.65);
-    color: #3182F6;
-    padding: 4px 10px;
-    border-radius: 999px;
-}
-.tds-cal-legend {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    font-size: 0.74rem;
-    font-weight: 700;
-    color: #4E5968;
-}
-.tds-cal-legend-item {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-}
-.tds-cal-legend-dot {
-    width: 9px;
-    height: 9px;
-    border-radius: 50%;
-    display: inline-block;
-}
-.tds-cal-legend-dot.red { background: #F04452; }
-.tds-cal-legend-dot.blue { background: #3182F6; }
-.tds-cal-legend-dot.green { background: #00A86B; }
-
+/* 달력 최상단 요일 헤더 (상단 연월/범례 제거 후 최상단 배치) */
 .tds-cal-dow-grid {
     display: grid;
     grid-template-columns: repeat(7, 1fr);
-    gap: 8px;
-    margin-bottom: 8px;
+    gap: 10px;
+    margin-bottom: 10px;
     text-align: center;
 }
 .tds-cal-dow-cell {
-    font-size: 0.76rem;
+    font-size: 0.84rem;
     font-weight: 800;
     color: #6B7684;
-    padding: 4px 0;
+    padding: 4px 0 6px 0;
 }
 .tds-cal-dow-cell.sun { color: #F04452; }
 .tds-cal-dow-cell.sat { color: #3182F6; }
 
-/* 달력 날짜 셀 (30% 반투명 글래스 + 20px 라운드) */
+/* 달력 날짜 셀 (하단까지 꽉 차도록 셀 높이 126px로 대폭 확장) */
 .tds-cal-day-card {
-    background: rgba(255, 255, 255, 0.30);
+    background: rgba(255, 255, 255, 0.36);
     backdrop-filter: blur(10px);
     -webkit-backdrop-filter: blur(10px);
-    border: 1px solid rgba(255, 255, 255, 0.60);
+    border: 1px solid rgba(255, 255, 255, 0.65);
     border-radius: 20px;
-    min-height: 86px;
-    padding: 10px;
+    height: 126px;
+    min-height: 126px;
+    padding: 12px;
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
     justify-content: space-between;
     transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
-    margin-bottom: 4px;
+    margin-bottom: 6px;
+    overflow: hidden;
 }
 .tds-cal-day-card:hover {
-    background: rgba(255, 255, 255, 0.58);
+    background: rgba(255, 255, 255, 0.64);
     transform: translateY(-2px);
     box-shadow: 0 8px 20px -6px rgba(49, 130, 246, 0.14);
 }
 .tds-cal-day-card.selected {
-    background: rgba(255, 255, 255, 0.72) !important;
-    border: 2px solid #3182F6 !important;
+    background: rgba(255, 255, 255, 0.78) !important;
+    border: 2.5px solid #3182F6 !important;
     box-shadow: 0 10px 24px -6px rgba(49, 130, 246, 0.22);
 }
 .tds-cal-day-card.empty {
     background: rgba(255, 255, 255, 0.10);
-    border: 1px dashed rgba(229, 232, 235, 0.40);
+    border: 1px dashed rgba(229, 232, 235, 0.45);
 }
 .tds-cal-day-top {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 4px;
+    margin-bottom: 6px;
 }
 .tds-cal-day-num {
-    font-size: 0.82rem;
+    font-size: 0.90rem;
     font-weight: 800;
     color: #191F28;
     font-variant-numeric: tabular-nums;
@@ -842,50 +753,50 @@ CALENDAR_MAIN_CSS = """
 .tds-cal-day-num.sun { color: #F04452; }
 .tds-cal-day-num.sat { color: #3182F6; }
 .tds-cal-today-badge {
-    font-size: 0.62rem;
+    font-size: 0.65rem;
     font-weight: 800;
     color: #FFFFFF;
     background: #3182F6;
-    padding: 2px 7px;
+    padding: 2px 8px;
     border-radius: 999px;
 }
 .tds-cal-ev-list {
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 4px;
 }
 .tds-cal-ev-pill {
-    font-size: 0.68rem;
+    font-size: 0.71rem;
     font-weight: 800;
-    padding: 2px 7px;
-    border-radius: 7px;
+    padding: 3px 8px;
+    border-radius: 8px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     line-height: 1.35;
 }
-.tds-cal-ev-pill.blue { background: rgba(232, 243, 255, 0.92); color: #3182F6; }
-.tds-cal-ev-pill.red { background: rgba(255, 240, 240, 0.92); color: #F04452; }
-.tds-cal-ev-pill.green { background: rgba(229, 247, 240, 0.92); color: #00A86B; }
+.tds-cal-ev-pill.blue { background: rgba(232, 243, 255, 0.94); color: #3182F6; }
+.tds-cal-ev-pill.red { background: rgba(255, 240, 240, 0.94); color: #F04452; }
+.tds-cal-ev-pill.green { background: rgba(229, 247, 240, 0.94); color: #00A86B; }
 .tds-cal-ev-more {
-    font-size: 0.65rem;
+    font-size: 0.68rem;
     font-weight: 800;
     color: #6B7684;
     padding-left: 3px;
 }
 
-/* 날짜 셀 클릭 투명 오버레이 (셀 아래 별도 '1일 (0건)' 버튼 노출 완전 제거 — to_do.html 100% 동일) */
+/* 날짜 셀 클릭 투명 오버레이 (확장된 126px 셀 높이에 100% 정합 매칭) */
 [data-testid="stApp"] [data-testid="stMainBlockContainer"] [class*="st-key-cal_sel_d_"] {
-    margin-top: -94px !important;
-    height: 86px !important;
+    margin-top: -134px !important;
+    height: 126px !important;
     position: relative !important;
     z-index: 5 !important;
 }
 [data-testid="stApp"] [data-testid="stMainBlockContainer"] [class*="st-key-cal_sel_d_"] div.stButton,
 [data-testid="stApp"] [data-testid="stMainBlockContainer"] [class*="st-key-cal_sel_d_"] div.stButton > button {
     width: 100% !important;
-    height: 86px !important;
-    min-height: 86px !important;
+    height: 126px !important;
+    min-height: 126px !important;
     opacity: 0 !important;
     cursor: pointer !important;
     border: none !important;
@@ -895,46 +806,46 @@ CALENDAR_MAIN_CSS = """
     margin: 0 !important;
 }
 
-/* 5. 우측 '선택한 날짜의 할 일' 패널 내부 스타일 */
+/* 4. 우측 '선택한 날짜의 할 일' 패널 내부 스타일 */
 .tds-side-hdr {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding-bottom: 12px;
-    margin-bottom: 12px;
+    padding-bottom: 14px;
+    margin-bottom: 14px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.55);
 }
 .tds-side-sub {
-    font-size: 0.74rem;
+    font-size: 0.76rem;
     font-weight: 700;
     color: #6B7684;
 }
 .tds-side-title {
-    font-size: 1.05rem;
+    font-size: 1.12rem;
     font-weight: 800;
     color: #191F28;
     margin-top: 2px;
     letter-spacing: -0.3px;
 }
 .tds-side-badge {
-    font-size: 0.74rem;
+    font-size: 0.76rem;
     font-weight: 800;
-    padding: 4px 10px;
+    padding: 4px 11px;
     border-radius: 999px;
     background: #3182F6;
     color: #FFFFFF;
 }
 .tds-day-ev-card {
-    padding: 13px 14px;
-    border-radius: 16px;
-    background: rgba(255, 255, 255, 0.82);
+    padding: 14px 16px;
+    border-radius: 18px;
+    background: rgba(255, 255, 255, 0.85);
     border: 1px solid #FFFFFF;
-    box-shadow: 0 2px 6px rgba(25, 31, 40, 0.03);
+    box-shadow: 0 2px 8px rgba(25, 31, 40, 0.03);
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
     gap: 8px;
-    margin-bottom: 8px;
+    margin-bottom: 10px;
 }
 .tds-day-ev-left {
     display: flex;
@@ -955,10 +866,10 @@ CALENDAR_MAIN_CSS = """
     display: flex;
     align-items: center;
     gap: 6px;
-    margin-bottom: 3px;
+    margin-bottom: 4px;
 }
 .tds-day-ev-tag {
-    font-size: 0.68rem;
+    font-size: 0.69rem;
     font-weight: 800;
     padding: 2px 8px;
     border-radius: 999px;
@@ -967,24 +878,24 @@ CALENDAR_MAIN_CSS = """
 .tds-day-ev-tag.red { background: #FFF0F0; color: #F04452; }
 .tds-day-ev-tag.green { background: #E5F7F0; color: #00A86B; }
 .tds-day-ev-time {
-    font-size: 0.70rem;
+    font-size: 0.72rem;
     font-weight: 700;
     color: #8B95A1;
 }
 .tds-day-ev-title {
-    font-size: 0.85rem;
+    font-size: 0.88rem;
     font-weight: 800;
     color: #191F28;
-    line-height: 1.35;
+    line-height: 1.38;
 }
 .tds-quick-add-hdr {
-    font-size: 0.76rem;
+    font-size: 0.78rem;
     font-weight: 800;
     color: #333D4B;
-    margin-top: 12px;
-    padding-top: 12px;
+    margin-top: 16px;
+    padding-top: 14px;
     border-top: 1px solid rgba(255, 255, 255, 0.55);
-    margin-bottom: 6px;
+    margin-bottom: 8px;
 }
 </style>
 """
@@ -1033,7 +944,7 @@ def _init_calendar_state() -> Dict[str, Any]:
 
 def render_calendar_sidebar() -> None:
     """
-    좌측 사이드바 ('달력' 모드 전용 제어판 — to_do.html의 카톡 백그라운드 시뮬레이터 5종 & 하단 푸터 완벽 이식)
+    좌측 사이드바 ('달력' 모드 전용 제어판 — 카톡 백그라운드 시뮬레이터 5종 & 하단 푸터 완벽 이식)
     """
     cstate = _init_calendar_state()
     today_d = get_kst_today()
@@ -1081,7 +992,7 @@ def render_calendar_sidebar() -> None:
             cstate["selected_day"] = today_d.day
             st.rerun()
 
-    # 2. 카톡 백그라운드 시뮬레이터 (to_do.html 체험버튼 ①~⑤ 그대로 이식)
+    # 2. 카톡 백그라운드 시뮬레이터 (체험버튼 ①~⑤ 그대로 이식)
     with st.container(border=True):
         sim_pill = "<span style='font-size:0.66rem;font-weight:700;padding:2px 8px;border-radius:999px;background:#FFF4E5;color:#D97706;'>체험버튼</span>"
         st.markdown(_ui_theme.sb_title("zap", "카톡 백그라운드 시뮬레이터", sim_pill), unsafe_allow_html=True)
@@ -1127,13 +1038,12 @@ def render_calendar_main() -> None:
     """
     메인 화면:
     1) 상단 워크스페이스 필 바 (👨‍💼 범준님의 워크스페이스 | 카톡 자동 닫기(1소거): 단순인사 N건 완료)
-    2) 달력 상단 3대 KPI 카드 (일정 / AI작업중 / 작업완료, 승인요청) + 우측 초대형 '11월' & '＋ 일정 추가하기'
-    3) 좌측 30% 반투명 글래스 달력 (2/3) + 우측 선택한 날짜의 할 일 & '⚡ 빠른 일정 등록' 글래스 카드 (1/3)
-    4) 우측 하단 미소 얼굴 홈버튼 + 직각 네모 말풍선 + 60% 확장 To-Do 오버레이
+    2) 좌측: 상단 KPI 카드 및 내부 헤더 없이 최상단부터 요일(일~토)이 시작되어 하단까지 꽉 차는 30% 반투명 글래스 달력 (2/3)
+    3) 우측: 초대형 'N월' & '＋ 일정 추가하기' 헤더 + 달력 하단 끝선까지 확장된 '선택한 날짜의 할 일' & '⚡ 빠른 일정 등록' 글래스 카드 (1/3)
+    4) 우측 하단: 마우스 좌클릭 드래그 이동이 가능한 미소 얼굴 홈버튼 + 직각 네모 말풍선 + 60% 확장 To-Do 오버레이
     """
     cstate = _init_calendar_state()
     today_d = get_kst_today()
-    counts = _get_status_counts(cstate)
 
     st.markdown(CALENDAR_MAIN_CSS, unsafe_allow_html=True)
 
@@ -1142,7 +1052,7 @@ def render_calendar_main() -> None:
         user_nm = "범준"
     silent_cnt = int(cstate.get("silent_read_count", 2))
 
-    # 1. 상단 토스 필 바 (to_do.html Top Toss Pill Bar)
+    # 1. 상단 토스 필 바 (Top Toss Pill Bar)
     st.markdown(
         _html(f"""
         <div class="tds-workspace-pill-bar">
@@ -1153,7 +1063,7 @@ def render_calendar_main() -> None:
             </div>
             <div>
                 <span class="tds-wp-right-badge">
-                    😊 우측 하단 웃는 홈버튼을 누르면 60% To-Do 화면이 열립니다
+                    😊 우측 하단 웃는 홈버튼은 드래그로 이동 가능하며 클릭 시 60% To-Do가 열립니다
                 </span>
             </div>
         </div>
@@ -1169,135 +1079,12 @@ def render_calendar_main() -> None:
         ym_key, _default_schedules_for_month(year, month, today_d)
     )
 
-    # 2. 달력 상단 구성: 좌측 3대 KPI 카드 (74px) + 우측 초대형 'N월' & '＋ 일정 추가하기' (74px)
-    col_top_left, col_top_right = st.columns([2.0, 1.0], gap="large")
-
-    with col_top_left:
-        st.markdown(
-            _html(f"""
-            <div class="tds-top-status-row">
-                <div class="tds-stat-card">
-                    <div>
-                        <div class="tds-stat-label">일정</div>
-                        <div class="tds-stat-val">{counts['day_schedules']}건</div>
-                    </div>
-                    <span class="tds-stat-icon blue">📅</span>
-                </div>
-                <div class="tds-stat-card">
-                    <div>
-                        <div class="tds-stat-label">AI작업중</div>
-                        <div class="tds-stat-val amber">{counts['working']}건</div>
-                    </div>
-                    <span class="tds-stat-icon amber">⏳</span>
-                </div>
-                <div class="tds-stat-card">
-                    <div>
-                        <div class="tds-stat-label">작업완료, 승인요청</div>
-                        <div class="tds-stat-val red">{counts['approval_req']}건</div>
-                    </div>
-                    <span class="tds-stat-icon red">🔔</span>
-                </div>
-            </div>
-            """),
-            unsafe_allow_html=True,
-        )
-
-    with col_top_right:
-        c_m_left, c_m_right = st.columns([1.1, 1.0], gap="small")
-        with c_m_left:
-            st.markdown(
-                _html(f"""
-                <div class="tds-month-heading-box">
-                    <span class="tds-month-big-text">{month}월</span>
-                </div>
-                """),
-                unsafe_allow_html=True,
-            )
-        with c_m_right:
-            with st.container(key="cal_add_btn_wrap"):
-                if st.button("＋ 일정 추가하기", type="primary", key="btn_cal_open_add_schedule"):
-                    cstate["show_add_modal"] = not cstate.get("show_add_modal", False)
-                    st.rerun()
-
-    # 새 일정 추가 모달/카드 폼 (to_do.html scheduleModal 대응)
-    if cstate.get("show_add_modal"):
-        with st.container(border=True):
-            st.markdown(f"##### 📅 {year}년 {month}월 새 일정 추가하기")
-            max_day = calendar.monthrange(year, month)[1]
-            m_c1, m_c2, m_c3 = st.columns([1.0, 1.2, 1.8])
-            with m_c1:
-                in_day = st.selectbox(
-                    "날짜 선택",
-                    options=list(range(1, max_day + 1)),
-                    index=min(selected_day, max_day) - 1,
-                    format_func=lambda d: f"{year}년 {month}월 {d}일",
-                    key="modal_day_select",
-                )
-            with m_c2:
-                in_type_lbl = st.selectbox(
-                    "일정 종류",
-                    options=[
-                        "📌 내 스케줄 (미팅·결산·방문)",
-                        "🔴 세무 법정 신고·납부기한",
-                        "🟢 카톡 승인완료 기록",
-                    ],
-                    key="modal_type_select",
-                )
-            with m_c3:
-                in_title = st.text_input(
-                    "일정 내용",
-                    placeholder="예: (주)갑 3분기 가결산 미팅",
-                    key="modal_title_input",
-                )
-
-            b_c1, b_c2 = st.columns([1, 1])
-            with b_c1:
-                if st.button("저장하기", type="primary", width="stretch", key="btn_save_schedule_modal"):
-                    ttl = in_title.strip() or "세무 일정"
-                    d_int = int(in_day)
-                    ev_t = "TAX" if "세무" in in_type_lbl else ("DONE" if "승인완료" in in_type_lbl else "MY")
-                    month_schedules.setdefault(d_int, []).append({
-                        "id": f"m_{int(datetime.now().timestamp() * 1000)}",
-                        "type": ev_t,
-                        "time": "기한" if ev_t == "TAX" else "일정",
-                        "title": ttl,
-                        "client": "거래처",
-                        "category": "세무기한" if ev_t == "TAX" else ("승인완료" if ev_t == "DONE" else "내 스케줄"),
-                        "ai_status": "사용자 승인완료" if ev_t == "DONE" else "작업 완료, 승인요청중",
-                        "done": (ev_t == "DONE"),
-                        "desc": ttl,
-                    })
-                    cstate["selected_day"] = d_int
-                    cstate["show_add_modal"] = False
-                    st.toast(f"{month}월 {d_int}일에 일정이 추가되었어요.", icon="📅")
-                    st.rerun()
-            with b_c2:
-                if st.button("취소", width="stretch", key="btn_cancel_schedule_modal"):
-                    cstate["show_add_modal"] = False
-                    st.rerun()
-
-    # 3. 메인 본문: 좌측 30% 반투명 글래스 달력 (2.0) + 우측 선택한 날짜의 할 일 & 빠른 일정 등록 (1.0)
+    # 2. 메인 본문 2단 레이아웃: 좌측 확장형 달력 (2.0) + 우측 'N월' 헤더 및 확장형 할 일 박스 (1.0)
     col_cal, col_side = st.columns([2.0, 1.0], gap="large")
 
     with col_cal:
         with st.container(key="cal_glass_surface"):
-            st.markdown(
-                _html(f"""
-                <div class="tds-cal-card-hdr">
-                    <div class="tds-cal-card-hdr-l">
-                        <span class="tds-cal-ym-title">{year}년 {month}월</span>
-                        <span class="tds-cal-glass-pill">30% 반투명 글래스 모드</span>
-                    </div>
-                    <div class="tds-cal-legend">
-                        <span class="tds-cal-legend-item"><span class="tds-cal-legend-dot red"></span>세무기한</span>
-                        <span class="tds-cal-legend-item"><span class="tds-cal-legend-dot blue"></span>내 스케줄</span>
-                        <span class="tds-cal-legend-item"><span class="tds-cal-legend-dot green"></span>카톡 승인완료</span>
-                    </div>
-                </div>
-                """),
-                unsafe_allow_html=True,
-            )
-
+            # 달력 내부 최상단에 바로 요일(일~토) 배치
             dow_html = "".join(
                 f"<div class='tds-cal-dow-cell {'sun' if i == 0 else ('sat' if i == 6 else '')}'>{d_lbl}</div>"
                 for i, d_lbl in enumerate(_SUN_FIRST_HEADERS)
@@ -1321,11 +1108,11 @@ def render_calendar_main() -> None:
 
                             evs = month_schedules.get(day_num, [])
                             pills_html = ""
-                            for ev in evs[:2]:
+                            for ev in evs[:3]:
                                 p_cls = _ev_pill_cls(ev)
                                 pills_html += f"<div class='tds-cal-ev-pill {p_cls}'>{_html_lib.escape(str(ev.get('title', '')))}</div>"
-                            if len(evs) > 2:
-                                pills_html += f"<div class='tds-cal-ev-more'>+{len(evs) - 2}건</div>"
+                            if len(evs) > 3:
+                                pills_html += f"<div class='tds-cal-ev-more'>+{len(evs) - 3}건</div>"
 
                             st.markdown(
                                 _html(f"""
@@ -1350,102 +1137,174 @@ def render_calendar_main() -> None:
                                 st.rerun()
 
     with col_side:
+        # 우측 상단: 초대형 'N월' & '＋ 일정 추가하기' 버튼
+        c_m_left, c_m_right = st.columns([1.1, 1.0], gap="small")
+        with c_m_left:
+            st.markdown(
+                _html(f"""
+                <div class="tds-month-heading-box">
+                    <span class="tds-month-big-text">{month}월</span>
+                </div>
+                """),
+                unsafe_allow_html=True,
+            )
+        with c_m_right:
+            with st.container(key="cal_add_btn_wrap"):
+                if st.button("＋ 일정 추가하기", type="primary", key="btn_cal_open_add_schedule"):
+                    cstate["show_add_modal"] = not cstate.get("show_add_modal", False)
+                    st.rerun()
+
+        # 새 일정 추가 모달/카드 폼
+        if cstate.get("show_add_modal"):
+            with st.container(border=True):
+                st.markdown(f"##### 📅 {year}년 {month}월 새 일정 추가하기")
+                max_day = calendar.monthrange(year, month)[1]
+                in_day = st.selectbox(
+                    "날짜 선택",
+                    options=list(range(1, max_day + 1)),
+                    index=min(selected_day, max_day) - 1,
+                    format_func=lambda d: f"{year}년 {month}월 {d}일",
+                    key="modal_day_select",
+                )
+                in_type_lbl = st.selectbox(
+                    "일정 종류",
+                    options=[
+                        "📌 내 스케줄 (미팅·결산·방문)",
+                        "🔴 세무 법정 신고·납부기한",
+                        "🟢 카톡 승인완료 기록",
+                    ],
+                    key="modal_type_select",
+                )
+                in_title = st.text_input(
+                    "일정 내용",
+                    placeholder="예: (주)갑 3분기 가결산 미팅",
+                    key="modal_title_input",
+                )
+
+                b_c1, b_c2 = st.columns([1, 1])
+                with b_c1:
+                    if st.button("저장하기", type="primary", width="stretch", key="btn_save_schedule_modal"):
+                        ttl = in_title.strip() or "세무 일정"
+                        d_int = int(in_day)
+                        ev_t = "TAX" if "세무" in in_type_lbl else ("DONE" if "승인완료" in in_type_lbl else "MY")
+                        month_schedules.setdefault(d_int, []).append({
+                            "id": f"m_{int(datetime.now().timestamp() * 1000)}",
+                            "type": ev_t,
+                            "time": "기한" if ev_t == "TAX" else "일정",
+                            "title": ttl,
+                            "client": "거래처",
+                            "category": "세무기한" if ev_t == "TAX" else ("승인완료" if ev_t == "DONE" else "내 스케줄"),
+                            "ai_status": "사용자 승인완료" if ev_t == "DONE" else "작업 완료, 승인요청중",
+                            "done": (ev_t == "DONE"),
+                            "desc": ttl,
+                        })
+                        cstate["selected_day"] = d_int
+                        cstate["show_add_modal"] = False
+                        st.toast(f"{month}월 {d_int}일에 일정이 추가되었어요.", icon="📅")
+                        st.rerun()
+                with b_c2:
+                    if st.button("취소", width="stretch", key="btn_cancel_schedule_modal"):
+                        cstate["show_add_modal"] = False
+                        st.rerun()
+
         sel_date_obj = date(year, month, min(selected_day, calendar.monthrange(year, month)[1]))
         sel_wd_full = _WEEKDAYS_FULL[sel_date_obj.weekday()]
         is_sel_today = (sel_date_obj == today_d)
         today_suffix = " · 오늘" if is_sel_today else ""
         day_evs = month_schedules.get(selected_day, [])
 
+        # 우측 확장형 '선택한 날짜의 할 일' 글래스 카드
         with st.container(key="cal_right_todo_card"):
-            st.markdown(
-                _html(f"""
-                <div class="tds-side-hdr">
-                    <div>
-                        <div class="tds-side-sub">선택한 날짜의 할 일</div>
-                        <div class="tds-side-title">{month}월 {selected_day}일 {sel_wd_full}{today_suffix}</div>
-                    </div>
-                    <span class="tds-side-badge">{len(day_evs)}건</span>
-                </div>
-                """),
-                unsafe_allow_html=True,
-            )
-
-            if not day_evs:
+            with st.container():
                 st.markdown(
-                    _html("""
-                    <div style="padding:20px;border-radius:16px;background:rgba(255,255,255,0.55);text-align:center;font-size:0.82rem;color:#8B95A1;font-weight:600;">
-                        등록된 일정이 없어요.<br/>아래에서 새 일정을 추가해 보세요.
+                    _html(f"""
+                    <div class="tds-side-hdr">
+                        <div>
+                            <div class="tds-side-sub">선택한 날짜의 할 일</div>
+                            <div class="tds-side-title">{month}월 {selected_day}일 {sel_wd_full}{today_suffix}</div>
+                        </div>
+                        <span class="tds-side-badge">{len(day_evs)}건</span>
                     </div>
                     """),
                     unsafe_allow_html=True,
                 )
-            else:
-                for idx_e, ev in enumerate(list(day_evs)):
-                    dot_cls, tag_lbl, tag_cls = _status_pill_cls(ev)
-                    ev_time = _html_lib.escape(str(ev.get("time") or "일정"))
-                    ev_title = _html_lib.escape(str(ev.get("title") or ""))
-                    c_ev_l, c_ev_r = st.columns([5.2, 1.0], gap="small")
-                    with c_ev_l:
-                        st.markdown(
-                            _html(f"""
-                            <div class="tds-day-ev-card">
-                                <div class="tds-day-ev-left">
-                                    <span class="tds-day-ev-dot {dot_cls}"></span>
-                                    <div>
-                                        <div class="tds-day-ev-meta">
-                                            <span class="tds-day-ev-tag {tag_cls}">{tag_lbl}</span>
-                                            <span class="tds-day-ev-time">{ev_time}</span>
+
+                if not day_evs:
+                    st.markdown(
+                        _html("""
+                        <div style="padding:28px 20px;border-radius:18px;background:rgba(255,255,255,0.55);text-align:center;font-size:0.84rem;color:#8B95A1;font-weight:600;">
+                            등록된 일정이 없어요.<br/>아래에서 새 일정을 추가해 보세요.
+                        </div>
+                        """),
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    for idx_e, ev in enumerate(list(day_evs)):
+                        dot_cls, tag_lbl, tag_cls = _status_pill_cls(ev)
+                        ev_time = _html_lib.escape(str(ev.get("time") or "일정"))
+                        ev_title = _html_lib.escape(str(ev.get("title") or ""))
+                        c_ev_l, c_ev_r = st.columns([5.2, 1.0], gap="small")
+                        with c_ev_l:
+                            st.markdown(
+                                _html(f"""
+                                <div class="tds-day-ev-card">
+                                    <div class="tds-day-ev-left">
+                                        <span class="tds-day-ev-dot {dot_cls}"></span>
+                                        <div>
+                                            <div class="tds-day-ev-meta">
+                                                <span class="tds-day-ev-tag {tag_cls}">{tag_lbl}</span>
+                                                <span class="tds-day-ev-time">{ev_time}</span>
+                                            </div>
+                                            <div class="tds-day-ev-title">{ev_title}</div>
                                         </div>
-                                        <div class="tds-day-ev-title">{ev_title}</div>
                                     </div>
                                 </div>
-                            </div>
-                            """),
-                            unsafe_allow_html=True,
-                        )
-                    with c_ev_r:
-                        if st.button("✕", key=f"btn_del_day_ev_{ev.get('id', idx_e)}_{idx_e}", help="일정 삭제"):
-                            month_schedules[selected_day] = [x for i, x in enumerate(day_evs) if i != idx_e]
+                                """),
+                                unsafe_allow_html=True,
+                            )
+                        with c_ev_r:
+                            if st.button("✕", key=f"btn_del_day_ev_{ev.get('id', idx_e)}_{idx_e}", help="일정 삭제"):
+                                month_schedules[selected_day] = [x for i, x in enumerate(day_evs) if i != idx_e]
+                                st.rerun()
+
+            # 우측 카드 하단 고정: ⚡ 빠른 일정 등록
+            with st.container():
+                st.markdown("<div class='tds-quick-add-hdr'>⚡ 빠른 일정 등록</div>", unsafe_allow_html=True)
+                q_c1, q_c2 = st.columns([3.2, 1.1], gap="small")
+                with q_c1:
+                    quick_val = st.text_input(
+                        "빠른 일정 입력",
+                        placeholder="예: (주)모 가결산 미팅 14시",
+                        label_visibility="collapsed",
+                        key=f"quick_sch_inp_{year}_{month}_{selected_day}",
+                    )
+                with q_c2:
+                    if st.button("등록", type="primary", width="stretch", key=f"btn_quick_sch_add_{year}_{month}_{selected_day}"):
+                        if quick_val and quick_val.strip():
+                            month_schedules.setdefault(selected_day, []).append({
+                                "id": f"q_{int(datetime.now().timestamp() * 1000)}",
+                                "type": "MY",
+                                "time": "일정",
+                                "title": quick_val.strip(),
+                                "client": "내 스케줄",
+                                "category": "내 스케줄",
+                                "ai_status": "작업 완료, 승인요청중",
+                                "done": False,
+                                "desc": quick_val.strip(),
+                            })
+                            st.toast(f"{month}월 {selected_day}일에 일정이 등록되었어요.", icon="📅")
                             st.rerun()
 
-            # 우측 하단: ⚡ 빠른 일정 등록 (to_do.html quickScheduleInput & btnQuickScheduleAdd 완벽 이식)
-            st.markdown("<div class='tds-quick-add-hdr'>⚡ 빠른 일정 등록</div>", unsafe_allow_html=True)
-            q_c1, q_c2 = st.columns([3.2, 1.1], gap="small")
-            with q_c1:
-                quick_val = st.text_input(
-                    "빠른 일정 입력",
-                    placeholder="예: (주)모 가결산 미팅 14시",
-                    label_visibility="collapsed",
-                    key=f"quick_sch_inp_{year}_{month}_{selected_day}",
-                )
-            with q_c2:
-                if st.button("등록", type="primary", width="stretch", key=f"btn_quick_sch_add_{year}_{month}_{selected_day}"):
-                    if quick_val and quick_val.strip():
-                        month_schedules.setdefault(selected_day, []).append({
-                            "id": f"q_{int(datetime.now().timestamp() * 1000)}",
-                            "type": "MY",
-                            "time": "일정",
-                            "title": quick_val.strip(),
-                            "client": "내 스케줄",
-                            "category": "내 스케줄",
-                            "ai_status": "작업 완료, 승인요청중",
-                            "done": False,
-                            "desc": quick_val.strip(),
-                        })
-                        st.toast(f"{month}월 {selected_day}일에 일정이 등록되었어요.", icon="📅")
-                        st.rerun()
-
-    # 4. 우측 하단 플로팅 홈버튼 + 직각 네모 말풍선 + 60% 애니메이션 확장 To-Do 오버레이 렌더링
+    # 4. 우측 하단 플로팅 홈버튼(좌클릭 드래그 이동 & 다른 페이지 복귀 시 원위치 초기화) + 네모 말풍선 + 60% To-Do 오버레이
     render_floating_kakao_todo_overlay()
 
 
 def render_floating_kakao_todo_overlay() -> None:
     """
-    to_do.html의 우측 하단 플로팅 미소 홈버튼(#3898FF, 귀·머리카락 없는 동그라미 선 + 세로 두 눈 SVG) +
+    우측 하단 플로팅 미소 홈버튼(#3898FF, 동그라미 선 + 세로 두 눈 SVG) +
+    마우스 좌클릭 드래그 위치 이동 (다른 페이지 이동 후 복귀 시 기본 위치 right:20px, bottom:60px 자동 복원) +
     직각 네모 말풍선(6px, [다음 ▸] / [체크리스트 열기]) +
-    60% 확장 To-Do 오버레이(전체/작업중/승인요청중/승인완료 컬러 탭, 카톡 원문 + AI 결과 2단 박스,
-    [뒤쪽 작업화면에 띄우기], [승인요청 건 모두 승인하기], [홈버튼으로 접기 ↘])를
-    window.parent.document에 마운트합니다.
+    60% 확장 To-Do 오버레이를 window.parent.document에 마운트합니다.
     """
     cstate = _init_calendar_state()
     todos = cstate.get("kakao_todos", [])
@@ -1461,9 +1320,12 @@ def render_floating_kakao_todo_overlay() -> None:
 
     components.html(
         f"""
+        <div id="tds-cal-iframe-marker" style="display:none;"></div>
         <script>
         (function() {{
-            const parentDoc = window.parent.document;
+            const parentWin = window.parent;
+            const parentDoc = parentWin.document;
+            const frameEl = window.frameElement;
             const TODOS_DATA = {todos_json};
             const INIT_OPEN = {init_open_js};
             const CURRENT_USER = {user_nm_json};
@@ -1507,6 +1369,7 @@ def render_floating_kakao_todo_overlay() -> None:
                     flex-direction: column;
                     align-items: flex-end;
                     user-select: none;
+                    touch-action: none;
                 }}
 
                 #tds-kakao-backdrop {{
@@ -1524,7 +1387,7 @@ def render_floating_kakao_todo_overlay() -> None:
                     pointer-events: auto;
                 }}
 
-                /* 60% 확장 To-Do 오버레이 패널 (to_do.html .todo-overlay-panel) */
+                /* 60% 확장 To-Do 오버레이 패널 */
                 #tds-kakao-todo-panel {{
                     position: fixed;
                     right: 20px;
@@ -1850,7 +1713,7 @@ def render_floating_kakao_todo_overlay() -> None:
                     background: #E5E8EB;
                 }}
 
-                /* 직각 네모 말풍선 (to_do.html .square-speech-bubble) */
+                /* 직각 네모 말풍선 */
                 #tds-kakao-square-bubble {{
                     background: #FFFFFF;
                     border: 2px solid #3182F6;
@@ -1959,7 +1822,7 @@ def render_floating_kakao_todo_overlay() -> None:
                     right: 28px;
                 }}
 
-                /* 우측 하단 파란 홈버튼 (to_do.html #floatingHomeBtn + .cute-face-svg) */
+                /* 우측 하단 파란 홈버튼 (마우스 좌클릭 드래그 이동 지원) */
                 #tds-kakao-home-fab {{
                     animation: tossPulseRing 2.2s infinite;
                     position: relative;
@@ -1972,18 +1835,22 @@ def render_floating_kakao_todo_overlay() -> None:
                     display: flex;
                     align-items: center;
                     justify-content: center;
-                    cursor: pointer;
+                    cursor: grab;
                     transition: transform 0.2s ease, background 0.2s ease;
+                    touch-action: none;
                 }}
                 #tds-kakao-home-fab:hover {{
                     background: #2584F4;
                     transform: scale(1.05);
                 }}
-                #tds-kakao-home-fab:active {{
-                    transform: scale(0.95);
+                #tds-kakao-home-fab.dragging {{
+                    cursor: grabbing !important;
+                    transform: scale(1.08) !important;
+                    transition: none !important;
                 }}
                 .cute-face-svg {{
                     animation: cuteWinkBounce 2.8s ease-in-out infinite;
+                    pointer-events: none;
                 }}
                 #tds-kakao-fab-badge {{
                     position: absolute;
@@ -2003,9 +1870,11 @@ def render_floating_kakao_todo_overlay() -> None:
                     justify-content: center;
                     box-shadow: 0 2px 6px rgba(240, 68, 82, 0.4);
                     z-index: 10;
+                    pointer-events: none;
                 }}
             `;
 
+            const isFreshEntry = !parentDoc.getElementById("tds-kakao-floating-root");
             let rootEl = parentDoc.getElementById("tds-kakao-floating-root");
             if (!rootEl) {{
                 rootEl = parentDoc.createElement("div");
@@ -2013,7 +1882,6 @@ def render_floating_kakao_todo_overlay() -> None:
                 parentDoc.body.appendChild(rootEl);
             }}
 
-            // to_do.html 원본 그대로: 귀/머리카락 없는 동그라미 선 + 세로 두 눈 캐릭터 SVG
             const FAB_ICON_CLOSED_SVG = `
                 <svg class="cute-face-svg" width="46" height="46" viewBox="0 0 32 32" fill="none">
                     <circle cx="16" cy="16" r="12.5" stroke="#FFFFFF" stroke-width="2.9" stroke-linecap="round" stroke-linejoin="round" />
@@ -2022,7 +1890,7 @@ def render_floating_kakao_todo_overlay() -> None:
                 </svg>
             `;
             const FAB_ICON_OPEN_SVG = `
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" style="pointer-events:none;">
                     <path d="M6 9L12 15L18 9" stroke="#FFFFFF" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" />
                 </svg>
             `;
@@ -2034,20 +1902,59 @@ def render_floating_kakao_todo_overlay() -> None:
                 </svg>
             `;
 
-            if (!window.parent._tdsKakaoState) {{
-                window.parent._tdsKakaoState = {{
+            if (!parentWin._tdsKakaoState) {{
+                parentWin._tdsKakaoState = {{
                     open: INIT_OPEN,
                     filter: "ALL",
                     bubbleIdx: 0,
                     bubbleDismissed: false,
-                    todos: TODOS_DATA
+                    todos: TODOS_DATA,
+                    customPos: null
                 }};
             }} else {{
-                window.parent._tdsKakaoState.todos = TODOS_DATA;
-                if (INIT_OPEN !== window.parent._tdsKakaoState._lastServerOpen) {{
-                    window.parent._tdsKakaoState.open = INIT_OPEN;
-                    window.parent._tdsKakaoState._lastServerOpen = INIT_OPEN;
+                parentWin._tdsKakaoState.todos = TODOS_DATA;
+                if (INIT_OPEN !== parentWin._tdsKakaoState._lastServerOpen) {{
+                    parentWin._tdsKakaoState.open = INIT_OPEN;
+                    parentWin._tdsKakaoState._lastServerOpen = INIT_OPEN;
                 }}
+                // 다른 페이지에 다녀와 달력 화면에 새로 진입한 경우 원래 코딩된 기본 위치로 초기화
+                if (isFreshEntry) {{
+                    parentWin._tdsKakaoState.customPos = null;
+                }}
+            }}
+
+            function applyFloatingPosition() {{
+                const stObj = parentWin._tdsKakaoState;
+                if (stObj && stObj.customPos) {{
+                    rootEl.style.left = stObj.customPos.left + "px";
+                    rootEl.style.top = stObj.customPos.top + "px";
+                    rootEl.style.right = "auto";
+                    rootEl.style.bottom = "auto";
+                }} else {{
+                    rootEl.style.left = "auto";
+                    rootEl.style.top = "auto";
+                    rootEl.style.right = "20px";
+                    rootEl.style.bottom = "60px";
+                }}
+            }}
+
+            // 다른 페이지(자율 에이전트AI, 인건비 자동화 등)로 이동하여 달력 iframe이 언마운트되면
+            // 플로팅 루트를 제거하고 customPos를 null로 리셋 -> 달력 재진입 시 기본 위치(right:20px, bottom:60px) 보장
+            parentWin._tdsActiveCalFrame = frameEl;
+            if (!parentWin._tdsCalCleanupTimer) {{
+                parentWin._tdsCalCleanupTimer = parentWin.setInterval(function() {{
+                    const activeFr = parentWin._tdsActiveCalFrame;
+                    if (!activeFr || !parentDoc.body.contains(activeFr)) {{
+                        const r = parentDoc.getElementById("tds-kakao-floating-root");
+                        if (r) r.remove();
+                        if (parentWin._tdsKakaoState) {{
+                            parentWin._tdsKakaoState.customPos = null;
+                            parentWin._tdsKakaoState.open = false;
+                        }}
+                        parentWin.clearInterval(parentWin._tdsCalCleanupTimer);
+                        parentWin._tdsCalCleanupTimer = null;
+                    }}
+                }}, 400);
             }}
 
             function escHtml(v) {{
@@ -2089,8 +1996,74 @@ def render_floating_kakao_todo_overlay() -> None:
                 if (found) found.click();
             }}
 
+            function bindFabDrag(fabBtn) {{
+                if (!fabBtn) return;
+                let isPointerDown = false;
+                let hasDragged = false;
+                let startX = 0;
+                let startY = 0;
+                let origLeft = 0;
+                let origTop = 0;
+                const DRAG_THRESHOLD = 5;
+
+                fabBtn.addEventListener("mousedown", function(e) {{
+                    if (e.button !== 0) return; // 마우스 왼쪽 클릭만 허용
+                    isPointerDown = true;
+                    hasDragged = false;
+                    startX = e.clientX;
+                    startY = e.clientY;
+                    const rect = rootEl.getBoundingClientRect();
+                    origLeft = rect.left;
+                    origTop = rect.top;
+                    e.preventDefault();
+                }});
+
+                if (parentWin._tdsFabMouseMoveHandler) {{
+                    parentWin.removeEventListener("mousemove", parentWin._tdsFabMouseMoveHandler);
+                }}
+                if (parentWin._tdsFabMouseUpHandler) {{
+                    parentWin.removeEventListener("mouseup", parentWin._tdsFabMouseUpHandler);
+                }}
+
+                parentWin._tdsFabMouseMoveHandler = function(e) {{
+                    if (!isPointerDown) return;
+                    const dx = e.clientX - startX;
+                    const dy = e.clientY - startY;
+                    if (!hasDragged && Math.hypot(dx, dy) > DRAG_THRESHOLD) {{
+                        hasDragged = true;
+                        fabBtn.classList.add("dragging");
+                    }}
+                    if (hasDragged) {{
+                        const rootRect = rootEl.getBoundingClientRect();
+                        const maxLeft = parentWin.innerWidth - rootRect.width - 10;
+                        const maxTop = parentWin.innerHeight - rootRect.height - 10;
+                        const nextLeft = Math.max(10, Math.min(maxLeft, origLeft + dx));
+                        const nextTop = Math.max(10, Math.min(maxTop, origTop + dy));
+                        rootEl.style.left = nextLeft + "px";
+                        rootEl.style.top = nextTop + "px";
+                        rootEl.style.right = "auto";
+                        rootEl.style.bottom = "auto";
+                        parentWin._tdsKakaoState.customPos = {{ left: nextLeft, top: nextTop }};
+                    }}
+                }};
+
+                parentWin._tdsFabMouseUpHandler = function(e) {{
+                    if (!isPointerDown) return;
+                    isPointerDown = false;
+                    fabBtn.classList.remove("dragging");
+                    if (!hasDragged) {{
+                        parentWin._tdsKakaoState.open = !parentWin._tdsKakaoState.open;
+                        renderOverlay();
+                    }}
+                    hasDragged = false;
+                }};
+
+                parentWin.addEventListener("mousemove", parentWin._tdsFabMouseMoveHandler);
+                parentWin.addEventListener("mouseup", parentWin._tdsFabMouseUpHandler);
+            }}
+
             function renderOverlay() {{
-                const stObj = window.parent._tdsKakaoState;
+                const stObj = parentWin._tdsKakaoState;
                 const allTodos = stObj.todos || [];
                 const workingList = allTodos.filter(t => getStatusCode(t) === "WORKING");
                 const readyList = allTodos.filter(t => getStatusCode(t) === "READY");
@@ -2148,7 +2121,7 @@ def render_floating_kakao_todo_overlay() -> None:
                 const bItem = readyList[stObj.bubbleIdx] || {{}};
                 const bCat = bItem.category ? `${{bItem.category}} (${{stObj.bubbleIdx + 1}}/${{readyList.length}})` : "카톡 백그라운드 알림";
                 const bMsg = bItem.bubble_msg || `${{CURRENT_USER}}님, (주)모 회사에 보낼 세법 검토 카톡이 완성되었습니다`;
-                const bTime = `${{bItem.time_ago || "방금 전"}} · 웃는 홈버튼 클릭 시 60% 열림`;
+                const bTime = `${{bItem.time_ago || "방금 전"}} · 드래그하여 이동 · 클릭 시 열림`;
 
                 rootEl.innerHTML = `
                     <div id="tds-kakao-backdrop" class="${{stObj.open ? 'open' : ''}}"></div>
@@ -2204,11 +2177,13 @@ def render_floating_kakao_todo_overlay() -> None:
                         <div class="tds-sb-tail"></div>
                     </div>
 
-                    <button id="tds-kakao-home-fab" aria-label="홈버튼 열기">
+                    <button id="tds-kakao-home-fab" aria-label="홈버튼 열기 (드래그하여 위치 이동 가능)" title="좌클릭 드래그: 위치 이동 / 클릭: To-Do 열기">
                         ${{totalAttention > 0 ? `<span id="tds-kakao-fab-badge">${{totalAttention}}</span>` : ''}}
                         ${{stObj.open ? FAB_ICON_OPEN_SVG : FAB_ICON_CLOSED_SVG}}
                     </button>
                 `;
+
+                applyFloatingPosition();
 
                 const fabBtn = parentDoc.getElementById("tds-kakao-home-fab");
                 const closeBtn = parentDoc.getElementById("tds-kp-close");
@@ -2219,12 +2194,8 @@ def render_floating_kakao_todo_overlay() -> None:
                 const sbNext = parentDoc.getElementById("tds-sb-next");
                 const sbOpen = parentDoc.getElementById("tds-sb-open");
 
-                if (fabBtn) {{
-                    fabBtn.onclick = function() {{
-                        stObj.open = !stObj.open;
-                        renderOverlay();
-                    }};
-                }}
+                bindFabDrag(fabBtn);
+
                 if (closeBtn) closeBtn.onclick = function() {{ stObj.open = false; renderOverlay(); }};
                 if (minBtn) minBtn.onclick = function() {{ stObj.open = false; renderOverlay(); }};
                 if (backdropEl) backdropEl.onclick = function() {{ stObj.open = false; renderOverlay(); }};
