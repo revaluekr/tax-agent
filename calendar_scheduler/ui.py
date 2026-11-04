@@ -874,23 +874,25 @@ CALENDAR_MAIN_CSS = """
     padding-left: 3px;
 }
 
-/* 날짜 셀 선택 버튼 (컴팩트 플랫) */
-[data-testid="stApp"] [data-testid="stMainBlockContainer"] [class*="st-key-cal_sel_d_"] div.stButton > button {
-    min-height: 24px !important;
-    height: 24px !important;
-    padding: 0 6px !important;
-    border-radius: 8px !important;
-    font-size: 0.72rem !important;
-    font-weight: 700 !important;
-    background: rgba(255, 255, 255, 0.55) !important;
-    border: 1px solid rgba(229, 232, 235, 0.85) !important;
-    color: #4E5968 !important;
-    box-shadow: none !important;
+/* 날짜 셀 클릭 투명 오버레이 (셀 아래 별도 '1일 (0건)' 버튼 노출 완전 제거 — to_do.html 100% 동일) */
+[data-testid="stApp"] [data-testid="stMainBlockContainer"] [class*="st-key-cal_sel_d_"] {
+    margin-top: -94px !important;
+    height: 86px !important;
+    position: relative !important;
+    z-index: 5 !important;
 }
-[data-testid="stApp"] [data-testid="stMainBlockContainer"] [class*="st-key-cal_sel_d_"] div.stButton > button[kind="primary"] {
-    background: #3182F6 !important;
-    border-color: #3182F6 !important;
-    color: #FFFFFF !important;
+[data-testid="stApp"] [data-testid="stMainBlockContainer"] [class*="st-key-cal_sel_d_"] div.stButton,
+[data-testid="stApp"] [data-testid="stMainBlockContainer"] [class*="st-key-cal_sel_d_"] div.stButton > button {
+    width: 100% !important;
+    height: 86px !important;
+    min-height: 86px !important;
+    opacity: 0 !important;
+    cursor: pointer !important;
+    border: none !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
 }
 
 /* 5. 우측 '선택한 날짜의 할 일' 패널 내부 스타일 */

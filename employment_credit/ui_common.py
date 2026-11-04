@@ -4,6 +4,9 @@
 (ui.py에서 나눈 파일. 함수 본문은 원래 ui.py와 같습니다.)
 """
 from __future__ import annotations
+from datetime import datetime as _kst_dt
+from zoneinfo import ZoneInfo
+_KST = ZoneInfo("Asia/Seoul")   # 한국 표준시(KST)
 from typing import Any
 import io
 import os
@@ -596,6 +599,62 @@ def _ctx(s: dict, year: int) -> dict:
 _CALC_CACHE_KEY = "_ec_calc_cache"
 
 
+_PDF_MEMO_KEY = "_ec_pdf_memo"
+_PDF_SIG_SKIP = {"step", "max_step_reached", "files", "ext", "uploader_ver"}
+
+
+def _pdf_sig_norm(obj):
+    if isinstance(obj, (str, int, float, bool)) or obj is None:
+        return obj
+    if isinstance(obj, dict):
+        return {str(k): _pdf_sig_norm(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return [_pdf_sig_norm(v) for v in obj]
+    if isinstance(obj, (bytes, bytearray)):
+        return "b:" + hashlib.md5(bytes(obj)).hexdigest()
+    return str(obj)
+
+
+def _fast_json_dumps_norm(payload: dict) -> str:
+    """일반 상태에서는 C-레벨 json.dumps를 바로 실행하고, 숫자·문자열 혼합 키나 특수 타입(set/bytes)이 있을 때만 _pdf_sig_norm으로 폴백합니다."""
+    try:
+        return json.dumps(payload, sort_keys=True, default=str, ensure_ascii=False, separators=(",", ":"))
+    except TypeError:
+        return json.dumps(_pdf_sig_norm(payload), sort_keys=True, default=str, ensure_ascii=False, separators=(",", ":"))
+
+
+def _pdf_memo(s: dict, kind: str, build_fn, *args, **kwargs) -> bytes:
+    """
+    [PDF 재사용] 화면을 새로 그릴 때마다 같은 PDF를 다시 만들지 않도록,
+    작업 상태 전체(화면 위치·업로드 원문 제외, 업로드 파일 목록·추출 서명 포함) + 인자 + 오늘 날짜가
+    한 글자라도 다르면 새로 만들고, 완전히 같을 때만 직전 PDF를 그대로 씁니다. (정확도 영향 없음)
+    """
+    try:
+        files_meta = sorted(
+            (str(n), (f or {}).get("key"), (f or {}).get("wp", ""), len(str((f or {}).get("text") or "")))
+            for n, f in (s.get("files") or {}).items()
+        )
+        blob = json.dumps(
+            _pdf_sig_norm({
+                "s": {k: v for k, v in s.items() if k not in _PDF_SIG_SKIP},
+                "files": files_meta,
+                "args": [args, kwargs],
+                "today": _kst_dt.now(_KST).strftime("%Y-%m-%d"),
+            }),
+            sort_keys=True, default=str, ensure_ascii=False,
+        )
+        sig = kind + ":" + hashlib.md5(blob.encode("utf-8")).hexdigest()
+    except Exception:
+        return build_fn(s, *args, **kwargs)
+    memo = st.session_state.setdefault(_PDF_MEMO_KEY, {})
+    hit = memo.get(kind)
+    if isinstance(hit, tuple) and len(hit) == 2 and hit[0] == sig:
+        return hit[1]
+    data = build_fn(s, *args, **kwargs)
+    memo[kind] = (sig, data)
+    return data
+
+
 def _calc_fingerprint(s: dict) -> str | None:
     try:
         files_meta = sorted(
@@ -603,10 +662,9 @@ def _calc_fingerprint(s: dict) -> str | None:
             for n, f in (s.get("files") or {}).items()
         )
         wht_years = sorted(str(k) for k, v in (((s.get("ext") or {}).get("wht")) or {}).items() if v)
-        blob = json.dumps(
-            {
+        blob = _fast_json_dumps_norm({
                 "people": s.get("people"),
-                "year_recs": {str(k): v for k, v in (s.get("year_recs") or {}).items()},
+                "year_recs": s.get("year_recs"),
                 "biz": s.get("biz"),
                 "corp_size_default": s.get("corp_size_default"),
                 "corp_size_by_year": s.get("corp_size_by_year"),
@@ -618,9 +676,7 @@ def _calc_fingerprint(s: dict) -> str | None:
                 "manual_extra_years": s.get("manual_extra_years"),
                 "files": files_meta,
                 "wht_years": wht_years,
-            },
-            sort_keys=True, default=str, ensure_ascii=False,
-        )
+            })
         return hashlib.md5(blob.encode("utf-8")).hexdigest()
     except Exception:
         return None          # 지문을 못 만들면 재사용하지 않고 항상 새로 계산
@@ -1667,7 +1723,7 @@ div[class*="st-key-ec_step_nav_wait_"] button p {
     min-height: 68px !important;
     padding: 10px 18px !important;
     border: 2px solid #cbd5e1 !important;
-    border-left: 5px solid #16a34a !important;
+    border: 2px dashed #90C2FF !important;
     border-radius: 12px !important;
     background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%) !important;
     box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06) !important;
@@ -1677,8 +1733,8 @@ div[class*="st-key-ec_step_nav_wait_"] button p {
     transition: all 0.18s ease;
 }
 .st-key-ec_drop [data-testid="stFileUploaderDropzone"]:hover {
-    border-color: #16a34a !important;
-    background: #f0fdf4 !important;
+    border-color: #3182F6 !important;
+    background: #F8FBFF !important;
     box-shadow: 0 4px 12px rgba(22, 163, 74, 0.14) !important;
 }
 .ec-bottom-upload-label {
@@ -1719,36 +1775,64 @@ div[class*="st-key-ec_step_nav_wait_"] button p {
     font-family: 'Pretendard', 'Malgun Gothic', sans-serif;
 }
 .ec-docs th {
-    background-color: #1e293b !important;
-    color: #ffffff !important;
+    background-color: #F9FAFB !important;
+    color: #4E5968 !important;
     font-weight: 700 !important;
     text-align: left;
-    padding: 9px 12px;
-    border: 1px solid #334155;
-    font-size: 0.89rem;
+    padding: 11px 14px;
+    border-bottom: 1px solid #E5E8EB;
+    font-size: 0.84rem;
 }
 .ec-docs td {
-    padding: 8px 12px;
-    border: 1px solid #cbd5e1;
-    color: #1e293b;
-    background-color: #ffffff;
+    padding: 11px 14px;
+    border-bottom: 1px solid #F2F4F6;
+    color: #191F28;
+    background-color: #FFFFFF;
     vertical-align: middle;
     line-height: 1.45;
 }
-.ec-docs tr:nth-child(even) td {
-    background-color: #f8fafc;
+.ec-docs tr:hover td {
+    background-color: #F9FAFB;
 }
 .ec-docs tr.on td {
-    background-color: #f0fdf4 !important;
+    background-color: #F8FDFB !important;
 }
 .ec-docs tr.extra td {
-    background-color: #eff6ff !important;
+    background-color: #F5F9FF !important;
 }
 .ec-docs td.led-cell, .ec-docs th.led-cell {
-    width: 44px;
+    width: 118px !important;
+    min-width: 118px !important;
+    white-space: nowrap !important;
     text-align: center !important;
-    padding-left: 4px;
-    padding-right: 4px;
+    padding-left: 10px !important;
+    padding-right: 10px !important;
+}
+.ec-status-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    padding: 4px 11px;
+    border-radius: 999px;
+    font-size: 0.76rem;
+    font-weight: 800;
+    white-space: nowrap;
+}
+.ec-status-badge.done { background: #E5F9F0; color: #00A660; }
+.ec-status-badge.req-wait { background: #FFF5E5; color: #D97706; }
+.ec-status-badge.empty { background: #F2F4F6; color: #8B95A1; }
+.ec-file-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 10px;
+    border-radius: 8px;
+    background: #E8F3FF;
+    color: #3182F6;
+    font-size: 0.80rem;
+    font-weight: 700;
+    margin: 2px 4px 2px 0;
 }
 .ec-docs td.help {
     color: #475569;
@@ -2599,11 +2683,11 @@ def _current_build_sig(s: dict) -> str:
         ensure_ascii=False,
     )
     sz_sig = json.dumps(
-        {
+        _pdf_sig_norm({
             "def": s.get("corp_size_default"),
             "by_yr": s.get("corp_size_by_year"),
             "uset": s.get("corp_size_user_set"),
-        },
+        }),
         sort_keys=True,
         ensure_ascii=False,
     )

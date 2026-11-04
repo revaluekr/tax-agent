@@ -18,6 +18,7 @@ from . import headcount as H
 from . import parsers as P
 
 from .ui_common import (  # noqa: F401
+    _pdf_memo,
     _S,
     _block_titles_for_year,
     _cohort_corp_size,
@@ -181,12 +182,12 @@ def _build_top_kpi_cards_html(pkg: dict, tax_yr: int) -> str:
     c_cont = int(pkg.get("total_continued_credit_won") or 0)
     c_add = int(pkg.get("additional_credit_won") or 0)
 
-    neg_col = "#DC2626" if (claw_net + rural_won) > 0 else "#334155"
+    neg_col = "#F04452" if (claw_net + rural_won) > 0 else "#4E5968"
     return (
         "<div class='ecx-kpis' style='display:grid;grid-template-columns:1fr 1fr 1.15fr;gap:12px;margin-bottom:14px;'>"
         "<div class='ecx-kpi'>"
         f"<div class='l'>① {tax_yr}년 총 공제세액 (확정)</div>"
-        f"<div class='v' style='color:#1D4ED8;'>+{tot_gross:,}원</div>"
+        f"<div class='v' style='color:#3182F6;'>+{tot_gross:,}원</div>"
         f"<div class='s'>1차 {c1_won:,} + 연속 {c_cont:,}" + (f" + 추가 {c_add:,}" if c_add > 0 else "") + "</div></div>"
         "<div class='ecx-kpi'>"
         "<div class='l'>② 추가납부(추징) · 농특세 20%</div>"
@@ -3048,7 +3049,7 @@ def _page_calculation():
         with st.container(key="ec_btn_pdf_step3_wrap"):
             st.download_button(
                 "PDF 출력",
-                data=_build_step3_calculation_pdf_bytes(s, pkg, matrix_cols),
+                data=_pdf_memo(s, "step3_calc", _build_step3_calculation_pdf_bytes, pkg, matrix_cols),
                 file_name=f"{corp_nm_fn}_{tax_yr}년귀속_통합고용세액공제_계산서.pdf",
                 mime="application/pdf",
                 width="stretch",

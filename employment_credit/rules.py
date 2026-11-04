@@ -17,6 +17,8 @@
 4. 법인 본·지점 합산 및 개인사업자 기중 사업 양도·포괄양수(조특령 제26조의8 제10항) 복수 사업장 구분 상수 지원.
 """
 from __future__ import annotations
+from zoneinfo import ZoneInfo
+_KST = ZoneInfo("Asia/Seoul")   # 한국 표준시(KST)
 from typing import Any
 
 # ── 지원 귀속연도 (2024~2028년 A·B·C 점증형 산식 및 구법 사후관리 전면 지원) ──
@@ -1599,7 +1601,7 @@ def evaluate_law_monitoring_status(
     4) 기준 해시가 비어 있으면 노랑 '기준 버전 미설정 · 확인 필요'로 판정합니다.
     """
     base_map = baseline_info or BASELINE_LAW_INFO
-    today_dt = _parse_iso_or_dot_date(today) or _date.today()
+    today_dt = _parse_iso_or_dot_date(today) or _datetime.now(_KST).date()
     ty = int(tax_year or DEFAULT_TAX_YEAR)
 
     if (
@@ -2009,7 +2011,7 @@ def evaluate_ruling_monitoring_status(
     - 1건 이상이면 초록불(green) + "[N건]", 0건이면 회색불(gray) + 배지 숨김("").
     """
     r_map = rulings_dict if rulings_dict is not None else ADMIN_RULINGS_AND_NOTICES
-    today_dt = _parse_iso_or_dot_date(today) or _date.today()
+    today_dt = _parse_iso_or_dot_date(today) or _datetime.now(_KST).date()
     recent_items: list[dict[str, Any]] = []
     all_items: list[dict[str, Any]] = []
 
@@ -2217,7 +2219,7 @@ def get_or_create_ai_law_interpretation(
 
     raw_output = str(generator_fn() or "")
     sanitized = sanitize_ai_law_interpretation(raw_output, trace=trace)
-    ts_str = created_at or _datetime.now().strftime("%Y-%m-%d %H:%M")
+    ts_str = created_at or _datetime.now(_KST).strftime("%Y-%m-%d %H:%M")
     header = f"AI 해석(원문 아님) | 생성 일시: {ts_str} | 사용 모델: {model_name}"
     body = sanitized["text"].strip()
     formatted = f"**{header}**\n\n{body}"

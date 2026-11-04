@@ -178,16 +178,16 @@ div[data-testid="stFormSubmitButton"] > button[kind="primary"],
 .st-key-btn_top_mode_agent button[kind="primary"],
 .st-key-btn_top_mode_credit button[kind="primary"],
 .st-key-btn_top_mode_payroll button[kind="primary"] {
-    background-color: #3182F6 !important;
-    border: 1.5px solid #3182F6 !important;
+    background-color: #16a34a !important;
+    border: 1.5px solid #15803d !important;
     color: #ffffff !important;
     font-weight: 800 !important;
 }
 div.stButton > button[kind="primary"]:hover,
 div.stButton > button[data-testid="stBaseButton-primary"]:hover,
 div[data-testid="stFormSubmitButton"] > button[kind="primary"]:hover {
-    background-color: #1B64DA !important;
-    border-color: #1B64DA !important;
+    background-color: #15803d !important;
+    border-color: #166534 !important;
     color: #ffffff !important;
 }
 div.stButton > button[kind="primary"] p,
@@ -371,134 +371,19 @@ div[class*="st-key-room_btn_"][class*="_running"] button::after {
     animation: geminiAuroraPulse 1.4s infinite ease-in-out !important;
 }
 
-/* 상단 슬림 미니 상태바 (토스 웹 스타일 + 고정 배경 #F4F6FA) */
-[data-testid="stApp"] [data-testid="stMain"],
-[data-testid="stApp"] [data-testid="stAppScrollToBottomContainer"],
-[data-testid="stApp"] [data-testid="stBottom"] > div {
-    background-color: #F4F6FA !important;
-}
+/* 상단 슬림 미니 상태바 */
 .top-mini-status-bar {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    background-color: #FFFFFF;
-    border: 1px solid #E5E8EB;
-    border-left: 4px solid #3182F6;
-    border-radius: 12px;
-    padding: 9px 16px;
-    margin-bottom: 14px;
+    background-color: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-left: 4px solid #16a34a;
+    border-radius: 8px;
+    padding: 7px 14px;
+    margin-bottom: 10px;
     font-size: 0.92rem;
-    color: #191F28;
-    box-shadow: 0 2px 8px rgba(0, 27, 55, 0.03);
-}
-/* ── 개선 3: 자율 에이전트AI 토스 웹 2x2 화이트 벤토 그리드(Bento Grid) ── */
-.toss-bento-wrap {
-    max-width: 840px;
-    margin: 28px auto 18px auto;
-    padding: 0 8px;
-}
-.toss-bento-header {
-    text-align: center;
-    margin-bottom: 24px;
-}
-.toss-bento-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    background: #E8F3FF;
-    color: #3182F6;
-    font-size: 0.82rem;
-    font-weight: 800;
-    padding: 6px 14px;
-    border-radius: 999px;
-    margin-bottom: 12px;
-    letter-spacing: -0.2px;
-}
-.toss-bento-title {
-    font-size: 2.0rem;
-    font-weight: 800;
-    color: #191F28;
-    letter-spacing: -0.8px;
-    line-height: 1.25;
-    margin-bottom: 8px;
-}
-.toss-bento-sub {
-    font-size: 0.98rem;
-    color: #4E5968;
-    font-weight: 500;
-    line-height: 1.55;
-}
-.toss-bento-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 16px;
-    margin-bottom: 12px;
-}
-.toss-bento-card {
-    cursor: pointer;
-    background: #FFFFFF;
-    border: 1px solid #E5E8EB;
-    border-radius: 20px;
-    padding: 22px 24px 18px 24px;
-    box-shadow: 0 4px 16px rgba(0, 27, 55, 0.04);
-    transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
-}
-.toss-bento-card:hover {
-    transform: translateY(-2px);
-    border-color: #90C2FF;
-    box-shadow: 0 8px 24px rgba(49, 130, 246, 0.10);
-}
-.toss-bento-top {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 14px;
-}
-.toss-bento-icon {
-    width: 46px;
-    height: 46px;
-    border-radius: 14px;
-    background: #E8F3FF;
-    color: #3182F6;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-.toss-bento-arrow {
-    width: 30px;
-    height: 30px;
-    border-radius: 50%;
-    background: #F2F4F6;
-    color: #4E5968;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 0.90rem;
-    font-weight: 700;
-}
-.toss-bento-card-title {
-    font-size: 1.15rem;
-    font-weight: 800;
-    color: #191F28;
-    letter-spacing: -0.4px;
-    margin-bottom: 6px;
-}
-.toss-bento-card-desc {
-    font-size: 0.90rem;
-    color: #4E5968;
-    line-height: 1.55;
-    word-break: keep-all;
-}
-[data-testid="stApp"] [data-testid="stBottom"] [data-testid="stChatInput"] {
-    border-radius: 16px !important;
-    border: 1.5px solid #3182F6 !important;
-    box-shadow: 0 4px 18px rgba(49, 130, 246, 0.12) !important;
-    background: #FFFFFF !important;
-}
-[data-testid="stApp"] [data-testid="stBottom"] [data-testid="stChatInput"] [data-testid="stChatInputSubmitButton"] {
-    background-color: #3182F6 !important;
-    color: #FFFFFF !important;
-    border-radius: 50% !important;
+    color: #334155;
 }
 
 /* 🤖 답변 로봇 아바타 초록색 배경(#22c55e) & 흰색 아이콘 */
@@ -631,6 +516,81 @@ div[data-testid="stChatMessageContent"] blockquote {
 }
 
 footer {visibility: hidden;}
+
+    /* ─── [5] 자율 에이전트AI 메인 빈 화면 — 상단 미니 상태바 & 토스 웹 2×2 화이트 벤토 그리드 ─── */
+    .top-mini-status-bar {
+        display: flex !important; align-items: center !important; justify-content: space-between !important;
+        flex-wrap: wrap !important; gap: 8px !important;
+        background: #FFFFFF !important;
+        border: 1px solid #E5E8EB !important;
+        border-left: 4px solid #3182F6 !important;
+        border-radius: 12px !important;
+        padding: 9px 16px !important;
+        margin: 0 0 14px 0 !important;
+        box-shadow: 0 2px 10px rgba(0, 27, 55, 0.04) !important;
+        font-size: 0.84rem !important; color: #4E5968 !important;
+    }
+    .toss-bento-wrap {
+        max-width: 840px; margin: 22px auto 16px; padding: 8px 4px;
+    }
+    .toss-bento-hero {
+        text-align: center; margin-bottom: 24px;
+    }
+    .toss-bento-badge {
+        display: inline-flex; align-items: center; gap: 6px;
+        background: #E8F3FF; color: #3182F6;
+        font-size: 0.78rem; font-weight: 800;
+        padding: 6px 14px; border-radius: 999px; margin-bottom: 12px;
+    }
+    .toss-bento-title {
+        font-size: 2.0rem; font-weight: 800; color: #191F28;
+        letter-spacing: -0.6px; margin: 0 0 8px; line-height: 1.25;
+    }
+    .toss-bento-sub {
+        font-size: 0.94rem; color: #4E5968; margin: 0; font-weight: 500;
+    }
+    .toss-bento-grid {
+        display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px;
+    }
+    .toss-bento-card {
+        background: #FFFFFF; border: 1px solid #E5E8EB;
+        border-radius: 20px; padding: 22px 24px 18px;
+        box-shadow: 0 2px 10px rgba(0, 27, 55, 0.04);
+        transition: all 0.18s ease;
+        position: relative;
+    }
+    .toss-bento-card:hover {
+        border-color: #90C2FF;
+        transform: translateY(-2px);
+        box-shadow: 0 8px 22px rgba(49, 130, 246, 0.10);
+    }
+    .toss-bento-top {
+        display: flex; align-items: center; justify-content: space-between;
+        margin-bottom: 14px;
+    }
+    .toss-bento-icon {
+        width: 46px; height: 46px; border-radius: 14px;
+        background: #E8F3FF; color: #3182F6;
+        display: flex; align-items: center; justify-content: center;
+    }
+    .toss-bento-arrow {
+        width: 30px; height: 30px; border-radius: 999px;
+        background: #F2F4F6; color: #4E5968;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 0.88rem; font-weight: 800;
+    }
+    .toss-bento-card .b-cat {
+        font-size: 0.78rem; font-weight: 800; color: #3182F6;
+        margin-bottom: 4px; display: block;
+    }
+    .toss-bento-card .b-ttl {
+        font-size: 1.08rem; font-weight: 800; color: #191F28;
+        margin-bottom: 6px; letter-spacing: -0.3px; line-height: 1.3;
+    }
+    .toss-bento-card .b-desc {
+        font-size: 0.86rem; color: #8B95A1; line-height: 1.5; font-weight: 500;
+    }
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -655,16 +615,25 @@ _CITED_ARTICLE_TAG_RE = re.compile(
 
 RUNTIME_API_KEYS_FILE = os.path.join(".workspace_storage", "runtime_api_keys.json")
 
+_RT_KEYS_CACHE: dict = {"mtime": None, "data": {}}
+
+
 def _load_runtime_api_keys() -> dict:
+    """runtime_api_keys.json을 파일이 바뀐 경우에만 다시 읽습니다 (화면 새로고침마다 디스크를 반복해서 읽지 않도록). 돌려주는 값은 복사본."""
     try:
-        if os.path.exists(RUNTIME_API_KEYS_FILE):
+        mt = os.path.getmtime(RUNTIME_API_KEYS_FILE)
+    except OSError:
+        _RT_KEYS_CACHE["mtime"], _RT_KEYS_CACHE["data"] = None, {}
+        return {}
+    if _RT_KEYS_CACHE["mtime"] != mt:
+        try:
             with open(RUNTIME_API_KEYS_FILE, "r", encoding="utf-8") as rf:
                 data = json.load(rf)
-            if isinstance(data, dict):
-                return data
-    except Exception:
-        pass
-    return {}
+            _RT_KEYS_CACHE["data"] = data if isinstance(data, dict) else {}
+        except Exception:
+            _RT_KEYS_CACHE["data"] = {}
+        _RT_KEYS_CACHE["mtime"] = mt
+    return dict(_RT_KEYS_CACHE["data"])
 
 def _save_runtime_api_keys(new_entries: dict) -> None:
     os.makedirs(".workspace_storage", exist_ok=True)
@@ -726,7 +695,7 @@ def _fmt_ymd_str(raw_ymd: str) -> str:
     return str(raw_ymd or "-")
 
 @st.cache_data(ttl=43200, show_spinner=False)
-def _fetch_latest_tax_law_promulgations_cached() -> dict[str, dict]:
+def _fetch_latest_tax_law_promulgations_cached(kst_ymd: str = "") -> dict[str, dict]:
     """
     [속도 개선 ①] 9개 주요 세법 및 각 시행령(총 18건)의 최신 공포·시행 정보를
     ThreadPoolExecutor(6워커)로 병렬 조회하여 초기 구동 시간을 8~12초 -> 1~1.5초로 단축합니다.
@@ -749,17 +718,32 @@ def _fetch_latest_tax_law_promulgations_cached() -> dict[str, dict]:
                 if str(it.get("법령명한글", "")).replace(" ", "") == target_clean
             ]
             candidates = exact_matches if exact_matches else raw_res[:1]
-            candidates.sort(
+            candidates_latest = sorted(
+                candidates,
                 key=lambda x: (str(x.get("공포일자", "")), str(x.get("시행일자", ""))),
                 reverse=True
             )
-            top = candidates[0]
+            top = candidates_latest[0]
+            enforced_now_cands = [
+                it for it in candidates
+                if len(re.sub(r"\D", "", str(it.get("시행일자", "")))) == 8
+                and int(re.sub(r"\D", "", str(it.get("시행일자", "")))) <= today_int
+            ]
+            if enforced_now_cands:
+                enforced_now_cands.sort(
+                    key=lambda x: (str(x.get("시행일자", "")), str(x.get("공포일자", ""))),
+                    reverse=True
+                )
+                active_cur_item = enforced_now_cands[0]
+            else:
+                active_cur_item = top
+
             prom_raw = str(top.get("공포일자", "")).strip()
             enf_raw = str(top.get("시행일자", "")).strip()
             prom_no = str(top.get("공포번호", "")).strip()
             rev_type = str(top.get("제개정구분명", "개정")).strip()
-            law_id = str(top.get("법령ID") or top.get("법령일련번호") or "").strip()
-            mst_id = str(top.get("법령일련번호") or top.get("MST") or law_id).strip()
+            law_id = str(active_cur_item.get("법령ID") or active_cur_item.get("법령일련번호") or "").strip()
+            mst_id = str(active_cur_item.get("법령일련번호") or active_cur_item.get("MST") or law_id).strip()
 
             days_since_prom = 9999
             if len(prom_raw) == 8 and prom_raw.isdigit():
@@ -808,7 +792,8 @@ def _fetch_latest_tax_law_promulgations_cached() -> dict[str, dict]:
 
 def fetch_latest_tax_law_promulgations() -> dict[str, dict]:
     """일시적 네트워크 오류로 빈 결과가 반환될 경우 12시간 동안 빈 딕셔너리가 캐싱되지 않도록 즉시 캐시를 비웁니다."""
-    res = _fetch_latest_tax_law_promulgations_cached()
+    kst_ymd = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d")
+    res = _fetch_latest_tax_law_promulgations_cached(kst_ymd)
     if not res:
         _fetch_latest_tax_law_promulgations_cached.clear()
     return res
@@ -2312,10 +2297,11 @@ def _trigger_agent_task(
 
     current_messages.append({"role": "user", "content": display_prompt})
 
+    _invisible_date_prefix = getattr(agent, "build_hidden_date_law_directive", lambda q="": "")(effective_prompt)
     if has_attached_file and not force_flash:
         doc_cap = MAX_DOC_CHARS_PRO if is_pro_request else MAX_DOC_CHARS_STANDARD
         full_input_for_agent = (
-            f"{history_context}{target_block}"
+            f"{history_context}{target_block}{_invisible_date_prefix}"
             f"[현재 사용자 질문]: {effective_prompt}\n\n"
             f"아래는 사용자가 현재 대화방에 업로드한 첨부파일({current_file_info['name']})의 데이터입니다. "
             f"직전 대화 맥락과 이 파일 데이터를 바탕으로 관련 법령·예규·판례·환율을 정밀 대조하여 답변하세요:\n"
@@ -2324,7 +2310,11 @@ def _trigger_agent_task(
             f"========================================"
         )
     else:
-        full_input_for_agent = f"{history_context}{target_block}[현재 사용자 질문]: {effective_prompt}" if (history_context or target_block) else effective_prompt
+        full_input_for_agent = (
+            f"{history_context}{target_block}{_invisible_date_prefix}[현재 사용자 질문]: {effective_prompt}"
+            if (history_context or target_block)
+            else f"{_invisible_date_prefix}[현재 사용자 질문]: {effective_prompt}"
+        )
 
     if general_mode_on:
         # 일반(웹 검색) 모드: agent.run_agent가 "[일반]" 표시를 보고 법령 도구 없이 Gemini + Google 검색 경로로 처리
@@ -2810,9 +2800,9 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
                 )
                 in_paid_key = st.text_input(
                     "Google AI Studio 유료키 (GEMINI_PAID_KEY, 선택)",
-                    value=rt_cur.get("GEMINI_PAID_KEY", ""),
+                    value="",   # 저장된 유료키는 화면에 다시 보내지 않음 (빈칸 = 기존 값 유지)
                     type="password",
-                    placeholder="AIzaSy..."
+                    placeholder=("등록됨 — 바꿀 때만 새 키 입력" if rt_cur.get("GEMINI_PAID_KEY") else "AIzaSy...")
                 )
             with c_rt2:
                 cur_v_on = getattr(agent, "is_vertex_enabled", lambda: False)()
@@ -2828,9 +2818,9 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
                 )
                 in_gcp_sa = st.text_area(
                     "Vertex AI 서비스 계정 JSON 전체 (GCP_SERVICE_ACCOUNT_JSON)",
-                    value=rt_cur.get("GCP_SERVICE_ACCOUNT_JSON", ""),
+                    value="",   # 저장된 서비스 계정 JSON(비공개 키 포함)은 화면에 다시 보내지 않음 (빈칸 = 기존 값 유지)
                     height=95,
-                    placeholder='{"type": "service_account", "project_id": "...", ...}'
+                    placeholder=("등록됨 — 바꿀 때만 새 JSON 전체 붙여넣기" if rt_cur.get("GCP_SERVICE_ACCOUNT_JSON") else '{"type": "service_account", "project_id": "...", ...}')
                 )
             if st.form_submit_button("💾 입력한 API 보안키 및 Vertex AI 설정 즉시 저장·적용", type="primary", width="stretch"):
                 to_save = {}
@@ -2951,11 +2941,13 @@ def _detect_any_room_button_click() -> None:
 _detect_any_room_button_click()
 
 with st.sidebar:
-    # B안: 로고 + 세로 메뉴 3개 (선택된 메뉴만 연한 바탕 + 포인트색)
+    # B안: 로고 + 세로 메뉴 4개 (선택된 메뉴만 연한 바탕 + 포인트색)
     import ui_theme as _ui_theme
+    st.markdown(_ui_theme.SIDEBAR_CSS, unsafe_allow_html=True)
     st.markdown(_ui_theme.brand_html(), unsafe_allow_html=True)
     with st.container(key="sbx_nav"):
         for _lbl, _key, _mode, _ico in (
+            ("달력", "btn_top_mode_calendar", "CALENDAR", ":material/calendar_month:"),
             ("자율 에이전트AI", "btn_top_mode_agent", "AGENT", ":material/chat_bubble:"),
             ("통합고용세액공제", "btn_top_mode_credit", "CREDIT_CALC", ":material/calculate:"),
             ("인건비 자동화", "btn_top_mode_payroll", "PAYROLL_AUTO", ":material/receipt_long:"),
@@ -3058,8 +3050,14 @@ with st.sidebar:
             or st.session_state.anon_workspace_id
         )
 
-    # 📦 [통합고용세액공제 모드 전용] 귀속사업연도 · 사업자정보 (내 작업공간 바로 아래)
-    if st.session_state.app_top_mode == "CREDIT_CALC":
+    # 📦 [대분류 패키지별 전용 사이드바 렌더링]
+    if st.session_state.app_top_mode == "CALENDAR":
+        try:
+            import calendar_scheduler
+            calendar_scheduler.render_calendar_sidebar()
+        except ModuleNotFoundError:
+            st.warning("📦 `calendar_scheduler` 폴더를 프로젝트 루트에 함께 업로드해 주세요.")
+    elif st.session_state.app_top_mode == "CREDIT_CALC":
         import employment_credit
         employment_credit.render_credit_sidebar()
     elif st.session_state.app_top_mode == "PAYROLL_AUTO":
@@ -3203,6 +3201,21 @@ current_file_info = _normalize_room_file_entry(st.session_state.room_files[selec
 current_task_key = f"{effective_ws_id}::{selected_room}"
 active_task = task_mgr["tasks"].get(current_task_key)
 is_current_room_running = bool(active_task and active_task.get("status") == "running")
+
+if st.session_state.app_top_mode == "CALENDAR":
+    if st.session_state.get("show_inline_api_manager"):
+        with st.container(border=True):
+            st.subheader("🔑 연동 API 현황 및 보안키·만료일 통합 관리")
+            _render_api_key_manager_body(expiry_all_status, law_prom_map)
+            if st.button("✖️ API 관리창 닫기"):
+                st.session_state.show_inline_api_manager = False
+                st.rerun()
+    try:
+        import calendar_scheduler
+        calendar_scheduler.render_calendar_main()
+    except ModuleNotFoundError:
+        st.error("📦 `calendar_scheduler` 패키지 폴더를 찾을 수 없습니다. GitHub 저장소에 `calendar_scheduler/` 폴더(`__init__.py`, `ui.py`)를 함께 업로드해 주세요.")
+    st.stop()
 
 if st.session_state.app_top_mode == "CREDIT_CALC":
     if st.session_state.get("show_inline_api_manager"):
@@ -3370,58 +3383,62 @@ if st.session_state.get("show_inline_api_manager"):
 with st.container(key=f"room_main_view_{effective_ws_id}_{selected_room}"):
     if not current_messages and not is_current_room_running:
         st.markdown(
-            """
+            f"""
             <div class="toss-bento-wrap">
-              <div class="toss-bento-header">
-                <div class="toss-bento-badge">✨ 2026 최신 세법 · 예규 · 판례 실시간 연동 ↗</div>
-                <div class="toss-bento-title">무엇을 검토해 드릴까요?</div>
-                <div class="toss-bento-sub">질문을 입력하거나 검토할 파일(엑셀·PDF·한글·워드)을 업로드하면<br>즉시 세무 리스크와 공제 세액을 분석합니다.</div>
-              </div>
-              <div class="toss-bento-grid">
-                <div class="toss-bento-card toss-bento-card-1">
-                  <div class="toss-bento-top">
-                    <div class="toss-bento-icon">
-                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#3182F6" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-                    </div>
-                    <div class="toss-bento-arrow">↗</div>
-                  </div>
-                  <div class="toss-bento-card-title">경정청구 · 통합고용세액공제 진단</div>
-                  <div class="toss-bento-card-desc">원천징수이행상황신고서·기신고서 기반 공제 누락액 및 사후관리 추징 리스크 자동 계산</div>
+                <div class="toss-bento-hero">
+                    <div class="toss-bento-badge">● 실시간 법제처 3단 대조 · 예규·판례 심층 검색</div>
+                    <div class="toss-bento-title">무엇을 검토해 드릴까요?</div>
+                    <p class="toss-bento-sub">{selected_room} [{current_room_title}] — 아래 카드를 클릭하거나 입력창에 질문·문서를 올려주시면 즉시 검토를 시작합니다.</p>
                 </div>
-                <div class="toss-bento-card toss-bento-card-2">
-                  <div class="toss-bento-top">
-                    <div class="toss-bento-icon">
-                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#3182F6" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
+                <div class="toss-bento-grid">
+                    <div class="toss-bento-card">
+                        <div class="toss-bento-top">
+                            <div class="toss-bento-icon">
+                                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#3182F6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                            </div>
+                            <div class="toss-bento-arrow">→</div>
+                        </div>
+                        <span class="b-cat">조세특례제한법 · 세액공제</span>
+                        <div class="b-ttl">통합고용세액공제 상시근로자 요건 검토</div>
+                        <div class="b-desc">청년 등 상시근로자 증가 인원 산정, 사후관리 추징 배제 요건 및 2026년 귀속 개정사항 비교</div>
                     </div>
-                    <div class="toss-bento-arrow">↗</div>
-                  </div>
-                  <div class="toss-bento-card-title">급여 · 4대보험 · 인건비 세무 자문</div>
-                  <div class="toss-bento-card-desc">비과세 식대·차량유지비 요건, 중도입퇴사자 연말정산 및 근로기준법 수당 검토</div>
-                </div>
-                <div class="toss-bento-card toss-bento-card-3">
-                  <div class="toss-bento-top">
-                    <div class="toss-bento-icon">
-                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#3182F6" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18"/><path d="M5 7h14"/><path d="M5 7l-3 7a4 4 0 0 0 6 0z"/><path d="M19 7l-3 7a4 4 0 0 0 6 0z"/><path d="M8 21h8"/></svg>
+                    <div class="toss-bento-card">
+                        <div class="toss-bento-top">
+                            <div class="toss-bento-icon">
+                                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#3182F6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                            </div>
+                            <div class="toss-bento-arrow">→</div>
+                        </div>
+                        <span class="b-cat">소득세법 · 원천징수</span>
+                        <div class="b-ttl">근로·사업·기타소득 원천징수 및 비과세 한도</div>
+                        <div class="b-desc">식대·자가운전보조금 비과세 요건, 프리랜서 3.3% 원천징수 및 간이지급명세서 제출 기한 검토</div>
                     </div>
-                    <div class="toss-bento-arrow">↗</div>
-                  </div>
-                  <div class="toss-bento-card-title">최신 예규·판례 및 과세관청 소명서 작성</div>
-                  <div class="toss-bento-card-desc">조세심판원·국세청 최신 결정례 검색 및 세무조사/해명자료 제출용 소명서 초안 작성</div>
-                </div>
-                <div class="toss-bento-card toss-bento-card-4">
-                  <div class="toss-bento-top">
-                    <div class="toss-bento-icon">
-                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#3182F6" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                    <div class="toss-bento-card">
+                        <div class="toss-bento-top">
+                            <div class="toss-bento-icon">
+                                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#3182F6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="2" width="16" height="20" rx="2"/><path d="M9 22v-4h6v4"/><path d="M8 6h.01M12 6h.01M16 6h.01M8 10h.01M12 10h.01M16 10h.01"/></svg>
+                            </div>
+                            <div class="toss-bento-arrow">→</div>
+                        </div>
+                        <span class="b-cat">법인세 · 부가가치세</span>
+                        <div class="b-ttl">가지급금 인정이자 및 업무용승용차 손금불산입</div>
+                        <div class="b-desc">특수관계인 대여금 가중평균차입이자율 적용, 임직원 전용보험 및 운행기록부 작성 기준 확인</div>
                     </div>
-                    <div class="toss-bento-arrow">↗</div>
-                  </div>
-                  <div class="toss-bento-card-title">신고서 · 원장 파일 즉시 업로드 분석</div>
-                  <div class="toss-bento-card-desc">엑셀·PDF·한글 파일을 끌어다 놓으면 핵심 쟁점과 오류 내역을 표로 요약</div>
+                    <div class="toss-bento-card">
+                        <div class="toss-bento-top">
+                            <div class="toss-bento-icon">
+                                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#3182F6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18"/><path d="M5 7h14"/><path d="M5 7l-3 7a4 4 0 0 0 6 0z"/><path d="M19 7l-3 7a4 4 0 0 0 6 0z"/><path d="M8 21h8"/></svg>
+                            </div>
+                            <div class="toss-bento-arrow">→</div>
+                        </div>
+                        <span class="b-cat">상속·증여 · 양도소득세</span>
+                        <div class="b-ttl">가업승계 증여세 과세특례 및 1세대 1주택 비과세</div>
+                        <div class="b-desc">최신 예규·심판례 기반 양도소득세 중과 배제 요건 및 창업자금·가업승계 사후관리 점검</div>
+                    </div>
                 </div>
-              </div>
             </div>
             """,
-            unsafe_allow_html=True,
+            unsafe_allow_html=True
         )
 
     for idx, message in enumerate(current_messages):
@@ -3637,33 +3654,6 @@ st.components.v1.html(
             if (btn && !btn.disabled && (!ta || !ta.value.trim())) return true;
             return chatInput.querySelectorAll('[data-testid*="File"], [class*="uploadedFile"], li').length > 0;
         }
-        doc.addEventListener('click', function(e) {
-            const card = e.target && e.target.closest ? e.target.closest('.toss-bento-card') : null;
-            if (!card) return;
-            const chatInput = doc.querySelector('[data-testid="stChatInput"]');
-            if (!chatInput) return;
-            if (card.classList.contains('toss-bento-card-4')) {
-                const fileInput = chatInput.querySelector('input[type="file"]');
-                if (fileInput) { fileInput.click(); return; }
-            }
-            const prompts = {
-                'toss-bento-card-1': '2026년 귀속 통합고용세액공제 공제요건, 우대공제 단가 및 사후관리(2·3차년도) 추징 점검 기준을 정리해 주세요.',
-                'toss-bento-card-2': '근로소득 비과세 식대·자가운전보조금 요건과 5인 이상/미만 사업장의 연장·야간·휴일·주휴수당 계산 기준을 검토해 주세요.',
-                'toss-bento-card-3': '과세관청 해명자료(소명서) 및 경정청구 의견서 작성 시 필수 법리 구조와 최신 조세심판원 결정례 인용 방법을 알려주세요.',
-                'toss-bento-card-4': '첨부한 신고서·원장 파일의 핵심 세무 쟁점과 오류·누락 내역을 표로 요약해 주세요.'
-            };
-            let textToFill = '';
-            for (const cls in prompts) {
-                if (card.classList.contains(cls)) { textToFill = prompts[cls]; break; }
-            }
-            const ta = chatInput.querySelector('textarea');
-            if (ta && textToFill) {
-                const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-                setter.call(ta, textToFill);
-                ta.dispatchEvent(new Event('input', { bubbles: true }));
-                ta.focus();
-            }
-        }, true);
         doc.addEventListener('drop', function() {
             setTimeout(function() {
                 const ta = doc.querySelector('[data-testid="stChatInput"] textarea');
@@ -3788,3 +3778,8 @@ elif ws_has_running_init:
         _render_live_task_monitor(effective_ws_id, selected_room)
         time.sleep(1.0)
         st.rerun()
+try:
+    import calendar_scheduler as _cs_overlay
+    _cs_overlay.render_floating_kakao_todo_overlay()
+except Exception:
+    pass
