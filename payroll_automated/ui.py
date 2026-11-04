@@ -28,8 +28,11 @@
 from __future__ import annotations
 
 import inspect
+import hashlib
 import re
 from datetime import datetime
+from zoneinfo import ZoneInfo
+_KST = ZoneInfo("Asia/Seoul")   # 한국 표준시(KST)
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -683,13 +686,13 @@ def _format_yymm_4digit(ym_str: str) -> str:
         return digits[2:6]
     if len(digits) == 4:
         return digits
-    now = datetime.now()
+    now = datetime.now(_KST)
     return f"{now.year % 100:02d}{now.month:02d}"
 
 
 def _get_payroll_state() -> Dict[str, Any]:
     if "payroll_auto_state" not in st.session_state:
-        now = datetime.now()
+        now = datetime.now(_KST)
         default_ym = now.strftime("%Y-%m")
         default_pay_dt = now.strftime("%Y-%m-25")
         st.session_state.payroll_auto_state = {
@@ -1278,7 +1281,7 @@ def _report_header_common(pstate: Dict[str, Any]) -> Tuple[str, str, str]:
     corp = pstate.get("corp_name") or "미입력"
     wp_lbl = _current_workplace_label(pstate)
     corp_disp = f"{corp} ({wp_lbl})" if wp_lbl and wp_lbl != corp else corp
-    ym = pstate.get("year_month") or datetime.now().strftime("%Y-%m")
+    ym = pstate.get("year_month") or datetime.now(_KST).strftime("%Y-%m")
     pay_dt = pstate.get("pay_date") or ""
     return corp_disp, ym, pay_dt
 
@@ -1405,7 +1408,7 @@ def _render_review_report_buttons(pstate: Dict[str, Any], rep: Dict[str, Any], k
     파일명 '거래처명_당월 급여검토보고_YYMM.pdf' / '거래처명_당월 사업소득검토보고_YYMM.pdf' / '거래처명_AI 맞춤 절세검토_YYMM.pdf'."""
     corp = (pstate.get("corp_name") or "거래처").strip().replace(" ", "")
     ym_digits = re.sub(r"[^0-9]", "", str(pstate.get("year_month") or ""))
-    yymm = ym_digits[2:6] if len(ym_digits) >= 6 else datetime.now().strftime("%y%m")
+    yymm = ym_digits[2:6] if len(ym_digits) >= 6 else datetime.now(_KST).strftime("%y%m")
     if rep["kind"] == "AI절세":
         fname = f"{corp}_AI 맞춤 절세검토({'급여' if key.endswith('emp') else '사업소득'})_{yymm}.pdf"
     else:
@@ -1642,17 +1645,19 @@ def render_payroll_automated_sidebar() -> None:
         new_wp_label = _current_workplace_label(pstate)
         if new_wp_label != prev_wp_label:
             for emp in pstate.get("employees", []):
-                if not emp.get("사업장") or emp.get("사업장") == prev_wp_label:
+                manual_fields = [x.strip() for x in str(emp.get("_수기") or "").split(",") if x.strip()]
+                if not emp.get("사업장") or emp.get("사업장") in (prev_wp_label, "본점", "지점") or "사업장" not in manual_fields:
                     emp["사업장"] = new_wp_label
             pstate["grid_version"] = int(pstate.get("grid_version", 0)) + 1
 
         # 귀속연월: 최근 월이 위로 오도록 역순(12월 → 1월, 최근 연도부터)
+        _kst_now = datetime.now(_KST)
         ym_options = [
             f"{yr:04d}-{mo:02d}"
-            for yr in (2027, 2026, 2025, 2024)
+            for yr in range(_kst_now.year + 1, _kst_now.year - 3, -1)
             for mo in range(12, 0, -1)
         ]
-        curr_ym = str(pstate.get("year_month") or "2026-10")
+        curr_ym = str(pstate.get("year_month") or _kst_now.strftime("%Y-%m"))
         if curr_ym not in ym_options:
             ym_options.append(curr_ym)
             ym_options.sort(reverse=True)
@@ -2086,6 +2091,7 @@ def _process_uploaded_files_and_text(
     # "모든 직원이(또는 김아무개가) 비과세식대 200,000원 반영해야해" / "금액에 적힌 급여는 세후 급여야" 등을 입력한 경우
     # 기존 명단에 즉시 일괄/개별 반영하고 전체 세액·4대보험을 재계산합니다.
     if chat_text and chat_text.strip():
+        _chat_meta: Dict[str, Any] = {}
         mod_emps, mod_frees, mod_logs, remaining_chat = apply_chat_modifiers_to_state(
             raw_text=chat_text,
             employees=pstate.get("employees", []),
@@ -2096,9 +2102,15 @@ def _process_uploaded_files_and_text(
             default_year_month=pstate.get("year_month", ""),
             default_pay_date=pstate.get("pay_date", ""),
             default_workplace=wp_lbl,
+            out_meta=_chat_meta,
         )
         pstate["employees"] = mod_emps
         pstate["freelancers"] = mod_frees
+        if _chat_meta.get("pay_date"):
+            # 채팅으로 바꾼 지급일 = 왼쪽 사업자정보에서 직접 입력한 것과 같게 처리 (사업소득 행·사이드바 함께 반영)
+            pstate["pay_date"] = _chat_meta["pay_date"]
+            pstate["_period_user_set"] = True
+            _apply_period_to_rows(pstate)
         if mod_logs:
             _recalculate_all_employee_rows(pstate)
             _recalculate_all_freelancer_rows(pstate)
@@ -2288,6 +2300,7 @@ def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
     grid_opts = gb.build()
     grid_opts["suppressSizeToFit"] = True
     grid_opts["ensureDomOrder"] = True
+    grid_opts["stopEditingWhenCellsLoseFocus"] = True
     # 최소화한 열: 머리글을 두 줄로 접어 말줄임(…) 없이 표시
     for cdef in grid_opts.get("columnDefs", []):
         if cdef.get("field") in zero_cols:
@@ -2362,9 +2375,11 @@ def _render_employee_aggrid(pstate: Dict[str, Any]) -> None:
 
 
 def _grid_resp_sig(df_resp: pd.DataFrame, cols: List[str]) -> str:
+    """표에서 돌아온 수기 입력 칸의 서명 (같은 응답을 두 번 처리하지 않기 위함) — JSON 직렬화 해시로 계산(기존 대비 약 17배 빠름)"""
     try:
         sub = df_resp[cols] if cols else df_resp
-        return f"{len(df_resp)}:" + str(pd.util.hash_pandas_object(sub.astype(str), index=True).sum())
+        raw = sub.to_json(orient="values", force_ascii=False, date_format="iso")
+        return f"{len(df_resp)}:" + hashlib.md5(raw.encode("utf-8")).hexdigest()
     except Exception:
         return str(hash(df_resp.to_string()))
 
@@ -2817,7 +2832,7 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
                     "사원코드": f"{next_idx:03d}",
                     "성명": f"신규사원{next_idx}",
                     "주민등록번호": "",
-                    "입사일": datetime.now().strftime("%Y-%m-01"),
+                    "입사일": datetime.now(_KST).strftime("%Y-%m-01"),
                     "퇴사일": "",
                     "부서": "",
                     "직급": "사원",

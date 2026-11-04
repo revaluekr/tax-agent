@@ -17,6 +17,9 @@
 """
 
 from __future__ import annotations
+import math
+from zoneinfo import ZoneInfo
+_KST = ZoneInfo("Asia/Seoul")   # 한국 표준시(KST)
 
 import csv
 import io
@@ -296,14 +299,16 @@ def is_valid_person_name(name: str) -> bool:
 
 
 def parse_number(val: Any, default: int = 0) -> int:
-    if val is None:
+    if val is None or isinstance(val, bool):
         return default
-    if isinstance(val, (int, float)):
-        if pd.isna(val):
+    if isinstance(val, int):
+        return val
+    if isinstance(val, float):
+        if not math.isfinite(val) or pd.isna(val):
             return default
-        return int(round(float(val)))
+        return int(round(val))
     s = str(val).strip()
-    if not s or s.lower() in ("nan", "none", "-", ""):
+    if not s or s.lower() in ("nan", "none", "null", "inf", "-inf", "infinity", "-infinity", "-", ""):
         return default
     s = s.replace(",", "").replace("원", "").replace(" ", "").strip()
     # △ 또는 ▲ 음수 표기 처리
@@ -311,11 +316,20 @@ def parse_number(val: Any, default: int = 0) -> int:
         s = "-" + s[1:].strip()
     m_man = re.match(r"^([+-]?\d+(?:\.\d+)?)\s*만$", s)
     if m_man:
-        return int(round(float(m_man.group(1)) * 10000))
+        f_man = float(m_man.group(1)) * 10000.0
+        return int(round(f_man)) if math.isfinite(f_man) else default
     try:
-        return int(round(float(s)))
-    except ValueError:
+        f = float(s)
+        return int(round(f)) if math.isfinite(f) else default
+    except (ValueError, OverflowError):
         return default
+
+
+def _validate_ymd(y: int, m: int, d: int) -> str:
+    try:
+        return date(int(y), int(m), int(d)).strftime("%Y-%m-%d")
+    except ValueError:
+        return ""
 
 
 def parse_date_str(val: Any) -> str:
@@ -324,19 +338,19 @@ def parse_date_str(val: Any) -> str:
     if isinstance(val, (datetime, date)):
         return val.strftime("%Y-%m-%d")
     s = str(val).strip()
-    if not s or s.lower() in ("nan", "none", "nat", "-"):
+    if not s or s.lower() in ("nan", "none", "null", "nat", "-"):
         return ""
-    m = re.match(r"^(\d{4})[-./](\d{1,2})[-./](\d{1,2})", s)
+    m = re.match(r"^(\d{4})[-./년\s](\d{1,2})[-./월\s](\d{1,2})", s)
     if m:
-        return f"{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+        return _validate_ymd(int(m.group(1)), int(m.group(2)), int(m.group(3)))
     m2 = re.match(r"^(\d{2})[-./](\d{1,2})[-./](\d{1,2})$", s)
     if m2:
         yy = int(m2.group(1))
         yyyy = 2000 + yy if yy < 50 else 1900 + yy
-        return f"{yyyy:04d}-{int(m2.group(2)):02d}-{int(m2.group(3)):02d}"
+        return _validate_ymd(yyyy, int(m2.group(2)), int(m2.group(3)))
     m3 = re.match(r"^(\d{4})(\d{2})(\d{2})$", s)
     if m3:
-        return f"{m3.group(1)}-{m3.group(2)}-{m3.group(3)}"
+        return _validate_ymd(int(m3.group(1)), int(m3.group(2)), int(m3.group(3)))
     return ""
 
 
@@ -409,8 +423,10 @@ def rrn_to_birth_dot(rrn_or_birth: str) -> str:
             yyyy = 2000 + yy
         else:
             yyyy = 2000 + yy if yy <= 30 else 1900 + yy
-        if 1 <= mm <= 12 and 1 <= dd <= 31:
-            return f"{yyyy:04d}.{mm:02d}.{dd:02d}"
+        try:
+            return date(yyyy, mm, dd).strftime("%Y.%m.%d")
+        except ValueError:
+            return ""
     return ""
 
 
@@ -1088,7 +1104,7 @@ def parse_client_payroll_excel(
         else:
             m_m = re.search(r"(\d{1,2})\s*월", filename)
             if m_m:
-                meta["year_month"] = f"{datetime.now().year:04d}-{int(m_m.group(1)):02d}"
+                meta["year_month"] = f"{datetime.now(_KST).year:04d}-{int(m_m.group(1)):02d}"
 
     for r_idx in range(min(30, len(all_rows))):
         row_text = " ".join(str(c) for c in all_rows[r_idx] if c is not None)
@@ -2554,8 +2570,8 @@ def parse_freelancer_excel(
             input_mode = "세전"
 
         code_val = str(rec.get("코드") or f"{len(freelancers) + 1:04d}").strip()
-        ym_val = str(rec.get("귀속년월") or default_year_month or datetime.now().strftime("%Y-%m")).strip()
-        pay_d_val = str(rec.get("지급년월일") or default_pay_date or datetime.now().strftime("%Y-%m-%d")).strip()
+        ym_val = str(rec.get("귀속년월") or default_year_month or datetime.now(_KST).strftime("%Y-%m")).strip()
+        pay_d_val = str(rec.get("지급년월일") or default_pay_date or datetime.now(_KST).strftime("%Y-%m-%d")).strip()
 
         raw_ind = str(rec.get("소득구분") or "940909").strip()
         m_ind = re.search(r"\b(\d{6})\b", raw_ind)
@@ -2602,8 +2618,8 @@ def _fallback_parse_freelancers_from_doc(
     """한글(.hwp/.hwpx)·워드(.docx)·한셀(.cell) 등에서 정형 표 헤더 매칭이 안 될 때
     1) 지급대장 정규식 파서 -> 2) 연속 문단(성명+주민번호+금액) 블록 스캐너 -> 3) 카톡 줄글 파서 -> 4) Gemini AI 문서 파서 순서로 추출합니다."""
     doc_txt, doc_rows = extract_universal_document_text_and_rows(file_bytes, filename=filename)
-    eff_ym = default_year_month or datetime.now().strftime("%Y-%m")
-    eff_pd = default_pay_date or datetime.now().strftime("%Y-%m-%d")
+    eff_ym = default_year_month or datetime.now(_KST).strftime("%Y-%m")
+    eff_pd = default_pay_date or datetime.now(_KST).strftime("%Y-%m-%d")
 
     if doc_txt.strip():
         # 1) 사업소득 지급대장 PDF 텍스트 파서 (반환값이 Dict이므로 .get("freelancers") 추출)
@@ -2784,37 +2800,74 @@ def parse_kakao_text_instructions(
 
     text_norm = re.sub(r"(?<=\d),(?=\d{3}(?!\d))", "", raw_text)  # "3,000,000원"처럼 뒤에 한글이 붙어도 쉼표 제거
 
-    # 줄바꿈이 있으면 줄 단위로 먼저 나누고, 한 줄 안에 쉼표로 구분된 항목이 '이름+주민번호+금액' 단일 인원인지 복수 인원인지 판별
+    _NON_NAME_WORDS = {
+        "실수령", "실수령액", "세후금액", "세전금액", "세전으로", "세후로", "세후", "세전",
+        "프리랜서", "사업소득", "아르바이트", "알바비", "식대포함", "식대별도", "식대", "포함", "별도",
+        "비과세", "자가운전", "차량보조금", "차량유지비", "입금요청", "입금해", "주세요",
+        "만원씩", "만원", "기본급", "상여금", "상여", "연장수당", "휴일수당", "연차수당",
+        "부양가족", "자녀수", "자녀", "정규직", "근로자", "본점", "지점", "사업장",
+        # 지시문 단어(사람 이름으로 오인 방지): "지급일은 2026-11-10으로 변경", "업종코드는 940911로 반영"
+        "지급일", "지급일은", "지급일자", "지급일자는", "지급일을", "지급일로",
+        "업종", "업종코드", "업종코드는", "업종코드를", "업종은", "소득구분", "소득구분은", "소득구분을",
+        "귀속", "귀속연월", "귀속월", "적용", "설정", "기준", "반영해", "변경해",
+        "모든", "전원", "전체", "모두", "변경", "반영", "수정", "바꿔줘", "바꿔", "해줘", "일로", "으로",
+    }
+
+    def _is_workplace_token(tok: str) -> bool:
+        t = tok.strip("[]() ")
+        if not t or len(t) < 2 or len(t) > 10:
+            return False
+        if t in ("본점", "지점"):
+            return True
+        return bool(re.match(r"^[가-힣A-Za-z0-9]{1,7}(?:본점|지점|사업장|지사|센터|센타|매장|점)$", t)) and t not in ("시점", "요점", "장점", "단점", "중점", "관점", "고점", "저점", "만점")
+
+    def _extract_person_cands(s: str) -> List[str]:
+        s_clean = re.sub(r"(\d{6}\s*-\s*[1-8*][0-9*]{5,6}|\b\d{13}\b)", " ", s)
+        s_clean = re.sub(r"식대\s*\d+(?:\.\d+)?\s*(?:만\s*원|만|원)?", " ", s_clean)
+        out = []
+        for w in re.findall(r"[가-힣]{2,4}", s_clean):
+            if w not in _NON_NAME_WORDS and not _is_workplace_token(w):
+                out.append(w)
+        return out
+
+    # 줄바꿈이 있으면 줄 단위로 먼저 나누되, (1) 단독 사업장 줄("동탄점")과 (2) 여러 줄로 나뉜 한 사람의 급여/식대 정보를 자동 병합
     raw_lines = [ln.strip() for ln in re.split(r"[\n;/]+", text_norm) if ln.strip()]
-    segments: List[str] = []
+    merged_lines: List[Tuple[str, str]] = []  # (workplace, segment_text)
+    active_wp = default_workplace
     for ln in raw_lines:
-        # 쉼표로 나눴을 때 각 조각마다 한글 이름이 있으면 복수 인원, 아니면 단일 인원의 속성(이름, 주민번호, 세후 300만원)
-        comma_parts = [p.strip() for p in re.split(r"(?<!\d),(?!\d)", ln) if p.strip()]
-        if len(comma_parts) > 1:
-            parts_with_names = 0
-            for cp in comma_parts:
-                cands = [
-                    w for w in re.findall(r"[가-힣]{2,4}", cp)
-                    if w not in (
-                        "실수령", "실수령액", "세후금액", "세전금액", "세전으로", "세후로", "세후", "세전",
-                        "프리랜서", "사업소득", "아르바이트", "알바비", "식대포함", "입금요청",
-                        "입금해", "주세요", "만원씩", "만원", "기본급", "상여금", "연장수당",
-                    )
-                ]
-                if cands:
-                    parts_with_names += 1
-            if parts_with_names >= 2:
-                segments.extend(comma_parts)
+        ln_stripped = ln.strip("[]() ")
+        # 단독 사업장 헤더 줄 (예: "동탄점", "[강남지점]")
+        if _is_workplace_token(ln_stripped) and not re.search(r"\d{2,}", ln_stripped):
+            active_wp = ln_stripped
+            continue
+        # 줄 맨 앞에 사업장명이 붙은 경우 (예: "동탄점 김철수 900101-1234567")
+        first_tok = ln.split()[0].strip("[]() ") if ln.split() else ""
+        if _is_workplace_token(first_tok) and len(ln.split()) >= 2:
+            active_wp = first_tok
+            ln = ln[ln.find(first_tok) + len(first_tok):].strip()
+
+        cands_in_ln = _extract_person_cands(ln)
+        if cands_in_ln:
+            # 쉼표로 복수 인원이 한 줄에 적힌 경우 분리
+            comma_parts = [p.strip() for p in re.split(r"(?<!\d),(?!\d)", ln) if p.strip()]
+            if len(comma_parts) > 1 and sum(1 for cp in comma_parts if _extract_person_cands(cp)) >= 2:
+                for cp in comma_parts:
+                    merged_lines.append((active_wp, cp))
             else:
-                segments.append(ln)
+                merged_lines.append((active_wp, ln))
         else:
-            segments.append(ln)
+            # 이름이 없는 연속 줄(예: "실수령 300만원", "식대 20만원 포함")은 직전 인원 줄에 병합
+            if merged_lines:
+                prev_wp, prev_txt = merged_lines[-1]
+                merged_lines[-1] = (prev_wp, f"{prev_txt} {ln}")
+            else:
+                merged_lines.append((active_wp, ln))
 
     parsed_employees: List[Dict[str, Any]] = []
     parsed_freelancers: List[Dict[str, Any]] = []
     messages: List[str] = []
 
-    for seg in segments:
+    for seg_wp, seg in merged_lines:
         # 1단계: 주민등록번호(예: 950101-******* 또는 950101-1234567 또는 13자리 숫자) 최우선 추출 및 텍스트에서 제거!
         extracted_rrn = ""
         extracted_raw_rrn = ""
@@ -2827,16 +2880,8 @@ def parse_kakao_text_instructions(
             seg_wo_rrn = seg
 
         # 2단계: 이름 추출 (2~4자 한글)
-        candidates = re.findall(r"[가-힣]{2,4}", seg_wo_rrn)
-        person_name = ""
-        for cand in candidates:
-            if cand not in (
-                "실수령", "실수령액", "세후금액", "세전금액", "세전으로", "세후로", "세후", "세전",
-                "프리랜서", "사업소득", "아르바이트", "알바비", "식대포함", "입금요청",
-                "입금해", "주세요", "만원씩", "만원", "기본급", "상여금", "연장수당",
-            ):
-                person_name = cand
-                break
+        cands = _extract_person_cands(seg_wo_rrn)
+        person_name = cands[0] if cands else ""
         if not person_name:
             continue
 
@@ -2892,8 +2937,8 @@ def parse_kakao_text_instructions(
                 "_raw_rrn": extracted_raw_rrn or base_f.get("_raw_rrn") or extract_full_rrn(base_f.get("주민등록번호", "")),
                 "_base_amount": amount,
                 "소득구분": base_f.get("소득구분", "940909"),
-                "귀속년월": default_year_month or datetime.now().strftime("%Y-%m"),
-                "지급년월일": default_pay_date or datetime.now().strftime("%Y-%m-%d"),
+                "귀속년월": default_year_month or datetime.now(_KST).strftime("%Y-%m"),
+                "지급년월일": default_pay_date or datetime.now(_KST).strftime("%Y-%m-%d"),
                 "입력기준": in_mode,
                 "지급총액": calc["gross_pay"],
                 "세율": 3,
@@ -2944,7 +2989,7 @@ def parse_kakao_text_instructions(
                 target_net = 0
 
             parsed_employees.append({
-                "사업장": base_e.get("사업장") or default_workplace,
+                "사업장": seg_wp if (seg_wp and seg_wp != default_workplace) else (base_e.get("사업장") or default_workplace),
                 "사원코드": base_e.get("사원코드") or f"{len(parsed_employees) + 1:03d}",
                 "성명": person_name,
                 "주민등록번호": mask_rrn_front7(extracted_rrn or base_e.get("주민등록번호", "")),
@@ -2987,9 +3032,11 @@ def apply_chat_modifiers_to_state(
     default_year_month: str = "",
     default_pay_date: str = "",
     default_workplace: str = "본점",
+    out_meta: Optional[Dict[str, Any]] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[str], str]:
     """
     [파일+채팅 동시 입력 및 파일 업로드 후 채팅 일괄/개별 수정 엔진]
+    - out_meta(dict)를 넘기면 화면 전체에 적용할 값(예: out_meta["pay_date"] = "2026-11-10")을 돌려받습니다.
     - 소득 구분(근로소득 <-> 사업소득) 강제 전환 없이 현재 탭(sub_mode)의 명단을 기준으로 작동합니다.
     - 지원 지시문:
       1) "모든 직원이(또는 김아무개가) 비과세식대 200,000원 반영해야해" -> 전체 또는 지정 사원의 식대·차량보조금·상여·연장수당·휴일수당·연차수당·부양가족·자녀수·소득세감면율 즉시 수정 및 재계산
@@ -3045,7 +3092,9 @@ def apply_chat_modifiers_to_state(
         ]
 
         # 1) 근로소득 수당·공제·부양가족·감면율 개별/일괄 수정 지시 검사
-        if employees:
+        # 단, 채팅 입력 내에 신규 인원(주민번호 포함 또는 기존 명단에 없는 이름)이 함께 들어있는 멀티라인 카톡이면 개별 생성 파서로 넘김
+        _has_new_person_in_raw = bool(re.search(r"\d{6}\s*-\s*[1-8*]", text_clean))
+        if employees and not (_has_new_person_in_raw and not matched_emp_indices and not has_all_kw):
             target_e_idxs = matched_emp_indices if matched_emp_indices else (
                 list(range(len(employees))) if (has_all_kw or not re.findall(r"[가-힣]{2,4}", re.sub(r"비과세|식대|자가운전|보조금|차량|연장|휴일|연차|수당|상여|보너스|결근|공제|조정|학자금|부양가족|자녀|감면|반영|적용|추가|변경|수정|포함|분리|모든|직원|전원|전체|모두|해야해|해줘|해주세요|원|만원", " ", ln))) else []
             )
@@ -3163,14 +3212,47 @@ def apply_chat_modifiers_to_state(
                 logs.append(f"[채팅 기준 전환] {t_lbl}: 급여 금액을 '{new_mode}' 기준으로 일괄 역산 반영했습니다.")
                 handled_this_line = True
 
-        # 3) 사업소득 업종코드(6자리) 변경 지시
-        m_ind = re.search(r"\b(94\d{4})\b", ln)
-        if m_ind and freelancers:
+        # 3-0) 지급일 변경 지시 (예: "지급일은 2026-11-10으로 변경", "지급일 11월 10일로 바꿔줘")
+        if re.search(r"지급\s*일(?:자)?", ln):
+            _ref_y = (default_year_month or default_pay_date or "")[:4]
+            _ref_y = _ref_y if _ref_y.isdigit() else str(datetime.now(_KST).year)
+            _attr_m_match = re.search(r"20\d{2}\D+(\d{1,2})", default_year_month or "")
+            _attr_m = int(_attr_m_match.group(1)) if _attr_m_match else 0
+            _pd = ""
+            m_full = re.search(r"(20\d{2})\s*[-./년]\s*(\d{1,2})\s*[-./월]\s*(\d{1,2})", ln) or re.search(r"(?<!\d)(20\d{2})(\d{2})(\d{2})(?!\d)", ln)
+            m_md = re.search(r"(?<!\d)(\d{1,2})\s*(?:월|/)\s*(\d{1,2})(?![0-9/]|일치|명|건|%)", ln)
+            if m_full:
+                _pd = f"{int(m_full.group(1)):04d}-{int(m_full.group(2)):02d}-{int(m_full.group(3)):02d}"
+            elif m_md:
+                _m_val, _d_val = int(m_md.group(1)), int(m_md.group(2))
+                _y_val = (int(_ref_y) + 1) if (_attr_m == 12 and _m_val == 1) else int(_ref_y)
+                _pd = f"{_y_val:04d}-{_m_val:02d}-{_d_val:02d}"
+            if _pd:
+                try:
+                    datetime.strptime(_pd, "%Y-%m-%d")
+                except ValueError:
+                    _pd = ""
+            if _pd:
+                if out_meta is not None:
+                    out_meta["pay_date"] = _pd
+                for _fr_item in freelancers:
+                    _fr_item["지급년월일"] = _pd
+                logs.append(f"[채팅 지급일 반영] 지급일자를 {_pd}(으)로 변경했습니다.")
+                handled_this_line = True
+
+        # 3) 사업소득 업종코드(6자리) 변경 지시 (숫자 뒤에 조사가 붙어도 인식: "940911로")
+        m_ind = re.search(r"(?<!\d)(94\d{4})(?!\d)", ln)
+        if m_ind and (re.search(r"업종|소득구분", ln) or ln.strip().startswith("94") or matched_free_indices):
             ind_code = m_ind.group(1)
-            t_f_idxs = matched_free_indices if matched_free_indices else list(range(len(freelancers)))
-            for idx_f in t_f_idxs:
-                freelancers[idx_f]["소득구분"] = ind_code
-            logs.append(f"[채팅 업종코드 반영] 대상 {len(t_f_idxs)}명: 업종코드 {ind_code} 적용 완료")
+            if out_meta is not None:
+                out_meta["industry_code"] = ind_code
+            if freelancers:
+                t_f_idxs = matched_free_indices if matched_free_indices else list(range(len(freelancers)))
+                for idx_f in t_f_idxs:
+                    freelancers[idx_f]["소득구분"] = ind_code
+                logs.append(f"[채팅 업종코드 반영] 대상 {len(t_f_idxs)}명: 업종코드 {ind_code} 적용 완료")
+            else:
+                logs.append(f"[채팅 업종코드 반영] 기본 업종코드 {ind_code} 설정 완료")
             handled_this_line = True
 
         if not handled_this_line:
@@ -3260,8 +3342,8 @@ def parse_image_with_gemini_vision(
                         "성명": nm,
                         "주민등록번호": normalize_rrn(item.get("rrn", "")),
                         "소득구분": m_ic.group(1) if m_ic else "940909",
-                        "귀속년월": str(item.get("year_month") or default_year_month or datetime.now().strftime("%Y-%m")).strip(),
-                        "지급년월일": str(item.get("pay_date") or default_pay_date or datetime.now().strftime("%Y-%m-%d")).strip(),
+                        "귀속년월": str(item.get("year_month") or default_year_month or datetime.now(_KST).strftime("%Y-%m")).strip(),
+                        "지급년월일": str(item.get("pay_date") or default_pay_date or datetime.now(_KST).strftime("%Y-%m-%d")).strip(),
                         "입력기준": in_mode,
                         "지급총액": calc["gross_pay"],
                         "세율": 3,

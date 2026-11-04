@@ -13,6 +13,497 @@ import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from zoneinfo import ZoneInfo
+
+_KST_WEEKDAYS = ("월", "화", "수", "목", "금", "토", "일")
+HIDDEN_DATE_DIRECTIVE_MARKER = "[시스템 자동 주입 기준일·귀속연도 판단 지침"
+
+def get_kst_today_context() -> dict:
+    """대한민국 표준시(Asia/Seoul) 기준 당일 날짜·요일·당해 귀속연도 정보를 실시간으로 반환합니다."""
+    now = datetime.now(ZoneInfo("Asia/Seoul"))
+    wd = _KST_WEEKDAYS[now.weekday()]
+    return {
+        "dt": now,
+        "year": now.year,
+        "prev_year": now.year - 1,
+        "prev2_year": now.year - 2,
+        "next_year": now.year + 1,
+        "ymd": now.strftime("%Y%m%d"),
+        "ymd_dash": now.strftime("%Y-%m-%d"),
+        "weekday_kr": f"{wd}요일",
+        "weekday_short": wd,
+        "dot_full": f"{now.strftime('%Y.%m.%d')} ({wd}요일)",
+        "kr_full": f"{now.strftime('%Y년 %m월 %d일')} ({wd}요일)",
+    }
+
+def _sort_law_candidates_for_today(cands: list[dict]) -> list[dict]:
+    """
+    법제처 법령 목록(cands)에서 이미 공포되었으나 시행일이 내년 이후(예: 2027.01.01)인 '미시행(시행예정) 버전'보다
+    오늘(KST) 기준 실제로 시행 중인 '현행 시행 법령(시행일자 <= 오늘)'을 1순위로 정렬합니다.
+    """
+    if not cands:
+        return []
+    today_int = int(get_kst_today_context()["ymd"])
+    def _sort_key(item: dict):
+        enf_s = re.sub(r"\D", "", str(item.get("시행일자", "") or ""))
+        prom_s = re.sub(r"\D", "", str(item.get("공포일자", "") or ""))
+        enf_i = int(enf_s) if len(enf_s) == 8 and enf_s.isdigit() else 0
+        prom_i = int(prom_s) if len(prom_s) == 8 and prom_s.isdigit() else 0
+        is_enforced_now = 1 if (0 < enf_i <= today_int) else 0
+        return (is_enforced_now, enf_i, prom_i)
+    return sorted(cands, key=_sort_key, reverse=True)
+
+def get_kst_now() -> datetime:
+    """한국 표준시(KST, Asia/Seoul) 기준 현재 시각을 반환합니다."""
+    return datetime.now(ZoneInfo("Asia/Seoul"))
+
+def get_kst_today_info() -> tuple[str, str, int]:
+    """(YYYY.MM.DD (X요일), YYYY년 MM월 DD일 (X요일), YYYY) 반환 (하위 호환용)"""
+    ctx = get_kst_today_context()
+    return ctx["dot_full"], ctx["kr_full"], ctx["year"]
+
+def detect_query_attribution_years(user_query: str = "", full_user_input: str = "") -> dict:
+    """
+    현재 질문(user_query)과 직전 대화 맥락(full_user_input)에서 귀속연도를 정밀 감지합니다.
+    - '20년 근무', '15년 재직', '30년 만기', '15년 영위' 등 기간 표현이 20XX년 귀속연도로 오탐되는 것을 원천 차단합니다.
+    - 현재 질문에 연도가 생략되었더라도 직전 대화 맥락에 과거 귀속연도가 지정된 경우 이를 보존합니다.
+    """
+    kst = get_kst_today_context()
+    cur_yr = kst["year"]
+    q_raw = user_query or ""
+    hist_raw = full_user_input or ""
+    if "[현재 사용자 질문]:" in q_raw:
+        parts = q_raw.rsplit("[현재 사용자 질문]:", 1)
+        if not hist_raw:
+            hist_raw = parts[0]
+        q_raw = parts[1]
+    if "========================================" in q_raw:
+        q_raw = q_raw.split("========================================")[0]
+    if "========================================" in hist_raw:
+        hist_raw = hist_raw.split("========================================")[0]
+    if HIDDEN_DATE_DIRECTIVE_MARKER in q_raw:
+        q_raw = q_raw.split(HIDDEN_DATE_DIRECTIVE_MARKER)[0]
+    if HIDDEN_DATE_DIRECTIVE_MARKER in hist_raw:
+        hist_raw = hist_raw.split(HIDDEN_DATE_DIRECTIVE_MARKER)[0]
+
+    past_years = set()
+    cur_years = set()
+    future_years = set()
+
+    _DURATION_SUFFIX = (
+        r"(?!\s*(?:간|동안|이상|미만|이하|초과|차|이내|보유|거주|근속|근무|재직|납입|만기|상환|할부|"
+        r"분할|임대|영위|운영|경력|연속|유예|거치|소멸시효|제척기간|개월|세|살|령|형|징역))"
+    )
+
+    # 1) 4자리 연도 감지 (예: 2024년, 2027년, 2024.05.10, 2024귀속 등)
+    for m4 in re.finditer(rf"(?<!\d)(20[123]\d)\s*(?:년|년도|귀속|기|사업연도|과세기간|\.|\-|/){_DURATION_SUFFIX}", q_raw):
+        yr_val = int(m4.group(1))
+        if 2010 <= yr_val < cur_yr:
+            past_years.add(yr_val)
+        elif yr_val == cur_yr:
+            cur_years.add(yr_val)
+        elif yr_val > cur_yr:
+            future_years.add(yr_val)
+
+    # 2) 2자리 연도 감지 (예: '24년, 24년 귀속, 24년도, 24년분, 24년 5월 등 — '20년 근무', '15년 재직', '30년 만기' 등 기간 표현 원천 배제)
+    for m2 in re.finditer(
+        rf"(?<![0-9제])(?:'([123]\d)\s*년|([123]\d)\s*(?:년도|년\s*귀속|귀속|년분|기|사업연도|과세기간|년\s*\d{{1,2}}\s*월|년도에|년도의|년분?부터)){_DURATION_SUFFIX}",
+        q_raw,
+    ):
+        yr_2d = int(m2.group(1) or m2.group(2))
+        yr_val = 2000 + yr_2d
+        if 2015 <= yr_val < cur_yr:
+            past_years.add(yr_val)
+        elif yr_val == cur_yr:
+            cur_years.add(yr_val)
+        elif yr_val > cur_yr:
+            future_years.add(yr_val)
+
+    # 3) 상대적 연도 표현 감지 ('작년', '재작년', '올해', '내년')
+    if re.search(r"(작년|전년도|전사업연도|직전\s*연도|직전\s*사업연도|지난\s*해)", q_raw):
+        past_years.add(cur_yr - 1)
+    if re.search(r"(재작년|전전년도|전전사업연도)", q_raw):
+        past_years.add(cur_yr - 2)
+    if re.search(r"(올해|금년|이번\s*연도|당해\s*연도|현행)", q_raw):
+        cur_years.add(cur_yr)
+    if re.search(r"(내년|명년|다음\s*연도|차기\s*사업연도)", q_raw):
+        future_years.add(cur_yr + 1)
+
+    # 4) 멀티턴 대화 맥락의 과거 귀속연도 감지 (4자리 '2024년' 및 2자리 "'24년", '24년 귀속' 모두 지원, 기간 수식어 배제)
+    _hist_4d = {
+        int(m.group(1))
+        for m in re.finditer(rf"(?<!\d)(20[12]\d)\s*(?:년\s*귀속|귀속|사업연도|과세기간|년분|년도|년){_DURATION_SUFFIX}", hist_raw)
+        if 2015 <= int(m.group(1)) < cur_yr
+    }
+    _hist_2d = {
+        2000 + int(m.group(1) or m.group(2))
+        for m in re.finditer(
+            rf"(?<![0-9제])(?:'([12]\d)\s*년|([12]\d)\s*(?:년도|년\s*귀속|귀속|년분|기|사업연도|과세기간)){_DURATION_SUFFIX}",
+            hist_raw,
+        )
+        if 2015 <= (2000 + int(m.group(1) or m.group(2))) < cur_yr
+    }
+    history_past_years = sorted(_hist_4d | _hist_2d)
+
+    has_retro_kw = bool(re.search(r"(경정청구|기한후신고|수정신고|구법|종전\s*규정|종전규정|연혁법령|사후관리|추가공제)", q_raw))
+    sorted_past = sorted(past_years)
+    sorted_cur = sorted(cur_years)
+    sorted_future = sorted(future_years)
+
+    if sorted_past and not sorted_cur and not sorted_future:
+        mode = "PAST_ONLY"
+    elif sorted_past and (sorted_cur or sorted_future):
+        mode = "MIXED_PAST_AND_CURRENT"
+    elif sorted_future and not sorted_past and not sorted_cur:
+        mode = "FUTURE_ONLY"
+    elif history_past_years and not sorted_cur:
+        mode = "MIXED_PAST_AND_CURRENT"
+        sorted_past = history_past_years
+    else:
+        mode = "DEFAULT_CURRENT"
+
+    return {
+        "mode": mode,
+        "past_years": sorted_past,
+        "history_past_years": history_past_years,
+        "cur_years": sorted_cur,
+        "future_years": sorted_future,
+        "has_retro_kw": has_retro_kw,
+        "current_year": cur_yr,
+        "dot_full": kst["dot_full"],
+    }
+
+def build_hidden_date_law_directive(user_query: str = "") -> str:
+    """
+    [통합 최종판] 사용자에게는 보이지 않지만 모든 질문(프롬프트)에 자동 부착되는
+    [질문 내 연도 자동 감지 4모드 + 25년 과거착각·27년 미시행 조기적용 양방향 차단 + 신고기한 과세기간 매핑 지침]
+    """
+    info = detect_query_attribution_years(user_query)
+    dot_full = info["dot_full"]
+    cur_yr = info["current_year"]
+    prev_yr = cur_yr - 1
+    prev2_yr = cur_yr - 2
+    next_yr = cur_yr + 1
+    mode = info["mode"]
+    past_yrs = info["past_years"]
+    fut_yrs = info["future_years"]
+    now_ymd_dot = get_kst_today_context()["dt"].strftime("%Y.%m.%d")
+
+    common_footer = (
+        f"• 📌 **[답변 형식 — '1. 결론' 첫 줄 적용 기준 명시]**: `### 1. 결론` 바로 아래 첫 줄에 반드시 "
+        f"**\"적용 기준: ○○○○년 귀속(또는 ○○○○.○○.○○ 거래/폐업) · ○○○○.○○.○○ 시행 법령\"**을 한 줄로 먼저 밝힌 뒤 결론을 작성하세요.\n\n"
+    )
+
+    if mode == "PAST_ONLY":
+        past_str = ", ".join(f"{y}년" for y in past_yrs)
+        first_past = past_yrs[0]
+        return (
+            f"{HIDDEN_DATE_DIRECTIVE_MARKER} — 내부 판단 기준이므로 이 지침 블록 자체를 답변에 그대로 복붙하지 말 것]\n"
+            f"• 오늘 날짜(대한민국 KST): 오늘은 {dot_full}입니다. (당해 연도는 {cur_yr}년이나, **이번 질문은 과거 귀속연도({past_str}) 지정 질의**입니다!)\n"
+            f"• 🚨 **[최우선 명령 — 과거 귀속연도({past_str}) 구법 적용 및 {cur_yr}년/{next_yr}년 개정세법 소급 왜곡 절대 금지]**: "
+            f"사용자가 이번 질문에서 **과거 연도({past_str} 귀속)**를 명시하여 질문했습니다. "
+            f"따라서 **{cur_yr}년 또는 {next_yr}년 개정 세법을 기준으로 계산하거나 결론 내리면 심각한 법리 오류가 발생합니다!**\n"
+            f"• **[필수 도구 및 판단 절차]**: 반드시 **`search_historical_law_for_gemini(law_name, target_date=\"{first_past}1231\", query_filter=...)` (구법·연혁법령 타임머신)** 및 현행 법령의 **부칙(적용례·경과조치)**을 조회하여, "
+            f"**{past_str} 과세기간 당시에 실제로 시행 중이던 구법(종전 규정)의 요건·공제액·세율·한도**를 기준으로 `1. 결론`과 `2. 내용`을 작성하세요. "
+            f"(현행 {cur_yr}년 개정 세법과 달라진 점이 있다면 본문 내 신·구 비교표에서 참고로만 대조해 주되, 질문 사안의 결론은 반드시 {past_str} 귀속 당시 법령으로 확정하세요.)\n"
+            + common_footer
+        )
+    elif mode == "MIXED_PAST_AND_CURRENT":
+        past_str = ", ".join(f"{y}년" for y in past_yrs)
+        first_past = past_yrs[0]
+        return (
+            f"{HIDDEN_DATE_DIRECTIVE_MARKER} — 내부 판단 기준이므로 이 지침 블록 자체를 답변에 그대로 복붙하지 말 것]\n"
+            f"• 오늘 날짜(대한민국 KST): 오늘은 {dot_full}이며, 이번 질문은 **과거 연도({past_str})와 당해 연도({cur_yr}년)가 함께 걸친 복합/사후관리/비교 질의**입니다.\n"
+            f"• 🚨 **[최우선 명령 — 과거({past_str}) 구법·부칙 경과조치와 당해({cur_yr}년) 현행법의 정밀 분리 적용]**: "
+            f"과거({past_str})에 최초 발생한 고용·투자·거래분에 대해서는 **`search_historical_law_for_gemini(law_name, target_date=\"{first_past}1231\", query_filter=...)`**와 **법령 부칙(적용례·경과조치)**을 조회하여 종전 규정(구법) 적용 여부를 먼저 확인하고(예: 통합고용세액공제 2024·2025년 귀속분의 2·3차년도 연속공제·사후관리 = 부칙 제34조에 따른 종전 규정), "
+            f"{cur_yr}년 신규 발생분이나 신·구 비교 요청에 대해서는 {cur_yr}년 현행 개정 세법을 대조하여 두 연도의 적용 기준이 절대 섞이거나 왜곡되지 않게 구분하여 답변하세요.\n"
+            + common_footer
+        )
+    elif mode == "FUTURE_ONLY":
+        fut_str = ", ".join(f"{y}년" for y in fut_yrs)
+        return (
+            f"{HIDDEN_DATE_DIRECTIVE_MARKER} — 내부 판단 기준이므로 이 지침 블록 자체를 답변에 그대로 복붙하지 말 것]\n"
+            f"• 오늘 날짜(대한민국 KST): 오늘은 {dot_full} (당해 {cur_yr}년)이며, 이번 질문은 사용자가 **미래 시행예정 연도({fut_str})**를 특정한 질의입니다.\n"
+            f"• 조문 및 부칙에서 **{fut_str} 1월 1일 이후 시행·적용되는 개정 규정**과 현행({cur_yr}년) 규정을 비교하여 명확히 답변하되, 해당 개정 규정이 {fut_str}부터 시행 예정임을 명시하세요.\n"
+            + common_footer
+        )
+    else:
+        return (
+            f"{HIDDEN_DATE_DIRECTIVE_MARKER} — 내부 판단 기준이므로 이 지침 블록 자체를 답변에 그대로 복붙하지 말 것]\n"
+            f"• **오늘 날짜(대한민국 KST) 및 시점 부등식**: 오늘은 **{dot_full}**이며, **올해(현재 당해 과세연도)는 {cur_yr}년({cur_yr}년 귀속)**, 작년은 {prev_yr}년입니다!\n"
+            f"  - 시점 선후 공식: `{prev2_yr}년(재작년)` < `{prev_yr}년(작년·이미 종료된 과거)` < **`{cur_yr}.01.01.(올해 초·이미 시행됨!)` <= `{dot_full}(오늘·현재)`** < **`{next_yr}.01.01.(내년·아직 미시행 미래 시행예정!)`**\n"
+            f"• 🚫 **[절대 금지 시점 착각 1 — '{cur_yr}년 시행이니 현재({prev_yr}년)는 유예/상관없다' 오판 금지]**:\n"
+            f"  - 법령 조문이나 부칙에서 **'{cur_yr}년 1월 1일부터 시행(적용)한다'**라는 문구를 보았을 때, 과거 학습 데이터의 관성으로 *\"이 규정은 {cur_yr}년부터 시행되므로 {prev_yr}년인 현재는 상관없다(유예 중이다)\"*라고 답하면 치명적인 오류입니다! 지금은 이미 **{cur_yr}년({dot_full})**이므로 `{cur_yr}.1.1.` 시행 규정은 **현재 전면 시행 중인 현행 규정**이며, `{prev_yr}.12.31.까지 유예` 규정은 이미 지난해 말로 종료되었습니다.\n"
+            f"• 🚫 **[절대 금지 시점 착각 2 — '이미 개정·공포된 {next_yr}년(27년) 시행예정 법령'을 지금({cur_yr}년)부터 적용받는 것처럼 조기적용 오판 금지]**:\n"
+            f"  - 반대로, 법령이 현재 이미 개정·공포되어 있더라도 조문 시행일자나 부칙 적용례에서 **'{next_yr}년 1월 1일 이후(또는 {next_yr}년 이후 개시·지급·양도분부터) 시행·적용한다'**고 정한 규정은 오늘({dot_full}) 기준 **아직 시행일이 도래하지 않은 미시행(내년 시행예정) 규정**입니다! (국회 미통과 정부 세법개정안 역시 법령이 아니므로 '개정 추진 중'으로만 언급할 것)\n"
+            f"  - 올해({cur_yr}년 귀속) 일반 질의에 대해 **{next_yr}년부터 시행되는 개정 규정을 마치 지금({cur_yr}년)부터 당장 적용받는 것처럼 결론 내리거나 계산하면 심각한 법리 오류가 됩니다!** 반드시 **올해({cur_yr}년) 현재 시행 중인 현행 규정**을 적용해 결론을 내리고, {next_yr}년 시행예정 개정 내용은 본문 하단이나 신·구 비교표에서 *'※ 참고: {next_yr}.1.1. 시행 예정 개정사항'*으로만 명확히 분리해 안내하세요.\n"
+            f"• 📅 **[연도 미기재 질문의 적용 기준시점 판별 규칙]**:\n"
+            f"  - (일반 법리·요건 질의): 오늘({dot_full}) 현재 시행 중인 `{cur_yr}년 귀속` 현행 법령을 최우선 적용하세요.\n"
+            f"  - (연도 없는 월·일 언급 시): 오늘({now_ymd_dot}) 기준 이미 지난 날짜의 과거 사실(예: '8월 31일 폐업')은 올해인 `{cur_yr}.08.31.`({cur_yr}년 귀속)로, 오늘 기준 아직 도래하지 않은 월·일의 과거 사실(예: '12월 15일 폐업했었다')은 직전 연도인 `{prev_yr}.12.15.`로 해석하고, 이번 달·연말 중 도래할 신고·지급 일정은 올해(`{cur_yr}년`)로 해석하세요.\n"
+            f"  - (정기 신고·납부·정산 시기 질의 시): 별도 귀속연도 표시 없이 '지금 신고·납부·정산할 세금'을 묻는 경우 오늘 시점에 신고하는 대상 과세기간(예: 1~3월 연말정산·12월 결산 법인세 정기신고 = 직전 연도분, 5월 종합소득세 정기신고 = 직전 연도분, 1월·7월 부가세 확정 = 직전 과세기간, 매월 원천세 = 전월 지급분)을 함께 고려하되, 기준시점이 두 가지로 읽힐 수 있으면 임의로 하나만 단정하지 말고 당해 연도({cur_yr}년 귀속) 기준과 직전 연도 신고분 기준을 구분해 답하세요.\n"
+            f"• **[부칙 경과조치 예외 보호]**: 과거({prev2_yr}~{prev_yr}년) 최초 고용증가·투자분에 대해 **법령 부칙(적용례·경과조치)에서 종전 규정(구법)을 따르도록 명시한 사안(예: 통합고용세액공제 2024·2025년 귀속분의 2·3차년도 연속공제·사후관리 = 법률 제21223호 부칙 제34조 종전 규정)**은 부칙 원문에 따라 종전 규정 적용분과 {cur_yr}년 현행 규정 적용분을 나눠 설명하세요.\n"
+            + common_footer
+        )
+
+_LEAKED_GUIDELINE_PATTERNS = (
+    re.compile(r"\[시스템\s*자동\s*주입\s*기준일\s*[·ㆍ]\s*귀속연도\s*판단\s*지침"),
+    re.compile(r"\[기준일\s*[·ㆍ]\s*적용시점\s*판단\s*지침"),
+    re.compile(r"\[시스템\s*실시간\s*기준일\s*및\s*귀속연도\s*원칙"),
+    re.compile(r"내부\s*(?:판단\s*기준|지침)이므로\s*이\s*(?:지침\s*블록|문장).*답변에.*말\s*것"),
+    re.compile(r"^•\s*\*\*?오늘\s*날짜\(대한민국\s*KST\)"),
+    re.compile(r"^•\s*오늘\s*날짜\(대한민국\s*KST\)"),
+    re.compile(r"시점\s*선후\s*공식\s*:"),
+    re.compile(r"\[(?:최우선\s*명령|절대\s*금지\s*시점\s*착각|연도\s*미기재\s*질문의\s*적용\s*기준시점|부칙\s*경과조치\s*예외\s*보호|필수\s*도구\s*및\s*판단\s*절차|답변\s*형식\s*—\s*.1\.\s*결론.\s*첫\s*줄\s*적용\s*기준\s*명시)"),
+    re.compile(r"^(?:1|2|3)단계\s*—\s*(?:적용\s*기준시점을\s*정한다|정해진\s*적용\s*기준시점에\s*맞는|결론\s*첫\s*줄에\s*적용\s*기준시점을)"),
+)
+
+def _strip_leaked_temporal_guideline(text: str) -> str:
+    """최종 답변에서 내부 기준일 지침 블록이나 문장이 실수로 노출된 경우 자동 제거합니다."""
+    if not text:
+        return ""
+    raw = str(text)
+    if HIDDEN_DATE_DIRECTIVE_MARKER in raw and "### 1." in raw:
+        idx_m = raw.find(HIDDEN_DATE_DIRECTIVE_MARKER)
+        idx_h = raw.find("### 1.", idx_m)
+        if idx_m != -1 and idx_h != -1:
+            raw = (raw[:idx_m] + raw[idx_h:]).strip()
+    out_lines = []
+    for line in raw.splitlines():
+        s = line.strip()
+        if any(p.search(s) for p in _LEAKED_GUIDELINE_PATTERNS):
+            continue
+        out_lines.append(line)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(out_lines)).strip()
+
+def _strip_directive_and_attachment_for_verify(text: str) -> str:
+    """감수 프롬프트 구성 전 숨김 날짜 지침 블록과 대용량 첨부파일 구분선 이후의 표 데이터를 걷어냅니다."""
+    s = (text or "").strip()
+    if not s:
+        return ""
+    if "========================================" in s:
+        s = s.split("========================================")[0].strip()
+    if HIDDEN_DATE_DIRECTIVE_MARKER in s:
+        if "[현재 사용자 질문]:" in s:
+            s = s.split(HIDDEN_DATE_DIRECTIVE_MARKER)[0].rstrip() + "\n[현재 사용자 질문]:" + s.rsplit("[현재 사용자 질문]:", 1)[-1]
+        else:
+            s = s.split(HIDDEN_DATE_DIRECTIVE_MARKER)[0].strip()
+    return s.strip()
+
+def _prepare_semantic_verify_query(
+    query_or_input: str = "",
+    full_user_input: str = "",
+    max_chars: int = 3000,
+    *,
+    raw_query: str = "",
+    user_query: str = "",
+) -> str:
+    """
+    감수자(_semantic_verify)에게 전달할 질문 텍스트를 구성합니다.
+    - 호출 방식 호환:
+      1) `_prepare_semantic_verify_query(raw_query, full_user_input, 3000)`
+      2) `_prepare_semantic_verify_query(full_in, raw_query=raw_q, max_chars=3000)`
+    - 숨김 날짜 지침 블록(HIDDEN_DATE_DIRECTIVE_MARKER)과 첨부파일 구분선 이후의 표 데이터를 먼저 제거하여,
+      대용량 파일이 첨부되어도 현재 질문(raw_query)이 100% 보존되도록 보장합니다.
+    """
+    if raw_query:
+        rq_src = raw_query
+        fu_src = full_user_input or user_query or query_or_input
+    elif user_query:
+        rq_src = query_or_input
+        fu_src = user_query or full_user_input
+    else:
+        rq_src = query_or_input
+        fu_src = full_user_input
+
+    fu_clean = _strip_directive_and_attachment_for_verify(fu_src)
+    rq_clean = _strip_directive_and_attachment_for_verify(rq_src)
+    if "[현재 사용자 질문]:" in rq_clean:
+        if not fu_clean:
+            fu_clean = rq_clean
+        rq_clean = rq_clean.rsplit("[현재 사용자 질문]:", 1)[-1].strip()
+    if not rq_clean and "[현재 사용자 질문]:" in fu_clean:
+        rq_clean = fu_clean.rsplit("[현재 사용자 질문]:", 1)[-1].strip()
+
+    if not rq_clean:
+        return fu_clean[-max_chars:] if len(fu_clean) > max_chars else fu_clean
+    if not fu_clean or fu_clean == rq_clean:
+        return rq_clean[-max_chars:] if len(rq_clean) > max_chars else rq_clean
+    if len(rq_clean) >= max_chars - 120:
+        return rq_clean[-max_chars:]
+
+    hist_part = fu_clean.rsplit("[현재 사용자 질문]:", 1)[0].strip() if "[현재 사용자 질문]:" in fu_clean else (
+        fu_clean[:-len(rq_clean)].strip() if fu_clean.endswith(rq_clean) else fu_clean
+    )
+    years = sorted(set(re.findall(r"(20[12]\d)\s*(?:년|귀속|사업연도|과세기간)", hist_part)))
+    yr_tag = f"[이전 대화 언급 연도: {', '.join(y + '년' for y in years)}]\n" if years else ""
+    rem = max(0, max_chars - len(rq_clean) - len(yr_tag) - 40)
+    tail = hist_part[-rem:] if (rem > 0 and hist_part) else ""
+    if tail:
+        return f"{yr_tag}[직전 대화 맥락]\n{tail}\n\n[현재 질문]\n{rq_clean}"
+    return f"{yr_tag}{rq_clean}".strip()
+
+
+def _prepare_verify_query_context(
+    raw_query: str = "",
+    full_user_input: str = "",
+    max_chars: int = 3000,
+) -> str:
+    """_prepare_semantic_verify_query의 표준 호환 별칭."""
+    return _prepare_semantic_verify_query(raw_query, full_user_input, max_chars=max_chars)
+
+def build_temporal_guideline() -> str:
+    """하위 호환용: 기본 기준일·적용시점 지침 문자열을 반환합니다."""
+    return build_hidden_date_law_directive("")
+
+def build_invisible_temporal_prefix() -> str:
+    """하위 호환용"""
+    return ""
+
+def ensure_hidden_date_directive_in_input(user_input: str, raw_query: str = "") -> str:
+    txt = user_input or ""
+    directive = build_hidden_date_law_directive(raw_query or txt)
+    if HIDDEN_DATE_DIRECTIVE_MARKER in txt:
+        return txt
+    if "[현재 사용자 질문]:" in txt:
+        head_part, tail_part = txt.rsplit("[현재 사용자 질문]:", 1)
+        return f"{head_part}\n{directive}[현재 사용자 질문]:{tail_part}"
+    return directive + txt
+
+def _annotate_law_effective_dates_vs_today(law_text: str) -> str:
+    """
+    [Stage 1 방어벽] get_law_details_for_gemini가 반환하는 법령·부칙 원문 텍스트에서
+    시행일·적용시기('2026.1.1', '2025.12.31', '2027.1.1' 등)를 스캔하여,
+    ① 2026.1.1 시행 규정을 미시행(유예)으로 착각하는 오류와
+    ② 이미 개정·공포되었으나 2027.1.1부터 시행되는 미래 규정을 지금(2026년) 당장 적용받는 것처럼 착각하는 오류를
+    도구 반환값 최상단에서 동시에 원천 차단합니다.
+    """
+    if not law_text or law_text.startswith("❌"):
+        return law_text
+    kst = get_kst_today_context()
+    cur_yr = kst["year"]
+    prev_yr = kst["prev_year"]
+    next_yr = kst["next_year"]
+    next2_yr = cur_yr + 2
+    dot_full = kst["dot_full"]
+
+    notes = [
+        f"⏰ [도구 실시간 시점 판정 브리핑 | 오늘 날짜(KST): {dot_full} · 현재 당해 과세연도: {cur_yr}년({cur_yr}년 귀속)]"
+    ]
+    compact = law_text.replace(" ", "")
+    has_cur_yr_ref = any(
+        pat in compact
+        for pat in (f"{cur_yr}년1월1일", f"{cur_yr}.1.1", f"{cur_yr}.01.01", f"{cur_yr}년귀속", f"{cur_yr}년이후")
+    )
+    has_prev_yr_ref = any(
+        pat in compact
+        for pat in (f"{prev_yr}년12월31일", f"{prev_yr}.12.31", f"{prev_yr}년귀속", f"{prev_yr}년지급분까지", f"{prev_yr}년까지")
+    )
+    has_next_yr_ref = any(
+        pat in compact
+        for pat in (
+            f"{next_yr}년1월1일", f"{next_yr}.1.1", f"{next_yr}.01.01", f"{next_yr}년이후", f"{next_yr}년부터",
+            f"시행일자:{next_yr}", f"조문시행일자:{next_yr}",
+            f"{next2_yr}년1월1일", f"{next2_yr}.1.1", f"{next2_yr}.01.01"
+        )
+    )
+
+    if has_cur_yr_ref:
+        notes.append(
+            f"  ✅ [파이썬 현행 시행 확정 판정 ({cur_yr}년)]: 아래 조문·부칙의 **'{cur_yr}년 1월 1일({cur_yr}.1.1.) 시행/적용'** 규정은 "
+            f"오늘({dot_full}) 기준으로 미래 유예 규정이 아니라 **이미 시행일이 경과하여 올해({cur_yr}년) 현재 전면 시행·적용 중인 현행 규정**입니다! "
+            f"(절대 '{cur_yr}년부터 시행이므로 현재({prev_yr}년)는 유예 중이라 상관없다'고 오판하지 말 것!)"
+        )
+    if has_prev_yr_ref:
+        notes.append(
+            f"  ⏹️ [파이썬 유예기한 만료 판정 ({prev_yr}년)]: 아래 조문·부칙의 **'{prev_yr}년 12월 31일까지(또는 {prev_yr}년 지급분까지)'** 유예·적용 규정은 "
+            f"오늘({dot_full}) 기준으로 **이미 지난해 말로 종료된 과거 규정**입니다! (질문자가 '{prev_yr}년 귀속'을 명시한 경우가 아니라면 당해 연도인 {cur_yr}년 사건에는 적용 불가)"
+        )
+    if has_next_yr_ref:
+        notes.append(
+            f"  🚨 [파이썬 미시행(미래 시행예정: {next_yr}년 이후) 조기적용 차단 경고]: 아래 조문·부칙에 포함된 **'{next_yr}년 1월 1일({next_yr}.1.1.) 이후 시행/적용'** 개정 규정은 "
+            f"현재 법령에 이미 개정·공포되어 있더라도 **오늘({dot_full}) 기준 아직 시행일이 도래하지 않은 미시행(내년 이후 시행예정) 규정**입니다! "
+            f"사용자가 '{next_yr}년 귀속'을 특정해 질문한 것이 아니라면, **현재({cur_yr}년 귀속) 사안에 이 {next_yr}년 시행예정 개정 규정을 지금 당장 적용받는 것처럼 답변하는 것을 절대 금지**합니다! "
+            f"반드시 **현재({cur_yr}년) 시행 중인 규정**으로 결론과 계산을 확정하고, {next_yr}년 개정 내용은 '※ 참고({next_yr}.1.1. 시행예정 개정사항)'로만 별도 안내하세요!"
+        )
+    if len(notes) == 1:
+        notes.append(
+            f"  📌 [기본 시점 기준]: 오늘({dot_full}) 기준 당해 연도는 **{cur_yr}년({cur_yr}년 귀속)**이며, `{cur_yr}.1.1.` 이전 시행 법령만 현재 적용 대상이고 `{next_yr}.1.1.` 이후 시행 법령은 아직 미시행 상태입니다."
+        )
+    return "\n".join(notes) + "\n\n" + law_text
+
+def _scan_timeline_hallucinations(answer_text: str, user_query: str = "", full_user_input: str = "") -> list[str]:
+    """
+    [Stage 4 방어벽] 생성된 답변 본문에서
+    ① 오늘(2026년)을 2025년(25년)으로 착각하거나 '2026년 1월 1일 시행'을 미시행 유예로 오판한 문장,
+    ② 이미 개정·공포되었으나 '2027년(27년) 1월 1일부터 시행'되는 미래 규정을 지금(2026년)부터 바로 적용받는 것처럼 서술한 조기적용 오판 문장,
+    ③ 과거 연도(예: 24년) 질문에 26년 최신법만 적용한 문장을 정밀 탐지합니다.
+    """
+    if not answer_text:
+        return []
+    info = detect_query_attribution_years(user_query, full_user_input=full_user_input)
+    cur_yr = info["current_year"]
+    prev_yr = cur_yr - 1
+    next_yr = cur_yr + 1
+    cur_2d = str(cur_yr)[2:]
+    prev_2d = str(prev_yr)[2:]
+    next_2d = str(next_yr)[2:]
+    mode = info["mode"]
+    errors = []
+
+    if mode == "DEFAULT_CURRENT":
+        # 1) 현재 연도를 2025년/25년(작년)으로 부르는 명백한 착각 패턴
+        pat_wrong_now = re.compile(
+            rf"((?:{prev_yr}|{prev_2d})\s*년인?\s*현재|현재\s*\(\s*(?:{prev_yr}|{prev_2d})\s*년\s*\)|올해\s*\(\s*(?:{prev_yr}|{prev_2d})\s*년\s*\)|금년\s*\(\s*(?:{prev_yr}|{prev_2d})\s*년\s*\)|현재는\s*(?:{prev_yr}|{prev_2d})\s*년|올해는\s*(?:{prev_yr}|{prev_2d})\s*년)"
+        )
+        for m in pat_wrong_now.finditer(answer_text):
+            errors.append(f"현재 연도를 {cur_yr}년이 아닌 '{m.group(0)}'으로 잘못 인식함")
+
+        # 2) 당해 연도(2026년) 언급이 전혀 없이 '2025년 지급분까지는 ... 현재 시점'이라고 단정한 패턴만 적발 (정기신고·신구비교·직전연도 12월 사건 병기는 정상 허용)
+        has_cur_yr_in_ans = bool(re.search(rf"(?:{cur_yr}|{cur_2d})\s*년", answer_text))
+        pat_wrong_attr = re.compile(
+            rf"((?:{prev_yr}|{prev_2d})\s*년\s*지급분까지는[^\n]*현재\s*시점)"
+        )
+        for m in pat_wrong_attr.finditer(answer_text):
+            errors.append(f"연도 미지정 당해연도({cur_yr}년) 질문을 '{m.group(0)}'(과거 {prev_yr}년 귀속)으로 잘못 전제함")
+        if not has_cur_yr_in_ans and not info.get("history_past_years"):
+            q_check = (user_query or "")
+            if not re.search(r"(연말정산|종합소득세|정기신고|확정신고|12\s*월\s*\d{1,2}\s*일)", q_check):
+                m_only_prev = re.search(rf"적용\s*기준\s*:\s*{prev_yr}\s*년\s*귀속", answer_text)
+                if m_only_prev:
+                    errors.append(f"연도 미지정 당해연도({cur_yr}년) 질문의 적용 기준을 '{m_only_prev.group(0)}'으로만 단정함")
+
+        # 3) '2026년(26년)부터 시행'을 미래 유예 규정으로 보고 현재 적용되지 않는다거나 종전 규정(반기별 제출 등)이 적용된다고 서술하는 패턴
+        pat_future_illusion = re.compile(
+            rf"((?:{cur_yr}|{cur_2d})\s*년(?:\s*1월\s*1일)?(?:\s*이후\s*지급분)?\s*(?:부터|이후)[^\n.]*시행[^\n.]*(?:예정|유예되어|현재는\s*적용되지|현재는\s*상관없|현재\s*상관없|아직\s*시행되지|도래하지\s*않)|아직\s*(?:{cur_yr}|{cur_2d})\s*년이\s*도래하지|(?:{prev_yr}|{prev_2d})\s*년\s*지급분까지는\s*반기별\s*제출[^\n.]*적용되므로)"
+        )
+        for m in pat_future_illusion.finditer(answer_text):
+            errors.append(f"이미 시행 중인 {cur_yr}년 규정을 미래 미시행/유예 규정으로 오판함 ('{m.group(0)[:55]}')")
+
+        # 4) [신규 추가] 이미 개정·공포되었으나 '2027년(27년)부터 시행/적용'되는 미시행 규정을 현재(2026년/올해/지금)부터 적용받는 것처럼 서술하는 패턴
+        for sent in re.split(r"[\n.!?]+", answer_text):
+            s_clean = sent.strip()
+            if not s_clean:
+                continue
+            # 정상 안내 문구('미시행', '시행예정', '시행 예정', '적용되지 않', '현행 규정을 적용')가 있는 문장은 정상 판정이므로 통과
+            if re.search(r"(미시행|시행\s*예정|적용되지\s*않|적용\s*불가|해당하지\s*않|현행\s*규정을?\s*적용|종전\s*규정을?\s*적용)", s_clean):
+                continue
+            has_2027 = bool(re.search(rf"(?<!\d)(?:{next_yr}|{next_2d})\s*년", s_clean))
+            has_premature_claim = bool(
+                re.search(
+                    rf"((?:현재|지금|올해|금년|당해|{cur_yr}년|{cur_2d}년)(?:부터|에도|에|역시|은|는)?[^\n]*?(?:개정된?\s*사항|개정\s*규정|개정법)?[^\n]*?(?:바로|즉시|당장|지금부터)?\s*(?:적용|해당|공제\s*가능|산출)|현재\s*개정된\s*사항\s*기준으로\s*(?:지금부터|바로|올해부터)?\s*(?:법령을?\s*)?적용)",
+                    s_clean
+                )
+            )
+            if has_2027 and has_premature_claim:
+                errors.append(f"아직 시행 전인 {next_yr}년 시행예정 개정 규정을 현재({cur_yr}년)부터 적용받는 것처럼 조기적용 오판함 ('{s_clean[:65]}')")
+
+    elif mode == "PAST_ONLY":
+        past_yrs = info["past_years"]
+        if past_yrs and not any(str(py) in answer_text or f"{str(py)[2:]}년" in answer_text for py in past_yrs):
+            past_str = ", ".join(f"{y}년" for y in past_yrs)
+            errors.append(f"사용자가 지정한 과거 귀속연도({past_str})가 답변에서 누락되고 {cur_yr}년 기준으로만 작성됨")
+
+    return list(dict.fromkeys(errors))
+
 import streamlit as st
 from google import genai
 from google.genai import types
@@ -22,18 +513,30 @@ load_dotenv()
 
 RUNTIME_API_KEYS_FILE = os.path.join(".workspace_storage", "runtime_api_keys.json")
 
+_RT_KEYS_CACHE: dict = {"mtime": None, "data": {}}
+
+def _read_runtime_keys_cached() -> dict:
+    """runtime_api_keys.json을 파일이 바뀐 경우에만 다시 읽습니다 (화면 새로고침마다 수십 번 디스크를 읽지 않도록)."""
+    try:
+        mt = os.path.getmtime(RUNTIME_API_KEYS_FILE)
+    except OSError:
+        _RT_KEYS_CACHE["mtime"], _RT_KEYS_CACHE["data"] = None, {}
+        return {}
+    if _RT_KEYS_CACHE["mtime"] != mt:
+        try:
+            with open(RUNTIME_API_KEYS_FILE, "r", encoding="utf-8") as rf:
+                data = json.load(rf)
+            _RT_KEYS_CACHE["data"] = data if isinstance(data, dict) else {}
+        except Exception:
+            _RT_KEYS_CACHE["data"] = {}
+        _RT_KEYS_CACHE["mtime"] = mt
+    return _RT_KEYS_CACHE["data"]
+
 def _get_secret_or_env(key_name: str) -> str:
     """1순위: 모달에서 저장한 런타임 보안키(.workspace_storage/runtime_api_keys.json) -> 2순위: st.secrets -> 3순위: 환경변수(.env)에서 실시간으로 읽어옵니다."""
-    try:
-        if os.path.exists(RUNTIME_API_KEYS_FILE):
-            with open(RUNTIME_API_KEYS_FILE, "r", encoding="utf-8") as rf:
-                rdata = json.load(rf)
-            if isinstance(rdata, dict) and key_name in rdata:
-                rval = str(rdata.get(key_name) or "").strip().strip('"').strip("'")
-                if rval:
-                    return rval
-    except Exception:
-        pass
+    rval = str(_read_runtime_keys_cached().get(key_name) or "").strip().strip('"').strip("'")
+    if rval:
+        return rval
     try:
         if hasattr(st, "secrets") and key_name in st.secrets:
             val = str(st.secrets[key_name]).strip().strip('"').strip("'")
@@ -553,8 +1056,10 @@ def _over_limit(kind: str, target: str) -> bool:
     trace["counts"][key] = used + 1
     return False
 
+_NORM_RE = re.compile(r"[\s「」『』\"'“”‘’]")
+
 def _norm(text: str) -> str:
-    return re.sub(r"[\s「」『』\"'“”‘’]", "", text or "")
+    return _NORM_RE.sub("", text) if text else ""
 
 def _record(kind: str, text: str) -> str:
     trace = _TOOL_TRACE.get()
@@ -653,47 +1158,87 @@ _LAW_ALIASES = {"상증법": "상속세및증여세법", "조특법": "조세특
                 "주임법": "주택임대차보호법", "상임법": "상가건물임대차보호법"}
 _REF_SKIP_SUFFIX = ("동법", "같은법", "이법", "본법", "당해법", "해당법", "동법시행령", "같은법시행령", "동법시행규칙")
 
-def _known_law_titles(trace: dict = None) -> list[str]:
-    titles = set()
-    for base in _COMMON_LAWS:
-        titles.update({base, base + "시행령", base + "시행규칙"})
-    if trace:
-        titles.update(t for (t, _, _) in trace.get("articles", set()))
-        titles.update(trace.get("fetched_laws", set()))
-    return sorted(titles, key=len, reverse=True)
+_BASE_KNOWN_LAW_TITLES: tuple[str, ...] = tuple(
+    sorted(
+        {t for base in _COMMON_LAWS for t in (base, base + "시행령", base + "시행규칙")},
+        key=len,
+        reverse=True,
+    )
+)
+_SAME_LAW_RE = re.compile(r"([가-힣ㆍ·]{2,35}?법률?)(?:및|과|와|,|또는)(?:동법|같은법)(시행령|시행규칙)$")
+_PARTIAL_LAW_RE = re.compile(r"([가-힣ㆍ·]{2,35}?법률?(?:시행령|시행규칙)?)$")
+_HANGUL_END_RE = re.compile(r"[가-힣]$")
+_ALIAS_RESOLVED_PAIRS: tuple[tuple[str, str], ...] = tuple(
+    (alias_key, full + ext)
+    for alias, full in _LAW_ALIASES.items()
+    for ext in ("시행규칙", "시행령", "")
+    for alias_key in (
+        (alias + ext, alias.replace("법", "령")) if (ext == "시행령" and "법" in alias) else (alias + ext,)
+    )
+)
+_PROMULGATION_TRAIL_RE = re.compile(
+    r"(?:\s*(?:\([^)]*(?:법률|대통령령|총리령|부령|기획재정부령|행정안전부령|고용노동부령|제\s*\d+\s*호|\d{4}\.\s*\d{1,2})[^)]*\)|"
+    r"<[^>]+>|"
+    r"(?:법률|대통령령|총리령|기획재정부령|행정안전부령|고용노동부령|부령)\s*제\s*\d+\s*호(?:\s*\([^)]*\))?|\d{4}\.\s*\d{1,2}\.\s*\d{1,2}\.?))+$"
+)
+_RESOLVE_LAW_CACHE: dict[str, str | None] = {}
 
-def _resolve_law_name(prefix: str, titles: list[str]):
-    """
-    1) '국세기본법', '중소기업기본법', '지방세기본법'이 '본법'으로 끝난다고 오판되어 검증에서 빠지지 않도록
-       앞 글자가 한글이 아닐 때(독립 단어일 때)만 지시대명사('본법', '이법' 등)로 처리합니다.
-    2) '국제조세조정에 관한 법률', '주식회사 등의 외부감사에 관한 법률' 등 '~에 관한 법률'(`법률`)로 끝나는 법령도
-       정확히 인식하도록 정규식을 `법률?`로 확장합니다.
-    """
-    tail = _norm(prefix)[-45:]
-    # 'A법 및 동법 시행령 제4조'처럼 앞 법령을 가리키는 '동법/같은 법 시행령·시행규칙'은 'A법 시행령·시행규칙'으로 해석
-    m_same = re.search(r"([가-힣ㆍ·]{2,35}?법률?)(?:및|과|와|,|또는)(?:동법|같은법)(시행령|시행규칙)$", tail)
+def _known_law_titles(trace: dict = None) -> list[str]:
+    if not trace:
+        return list(_BASE_KNOWN_LAW_TITLES)
+    extra = {t for (t, _, _) in trace.get("articles", set())} | set(trace.get("fetched_laws", set()))
+    if not extra or extra.issubset(_BASE_KNOWN_LAW_TITLES):
+        return list(_BASE_KNOWN_LAW_TITLES)
+    return sorted(set(_BASE_KNOWN_LAW_TITLES) | extra, key=len, reverse=True)
+
+def _resolve_law_name(prefix: str, titles: list[str] | tuple[str, ...]):
+    cleaned_prefix = _PROMULGATION_TRAIL_RE.sub("", (prefix or "").strip()).strip()
+    tail = _norm(cleaned_prefix)[-45:]
+    if not tail:
+        return None
+    use_cache = len(titles) == len(_BASE_KNOWN_LAW_TITLES)
+    if use_cache and tail in _RESOLVE_LAW_CACHE:
+        return _RESOLVE_LAW_CACHE[tail]
+    m_same = _SAME_LAW_RE.search(tail)
     if m_same:
-        return _resolve_law_name(m_same.group(1) + m_same.group(2), titles)
+        res = _resolve_law_name(m_same.group(1) + m_same.group(2), titles)
+        if use_cache and len(_RESOLVE_LAW_CACHE) < 4096:
+            _RESOLVE_LAW_CACHE[tail] = res
+        return res
     for suf in _REF_SKIP_SUFFIX:
-        if tail == suf or (tail.endswith(suf) and not re.search(r"[가-힣]$", tail[:-len(suf)])):
+        if tail == suf or (tail.endswith(suf) and not _HANGUL_END_RE.search(tail[:-len(suf)])):
+            if use_cache and len(_RESOLVE_LAW_CACHE) < 4096:
+                _RESOLVE_LAW_CACHE[tail] = None
             return None
-    for alias, full in _LAW_ALIASES.items():
-        for ext in ("시행규칙", "시행령", ""):
-            if tail.endswith(alias + ext) or (tail.endswith(alias.replace("법", "령")) and ext == "시행령"):
-                return full + ext
+    for alias_key, resolved_full in _ALIAS_RESOLVED_PAIRS:
+        if tail.endswith(alias_key):
+            if use_cache and len(_RESOLVE_LAW_CACHE) < 4096:
+                _RESOLVE_LAW_CACHE[tail] = resolved_full
+            return resolved_full
     for t in titles:
         if tail.endswith(t):
+            if use_cache and len(_RESOLVE_LAW_CACHE) < 4096:
+                _RESOLVE_LAW_CACHE[tail] = t
             return t
-    m = re.search(r"([가-힣ㆍ·]{2,35}?법률?(?:시행령|시행규칙)?)$", tail)
+    m = _PARTIAL_LAW_RE.search(tail)
     if not m:
+        if use_cache and len(_RESOLVE_LAW_CACHE) < 4096:
+            _RESOLVE_LAW_CACHE[tail] = None
         return None
     partial = m.group(1)
     if partial in _REF_SKIP_SUFFIX:
+        if use_cache and len(_RESOLVE_LAW_CACHE) < 4096:
+            _RESOLVE_LAW_CACHE[tail] = None
         return None
-    for t in titles:
-        if t.endswith(partial) and len(partial) >= 3:
-            return t
-    return partial
+    res = partial
+    if len(partial) >= 3:
+        for t in titles:
+            if t.endswith(partial):
+                res = t
+                break
+    if use_cache and len(_RESOLVE_LAW_CACHE) < 4096:
+        _RESOLVE_LAW_CACHE[tail] = res
+    return res
 
 _EXEC_STD = re.compile(r"(?<![\d의])(\d{1,3}(?:의\d{1,2})?-\d{1,3}(?:의\d{1,2})?-\d{1,3})(?![\d])")
 
@@ -766,30 +1311,30 @@ def _find_case_numbers(text: str) -> list[str]:
     return cited
 
 _ADDENDUM_SUFFIX_RE = re.compile(
-    r"(?:\s*부칙(?:\s*<[^>]*>|\s*\([^)]*\)|\s*제\s*\d+\s*호|\s*\d{4}\.\s*\d{1,2}\.\s*\d{1,2}\.?)?)+[\s「」『』\[\]:(),·ㆍ]*$"
+    r"(?:\s*부칙(?:\s*<[^>]*>|\s*\([^)]*\)|\s*(?:법률|대통령령|총리령|부령)?\s*제\s*\d+\s*호|\s*\d{4}\.\s*\d{1,2}\.\s*\d{1,2}\.?)?)+[\s「」『』\[\]:(),·ㆍ]*$"
 )
+_LAW_END_NORM_RE = re.compile(r"(법률?|령|규칙)$")
+_STRIP_TRAIL_PUNCT_RE = re.compile(r"[\s「」『』\[\]:(),·ㆍ]+$")
 
-def _find_article_refs_with_kind(text: str, trace: dict = None) -> list[tuple]:
-    """
-    조문 번호 앞의 법령명과 '부칙 여부(is_addendum)'를 함께 추출합니다.
-    반환: [(law_name, jo, gaji, is_addendum), ...]
-    - '조세특례제한법 부칙 제34조', '[부칙:조세특례제한법 부칙 제34조]' -> ('조세특례제한법', 34, 0, True)
-    - '조세특례제한법 제34조' -> ('조세특례제한법', 34, 0, False)
-    """
-    text = text or ""
-    titles = _known_law_titles(trace)
+def _find_article_refs_with_kind(text: str, trace: dict = None, titles: list[str] | None = None) -> list[tuple]:
+    if not text or "제" not in text:
+        return []
+    if titles is None:
+        titles = _known_law_titles(trace)
     refs = []
     last_end = 0
     for m in _ARTICLE_NO.finditer(text):
-        prefix = text[max(last_end, m.start() - 65):m.start()]
+        prefix = text[max(last_end, m.start() - 75):m.start()]
         last_end = m.end()
         raw_r = prefix.rstrip()
-        is_addendum = bool(_ADDENDUM_SUFFIX_RE.search(raw_r)) or ("부칙" in raw_r[-30:])
+        is_addendum = bool(_ADDENDUM_SUFFIX_RE.search(raw_r)) or ("부칙" in raw_r[-35:])
         stripped = _ADDENDUM_SUFFIX_RE.sub("", raw_r)
-        stripped = re.sub(r"[\s「」『』\[\]:(),·ㆍ]+$", "", stripped)
+        stripped = _PROMULGATION_TRAIL_RE.sub("", stripped)
+        stripped = _STRIP_TRAIL_PUNCT_RE.sub("", stripped)
         stripped = _ADDENDUM_SUFFIX_RE.sub("", stripped)
-        stripped = re.sub(r"[\s「」『』\[\]:(),·ㆍ]+$", "", stripped)
-        if not stripped or not re.search(r"(법률?|령|규칙)$", _norm(stripped)):
+        stripped = _PROMULGATION_TRAIL_RE.sub("", stripped)
+        stripped = _STRIP_TRAIL_PUNCT_RE.sub("", stripped)
+        if not stripped or not _LAW_END_NORM_RE.search(_norm(stripped)):
             continue
         name = _resolve_law_name(stripped, titles)
         if not name:
@@ -862,7 +1407,7 @@ def _scan_violations(answer: str, trace: dict) -> list[tuple]:
             else:
                 problems.append(f"판례·심판례 {no} (조회 기록 없음)")
 
-        for law_nm, jo, gaji, is_add in _find_article_refs_with_kind(line, trace):
+        for law_nm, jo, gaji, is_add in _find_article_refs_with_kind(line, trace, titles=known_titles):
             ref3 = (law_nm, jo, gaji)
             if is_add:
                 if ref3 in fetched_addenda:
@@ -883,7 +1428,7 @@ def _scan_violations(answer: str, trace: dict) -> list[tuple]:
 
         for kind, val in _TAG.findall(line):
             if kind in ("조문", "부칙"):
-                refs_kind = _find_article_refs_with_kind(val, trace)
+                refs_kind = _find_article_refs_with_kind(val, trace, titles=known_titles)
                 if refs_kind:
                     all_ok = True
                     for r_ln, r_jo, r_gaji, r_is_add in refs_kind:
@@ -1299,19 +1844,20 @@ def get_last_verify_info() -> dict:
     """현재 스레드에서 마지막으로 실행된 의미 검증의 모델·설정·소요 시간."""
     return dict(getattr(_VERIFY_INFO, "data", {}) or {})
 
-def _semantic_verify(api_key: str, claims: list, sources: dict, user_query: str = "") -> dict:
+def _semantic_verify(api_key: str, claims: list, sources: dict, user_query: str = "", full_user_input: str = "") -> dict:
     _emit_live_status("🛡️ 3단계: 듀얼 AI 감수(_semantic_verify) 정밀 판정 중...")
     src_block = "\n\n".join(f"[{sid}] {label}\n{text}" for sid, (label, text) in sources.items())
     claim_block = "\n".join(f"{n + 1}. (근거: {', '.join(c['sources'])}) {c['text']}" for n, c in enumerate(claims))
+    _kst_v = get_kst_today_context()
     prompt = (
-        "당신은 세무 답변의 근거를 검증하는 감수자입니다. 아래 [사용자 질문(사례 전제)]와 [원문(법령·판례·계산 결과)] 전체를 기준으로 각 [주장]의 '핵심 법적 명제'가 뒷받침되는지 판정하세요.\n"
+        f"당신은 세무 답변의 근거를 검증하는 감수자입니다. (현재 기준일: {_kst_v['dot_full']}, 당해 과세연도: {_kst_v['year']}년 귀속 — 질문에 연도 지정이 없으면 {_kst_v['year']}년 귀속·현행법 적용이 정상이며, 반대로 질문에서 '24년' 등 과거 연도를 지정했거나 부칙 경과조치 대상이면 해당 과거 연도 구법·종전규정을 적용한 것이 정상입니다.) 아래 [사용자 질문(사례 전제)]와 [원문(법령·판례·계산 결과)] 전체를 기준으로 각 [주장]의 '핵심 법적 명제'가 뒷받침되는지 판정하세요.\n"
         "- supported: 핵심 법리가 [원문]에 부합하고, 사례 금액·계산값이 [사용자 질문] 또는 [정밀 계산 완료] 내역과 일치함. 특히 법령 원문의 천분율·만분율(예: 1천분의 70.9, 1천분의 90, 1만분의 91.82)을 백분율(%)로 환산한 수치나 노사 절반(50%, 1/2) 부담분으로 나눈 수치(예: 3.545%, 4.5%, 0.4591%, 건보료 대비 12.95% 등), 같은 뜻의 요약·의역, 원문들을 결합해 도출되는 당연한 세무조정·소득처분 결론은 모두 supported로 판정할 것\n"
         "- partial: 법령상의 고정 기준 수치(예: 세율, 법정한도율, 기준금액)를 [원문]의 환산값과도 다르게 잘못 적은 경우에만 부여할 것. (사용자 질문의 사례 금액이나 단위 환산·절반 분담 계산값이 법조문 글자와 표기 형태만 다르다는 이유로 partial을 주지 말 것!)\n"
         "- unsupported: 핵심 법리 자체가 [원문]과 정면으로 모순되는 경우 (원문이 일부 생략된 표시가 있을 때는 생략된 부분에 있을 수 있으므로 함부로 unsupported를 주지 말 것)\n"
         "원문 밖의 지식으로 판단하지 마세요. 사소한 표현 차이로 partial/unsupported를 주지 말 것. "
         "reason은 한국어 30자 이내로, 'S1' 같은 번호 대신 법령·판례 이름으로 쓰세요.\n"
         '출력은 JSON 배열만: [{"id": 1, "verdict": "supported", "reason": "..."}]\n\n'
-        f"[사용자 질문(사례 전제)]\n{user_query[:3000]}\n\n[원문]\n{src_block}\n\n[주장]\n{claim_block}"
+        f"[사용자 질문(사례 전제)]\n{_prepare_semantic_verify_query(user_query, full_user_input, 3000)}\n\n[원문]\n{src_block}\n\n[주장]\n{claim_block}"
     )
     client = make_genai_client(api_key, 50000)
 
@@ -1487,6 +2033,16 @@ def _fetch_full_law_xml_direct(doc_id: str, query_filter: str = "") -> str:
                                 mok_txt = (mok.findtext("목내용") or "").strip()
                                 if mok_txt:
                                     lines.append("    " + mok_txt)
+                    u_eff = re.sub(r"\D", "", unit.findtext("조문시행일자") or "")
+                    if len(u_eff) == 8 and u_eff.isdigit():
+                        _today_i = int(get_kst_today_context()["ymd"])
+                        if int(u_eff) > _today_i:
+                            lines.append(
+                                f"[조문시행일자: {u_eff[:4]}.{u_eff[4:6]}.{u_eff[6:]} — "
+                                f"🚨 미시행(미래 시행예정) 조문 경고: 이미 개정·공포되었으나 오늘({get_kst_today_context()['dot_full']}) 기준 아직 시행일이 도래하지 않았으므로 당해 연도({get_kst_today_context()['year']}년 귀속)에 지금부터 적용 금지!]"
+                            )
+                        else:
+                            lines.append(f"[조문시행일자: {u_eff[:4]}.{u_eff[4:6]}.{u_eff[6:]} — ✅ 현재 시행 중]")
                     full_unit_txt = "\n".join(lines)
                     parsed_articles.append((u_jo, u_gaji, full_unit_txt))
 
@@ -1632,8 +2188,7 @@ def _resolve_law_id_if_name(doc_id: str) -> str:
             if isinstance(res, dict):
                 res = [res]
             exact = [it for it in res if str(it.get("법령명한글", "")).replace(" ", "") == clean_norm]
-            cands = exact if exact else res[:1]
-            cands.sort(key=lambda x: (str(x.get("공포일자", "")), str(x.get("시행일자", ""))), reverse=True)
+            cands = _sort_law_candidates_for_today(exact if exact else res[:1])
             found_id = str(cands[0].get("법령일련번호") or cands[0].get("법령ID") or "").strip()
             if found_id:
                 _cache_set(map_key, found_id)
@@ -2138,11 +2693,15 @@ def search_law_for_gemini(keyword: str, target: str = "law") -> str:
     if isinstance(results, dict):
         results = [results]
 
+    _today_int_s = int(get_kst_today_context()["ymd"])
     if target == "law":
+        results = _sort_law_candidates_for_today(results)
+        _seen_lnm = set()
         for item in results[:5]:
             lnm = str(item.get("법령명한글", "")).replace(" ", "").strip()
             lid = str(item.get("법령일련번호") or item.get("법령ID") or "").strip()
-            if lnm and lid:
+            if lnm and lid and lnm not in _seen_lnm:
+                _seen_lnm.add(lnm)
                 _cache_set(("law_name_to_id", today_ymd, lnm), lid)
 
     top_n = 10 if _is_unleashed() else 5
@@ -2152,7 +2711,14 @@ def search_law_for_gemini(keyword: str, target: str = "law") -> str:
     summary += f"총 {len(results)}건 검색됨 (상위 {min(len(results), top_n)}건 요약):\n"
     for i, item in enumerate(results[:top_n]):
         if target == "law":
-            summary += f"{i+1}. [법령] {item.get('법령명한글')} | 공포번호: {item.get('공포번호')} | 공포일: {item.get('공포일자')} | 시행일: {item.get('시행일자')} | 구분: {item.get('제개정구분명')} | ID: {item.get('법령일련번호')}\n"
+            _enf_s = re.sub(r"\D", "", str(item.get("시행일자") or ""))
+            _enf_i = int(_enf_s) if len(_enf_s) == 8 and _enf_s.isdigit() else 0
+            _enf_badge = (
+                f" 🚨[미시행(미래 시행예정: {item.get('시행일자')}) — 이미 공포되었으나 오늘({get_kst_today_context()['dot_full']}) 기준 아직 시행 전이므로 당해 {get_kst_today_context()['year']}년 귀속에 즉시 적용 금지!]"
+                if _enf_i > _today_int_s else
+                f" ✅[현행 시행중 — 당해 {get_kst_today_context()['year']}년 귀속 적용 대상]"
+            )
+            summary += f"{i+1}. [법령] {item.get('법령명한글')} | 공포번호: {item.get('공포번호')} | 공포일: {item.get('공포일자')} | 시행일: {item.get('시행일자')}{_enf_badge} | 구분: {item.get('제개정구분명')} | ID: {item.get('법령일련번호')}\n"
         elif target == "prec":
             summary += f"{i+1}. [판례] 사건명: {item.get('사건명')} | 사건번호: {item.get('사건번호')} | 선고일자: {item.get('선고일자')} | ID: {item.get('판례일련번호')}\n"
         elif target == "detc":
@@ -2281,6 +2847,7 @@ def get_law_details_for_gemini(doc_id: str, target: str = "law", query_filter: s
     print(f"[시스템]    ↳ 원문 {len(raw_text or ''):,}자 → 전달 {len(result):,}자 | 앞부분: {preview}")
     if target == "law" and body_ok:
         _record_law_articles(result)
+        result = _annotate_law_effective_dates_vs_today(result)
     if trace is not None and target in ("prec", "decc", "detc"):
         rno = trace["id_map"].get(clean_id)
         if rno and body_ok and _norm(rno) not in _norm(result):
@@ -2451,13 +3018,14 @@ def search_industry_code_for_gemini(keyword: str) -> str:
     except Exception as e:
         return f"업종코드 조회 오류: {e}"
 
-def search_dart_corp_for_gemini(corp_name: str, bsns_year: str = "2025") -> str:
-    """DART 전자공시에서 기업개황·요약재무제표·최대주주 지분·배당 정보를 조회합니다. bsns_year는 '2025' 등 4자리 연도."""
+def search_dart_corp_for_gemini(corp_name: str, bsns_year: str = "") -> str:
+    """DART 전자공시에서 기업개황·요약재무제표·최대주주 지분·배당 정보를 조회합니다. bsns_year 미지정 시 당해·직전 사업연도를 자동 순회합니다."""
+    _eff_yr = (bsns_year or "").strip() or f"{get_kst_today_context()['year']}~{get_kst_today_context()['prev_year']}"
     _emit_live_status(f"📊 1단계: DART 전자공시 재무·지분 조회 중 ('{corp_name}')...")
-    print(f"\n[시스템] 📊 DART 전자공시 통합 조회 가동: '{corp_name}' ({bsns_year}년)")
+    print(f"\n[시스템] 📊 DART 전자공시 통합 조회 가동: '{corp_name}' ({_eff_yr}년)")
     cap = 16000 if _is_unleashed() else 10000
     try:
-        return _record("detail", law_api.get_dart_corp_info(corp_name, bsns_year)[:cap])
+        return _record("detail", law_api.get_dart_corp_info(corp_name, (bsns_year or "").strip())[:cap])
     except Exception as e:
         return f"DART 공시 조회 오류: {e}"
 
@@ -2719,8 +3287,12 @@ def run_tax_calculator_for_gemini(formula_expression: str, description: str = ""
     - 숫자에는 천 단위 쉼표를 쓰지 말 것 (예: 1500000 * 0.15).
     - 함수 인자는 쉼표+공백으로 구분할 것 (예: min(1500000, 2000000), round(x, 2)).
     """
-    _emit_live_status(f"🧮 2단계: 파이썬 1원 단위 정밀 수리 계산기 구동 중 ({description or formula_expression[:20]})...")
-    print(f"\n[시스템] 🧮 파이썬 정밀 세액 계산기 가동: [{description}] 수식: {formula_expression}")
+    expr_str = str(formula_expression or "").strip()
+    desc_str = str(description or "").strip()
+    _emit_live_status(f"🧮 2단계: 파이썬 1원 단위 정밀 수리 계산기 구동 중 ({desc_str or expr_str[:20]})...")
+    print(f"\n[시스템] 🧮 파이썬 정밀 세액 계산기 가동: [{desc_str}] 수식: {expr_str}")
+    if not expr_str:
+        return "❌ 수식 계산 오류 (): 빈 수식입니다 -> 숫자에 쉼표 없이 올바른 파이썬 사칙연산 수식으로 다시 호출하세요."
     allowed_names = {
         "abs": abs, "round": round, "min": min, "max": max, "sum": sum, "pow": pow,
         "int": int, "float": float, "math": math
@@ -2790,7 +3362,7 @@ SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문
 3. 트랙 1 (전문 검토 보고서 모드) 필수 출력 양식 (반드시 아래 `<precheck>` 3단 크로스체크 검수표를 최소 200자 이상 구체적인 조문·수치로 작성한 뒤, 그 검증 결과를 바탕으로 `### 1. 결론`을 도출할 것. `<precheck>`가 누락되거나 부실하면 감사 시스템에서 즉시 반려됨!)
 
 <precheck>
-- [1단: 법령·판례 원문 및 최근 개정·귀속시기·일몰 대조] 이번에 도구로 실제 원문을 조회한 법률·시행령·시행규칙의 정확한 조·항·호 번호와 판례·심판례 사건번호를 구체적으로 열거하고, 해당 조문에 최근 개정 이력(<최근개정: 2025~2027...> 등)이나 경과규정이 있는지, 질문 사안의 귀속연도(과세기간) 적용 기준 및 조세특례 일몰기한(예: ~2026.12.31. 또는 ~2028.12.31.)이 유효한지 대조할 것
+- [1단: 오늘 날짜(KST) 기준 시점 부등식 및 법령 시행일·귀속시기·일몰 대조] 반드시 첫 줄에 「오늘 날짜(YYYY.MM.DD) vs 질문 사건 시점(연도 미지정 시 당해 연도인 2026년) vs 조회한 조문·부칙 시행일(예: 2026.1.1.)」의 선후 관계를 부등식(예: `2026.01.01 시행일 <= 오늘 날짜 → 이미 유예 종료되어 현재 2026년 전면 시행 중` / `2025.12.31 유예기한 < 오늘 날짜 → 이미 지난해 만료됨`)으로 먼저 확정하고, 도구로 실제 원문을 조회한 법률·시행령·시행규칙·부칙의 정확한 조·항·호 번호와 일몰기한을 대조할 것 (절대 현재를 2025년으로 착각하거나 2026.1.1. 시행 규정을 미시행 유예 규정으로 오판하지 말 것!)
 - [2단: 단서·배제 요건 및 연쇄 세목(농특세·소득처분) 정밀 점검] 해당 조문의 단서(다만, ~제외한다), 특수관계인·지배주주·업종·규모 배제 요건, 최저한세(조세특례제한법 제132조), 중복지원 배제(제127조), 농어촌특별세(20%) 부과 여부, 사후관리 추징 요건, 그리고 법인세 손금불산입 시 소득처분(상여·배당·기타사외유출)에 따른 원천세·4대보험 연쇄 리스크 중 본 사안에 적용되는 항목을 빠짐없이 짚어낼 것
 - [3단: 수리 계산식·지방소득세·가산세 감면율 최종 검산] 파이썬 정밀 계산기로 산출한 수식, 세율 구간·누진공제, 안분 비율, 공제 한도액의 오차 여부 및 지방소득세(10%) 별도 부과 여부를 수치로 직접 검산할 것 (수치 계산이 없는 법리·절차 질문인 경우 법정 신고·경정청구 기한, 가산세율 및 수정신고·기한후신고 감면율 요건을 수치로 재확인할 것)
 </precheck>
@@ -2863,11 +3435,12 @@ def _is_valid_report_body(text: str) -> bool:
 # 🔗 검증 완료된 법령·판례·심판례·해석례·예규·기본통칙 100% 원클릭 직링크 자동 결합 엔진
 #    (괄호가 포함된 판례·해석례 URL 생성 시 `%28`, `%29` 인코딩으로 마크다운/PDF/워드 괄호 잔류 원천 방지)
 # ---------------------------------------------------------
-def _build_direct_law_url(kind: str, val: str, trace: dict, rev_id_map: dict, meta_map: dict) -> str:
+def _build_direct_law_url(kind: str, val: str, trace: dict, rev_id_map: dict, meta_map: dict, known_titles: list[str] | None = None) -> str:
     """검증된 태그 종류와 값으로부터 국가법령정보센터 공식 원문 직링크 URL을 생성합니다."""
-    known_titles = _known_law_titles(trace)
+    if known_titles is None:
+        known_titles = _known_law_titles(trace)
     if kind in ("조문", "부칙"):
-        refs = _find_article_refs(val, trace)
+        refs = [r[:3] for r in _find_article_refs_with_kind(val, trace, titles=known_titles)]
         if refs:
             law_name, jo, gaji = refs[0]
             if kind == "부칙" or "부칙" in val:
@@ -2951,7 +3524,7 @@ def _inject_direct_law_links(text: str, trace: dict = None) -> str:
         kind = match.group(1).strip()
         val = match.group(2).strip()
         canonical_tag = f"[{kind}: {val}]"
-        url = _build_direct_law_url(kind, val, trace, rev_id_map, meta_map)
+        url = _build_direct_law_url(kind, val, trace, rev_id_map, meta_map, known_titles=known_titles)
         if url:
             return f"[{canonical_tag}]({url})"
         return canonical_tag
@@ -3104,7 +3677,8 @@ def _execute_with_key_and_model(
     dynamic_prompt: str,
     tools_list: list,
     safety_settings: list,
-    unleash: bool = False
+    unleash: bool = False,
+    raw_query: str = ""
 ) -> tuple[str, int]:
     timeout_ms = 120000 if unleash else 60000
     max_remote_calls = 30 if unleash else 20
@@ -3195,6 +3769,42 @@ def _execute_with_key_and_model(
     if precheck_text:
         print(f"\n[시스템] 🛡️ 사전 3단 크로스체크 정밀 수행 완료 ({len(precheck_text):,}자):\n{precheck_text}")
 
+    # [Stage 4 방어벽] 시점 인식 오류(2025년을 현재로 착각하거나 2026.1.1 시행 규정을 미시행 유예로 서술) 자동 스캔 및 강제 재작성
+    timeline_errs = _scan_timeline_hallucinations(stripped_body, raw_query or user_input, full_user_input=user_input)
+    if timeline_errs:
+        _kst_fix = get_kst_today_context()
+        print(f"[시스템] 🚨 시점/귀속연도 오인식 감지({len(timeline_errs)}건) → 즉시 교정 재작성 강제: {timeline_errs}")
+        _emit_live_status("🚨 3단계: 시점·시행일 인식 오류 자동 감지 → 기준시점 즉시 교정 중...")
+        timeline_fix_msg = (
+            f"🚨 [시점·귀속연도 인식 오류 긴급 교정 명령]\n"
+            f"방금 작성한 답변에서 다음과 같은 시점 오인식 오류가 감지되었습니다:\n- "
+            + "\n- ".join(timeline_errs)
+            + f"\n\n[절대 교정 기준]\n"
+            f"1. 오늘 날짜는 **{_kst_fix['dot_full']}**이며, 현재 당해 연도는 {_kst_fix['prev_year']}년이 아니라 **{_kst_fix['year']}년({_kst_fix['year']}년 귀속)**입니다!\n"
+            f"2. 법령·부칙의 **'{_kst_fix['year']}년 1월 1일 이후 시행/적용'** 규정은 올해({_kst_fix['year']}년) 이미 시행 중인 현행 규정이며, "
+            f"반대로 이미 개정·공포되었더라도 **'{_kst_fix['next_year']}년 1월 1일 이후 시행/적용'**되는 규정은 오늘({_kst_fix['dot_full']}) 기준 **아직 시행일이 도래하지 않은 미시행(내년 시행예정) 규정**이므로 올해({_kst_fix['year']}년 귀속)에 지금부터 적용받는 것처럼 서술하면 절대 안 됩니다!\n"
+            f"3. 질문의 귀속연도·거래시점 기준을 위 원칙에 맞게 바로잡아 `<precheck>`부터 `### 1. 결론` ~ `### 3. 관련법령` 전체를 즉시 다시 작성하세요."
+        )
+        trace_token_t = _TOOL_TRACE.set(trace)
+        try:
+            _t_stage = time.time()
+            t_resp = chat.send_message(timeline_fix_msg)
+            stage_secs.append(("시점오류 자동교정", time.time() - _t_stage))
+            t_raw = extract_safe_text(t_resp)
+            _extract_and_log_response_usage(t_resp, model_id, count_call=False, est_in_chars=len(timeline_fix_msg), est_out_chars=len(t_raw))
+            if t_raw:
+                t_body, t_pre = _extract_and_strip_precheck(t_raw)
+                if _is_valid_report_body(t_body):
+                    raw_output = t_raw
+                    stripped_body = t_body
+                    if t_pre:
+                        precheck_text = t_pre
+                    response = t_resp
+        except Exception as e:
+            print(f"[시스템]    ↳ 시점 오류 교정 재작성 호출 오류: {e}")
+        finally:
+            _TOOL_TRACE.reset(trace_token_t)
+
     final_text = re.sub(r"\s*<br\s*/?>\s*", " / ", stripped_body)
     final_text = _clean_latex_for_export(final_text)
 
@@ -3268,7 +3878,7 @@ def _execute_with_key_and_model(
                 print(f"[시스템] 🧪 의미 검증 가동: 주장 {len(claims)}건 / 원문 {len(sources)}건")
                 _t_stage = time.time()
                 try:
-                    verdicts = _semantic_verify(api_key, claims, sources, user_input)
+                    verdicts = _semantic_verify(api_key, claims, sources, raw_query or user_input, full_user_input=user_input)
                     final_text, cnt = _apply_semantic_results(final_text, claims, verdicts, sources)
                     citation_note += (f"\n> 🧪 의미 검증 {len(claims)}건: 일치 {cnt['supported']} · "
                                       f"원문 확인 필요 {cnt['partial']} · 불일치 {cnt['unsupported']}"
@@ -3328,7 +3938,7 @@ def _execute_with_key_and_model(
         print("[시스템] 📋 진단 정보(화면 미표시):" + diag.replace("\n> ", "\n   ").replace("\n\n---", ""))
     final_text = re.sub(r"\s*<br\s*/?>\s*", " / ", final_text)
 
-    return _clean_latex_for_export(final_text), len(precheck_text)
+    return _strip_leaked_temporal_guideline(_clean_latex_for_export(final_text)), len(precheck_text)
 
 # 4. 실행 순서(유료키 전용):
 #    - Flash 모드: gemini-3.8-flash → gemini-3.6-flash → gemini-3.5-flash-lite → gemini-2.5-flash
@@ -3403,8 +4013,15 @@ def run_general_agent(user_input: str, raw_query: str = "", has_file: bool = Fal
         prompt_text = clean_input.replace("[현재 사용자 질문]: [프로]", "[현재 사용자 질문]:", 1)
         if prompt_text.lstrip().startswith("[프로]"):
             prompt_text = prompt_text.replace("[프로]", "", 1).strip()
+        prompt_text = ensure_hidden_date_directive_in_input(prompt_text, clean_query)
+        _kst_gen = get_kst_today_context()
+        _gen_sys = (
+            f"[시스템 기준일 안내: 오늘은 {_kst_gen['dot_full']}이며, 현재 당해 연도는 {_kst_gen['year']}년({_kst_gen['year']}년 귀속)입니다. "
+            f"질문에 별도 과거 연도 지정이 없으면 반드시 오늘({_kst_gen['dot_full']}) 및 {_kst_gen['year']}년 최신 기준으로 답변하세요.]\n\n"
+            + GENERAL_SYSTEM_PROMPT
+        )
         cfg = types.GenerateContentConfig(
-            system_instruction=GENERAL_SYSTEM_PROMPT,
+            system_instruction=_gen_sys,
             tools=[types.Tool(google_search=types.GoogleSearch())],
             max_output_tokens=32768 if is_pro else 16384,
         )
@@ -3431,7 +4048,7 @@ def run_general_agent(user_input: str, raw_query: str = "", has_file: bool = Fal
                         header += notice
                     if diag_notes and _show_diag():
                         header += f"> *(ℹ️ 앞선 시도 실패: {' | '.join(diag_notes)})*\n"
-                    return header + "\n" + text + _grounding_sources_md(resp)
+                    return header + "\n" + _strip_leaked_temporal_guideline(text) + _grounding_sources_md(resp)
                 except Exception as e:
                     last_error = e
                     if _is_slow_error(e):
@@ -3468,16 +4085,40 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False, room
         if unleash_mode:
             live_pool = get_pro_key_pool()
 
-        today_str = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y년 %m월 %d일")
+        _kst_now = get_kst_today_context()
+        today_str = _kst_now["kr_full"]
+        today_dot = _kst_now["dot_full"]
+        cur_yr = _kst_now["year"]
+        prev_yr = _kst_now["prev_year"]
+        user_input = ensure_hidden_date_directive_in_input(user_input, query_for_routing)
+        _q_yr_info = detect_query_attribution_years(query_for_routing, full_user_input=user_input)
         unleash_guide = (
             "\n[🚀 PRO/ARGON 3배 리미트 해제 모드 가동 중: 법령 검색 최대 21회, 원문 조회 최대 36회, 판례·심판례·예규 조회 최대 6~9회, "
             "원문 길이 최대 60,000자까지 한도가 3배 확장되었습니다. 관련 법령 조문과 판례·예규의 구체적 사실관계(이유)까지 빠짐없이 깊이 있게 대조하여 작성하세요.]\n"
             if unleash_mode else ""
         )
-        dynamic_prompt = (
-            f"[시스템 기준일 안내: 오늘 날짜는 {today_str}입니다. 질문에 등장하는 연도와 날짜의 과거/현재 여부를 반드시 오늘 날짜({today_str}) 기준으로 판단하세요.]"
-            f"{unleash_guide}\n\n" + SYSTEM_PROMPT
-        )
+        if _q_yr_info["mode"] == "PAST_ONLY":
+            _p_str = ", ".join(f"{y}년" for y in _q_yr_info["past_years"])
+            _f_past = _q_yr_info["past_years"][0]
+            _sys_yr_header = (
+                f"[시스템 기준일 및 과거 귀속연도({_p_str}) 보호 원칙: 오늘은 {today_dot} ({today_str})이나, "
+                f"이번 질문은 사용자가 **과거 귀속연도({_p_str})**를 직접 지정한 질의입니다! "
+                f"절대 {cur_yr}년 최신 개정 세법을 소급 적용하여 답하지 말고, 반드시 `search_historical_law_for_gemini(law_name, target_date=\"{_f_past}1231\", ...)` 도구와 부칙 경과조치를 통해 **{_p_str} 과세기간 당시 시행 구법(종전 규정)**으로 결론과 계산을 도출하세요.]"
+            )
+        elif _q_yr_info["mode"] == "MIXED_PAST_AND_CURRENT":
+            _p_str = ", ".join(f"{y}년" for y in _q_yr_info["past_years"])
+            _sys_yr_header = (
+                f"[시스템 기준일 및 복합 귀속연도({_p_str} vs {cur_yr}년) 분리 원칙: 오늘은 {today_dot} ({today_str})이며, "
+                f"이번 질문은 과거 연도({_p_str})와 당해 연도({cur_yr}년)가 함께 등장하는 질의입니다. "
+                f"과거({_p_str}) 발생분은 구법 타임머신(`search_historical_law_for_gemini`) 및 부칙 경과조치(종전 규정)로 판단하고, {cur_yr}년 당해 연도분은 현행 개정 세법으로 분리하여 절대 섞이지 않게 판단하세요.]"
+            )
+        else:
+            _sys_yr_header = (
+                f"[시스템 기준일 및 귀속연도 최우선 원칙: 오늘은 {today_dot} ({today_str})이며, 현재 당해 과세연도(귀속연도)는 {cur_yr}년({cur_yr}년 귀속)입니다. "
+                f"① 이번 질문에는 특정 과거 연도가 명시되지 않았으므로 과거('{prev_yr}년 귀속' 등)가 아니라 반드시 당해 연도('{cur_yr}년 귀속') 및 오늘({today_dot}) 현재 시행 중인 최신 개정 세법·시행령을 최우선 기준으로 판단하세요. "
+                f"② 단, 직전 대화 맥락이 과거 귀속 사안이거나 법령 부칙(적용례·경과조치)상 종전 규정이 적용되는 사안은 부칙 경과조치에 따라 종전 규정과 현행 개정 규정을 엄격히 구분하여 왜곡 없이 판단하세요.]"
+            )
+        dynamic_prompt = f"{_sys_yr_header}{unleash_guide}\n\n" + SYSTEM_PROMPT
 
         tools_list = [
             search_law_for_gemini,
@@ -3536,7 +4177,8 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False, room
                         dynamic_prompt=dynamic_prompt,
                         tools_list=tools_list,
                         safety_settings=safety_settings,
-                        unleash=unleash_mode
+                        unleash=unleash_mode,
+                        raw_query=query_for_routing
                     )
                     precheck_badge = f" · 🛡️ **3단 크로스체크 완료({precheck_len:,}자 검증)**" if precheck_len > 0 else ""
                     diag_header = f"> {final_badge}{precheck_badge}\n"

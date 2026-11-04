@@ -18,6 +18,7 @@ from . import headcount as H
 from . import parsers as P
 
 from .ui_common import (  # noqa: F401
+    _pdf_memo,
     _S,
     _block_titles_for_year,
     _cohort_corp_size,
@@ -3048,7 +3049,7 @@ def _page_calculation():
         with st.container(key="ec_btn_pdf_step3_wrap"):
             st.download_button(
                 "PDF 출력",
-                data=_build_step3_calculation_pdf_bytes(s, pkg, matrix_cols),
+                data=_pdf_memo(s, "step3_calc", _build_step3_calculation_pdf_bytes, pkg, matrix_cols),
                 file_name=f"{corp_nm_fn}_{tax_yr}년귀속_통합고용세액공제_계산서.pdf",
                 mime="application/pdf",
                 width="stretch",

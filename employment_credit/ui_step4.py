@@ -1184,8 +1184,20 @@ def _compute_report_cache_sig(s: dict, tax_yr: int) -> str:
         "year_recs": s.get("year_recs"),
         "audit": s.get("pro_audit_comment"),
     }
-    raw_json = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+    try:
+        raw_json = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str, separators=(",", ":"))
+    except TypeError:
+        raw_json = json.dumps(_sig_norm_keys(payload), sort_keys=True, ensure_ascii=False, default=str, separators=(",", ":"))
     return hashlib.sha256(raw_json.encode("utf-8")).hexdigest()[:24]
+
+
+def _sig_norm_keys(obj):
+    """서명 계산용: 저장·복원 과정에서 연도 키가 숫자(2025)와 글자("2025")로 섞여도 정렬 오류가 나지 않도록 키를 글자로 통일 (원본은 그대로)"""
+    if isinstance(obj, dict):
+        return {str(k): _sig_norm_keys(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sig_norm_keys(v) for v in obj]
+    return obj
 
 
 def _build_report_docx_bytes(md_text: str) -> bytes:

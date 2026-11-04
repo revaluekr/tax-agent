@@ -17,6 +17,8 @@
   13자리 주민등록번호 패턴은 백업 전에 한 번 더 마스킹합니다.
 """
 from __future__ import annotations
+from zoneinfo import ZoneInfo
+_KST = ZoneInfo("Asia/Seoul")   # 한국 표준시(KST)
 
 import base64
 import copy
@@ -104,9 +106,14 @@ def _derive_fernet_key(password: str, salt: bytes) -> bytes:
 def _mask_rrn_deep(obj):
     if isinstance(obj, str):
         return _RRN_FULL_RE.sub(r"\1-\2******", obj)
+    if isinstance(obj, float):
+        import math as _m
+        return obj if _m.isfinite(obj) else None
+    if isinstance(obj, (datetime.datetime, datetime.date)):
+        return obj.isoformat()
     if isinstance(obj, dict):
-        return {k: _mask_rrn_deep(v) for k, v in obj.items()}
-    if isinstance(obj, list):
+        return {str(k) if not isinstance(k, (str, int, float, bool)) and k is not None else k: _mask_rrn_deep(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
         return [_mask_rrn_deep(v) for v in obj]
     return obj
 
@@ -151,7 +158,7 @@ def make_backup_bytes(state: dict, password: str) -> tuple[bytes, str]:
     clean_state = _sanitize_state_for_backup(state or {})
     corp = str((clean_state.get("biz") or {}).get("상호") or "미입력사업장").strip()
     tax_yr = int(clean_state.get("tax_year") or 2026)
-    saved_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    saved_at = datetime.datetime.now(_KST).strftime("%Y-%m-%d %H:%M")
 
     envelope = {
         "version": 1,
@@ -161,7 +168,7 @@ def make_backup_bytes(state: dict, password: str) -> tuple[bytes, str]:
         "people_count": len(clean_state.get("people") or {}),
         "state": clean_state,
     }
-    raw_json = json.dumps(envelope, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    raw_json = json.dumps(envelope, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8")
     compressed = zlib.compress(raw_json, level=6)
 
     salt = os.urandom(SALT_LEN)
@@ -169,7 +176,7 @@ def make_backup_bytes(state: dict, password: str) -> tuple[bytes, str]:
     blob = MAGIC + salt + token
 
     safe_corp = re.sub(r'[\\/:*?"<>|\s]+', "_", corp)[:30] or "사업장"
-    today = datetime.date.today().strftime("%Y%m%d")
+    today = datetime.datetime.now(_KST).date().strftime("%Y%m%d")
     filename = f"통합고용세액공제_{safe_corp}_{tax_yr}귀속_{today}.{FILE_EXT}"
     return blob, filename
 
@@ -203,4 +210,9 @@ def read_backup_bytes(blob: bytes, password: str) -> dict:
 
     if not isinstance(inner, dict) or not isinstance(inner.get("state"), dict):
         raise BackupError("백업 파일 내부 구조가 올바르지 않습니다.")
+    st_dict = inner["state"]
+    if isinstance(st_dict.get("year_recs"), dict):
+        st_dict["year_recs"] = {(int(k) if str(k).isdigit() else k): v for k, v in st_dict["year_recs"].items()}
+    if isinstance(st_dict.get("manual_extra_years"), list):
+        st_dict["manual_extra_years"] = [int(y) for y in st_dict["manual_extra_years"] if str(y).isdigit()]
     return inner

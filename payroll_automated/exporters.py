@@ -15,6 +15,9 @@
 """
 
 from __future__ import annotations
+import math
+from zoneinfo import ZoneInfo
+_KST = ZoneInfo("Asia/Seoul")   # 한국 표준시(KST)
 
 import base64
 import io
@@ -143,19 +146,46 @@ def get_korean_font_names() -> Tuple[str, str]:
     return _REGISTERED_FONT_REGULAR, _REGISTERED_FONT_BOLD
 
 
-def _fmt_won(val: Any) -> str:
+def _safe_num(val: Any, default: int = 0) -> int:
+    if val is None or isinstance(val, bool):
+        return default
+    if isinstance(val, int):
+        return val
+    if isinstance(val, float):
+        return int(round(val)) if math.isfinite(val) else default
+    s = str(val).strip().replace(",", "").replace("원", "").replace(" ", "")
+    if not s or s.lower() in ("nan", "none", "null", "inf", "-inf", "-"):
+        return default
+    if s.startswith(("△", "▲")):
+        s = "-" + s[1:].strip()
     try:
-        n = int(round(float(val or 0)))
+        f = float(s)
+        return int(round(f)) if math.isfinite(f) else default
+    except (ValueError, TypeError, OverflowError):
+        return default
+
+
+def _safe_flt(val: Any, default: float = 0.0) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    if isinstance(val, (int, float)):
+        f = float(val)
+        return f if math.isfinite(f) else default
+    s = str(val).strip().replace(",", "").replace(" ", "")
+    try:
+        f = float(s)
+        return f if math.isfinite(f) else default
     except (ValueError, TypeError):
-        n = 0
+        return default
+
+
+def _fmt_won(val: Any) -> str:
+    n = _safe_num(val, 0)
     return f"{n:,}" if n != 0 else ""
 
 
 def _fmt_won_zero(val: Any) -> str:
-    try:
-        n = int(round(float(val or 0)))
-    except (ValueError, TypeError):
-        n = 0
+    n = _safe_num(val, 0)
     return f"{n:,}"
 
 
@@ -163,7 +193,7 @@ def _parse_ym_parts(year_month: str) -> Tuple[int, int]:
     m = re.match(r"^(\d{4})\D*(\d{1,2})", str(year_month or ""))
     if m:
         return int(m.group(1)), int(m.group(2))
-    now = datetime.now()
+    now = datetime.now(_KST)
     return now.year, now.month
 
 
@@ -240,10 +270,10 @@ def export_wehago_payroll_excel(employees: List[Dict[str, Any]]) -> bytes:
             str(emp.get("직종", "")),
         ]
         for k in WEHAGO_PAYROLL_FIELD_KEYS:
-            val = int(emp.get(k, 0) or 0)
+            val = _safe_num(emp.get(k, 0), 0)
             row_vals.append(val)
             totals[k] += val
-        net_val = int(emp.get("차인지급액", 0) or 0)
+        net_val = _safe_num(emp.get("차인지급액", 0), 0)
         row_vals.append(net_val)
         totals["차인지급액"] += net_val
 
@@ -347,9 +377,9 @@ def export_wehago_freelancer_excel(
         pay8 = pay_digits[:8] if len(pay_digits) >= 8 else default_pay8
 
         rrn_digits = re.sub(r"[^0-9*]", "", str(fr.get("_raw_rrn") or fr.get("주민등록번호") or ""))
-        gross = int(fr.get("지급총액", 0) or 0)
-        itax = int(fr.get("소득세", 0) or 0)
-        ltax = int(fr.get("지방소득세", 0) or 0)
+        gross = _safe_num(fr.get("지급총액", 0), 0)
+        itax = _safe_num(fr.get("소득세", 0), 0)
+        ltax = _safe_num(fr.get("지방소득세", 0), 0)
 
         # 업종코드 6자리만 추출 (예: '940909 (기타자영업)' -> '940909')
         raw_ind = str(fr.get("소득구분") or "940909")
@@ -367,7 +397,7 @@ def export_wehago_freelancer_excel(
             clean_ind,
             pay8,
             gross,
-            int(fr.get("세율", 3) or 3),
+            _safe_num(fr.get("세율", 3), 3),
             itax,
             ltax,
             "0",
@@ -451,8 +481,8 @@ def export_payroll_ledger_pdf(
 
     for idx, emp in enumerate(employees or [], start=1):
         for k in WEHAGO_PAYROLL_FIELD_KEYS:
-            totals[k] += int(emp.get(k, 0) or 0)
-        totals["차인지급액"] += int(emp.get("차인지급액", 0) or 0)
+            totals[k] += _safe_num(emp.get(k, 0), 0)
+        totals["차인지급액"] += _safe_num(emp.get("차인지급액", 0), 0)
 
         c_code = str(emp.get("사원코드") or f"{idx:03d}")
         c_name = str(emp.get("성명", ""))
@@ -556,29 +586,29 @@ def export_payroll_ledger_pdf(
 def _extract_nonzero_pay_and_ded_items(emp: Dict[str, Any]) -> Tuple[List[Tuple[str, int]], List[Tuple[str, int]]]:
     """실제 금액이 0원이 아닌 지급 항목과 공제 항목만 순서대로 추출 (업로드된 샘플 6종과 동일하게 빈 줄 생략)"""
     pay_candidates = [
-        ("기본급", int(emp.get("기본급", 0) or 0)),
-        ("상여", int(emp.get("상여", 0) or 0)),
-        ("식대", int(emp.get("식대", 0) or 0)),
-        ("자가운전보조금", int(emp.get("자가운전보조금", 0) or 0)),
-        ("약정연장근로수당", int(emp.get("약정연장근로수당", 0) or 0)),
-        ("약정휴일근로수당", int(emp.get("약정휴일근로수당", 0) or 0)),
-        ("연장근로수당", int(emp.get("연장근로수당", 0) or 0)),
-        ("휴일근로수당", int(emp.get("휴일근로수당", 0) or 0)),
-        ("미사용연차수당", int(emp.get("미사용연차수당", 0) or 0)),
-        ("결근공제", int(emp.get("결근공제", 0) or 0)),
-        ("조정금액", int(emp.get("조정금액", 0) or 0)),
+        ("기본급", _safe_num(emp.get("기본급", 0), 0)),
+        ("상여", _safe_num(emp.get("상여", 0), 0)),
+        ("식대", _safe_num(emp.get("식대", 0), 0)),
+        ("자가운전보조금", _safe_num(emp.get("자가운전보조금", 0), 0)),
+        ("약정연장근로수당", _safe_num(emp.get("약정연장근로수당", 0), 0)),
+        ("약정휴일근로수당", _safe_num(emp.get("약정휴일근로수당", 0), 0)),
+        ("연장근로수당", _safe_num(emp.get("연장근로수당", 0), 0)),
+        ("휴일근로수당", _safe_num(emp.get("휴일근로수당", 0), 0)),
+        ("미사용연차수당", _safe_num(emp.get("미사용연차수당", 0), 0)),
+        ("결근공제", _safe_num(emp.get("결근공제", 0), 0)),
+        ("조정금액", _safe_num(emp.get("조정금액", 0), 0)),
     ]
     ded_candidates = [
-        ("국민연금", int(emp.get("국민연금", 0) or 0)),
-        ("건강보험", int(emp.get("건강보험", 0) or 0)),
-        ("고용보험", int(emp.get("고용보험", 0) or 0)),
-        ("장기요양보험료", int(emp.get("장기요양보험료", 0) or 0)),
-        ("소득세", int(emp.get("소득세", 0) or 0)),
-        ("지방소득세", int(emp.get("지방소득세", 0) or 0)),
-        ("학자금상환액", int(emp.get("학자금상환액", 0) or 0)),
-        ("건강보험료정산", int(emp.get("건강보험료정산", 0) or 0)),
-        ("장기요양보험료정산", int(emp.get("장기요양보험료정산", 0) or 0)),
-        ("국민연금정산", int(emp.get("국민연금정산", 0) or 0)),
+        ("국민연금", _safe_num(emp.get("국민연금", 0), 0)),
+        ("건강보험", _safe_num(emp.get("건강보험", 0), 0)),
+        ("고용보험", _safe_num(emp.get("고용보험", 0), 0)),
+        ("장기요양보험료", _safe_num(emp.get("장기요양보험료", 0), 0)),
+        ("소득세", _safe_num(emp.get("소득세", 0), 0)),
+        ("지방소득세", _safe_num(emp.get("지방소득세", 0), 0)),
+        ("학자금상환액", _safe_num(emp.get("학자금상환액", 0), 0)),
+        ("건강보험료정산", _safe_num(emp.get("건강보험료정산", 0), 0)),
+        ("장기요양보험료정산", _safe_num(emp.get("장기요양보험료정산", 0), 0)),
+        ("국민연금정산", _safe_num(emp.get("국민연금정산", 0), 0)),
     ]
     pay_items = [(k, v) for k, v in pay_candidates if v != 0]
     ded_items = [(k, v) for k, v in ded_candidates if v != 0]
@@ -593,22 +623,22 @@ def _build_calc_method_table(emp: Dict[str, Any], font_reg: str, font_bold: str,
         ["계산방법", "", ""],
         ["구분", "산출식 또는 산출방법", "지급액"],
     ]
-    meal_pay = int(emp.get("식대", 0) or 0)
-    fixed_ot = int(emp.get("약정연장근로수당", 0) or 0)
-    ot_pay = int(emp.get("연장근로수당", 0) or 0)
-    hol_pay = int(emp.get("휴일근로수당", 0) or 0)
-    abs_ded = int(emp.get("결근공제", 0) or 0)
+    meal_pay = _safe_num(emp.get("식대", 0), 0)
+    fixed_ot = _safe_num(emp.get("약정연장근로수당", 0), 0)
+    ot_pay = _safe_num(emp.get("연장근로수당", 0), 0)
+    hol_pay = _safe_num(emp.get("휴일근로수당", 0), 0)
+    abs_ded = _safe_num(emp.get("결근공제", 0), 0)
 
     if meal_pay > 0:
         calc_rows.append(["식대", "비과세식대", _fmt_won_zero(meal_pay)])
     if fixed_ot > 0:
         calc_rows.append(["약정연장근로수당", "약정 고정연장수당", _fmt_won_zero(fixed_ot)])
     if ot_pay > 0:
-        ot_h = float(emp.get("연장근무시간", 0) or 0)
+        ot_h = _safe_flt(emp.get("연장근무시간", 0), 0)
         hr_txt = f"{ot_h:.1f}시간" if ot_h > 0 else "연장근로시간 × 통상시급 × 1.5"
         calc_rows.append(["연장근로수당", hr_txt, _fmt_won_zero(ot_pay)])
     if hol_pay > 0:
-        hol_h = float(emp.get("휴일근무시간", 0) or 0)
+        hol_h = _safe_flt(emp.get("휴일근무시간", 0), 0)
         hol_txt = f"{hol_h:.1f}시간" if hol_h > 0 else "휴일근로시간 × 통상시급 × 1.5"
         calc_rows.append(["휴일근로수당", hol_txt, _fmt_won_zero(hol_pay)])
     if abs_ded != 0:
@@ -677,11 +707,11 @@ def render_single_employee_payslip_pdf(
     emp_pos = str(emp.get("직급") or "")
     emp_birth = rrn_to_birth_dot(str(emp.get("주민등록번호") or ""))
     emp_hire = str(emp.get("입사일") or "").replace("-", ".")
-    ot_h = float(emp.get("연장근무시간", 0) or 0)
-    hol_h = float(emp.get("휴일근무시간", 0) or 0)
-    hourly_w = int(emp.get("약정시급", 0) or 0)
-    if hourly_w <= 0 and int(emp.get("기본급", 0) or 0) > 0:
-        hourly_w = int(round(int(emp.get("기본급", 0)) / 209.0))
+    ot_h = _safe_flt(emp.get("연장근무시간", 0), 0)
+    hol_h = _safe_flt(emp.get("휴일근무시간", 0), 0)
+    hourly_w = _safe_num(emp.get("약정시급", 0), 0)
+    if hourly_w <= 0 and _safe_num(emp.get("기본급", 0), 0) > 0:
+        hourly_w = int(round(_safe_num(emp.get("기본급", 0), 0) / 209.0))
 
     pay_items, ded_items = _extract_nonzero_pay_and_ded_items(emp)
     gross_tot_str = _fmt_won_zero(emp.get("지급액계"))
@@ -855,7 +885,7 @@ def render_single_employee_payslip_pdf(
             elements.append(Spacer(1, 1.5 * mm))
         elif tpl == "근로기준5":
             work_days = 20
-            tot_hours = int(round(float(emp.get("월근무시간", 160) or 160)))
+            tot_hours = int(round(_safe_flt(emp.get("월근무시간", 160), 160)))
             wh_data = [
                 ["근로일수", "총 근무시간", "연장근로시간", "야간근로시간", "휴일근로시간", "통상시급(원)"],
                 [
@@ -1173,10 +1203,10 @@ def export_freelancer_ledger_pdf(
     tot_net = 0
 
     for idx, fr in enumerate(freelancers or [], start=1):
-        gross = int(fr.get("지급총액", 0) or 0)
-        itax = int(fr.get("소득세", 0) or 0)
-        ltax = int(fr.get("지방소득세", 0) or 0)
-        net = int(fr.get("차인지급액", 0) or 0)
+        gross = _safe_num(fr.get("지급총액", 0), 0)
+        itax = _safe_num(fr.get("소득세", 0), 0)
+        ltax = _safe_num(fr.get("지방소득세", 0), 0)
+        net = _safe_num(fr.get("차인지급액", 0), 0)
         tot_gross += gross
         tot_itax += itax
         tot_ltax += ltax
@@ -1307,11 +1337,11 @@ def _draw_freelancer_card(c: Any, fr: Dict[str, Any], corp_name: str = "", year_
     font_reg, font_bold = get_korean_font_names()
     yyyy, mm_num = _parse_ym_parts(fr.get("귀속년월") or year_month)
     pay_dt_str = str(fr.get("지급년월일") or pay_date or f"{yyyy}-{mm_num:02d}-25")
-    gross = int(fr.get("지급총액", 0) or 0)
-    itax = int(fr.get("소득세", 0) or 0)
-    ltax = int(fr.get("지방소득세", 0) or 0)
-    ded = int(fr.get("공제액계", itax + ltax) or (itax + ltax))
-    net = int(fr.get("차인지급액", gross - ded) or (gross - ded))
+    gross = _safe_num(fr.get("지급총액", 0), 0)
+    itax = _safe_num(fr.get("소득세", 0), 0)
+    ltax = _safe_num(fr.get("지방소득세", 0), 0)
+    ded = _safe_num(fr.get("공제액계", itax + ltax), itax + ltax)
+    net = _safe_num(fr.get("차인지급액", gross - ded), gross - ded)
     m_ind = re.search(r"\b(\d{6})\b", str(fr.get("소득구분") or "940909"))
     code = m_ind.group(1) if m_ind else "940909"
     ind_nm = _freelancer_industry_name(code)

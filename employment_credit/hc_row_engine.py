@@ -39,6 +39,46 @@ from .hc_eligibility import (
 # ══════════════════════════════════════════════════════════════════
 # 4. 개인별 · 월별 상시근로자 및 우측 블록(당해 세액공제 · 1차 사후관리 · 2차 사후관리) 계산
 # ══════════════════════════════════════════════════════════════════
+
+_FAST_FRAC_STR_MAP: dict[str, Fraction] = {
+    "0": Fraction(0),
+    "0.0": Fraction(0),
+    "0.5": Fraction(1, 2),
+    "0.75": Fraction(3, 4),
+    "1": Fraction(1),
+    "1.0": Fraction(1),
+    "2.0": Fraction(2),
+    "3.0": Fraction(3),
+    "4.0": Fraction(4),
+    "5.0": Fraction(5),
+    "6.0": Fraction(6),
+    "7.0": Fraction(7),
+    "8.0": Fraction(8),
+    "9.0": Fraction(9),
+    "10.0": Fraction(10),
+    "11.0": Fraction(11),
+    "12.0": Fraction(12),
+}
+
+def _to_frac(v: float | int | Fraction | None) -> Fraction:
+    if v is None or v is False or v == 0:
+        return Fraction(0)
+    if isinstance(v, Fraction):
+        return v
+    if isinstance(v, int) and not isinstance(v, bool):
+        return Fraction(v)
+    sv = str(v)
+    hit = _FAST_FRAC_STR_MAP.get(sv)
+    if hit is not None:
+        return hit
+    try:
+        f = Fraction(sv)
+        if len(_FAST_FRAC_STR_MAP) < 1024:
+            _FAST_FRAC_STR_MAP[sv] = f
+        return f
+    except Exception:
+        return Fraction(0)
+
 def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
     corp_size = R.normalize_corp_size(ctx.get("corp_size") or "중소기업")
     corp_size_by_year = ctx.get("corp_size_by_year") or {}
@@ -257,12 +297,12 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
         youth_flags_b2a.append(yf2a)
         youth_flags_b3a.append(yf3a)
 
-    row_sum_frac = sum((Fraction(str(v)) for v in months if v), Fraction(0))
-    yth_b1_frac = sum((Fraction(str(v)) for v, f in zip(months, youth_flags_b1) if v and f), Fraction(0))
-    yth_b2_frac = sum((Fraction(str(v)) for v, f in zip(months, youth_flags_b2) if v and f), Fraction(0))
-    yth_b3_frac = sum((Fraction(str(v)) for v, f in zip(months, youth_flags_b3) if v and f), Fraction(0))
-    yth_b2a_frac = sum((Fraction(str(v)) for v, f in zip(months, youth_flags_b2a) if v and f), Fraction(0))
-    yth_b3a_frac = sum((Fraction(str(v)) for v, f in zip(months, youth_flags_b3a) if v and f), Fraction(0))
+    row_sum_frac = sum((_to_frac(v) for v in months if v), Fraction(0))
+    yth_b1_frac = sum((_to_frac(v) for v, f in zip(months, youth_flags_b1) if v and f), Fraction(0))
+    yth_b2_frac = sum((_to_frac(v) for v, f in zip(months, youth_flags_b2) if v and f), Fraction(0))
+    yth_b3_frac = sum((_to_frac(v) for v, f in zip(months, youth_flags_b3) if v and f), Fraction(0))
+    yth_b2a_frac = sum((_to_frac(v) for v, f in zip(months, youth_flags_b2a) if v and f), Fraction(0))
+    yth_b3a_frac = sum((_to_frac(v) for v, f in zip(months, youth_flags_b3a) if v and f), Fraction(0))
 
     row_sum = float(row_sum_frac)
     yth_sum_b1 = float(yth_b1_frac)
@@ -428,9 +468,9 @@ def year_totals(computed_rows: list[dict], months_in_year: int, year: int | None
             m_non.append(None)
             continue
         idx = m - 1
-        r_sum_f = sum((Fraction(str(r["months"][idx])) for r in computed_rows if r["months"][idx]), Fraction(0))
+        r_sum_f = sum((_to_frac(r["months"][idx]) for r in computed_rows if r["months"][idx]), Fraction(0))
         y_sum_f = sum(
-            (Fraction(str(r["months"][idx])) for r in computed_rows if r["months"][idx] and r["youth_flags"][idx]),
+            (_to_frac(r["months"][idx]) for r in computed_rows if r["months"][idx] and r["youth_flags"][idx]),
             Fraction(0),
         )
         r_sum = float(r_sum_f)
@@ -439,12 +479,12 @@ def year_totals(computed_rows: list[dict], months_in_year: int, year: int | None
         m_yth.append(y_sum)
         m_non.append(round(r_sum - y_sum, 4))
 
-    reg_total_f = sum((Fraction(str(r["row_sum"])) for r in computed_rows), Fraction(0))
-    yth_b1_f = sum((Fraction(str(r["youth_sum"])) for r in computed_rows), Fraction(0))
-    yth_b2_f = sum((Fraction(str(r.get("youth_sum_b2", r["youth_sum"]))) for r in computed_rows), Fraction(0))
-    yth_b3_f = sum((Fraction(str(r.get("youth_sum_b3", r["youth_sum"]))) for r in computed_rows), Fraction(0))
-    yth_b2a_f = sum((Fraction(str(r.get("youth_sum_b2a", r.get("youth_sum_b2", r["youth_sum"])))) for r in computed_rows), Fraction(0))
-    yth_b3a_f = sum((Fraction(str(r.get("youth_sum_b3a", r.get("youth_sum_b3", r["youth_sum"])))) for r in computed_rows), Fraction(0))
+    reg_total_f = sum((_to_frac(r["row_sum"]) for r in computed_rows), Fraction(0))
+    yth_b1_f = sum((_to_frac(r["youth_sum"]) for r in computed_rows), Fraction(0))
+    yth_b2_f = sum((_to_frac(r.get("youth_sum_b2", r["youth_sum"])) for r in computed_rows), Fraction(0))
+    yth_b3_f = sum((_to_frac(r.get("youth_sum_b3", r["youth_sum"])) for r in computed_rows), Fraction(0))
+    yth_b2a_f = sum((_to_frac(r.get("youth_sum_b2a", r.get("youth_sum_b2", r["youth_sum"]))) for r in computed_rows), Fraction(0))
+    yth_b3a_f = sum((_to_frac(r.get("youth_sum_b3a", r.get("youth_sum_b3", r["youth_sum"]))) for r in computed_rows), Fraction(0))
 
     reg_total = float(reg_total_f)
     yth_total_b1 = float(yth_b1_f)
@@ -474,23 +514,23 @@ def year_totals(computed_rows: list[dict], months_in_year: int, year: int | None
     A_b3_yth_act = trunc2(yth_b3a_f / n)
 
     # ── 2) B방식(현행: [각 상시근로자 근무개월수 ÷ 과세연도 개월수 → 100분의 1 미만 절사]의 합계, 청년등외 = 전체 - 청년등) ──
-    B_b1_reg = round(sum(trunc2(Fraction(str(r["row_sum"])) / n) for r in computed_rows), 2)
-    B_b1_yth = round(sum(trunc2(Fraction(str(r["youth_sum"])) / n) for r in computed_rows), 2)
+    B_b1_reg = round(sum(trunc2(_to_frac(r["row_sum"]) / n) for r in computed_rows), 2)
+    B_b1_yth = round(sum(trunc2(_to_frac(r["youth_sum"]) / n) for r in computed_rows), 2)
     B_b1_gen = round(max(0.0, B_b1_reg - B_b1_yth), 2)
 
     B_b2_reg = B_b1_reg
-    B_b2_yth = round(sum(trunc2(Fraction(str(r.get("youth_sum_b2", r["youth_sum"]))) / n) for r in computed_rows), 2)
+    B_b2_yth = round(sum(trunc2(_to_frac(r.get("youth_sum_b2", r["youth_sum"])) / n) for r in computed_rows), 2)
     B_b2_gen = round(max(0.0, B_b2_reg - B_b2_yth), 2)
     B_b2_yth_act = round(
-        sum(trunc2(Fraction(str(r.get("youth_sum_b2a", r.get("youth_sum_b2", r["youth_sum"])))) / n) for r in computed_rows),
+        sum(trunc2(_to_frac(r.get("youth_sum_b2a", r.get("youth_sum_b2", r["youth_sum"]))) / n) for r in computed_rows),
         2,
     )
 
     B_b3_reg = B_b1_reg
-    B_b3_yth = round(sum(trunc2(Fraction(str(r.get("youth_sum_b3", r["youth_sum"]))) / n) for r in computed_rows), 2)
+    B_b3_yth = round(sum(trunc2(_to_frac(r.get("youth_sum_b3", r["youth_sum"])) / n) for r in computed_rows), 2)
     B_b3_gen = round(max(0.0, B_b3_reg - B_b3_yth), 2)
     B_b3_yth_act = round(
-        sum(trunc2(Fraction(str(r.get("youth_sum_b3a", r.get("youth_sum_b3", r["youth_sum"])))) / n) for r in computed_rows),
+        sum(trunc2(_to_frac(r.get("youth_sum_b3a", r.get("youth_sum_b3", r["youth_sum"]))) / n) for r in computed_rows),
         2,
     )
 
@@ -597,14 +637,14 @@ def regular_excluding_part_time(computed_rows: list[dict], emp_types: list[str],
     if m == "B":
         return round(
             sum(
-                trunc2(Fraction(str(r["row_sum"])) / n)
+                trunc2(_to_frac(r["row_sum"]) / n)
                 for r, et in zip(computed_rows, emp_types)
                 if et not in (R.EMP_PT_050, R.EMP_PT_075)
             ),
             2,
         )
     total_f = sum(
-        (Fraction(str(r["row_sum"])) for r, et in zip(computed_rows, emp_types) if et not in (R.EMP_PT_050, R.EMP_PT_075)),
+        (_to_frac(r["row_sum"]) for r, et in zip(computed_rows, emp_types) if et not in (R.EMP_PT_050, R.EMP_PT_075)),
         Fraction(0),
     )
     return trunc2(total_f / n)

@@ -158,7 +158,6 @@ section[data-testid="stSidebar"] div[data-testid="stMarkdownContainer"] {
 }
 
 /* 🟢 사이드바 최상단 모드 전환 버튼 (자율 에이전트AI / 통합고용세액공제) */
-.st-key-btn_top_mode_calendar button,
 .st-key-btn_top_mode_agent button,
 .st-key-btn_top_mode_credit button,
 .st-key-btn_top_mode_payroll button {
@@ -541,16 +540,25 @@ _CITED_ARTICLE_TAG_RE = re.compile(
 
 RUNTIME_API_KEYS_FILE = os.path.join(".workspace_storage", "runtime_api_keys.json")
 
+_RT_KEYS_CACHE: dict = {"mtime": None, "data": {}}
+
+
 def _load_runtime_api_keys() -> dict:
+    """runtime_api_keys.json을 파일이 바뀐 경우에만 다시 읽습니다 (화면 새로고침마다 디스크를 반복해서 읽지 않도록). 돌려주는 값은 복사본."""
     try:
-        if os.path.exists(RUNTIME_API_KEYS_FILE):
+        mt = os.path.getmtime(RUNTIME_API_KEYS_FILE)
+    except OSError:
+        _RT_KEYS_CACHE["mtime"], _RT_KEYS_CACHE["data"] = None, {}
+        return {}
+    if _RT_KEYS_CACHE["mtime"] != mt:
+        try:
             with open(RUNTIME_API_KEYS_FILE, "r", encoding="utf-8") as rf:
                 data = json.load(rf)
-            if isinstance(data, dict):
-                return data
-    except Exception:
-        pass
-    return {}
+            _RT_KEYS_CACHE["data"] = data if isinstance(data, dict) else {}
+        except Exception:
+            _RT_KEYS_CACHE["data"] = {}
+        _RT_KEYS_CACHE["mtime"] = mt
+    return dict(_RT_KEYS_CACHE["data"])
 
 def _save_runtime_api_keys(new_entries: dict) -> None:
     os.makedirs(".workspace_storage", exist_ok=True)
@@ -612,7 +620,7 @@ def _fmt_ymd_str(raw_ymd: str) -> str:
     return str(raw_ymd or "-")
 
 @st.cache_data(ttl=43200, show_spinner=False)
-def _fetch_latest_tax_law_promulgations_cached() -> dict[str, dict]:
+def _fetch_latest_tax_law_promulgations_cached(kst_ymd: str = "") -> dict[str, dict]:
     """
     [속도 개선 ①] 9개 주요 세법 및 각 시행령(총 18건)의 최신 공포·시행 정보를
     ThreadPoolExecutor(6워커)로 병렬 조회하여 초기 구동 시간을 8~12초 -> 1~1.5초로 단축합니다.
@@ -635,17 +643,32 @@ def _fetch_latest_tax_law_promulgations_cached() -> dict[str, dict]:
                 if str(it.get("법령명한글", "")).replace(" ", "") == target_clean
             ]
             candidates = exact_matches if exact_matches else raw_res[:1]
-            candidates.sort(
+            candidates_latest = sorted(
+                candidates,
                 key=lambda x: (str(x.get("공포일자", "")), str(x.get("시행일자", ""))),
                 reverse=True
             )
-            top = candidates[0]
+            top = candidates_latest[0]
+            enforced_now_cands = [
+                it for it in candidates
+                if len(re.sub(r"\D", "", str(it.get("시행일자", "")))) == 8
+                and int(re.sub(r"\D", "", str(it.get("시행일자", "")))) <= today_int
+            ]
+            if enforced_now_cands:
+                enforced_now_cands.sort(
+                    key=lambda x: (str(x.get("시행일자", "")), str(x.get("공포일자", ""))),
+                    reverse=True
+                )
+                active_cur_item = enforced_now_cands[0]
+            else:
+                active_cur_item = top
+
             prom_raw = str(top.get("공포일자", "")).strip()
             enf_raw = str(top.get("시행일자", "")).strip()
             prom_no = str(top.get("공포번호", "")).strip()
             rev_type = str(top.get("제개정구분명", "개정")).strip()
-            law_id = str(top.get("법령ID") or top.get("법령일련번호") or "").strip()
-            mst_id = str(top.get("법령일련번호") or top.get("MST") or law_id).strip()
+            law_id = str(active_cur_item.get("법령ID") or active_cur_item.get("법령일련번호") or "").strip()
+            mst_id = str(active_cur_item.get("법령일련번호") or active_cur_item.get("MST") or law_id).strip()
 
             days_since_prom = 9999
             if len(prom_raw) == 8 and prom_raw.isdigit():
@@ -694,7 +717,8 @@ def _fetch_latest_tax_law_promulgations_cached() -> dict[str, dict]:
 
 def fetch_latest_tax_law_promulgations() -> dict[str, dict]:
     """일시적 네트워크 오류로 빈 결과가 반환될 경우 12시간 동안 빈 딕셔너리가 캐싱되지 않도록 즉시 캐시를 비웁니다."""
-    res = _fetch_latest_tax_law_promulgations_cached()
+    kst_ymd = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d")
+    res = _fetch_latest_tax_law_promulgations_cached(kst_ymd)
     if not res:
         _fetch_latest_tax_law_promulgations_cached.clear()
     return res
@@ -2198,10 +2222,11 @@ def _trigger_agent_task(
 
     current_messages.append({"role": "user", "content": display_prompt})
 
+    _invisible_date_prefix = getattr(agent, "build_hidden_date_law_directive", lambda q="": "")(effective_prompt)
     if has_attached_file and not force_flash:
         doc_cap = MAX_DOC_CHARS_PRO if is_pro_request else MAX_DOC_CHARS_STANDARD
         full_input_for_agent = (
-            f"{history_context}{target_block}"
+            f"{history_context}{target_block}{_invisible_date_prefix}"
             f"[현재 사용자 질문]: {effective_prompt}\n\n"
             f"아래는 사용자가 현재 대화방에 업로드한 첨부파일({current_file_info['name']})의 데이터입니다. "
             f"직전 대화 맥락과 이 파일 데이터를 바탕으로 관련 법령·예규·판례·환율을 정밀 대조하여 답변하세요:\n"
@@ -2210,7 +2235,11 @@ def _trigger_agent_task(
             f"========================================"
         )
     else:
-        full_input_for_agent = f"{history_context}{target_block}[현재 사용자 질문]: {effective_prompt}" if (history_context or target_block) else effective_prompt
+        full_input_for_agent = (
+            f"{history_context}{target_block}{_invisible_date_prefix}[현재 사용자 질문]: {effective_prompt}"
+            if (history_context or target_block)
+            else f"{_invisible_date_prefix}[현재 사용자 질문]: {effective_prompt}"
+        )
 
     if general_mode_on:
         # 일반(웹 검색) 모드: agent.run_agent가 "[일반]" 표시를 보고 법령 도구 없이 Gemini + Google 검색 경로로 처리
@@ -2696,9 +2725,9 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
                 )
                 in_paid_key = st.text_input(
                     "Google AI Studio 유료키 (GEMINI_PAID_KEY, 선택)",
-                    value=rt_cur.get("GEMINI_PAID_KEY", ""),
+                    value="",   # 저장된 유료키는 화면에 다시 보내지 않음 (빈칸 = 기존 값 유지)
                     type="password",
-                    placeholder="AIzaSy..."
+                    placeholder=("등록됨 — 바꿀 때만 새 키 입력" if rt_cur.get("GEMINI_PAID_KEY") else "AIzaSy...")
                 )
             with c_rt2:
                 cur_v_on = getattr(agent, "is_vertex_enabled", lambda: False)()
@@ -2714,9 +2743,9 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
                 )
                 in_gcp_sa = st.text_area(
                     "Vertex AI 서비스 계정 JSON 전체 (GCP_SERVICE_ACCOUNT_JSON)",
-                    value=rt_cur.get("GCP_SERVICE_ACCOUNT_JSON", ""),
+                    value="",   # 저장된 서비스 계정 JSON(비공개 키 포함)은 화면에 다시 보내지 않음 (빈칸 = 기존 값 유지)
                     height=95,
-                    placeholder='{"type": "service_account", "project_id": "...", ...}'
+                    placeholder=("등록됨 — 바꿀 때만 새 JSON 전체 붙여넣기" if rt_cur.get("GCP_SERVICE_ACCOUNT_JSON") else '{"type": "service_account", "project_id": "...", ...}')
                 )
             if st.form_submit_button("💾 입력한 API 보안키 및 Vertex AI 설정 즉시 저장·적용", type="primary", width="stretch"):
                 to_save = {}
@@ -2818,7 +2847,7 @@ if "anon_workspace_id" not in st.session_state:
     _cleanup_stale_anon_workspaces(max_age_sec=86400)
 
 if "app_top_mode" not in st.session_state:
-    st.session_state.app_top_mode = "CALENDAR"
+    st.session_state.app_top_mode = "AGENT"
 
 def _detect_any_room_button_click() -> None:
     """
@@ -2837,8 +2866,9 @@ def _detect_any_room_button_click() -> None:
 _detect_any_room_button_click()
 
 with st.sidebar:
-    # B안: 로고 + 세로 메뉴 3개 (선택된 메뉴만 연한 바탕 + 포인트색)
+    # B안: 로고 + 세로 메뉴 4개 (선택된 메뉴만 연한 바탕 + 포인트색)
     import ui_theme as _ui_theme
+    st.markdown(_ui_theme.SIDEBAR_CSS, unsafe_allow_html=True)
     st.markdown(_ui_theme.brand_html(), unsafe_allow_html=True)
     with st.container(key="sbx_nav"):
         for _lbl, _key, _mode, _ico in (
@@ -2945,10 +2975,13 @@ with st.sidebar:
             or st.session_state.anon_workspace_id
         )
 
-    # 📦 [모드별 사이드바 카드]
+    # 📦 [대분류 패키지별 전용 사이드바 렌더링]
     if st.session_state.app_top_mode == "CALENDAR":
-        import calendar_todo_ui
-        calendar_todo_ui.render_calendar_sidebar_controls()
+        try:
+            import calendar_scheduler
+            calendar_scheduler.render_calendar_sidebar()
+        except ModuleNotFoundError:
+            st.warning("📦 `calendar_scheduler` 폴더를 프로젝트 루트에 함께 업로드해 주세요.")
     elif st.session_state.app_top_mode == "CREDIT_CALC":
         import employment_credit
         employment_credit.render_credit_sidebar()
@@ -3094,10 +3127,6 @@ current_task_key = f"{effective_ws_id}::{selected_room}"
 active_task = task_mgr["tasks"].get(current_task_key)
 is_current_room_running = bool(active_task and active_task.get("status") == "running")
 
-# 우측 하단 귀여운 얼굴 홈버튼 + 네모 말풍선 + 60% 반투명 확장 To-Do 관제판 (모든 화면 공통 주입)
-import calendar_todo_ui as _cal_todo_ui
-_cal_todo_ui.render_floating_kakao_todo_widget()
-
 if st.session_state.app_top_mode == "CALENDAR":
     if st.session_state.get("show_inline_api_manager"):
         with st.container(border=True):
@@ -3106,7 +3135,11 @@ if st.session_state.app_top_mode == "CALENDAR":
             if st.button("✖️ API 관리창 닫기"):
                 st.session_state.show_inline_api_manager = False
                 st.rerun()
-    _cal_todo_ui.render_calendar_scheduler_main()
+    try:
+        import calendar_scheduler
+        calendar_scheduler.render_calendar_main()
+    except ModuleNotFoundError:
+        st.error("📦 `calendar_scheduler` 패키지 폴더를 찾을 수 없습니다. GitHub 저장소에 `calendar_scheduler/` 폴더(`__init__.py`, `ui.py`)를 함께 업로드해 주세요.")
     st.stop()
 
 if st.session_state.app_top_mode == "CREDIT_CALC":
