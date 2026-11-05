@@ -44,8 +44,21 @@ def sb_title(icon_name: str, text: str, pill: str = "") -> str:
 
 
 def brand_html() -> str:
+    import streamlit as _st
+    cur_mode = str(_st.session_state.get("app_top_mode", "CALENDAR"))
+    prev_mode = _st.session_state.get("_sbx_last_top_mode")
+    jump_seq = int(_st.session_state.get("_sbx_cat_jump_seq", 0))
+    if prev_mode is not None and prev_mode != cur_mode:
+        jump_seq += 1
+        _st.session_state["_sbx_cat_jump_seq"] = jump_seq
+    _st.session_state["_sbx_last_top_mode"] = cur_mode
+
+    jump_cls = ""
+    if jump_seq > 0:
+        jump_cls = " sbx-cat-jump-a" if (jump_seq % 2 == 1) else " sbx-cat-jump-b"
+
     cat_svg = (
-        "<svg width='24' height='24' viewBox='0 0 32 32' fill='none' xmlns='http://www.w3.org/2000/svg' "
+        "<svg width='26' height='26' viewBox='0 0 32 32' fill='none' xmlns='http://www.w3.org/2000/svg' "
         "style='flex:none;display:block;'>"
         "<path d='M6.5 15.5 L7.5 6.2 C7.6 5.3 8.7 5.0 9.3 5.6 L13.2 9.5 C14.1 9.2 15.0 9.1 16.0 9.1 "
         "C17.0 9.1 17.9 9.2 18.8 9.5 L22.7 5.6 C23.3 5.0 24.4 5.3 24.5 6.2 L25.5 15.5 "
@@ -54,8 +67,8 @@ def brand_html() -> str:
         "</svg>"
     )
     return (
-        "<div class='sbx-brand'>"
-        f"<div class='sbx-logo'>{cat_svg}</div>"
+        f"<div class='sbx-brand' data-jump-seq='{jump_seq}'>"
+        f"<div class='sbx-logo{jump_cls}' id='sbx-cat-logo-box'>{cat_svg}</div>"
         "<div class='sbx-brand-t'>세무 <span style='color:#3182F6;'>AI</span> 에이전트</div>"
         "</div>"
     )
@@ -125,16 +138,58 @@ SIDEBAR_CSS = """
 [data-testid="stApp"] section[data-testid="stSidebar"] .ec-law-badge-orange{background:#FFF5E5 !important;color:#D97706 !important;}
 [data-testid="stApp"] section[data-testid="stSidebar"] .sb-badge-pro{background:#E8F3FF !important;color:#3182F6 !important;}
 
-/* 최상단 브랜드 영역 (.sbx-brand): 홈버튼과 동일한 파란 스쿼클(#3898FF) + 굵은 흰선 고양이 실루엣 + '세무 AI 에이전트' */
-.sbx-brand{display:flex;align-items:center;gap:11px;padding:4px 2px 12px;}
-.sbx-logo{
-  width:38px;height:38px;border-radius:13px;
-  background:#3898FF;
-  display:flex;align-items:center;justify-content:center;
-  box-shadow:0 4px 12px rgba(49,130,246,.28), inset 0 1px 1px rgba(255,255,255,.35);
-  flex:none;
+/* 최상단 브랜드 영역 (.sbx-brand): '세무 AI 에이전트' 문구 확대 + 4대 메뉴 이동 시 고양이 웅크림 -> 0.5배 점프 -> 제자리 착지 애니메이션 */
+@keyframes sbxCatCrouchJumpA {
+  0%   { transform: translateY(0px) scaleX(1) scaleY(1); }
+  22%  { transform: translateY(4px) scaleX(1.18) scaleY(0.76); }
+  52%  { transform: translateY(-21px) scaleX(0.90) scaleY(1.12); }
+  76%  { transform: translateY(2px) scaleX(1.09) scaleY(0.90); }
+  88%  { transform: translateY(-4px) scaleX(0.97) scaleY(1.03); }
+  100% { transform: translateY(0px) scaleX(1) scaleY(1); }
 }
-.sbx-brand-t{font-size:1.12rem;font-weight:800;color:#191F28;letter-spacing:-.4px;line-height:1.2;white-space:nowrap;}
+@keyframes sbxCatCrouchJumpB {
+  0%   { transform: translateY(0px) scaleX(1) scaleY(1); }
+  22%  { transform: translateY(4px) scaleX(1.18) scaleY(0.76); }
+  52%  { transform: translateY(-21px) scaleX(0.90) scaleY(1.12); }
+  76%  { transform: translateY(2px) scaleX(1.09) scaleY(0.90); }
+  88%  { transform: translateY(-4px) scaleX(0.97) scaleY(1.03); }
+  100% { transform: translateY(0px) scaleX(1) scaleY(1); }
+}
+.sbx-brand{
+  display:flex;
+  align-items:center;
+  gap:12px;
+  padding:18px 2px 14px;
+  overflow:visible !important;
+}
+.sbx-logo{
+  width:42px;
+  height:42px;
+  border-radius:14px;
+  background:#3898FF;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  box-shadow:0 5px 14px rgba(49,130,246,.32), inset 0 1px 1px rgba(255,255,255,.38);
+  flex:none;
+  transform-origin:center bottom;
+  will-change:transform;
+  cursor:pointer;
+}
+.sbx-logo.sbx-cat-jump-a{
+  animation:sbxCatCrouchJumpA 0.52s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.sbx-logo.sbx-cat-jump-b{
+  animation:sbxCatCrouchJumpB 0.52s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.sbx-brand-t{
+  font-size:1.38rem !important;
+  font-weight:800 !important;
+  color:#191F28 !important;
+  letter-spacing:-0.03em !important;
+  line-height:1.15 !important;
+  white-space:nowrap !important;
+}
 
 /* 최상단 메뉴 네비게이션: 모든 활성 메뉴를 소프트 블루(#E8F3FF) + 토스 블루(#3182F6, 800)로 단일 통일 */
 [data-testid="stApp"] section[data-testid="stSidebar"] [class*="st-key-btn_top_mode_"] div.stButton button{

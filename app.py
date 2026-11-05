@@ -3275,8 +3275,41 @@ with st.sidebar:
                 type=("primary" if st.session_state.app_top_mode == _mode else "secondary"),
                 width="stretch",
             ):
+                st.session_state["_sbx_cat_jump_seq"] = int(st.session_state.get("_sbx_cat_jump_seq", 0)) + 1
+                st.session_state["_sbx_last_top_mode"] = _mode
                 st.session_state.app_top_mode = _mode
                 st.rerun()
+        # 4개 메뉴("달력", "자율 에이전트AI", "통합고용세액공제", "인건비 자동화") 중 어느 메뉴에 있든
+        # 클릭 즉시 고양이 이모티콘이 몸을 웅크리고 0.5배 점프 후 제자리 착지하도록 전역 이벤트 바인딩
+        components.html(
+            """
+            <script>
+            (function() {
+                const pWin = window.parent;
+                const pDoc = pWin.document;
+                function playCatCrouchJump() {
+                    const logoEl = pDoc.querySelector('section[data-testid="stSidebar"] .sbx-logo');
+                    if (!logoEl) return;
+                    logoEl.classList.remove("sbx-cat-jump-a", "sbx-cat-jump-b");
+                    void logoEl.offsetWidth;
+                    pWin._sbxJsToggle = !pWin._sbxJsToggle;
+                    logoEl.classList.add(pWin._sbxJsToggle ? "sbx-cat-jump-a" : "sbx-cat-jump-b");
+                }
+                if (!pWin._sbxCatGlobalClickBound) {
+                    pWin._sbxCatGlobalClickBound = true;
+                    pDoc.addEventListener("mousedown", function(e) {
+                        const t = e.target;
+                        if (!t || !t.closest) return;
+                        if (t.closest('[class*="st-key-btn_top_mode_"] button') || t.closest('.sbx-logo')) {
+                            playCatCrouchJump();
+                        }
+                    }, true);
+                }
+            })();
+            </script>
+            """,
+            height=0,
+        )
 
     if st.session_state.app_top_mode == "AGENT":
         # 📦 [카드 1] 엔진 출력 모드 제어 (자율 에이전트AI 모드에서만 노출; 통합고용세액공제 모드에서는 법령·예규 모니터링 카드로 대체)
