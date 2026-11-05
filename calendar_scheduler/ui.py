@@ -22,7 +22,7 @@ import ui_theme as _ui_theme
 _WEEKDAYS_SHORT = ("월", "화", "수", "목", "금", "토", "일")
 _WEEKDAYS_FULL = ("월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일")
 _SUN_FIRST_HEADERS = ("일", "월", "화", "수", "목", "금", "토")
-_STATE_SCHEMA_VERSION = "v15_outer_whisper_skyblue_and_elevated_white_boards"
+_STATE_SCHEMA_VERSION = "v17_silver_iceblue_cell_borders"
 
 
 def _html(s: str) -> str:
@@ -884,8 +884,8 @@ CALENDAR_MAIN_CSS = """
 [data-testid="stApp"] [data-testid="stAppScrollToBottomContainer"],
 [data-testid="stApp"] [data-testid="stBottom"] > div,
 header[data-testid="stHeader"] {
-    background: #F4F9FF !important;
-    background-color: #F4F9FF !important;
+    background: #F4F6FA !important;
+    background-color: #F4F6FA !important;
     font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, sans-serif !important;
     letter-spacing: -0.02em !important;
 }
@@ -1119,12 +1119,14 @@ div[data-testid="InputInstructions"],
     background: #1B64DA !important;
 }
 
-/* [5]-1 좌측 달력 본체 & 우측 할 일 카드: 순백색(#FFFFFF) 보드 + 초미세 하늘빛 바깥 배경(#F4F9FF) 위로 떠오르는 입체 그림자 */
+/* [5]-1 좌측 달력 본체 & 우측 할 일 카드: 20% 반투명 글래스모피즘 + 연한 쿨그레이(#F4F6FA) 배경과 조화되는 그림자 */
 [data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-cal_glass_surface {
-    background: #FFFFFF !important;
-    background-color: #FFFFFF !important;
-    border: 1px solid #E2ECF8 !important;
-    box-shadow: 0 12px 32px rgba(25, 60, 125, 0.06), 0 3px 10px rgba(25, 60, 125, 0.03) !important;
+    background: rgba(255, 255, 255, 0.20) !important;
+    background-color: rgba(255, 255, 255, 0.20) !important;
+    backdrop-filter: blur(22px) saturate(180%) !important;
+    -webkit-backdrop-filter: blur(22px) saturate(180%) !important;
+    border: 1.5px solid #DCE6F5 !important;
+    box-shadow: 0 10px 28px rgba(15, 35, 75, 0.05), 0 2px 8px rgba(15, 35, 75, 0.03) !important;
     border-radius: 28px !important;
     padding: 18px 20px 22px 20px !important;
     min-height: 830px !important;
@@ -1132,10 +1134,12 @@ div[data-testid="InputInstructions"],
 }
 
 [data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-cal_right_todo_card {
-    background: #FFFFFF !important;
-    background-color: #FFFFFF !important;
-    border: 1px solid #E2ECF8 !important;
-    box-shadow: 0 12px 32px rgba(25, 60, 125, 0.06), 0 3px 10px rgba(25, 60, 125, 0.03) !important;
+    background: rgba(255, 255, 255, 0.20) !important;
+    background-color: rgba(255, 255, 255, 0.20) !important;
+    backdrop-filter: blur(22px) saturate(180%) !important;
+    -webkit-backdrop-filter: blur(22px) saturate(180%) !important;
+    border: 1.5px solid #DCE6F5 !important;
+    box-shadow: 0 10px 28px rgba(15, 35, 75, 0.05), 0 2px 8px rgba(15, 35, 75, 0.03) !important;
     border-radius: 28px !important;
     padding: 22px 20px 18px 20px !important;
     min-height: 830px !important;
@@ -1162,10 +1166,10 @@ div[data-testid="InputInstructions"],
 .tds-cal-dow-cell.sun { color: #F04452; }
 .tds-cal-dow-cell.sat { color: #3182F6; }
 
-/* 달력 날짜 셀 (146px 풀사이즈) */
+/* 달력 날짜 셀 (146px 풀사이즈 — 2번 실버 아이스 블루 테두리 1.8px solid #C4D9F8 적용) */
 .tds-cal-day-card {
     background: #FFFFFF;
-    border: 1px solid #E5ECF5;
+    border: 1.8px solid #C4D9F8;
     border-radius: 20px;
     height: 146px;
     min-height: 146px;
@@ -1181,17 +1185,17 @@ div[data-testid="InputInstructions"],
 }
 .tds-cal-day-card:hover {
     transform: translateY(-2px);
-    border-color: #B8D4FF;
+    border-color: #64A8FF;
     box-shadow: 0 8px 20px rgba(49, 130, 246, 0.11);
 }
 .tds-cal-day-card.selected {
     background: #FFFFFF !important;
-    border: 2px solid #3182F6 !important;
-    box-shadow: 0 8px 22px rgba(49, 130, 246, 0.13);
+    border: 2.5px solid #3182F6 !important;
+    box-shadow: 0 8px 22px rgba(49, 130, 246, 0.15), 0 0 0 2px rgba(49, 130, 246, 0.10) !important;
 }
 .tds-cal-day-card.empty {
-    background: #F9FBFF;
-    border: 1px solid #EDF3FA;
+    background: rgba(255, 255, 255, 0.32);
+    border: 1.5px solid rgba(196, 217, 248, 0.55);
     box-shadow: none;
 }
 .tds-cal-day-top {
