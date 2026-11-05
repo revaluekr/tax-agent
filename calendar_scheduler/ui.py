@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-달력 스케줄러 + Today To Do (0건 클린 초기화 & 시안 100% 일치 HTML 렌더링) +
-하늘색 시간 입력칸 & 3D 푸른 입체 버튼 독(Dock) + 구글 캘린더형 중앙 상세 모달 (calendar_scheduler/ui.py)
+달력 스케줄러 + Today To Do (시안 100% 일치 & Tab/Enter 정밀 제어) +
+3D 푸른 입체 버튼 독(Dock) + 시안 100% 동일 화면 중앙 상세입력 모달 (calendar_scheduler/ui.py)
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ import ui_theme as _ui_theme
 _WEEKDAYS_SHORT = ("월", "화", "수", "목", "금", "토", "일")
 _WEEKDAYS_FULL = ("월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일")
 _SUN_FIRST_HEADERS = ("일", "월", "화", "수", "목", "금", "토")
-_STATE_SCHEMA_VERSION = "v5_clean_3d_dock"
+_STATE_SCHEMA_VERSION = "v6_exact_mockup_100"
 
 
 def _html(s: str) -> str:
@@ -41,8 +41,7 @@ def get_kst_now_hm() -> str:
 def _default_schedules_for_month(year: int, month: int, today_d: date) -> Dict[int, List[Dict[str, Any]]]:
     """
     당해 연월의 기본 세무기한 일정을 생성합니다.
-    - 요청사항 반영: 오늘자(focus_day)에 하드코딩되어 있던 5개 임의 할 일 리스트는 모두 삭제하여
-      첫 진입 시 Today To Do가 0건(깨끗한 빈 상태)으로 시작하도록 초기화했습니다.
+    - 오늘자(focus_day) 임의 할 일 리스트는 모두 비워 Today To Do가 0건으로 시작합니다.
     """
     last_day = calendar.monthrange(year, month)[1]
 
@@ -57,7 +56,7 @@ def _default_schedules_for_month(year: int, month: int, today_d: date) -> Dict[i
                 "category": "세무기한",
                 "ai_status": "작업 완료, 승인요청중",
                 "done": False,
-                "alarm": True,
+                "alarm": False,
                 "alarm_glow": False,
                 "show_on_cal": True,
                 "urgent": True,
@@ -65,7 +64,7 @@ def _default_schedules_for_month(year: int, month: int, today_d: date) -> Dict[i
                 "repeat": "매월 반복",
                 "location": "홈택스 / 위택스",
                 "link_target": "PAYROLL_EMP",
-                "link_label": "[인건비 자동화] 화면 바로가기",
+                "link_label": "[인건비 자동화 > 급여명세서] 바로가기",
                 "attachment": "",
                 "sub_tasks": [
                     {"title": "원천징수이행상황신고서 마감 검증", "done": True},
@@ -130,7 +129,7 @@ def _default_schedules_for_month(year: int, month: int, today_d: date) -> Dict[i
                 "category": "세무기한",
                 "ai_status": "작업 완료, 승인요청중",
                 "done": False,
-                "alarm": True,
+                "alarm": False,
                 "alarm_glow": False,
                 "show_on_cal": True,
                 "urgent": True,
@@ -362,7 +361,12 @@ def _sort_day_events(evs: List[Dict[str, Any]], urgent_first: bool = False) -> L
 
 
 def _is_alarm_due(ev: Dict[str, Any], is_today_selected: bool) -> bool:
-    """알림이 켜진 할 일이 종 반짝임(노랑-주황-빨강) 상태인지 판별"""
+    """
+    종 반짝임(노랑-주황-빨강) 작동 조건:
+    - 반드시 [알림]이 켜져 있고(alarm=True), 완료되지 않았으며,
+    - 시간이 입력되어 있고 현재 시각이 해당 시간 이상이거나(정각 도달), 상세모달에서 시연을 켠 경우에만 작동!
+    - 시간 입력 없이 등록한 할 일은 절대 반짝이지 않음.
+    """
     if not ev.get("alarm") or ev.get("done"):
         return False
     if ev.get("alarm_glow"):
@@ -607,14 +611,25 @@ def _jump_to_target_mode(target_mode: str) -> None:
 
 CALENDAR_MAIN_CSS = """
 <style>
-/* ═════════ Toss Web TDS 달력 (브라우저 90% 배율 최적화) + Today To Do 시안 100% 일치 스타일 ═════════ */
+/* ═════════ Toss Web TDS 달력 + Today To Do 시안 100% 일치 스타일 ═════════ */
 [data-testid="stApp"] [data-testid="stMain"],
 [data-testid="stApp"] [data-testid="stAppScrollToBottomContainer"],
 [data-testid="stApp"] [data-testid="stBottom"] > div {
     background: #F4F6FA !important;
 }
 
-/* 종(Bell) 아이콘 자체만 노랑-주황-빨강-주황-노랑으로 반짝이는 애니메이션 (주변 빛/배경 완전 제거) */
+/* 1. 모든 입력창의 'Press Enter to apply' 문구 완전 삭제 (글자 잘림 원천 해결!) */
+[data-testid="InputInstructions"],
+div[data-testid="InputInstructions"] {
+    display: none !important;
+    visibility: hidden !important;
+    width: 0 !important;
+    height: 0 !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+}
+
+/* 종(Bell) 아이콘 자체만 노랑-주황-빨강-주황-노랑으로 반짝이는 애니메이션 (빛/배경 없음) */
 @keyframes tdsBellSparkleOnly {
     0%, 100% {
         color: #FACC15;
@@ -634,7 +649,7 @@ CALENDAR_MAIN_CSS = """
     }
 }
 
-/* 1. 상단 워크스페이스 필 바 */
+/* 상단 워크스페이스 필 바 */
 .tds-workspace-pill-bar {
     display: flex;
     flex-wrap: wrap;
@@ -658,21 +673,10 @@ CALENDAR_MAIN_CSS = """
     gap: 10px;
     flex-wrap: wrap;
 }
-.tds-wp-user {
-    font-weight: 800;
-    color: #191F28;
-}
-.tds-wp-sep {
-    color: #D1D6DB;
-}
-.tds-wp-silent {
-    color: #4E5968;
-    font-weight: 500;
-}
-.tds-wp-silent b {
-    color: #3182F6;
-    font-weight: 800;
-}
+.tds-wp-user { font-weight: 800; color: #191F28; }
+.tds-wp-sep { color: #D1D6DB; }
+.tds-wp-silent { color: #4E5968; font-weight: 500; }
+.tds-wp-silent b { color: #3182F6; font-weight: 800; }
 .tds-wp-right-badge {
     display: inline-flex;
     align-items: center;
@@ -685,7 +689,7 @@ CALENDAR_MAIN_CSS = """
     border-radius: 999px;
 }
 
-/* 2. 우측 상단 연도 표시 A안 ('2026년' + '11월') & '＋ 일정 추가하기' */
+/* 우측 상단 연도 표시 A안 ('2026년' + '11월') & '＋ 일정 추가하기' */
 .tds-month-heading-box {
     display: flex;
     flex-direction: column;
@@ -743,7 +747,7 @@ CALENDAR_MAIN_CSS = """
     border-color: #1B64DA !important;
 }
 
-/* 3. 좌측 30% 반투명 글래스모피즘 달력 본체 */
+/* 좌측 30% 반투명 글래스모피즘 달력 본체 */
 [data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-cal_glass_surface {
     background: rgba(255, 255, 255, 0.30) !important;
     backdrop-filter: blur(22px) saturate(180%) !important;
@@ -889,7 +893,7 @@ CALENDAR_MAIN_CSS = """
     margin: 0 !important;
 }
 
-/* 4. 우측 'Today To Do' 헤더 & 슬림 진행률 바 (시안 100% 일치) */
+/* 우측 'Today To Do' 헤더 & 슬림 진행률 바 */
 .tds-todo-hdr-left {
     display: flex;
     align-items: center;
@@ -951,7 +955,7 @@ CALENDAR_MAIN_CSS = """
     box-shadow: none !important;
 }
 
-/* 0건 초기 빈 상태 안내 카드 (시안과 100% 동일) */
+/* 0건 초기 빈 상태 안내 카드 */
 .tds-empty-todo-box {
     padding: 32px 20px;
     border-radius: 22px;
@@ -983,7 +987,7 @@ CALENDAR_MAIN_CSS = """
     color: #8B95A1;
 }
 
-/* 5. 시안 100% 일치 순수 HTML 할 일 카드 (높이 58px 고정 + 투명 클릭 오버레이) */
+/* 시안 100% 일치 순수 HTML 할 일 카드 (높이 58px 고정 + 투명 클릭 오버레이) */
 .tds-todo-card-pure {
     position: relative;
     height: 58px;
@@ -1143,7 +1147,7 @@ CALENDAR_MAIN_CSS = """
     z-index: 4;
 }
 
-/* 할 일 카드 위를 덮는 투명 클릭 오버레이 행 (체크박스 / 상세열기 / 대각선 삭제) */
+/* 할 일 카드 위를 덮는 투명 클릭 오버레이 행 */
 [data-testid="stApp"] [data-testid="stMainBlockContainer"] [class*="st-key-todo_hit_row_"] {
     margin-top: -62px !important;
     height: 58px !important;
@@ -1165,7 +1169,7 @@ CALENDAR_MAIN_CSS = """
     margin: 0 !important;
 }
 
-/* 6. 우측 최하단 한 줄 일체형 대화입력 독(Dock) 바 (시안 100% 동일: 빈 대화칸 + 하늘색 시간칸 + 3D 푸른 입체 버튼 3종) */
+/* ══════ 우측 최하단 한 줄 일체형 대화입력 독(Dock) 바 (시안 100% 일치) ══════ */
 [data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-todo_bottom_dock_a {
     background: #FFFFFF !important;
     border: 2.5px solid #3182F6 !important;
@@ -1175,13 +1179,14 @@ CALENDAR_MAIN_CSS = """
     margin-top: 10px !important;
 }
 
-/* (2) 좌측 할 일 대화입력칸 (문구 비움, 부드러운 연회색 라운드 박스) */
+/* 좌측 할 일 대화입력칸 (Press Enter 문구 제거로 글자 절대 안 잘림!) */
 [data-testid="stApp"] [data-testid="stMainBlockContainer"] [class*="st-key-dock_chat_wrap_"] [data-testid="stTextInput"] > div > div {
     background: #F4F6FA !important;
     border: 1.5px solid #E5E8EB !important;
     border-radius: 14px !important;
     height: 40px !important;
     min-height: 40px !important;
+    padding-right: 6px !important;
     box-shadow: none !important;
 }
 [data-testid="stApp"] [data-testid="stMainBlockContainer"] [class*="st-key-dock_chat_wrap_"] [data-testid="stTextInput"] input {
@@ -1192,16 +1197,18 @@ CALENDAR_MAIN_CSS = """
     font-size: 0.84rem !important;
     font-weight: 700 !important;
     color: #191F28 !important;
-    padding: 0 12px !important;
+    padding: 0 10px !important;
+    width: 100% !important;
 }
 
-/* (3) 중앙 하늘색 부드러운 네모 시간 입력칸 (자유 숫자 타이핑 가능) */
+/* 중앙 하늘색 부드러운 네모 시간 입력칸 */
 [data-testid="stApp"] [data-testid="stMainBlockContainer"] [class*="st-key-dock_time_wrap_"] [data-testid="stTextInput"] > div > div {
     background: #F0F8FF !important;
     border: 2.5px solid #60A5FA !important;
     border-radius: 14px !important;
     height: 40px !important;
     min-height: 40px !important;
+    padding: 0 !important;
     box-shadow: 0 2px 6px rgba(96, 165, 250, 0.15) !important;
 }
 [data-testid="stApp"] [data-testid="stMainBlockContainer"] [class*="st-key-dock_time_wrap_"] [data-testid="stTextInput"] input {
@@ -1213,59 +1220,92 @@ CALENDAR_MAIN_CSS = """
     font-weight: 800 !important;
     color: #191F28 !important;
     text-align: center !important;
-    padding: 0 6px !important;
+    padding: 0 4px !important;
     font-variant-numeric: tabular-nums !important;
 }
-[data-testid="stApp"] [data-testid="stMainBlockContainer"] [class*="st-key-dock_time_wrap_"] [data-testid="stTextInput"] input::placeholder {
-    color: #94A3B8 !important;
-    font-weight: 800 !important;
-}
 
-/* (4) 우측 [알림], [달력], [상세] 푸른색 3D 입체 버튼 & 클릭 시 4px 꾹 눌리는 입체 효과 */
-[data-testid="stApp"] [data-testid="stMainBlockContainer"] [class*="st-key-btn_dock_alarm_"] div.stButton > button,
-[data-testid="stApp"] [data-testid="stMainBlockContainer"] [class*="st-key-btn_dock_cal_"] div.stButton > button,
-[data-testid="stApp"] [data-testid="stMainBlockContainer"] [class*="st-key-btn_dock_detail_"] div.stButton > button {
+/* 우측 [알림], [달력], [상세] 푸른색 3D 입체 버튼 (빨간색 완전 차단!) */
+[data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-todo_bottom_dock_a button,
+[data-testid="stApp"] [data-testid="stMainBlockContainer"] [class*="st-key-btn_dock_"] button {
     height: 38px !important;
     min-height: 38px !important;
-    padding: 0 8px !important;
+    padding: 0 6px !important;
     border-radius: 13px !important;
     font-size: 0.78rem !important;
     font-weight: 800 !important;
     background: #3182F6 !important;
-    border: 1px solid #60A5FA !important;
+    background-color: #3182F6 !important;
+    border: 1.5px solid #60A5FA !important;
     color: #FFFFFF !important;
     box-shadow: 0 4px 0 #1B64DA, 0 5px 10px rgba(49, 130, 246, 0.25) !important;
     transform: translateY(0px) !important;
-    transition: transform 0.08s ease, box-shadow 0.08s ease, background 0.12s ease !important;
+    transition: transform 0.08s ease, box-shadow 0.08s ease, background-color 0.12s ease !important;
     cursor: pointer !important;
 }
-[data-testid="stApp"] [data-testid="stMainBlockContainer"] [class*="st-key-btn_dock_alarm_"] div.stButton > button:hover,
-[data-testid="stApp"] [data-testid="stMainBlockContainer"] [class*="st-key-btn_dock_cal_"] div.stButton > button:hover,
-[data-testid="stApp"] [data-testid="stMainBlockContainer"] [class*="st-key-btn_dock_detail_"] div.stButton > button:hover {
+[data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-todo_bottom_dock_a button * {
+    color: #FFFFFF !important;
+    font-weight: 800 !important;
+}
+[data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-todo_bottom_dock_a button:hover {
     background: #2575EB !important;
+    background-color: #2575EB !important;
 }
 /* 마우스로 클릭하는 순간 아래로 4px 꾹 눌리는 3D 입체 효과 */
-[data-testid="stApp"] [data-testid="stMainBlockContainer"] [class*="st-key-btn_dock_alarm_"] div.stButton > button:active,
-[data-testid="stApp"] [data-testid="stMainBlockContainer"] [class*="st-key-btn_dock_cal_"] div.stButton > button:active,
-[data-testid="stApp"] [data-testid="stMainBlockContainer"] [class*="st-key-btn_dock_detail_"] div.stButton > button:active {
+[data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-todo_bottom_dock_a button:active {
     background: #184EB2 !important;
+    background-color: #184EB2 !important;
     border-color: #144094 !important;
     box-shadow: 0 0px 0 #144094, inset 0 3px 5px rgba(10, 34, 82, 0.45) !important;
     transform: translateY(4px) !important;
 }
-/* [알림] 또는 [달력] 토글이 OFF 상태일 때도 푸른 톤의 소프트 3D 버튼 유지 */
-[data-testid="stApp"] [data-testid="stMainBlockContainer"] [class*="st-key-btn_dock_alarm_"] div.stButton > button[kind="secondary"],
-[data-testid="stApp"] [data-testid="stMainBlockContainer"] [class*="st-key-btn_dock_cal_"] div.stButton > button[kind="secondary"] {
-    background: #E8F3FF !important;
-    border: 1.5px solid #60A5FA !important;
-    color: #3182F6 !important;
-    box-shadow: 0 4px 0 #93C5FD, 0 4px 8px rgba(49, 130, 246, 0.12) !important;
+
+/* 숨김 Enter 제출용 트리거 버튼 */
+[data-testid="stApp"] [data-testid="stMainBlockContainer"] [class*="st-key-btn_dock_enter_submit_"] {
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    opacity: 0 !important;
+    overflow: hidden !important;
+    pointer-events: none !important;
+    z-index: -1 !important;
 }
-[data-testid="stApp"] [data-testid="stMainBlockContainer"] [class*="st-key-btn_dock_alarm_"] div.stButton > button[kind="secondary"]:active,
-[data-testid="stApp"] [data-testid="stMainBlockContainer"] [class*="st-key-btn_dock_cal_"] div.stButton > button[kind="secondary"]:active {
-    background: #DBEAFE !important;
-    box-shadow: 0 0px 0 #93C5FD, inset 0 2px 4px rgba(49, 130, 246, 0.25) !important;
-    transform: translateY(4px) !important;
+
+/* ══════ 화면 중앙 상세입력 창 (st.dialog를 시안 이미지와 100% 동일하게 커스텀) ══════ */
+div[data-testid="stDialog"] > div > div {
+    border-radius: 34px !important;
+    padding: 24px 28px !important;
+    border: 2px solid #FFFFFF !important;
+    box-shadow: 0 24px 64px -12px rgba(15, 23, 42, 0.28) !important;
+    background: #FFFFFF !important;
+    max-width: 780px !important;
+}
+.gcal-tds-title-wrap [data-testid="stTextInput"] > div > div {
+    background: transparent !important;
+    border: none !important;
+    border-bottom: 3.5px solid #3182F6 !important;
+    border-radius: 0 !important;
+    padding-left: 0 !important;
+    box-shadow: none !important;
+}
+.gcal-tds-title-wrap [data-testid="stTextInput"] input {
+    font-size: 1.55rem !important;
+    font-weight: 900 !important;
+    color: #191F28 !important;
+    padding-left: 2px !important;
+}
+.gcal-tds-row-lbl {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: #E8F3FF;
+    color: #3182F6;
+    font-size: 0.76rem;
+    font-weight: 800;
+    padding: 8px 10px;
+    border-radius: 12px;
+    margin-top: 2px;
+    width: 100%;
+    box-sizing: border-box;
 }
 </style>
 """
@@ -1273,13 +1313,12 @@ CALENDAR_MAIN_CSS = """
 
 def _init_calendar_state() -> Dict[str, Any]:
     """
-    달력 및 카톡 백그라운드 To-Do 세션 상태를 초기화하고,
-    기존 세션에 남아 있던 5개 임의 할 일 더미를 자동 클린 리셋합니다.
+    달력 및 Today To Do 세션 상태를 초기화합니다.
+    - 초기 dock_alarm, dock_cal은 모두 False로 두어 사용자가 직접 [알림]이나 [달력]을 눌렀을 때만 작동하게 합니다.
     """
     today_d = get_kst_today()
     today_iso = today_d.isoformat()
 
-    # 스키마 버전이 다르면 이전 5개 임의 할일 캐시를 즉시 초기화하여 0건 상태 보장
     if (
         "cal_scheduler_state" not in st.session_state
         or st.session_state["cal_scheduler_state"].get("_schema_v") != _STATE_SCHEMA_VERSION
@@ -1303,16 +1342,16 @@ def _init_calendar_state() -> Dict[str, Any]:
             "show_add_modal": False,
             "urgent_first": False,
             "hide_completed": False,
-            "dock_alarm": True,
-            "dock_cal": True,
+            "dock_alarm": False,
+            "dock_cal": False,
             "active_detail_ev_id": None,
         }
     cstate = st.session_state["cal_scheduler_state"]
     cstate.setdefault("silent_read_count", 2)
     cstate.setdefault("urgent_first", False)
     cstate.setdefault("hide_completed", False)
-    cstate.setdefault("dock_alarm", True)
-    cstate.setdefault("dock_cal", True)
+    cstate.setdefault("dock_alarm", False)
+    cstate.setdefault("dock_cal", False)
     cstate.setdefault("active_detail_ev_id", None)
 
     if cstate.get("_last_kst_today_iso") != today_iso:
@@ -1331,10 +1370,15 @@ def _init_calendar_state() -> Dict[str, Any]:
     return cstate
 
 
-def _add_schedule_from_dock(force_show_on_cal: bool | None = None) -> bool:
+def _add_schedule_from_dock(
+    force_alarm: bool | None = None,
+    force_show_on_cal: bool | None = None,
+) -> bool:
     """
-    하단 독(Dock)의 대화입력칸 + 하늘색 시간입력칸 값을 읽어
-    현재 선택된 날짜(기본: 오늘)의 체크리스트와 달력에 일정을 추가합니다.
+    하단 독(Dock)에서 Enter를 쳤거나 [알림] / [달력] 버튼을 눌렀을 때 할 일을 등록합니다.
+    - 시간을 입력하면 Today To Do 리스트에 시간순서대로 자동 배열됩니다.
+    - 종(알림)은 반드시 [알림] 버튼을 눌렀을 때만(is_alarm=True) 표시됩니다.
+    - [달력] 버튼을 눌렀을 때만(is_cal=True) 메인 화면 오늘 달력에 표시됩니다.
     """
     cstate = _init_calendar_state()
     year = int(cstate["year"])
@@ -1356,8 +1400,9 @@ def _add_schedule_from_dock(force_show_on_cal: bool | None = None) -> bool:
         ym_key, _default_schedules_for_month(year, month, today_d)
     )
     new_ev_id = f"q_{int(datetime.now().timestamp() * 1000)}"
-    is_alarm = bool(cstate.get("dock_alarm", True))
-    is_cal = True if force_show_on_cal is True else bool(cstate.get("dock_cal", True))
+
+    is_alarm = bool(force_alarm) if force_alarm is not None else bool(cstate.get("dock_alarm", False))
+    is_cal = bool(force_show_on_cal) if force_show_on_cal is not None else bool(cstate.get("dock_cal", False))
 
     new_ev = {
         "id": new_ev_id,
@@ -1369,7 +1414,7 @@ def _add_schedule_from_dock(force_show_on_cal: bool | None = None) -> bool:
         "ai_status": "작업 완료, 승인요청중",
         "done": False,
         "alarm": is_alarm,
-        "alarm_glow": is_alarm,
+        "alarm_glow": False,
         "show_on_cal": is_cal,
         "urgent": False,
         "has_detail": False,
@@ -1383,6 +1428,7 @@ def _add_schedule_from_dock(force_show_on_cal: bool | None = None) -> bool:
     }
     month_schedules.setdefault(sel_day, []).append(new_ev)
 
+    # [알림]이 켜진 경우에만 우측 하단 홈버튼 말풍선에 알림 등록
     if is_alarm:
         cstate["kakao_todos"].insert(0, {
             "id": f"todo_alarm_{new_ev_id}",
@@ -1405,18 +1451,20 @@ def _add_schedule_from_dock(force_show_on_cal: bool | None = None) -> bool:
         cstate["bubble_visible"] = True
         cstate["bubble_idx"] = 0
 
+    # 등록 후 입력칸 및 일회성 토글 초기화
     st.session_state[inp_key] = ""
+    st.session_state[time_key] = ""
+    cstate["dock_alarm"] = False
+    cstate["dock_cal"] = False
     return True
 
 
-def _submit_dock_todo() -> None:
-    """대화입력칸에서 Enter(엔터) 입력 시 호출되는 콜백"""
-    _add_schedule_from_dock()
-
-
-@st.dialog("📅 일정 상세정보 설정", width="large")
+@st.dialog("📋 상세일정 설정", width="large")
 def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str) -> None:
-    """구글 캘린더 디자인 구조를 토스(TDS) 글래스 컨셉에 맞게 재해석한 화면 중앙 '상세정보' 모달"""
+    """
+    시안 이미지(구글 캘린더 + 토스 글래스)와 100% 동일한 화면 중앙 상세입력 모달.
+    - 메인 화면은 뒤쪽에 그대로 유지된 채 중앙에 활성화됩니다.
+    """
     cstate = _init_calendar_state()
     today_d = get_kst_today()
     ym_key = f"{year:04d}-{month:02d}"
@@ -1426,71 +1474,49 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
     day_evs = month_schedules.setdefault(day_num, [])
     target_ev = next((x for x in day_evs if str(x.get("id")) == str(ev_id)), None)
 
+    inp_key = f"dock_chat_inp_{year}_{month}_{day_num}"
+    time_key = f"dock_time_inp_{year}_{month}_{day_num}"
+
     is_new = False
     if target_ev is None:
         is_new = True
-        time_key = f"dock_time_inp_{year}_{month}_{day_num}"
+        draft_title = str(st.session_state.get(inp_key, "")).strip()
         draft_t = _normalize_time_str(str(st.session_state.get(time_key, "")))
         target_ev = {
             "id": ev_id,
             "type": "MY",
             "time": draft_t or "15:00",
-            "title": "",
+            "title": draft_title,
             "client": "",
             "category": "내 스케줄",
             "ai_status": "작업 완료, 승인요청중",
             "done": False,
             "alarm": bool(cstate.get("dock_alarm", True)),
             "alarm_glow": False,
-            "show_on_cal": bool(cstate.get("dock_cal", True)),
+            "show_on_cal": True,
             "urgent": False,
             "has_detail": True,
             "repeat": "반복 안함",
             "location": "",
-            "link_target": "CALENDAR",
-            "link_label": "",
+            "link_target": "AGENT",
+            "link_label": "[자율 에이전트AI] 화면 바로가기",
             "attachment": "",
             "sub_tasks": [],
             "desc": "",
         }
 
-    st.markdown(
-        _html("""
-        <style>
-        .gcal-tds-banner {
-            border-bottom: 3px solid #3182F6;
-            padding-bottom: 6px;
-            margin-bottom: 12px;
-        }
-        .gcal-tds-row-lbl {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            background: #E8F3FF;
-            color: #3182F6;
-            font-size: 0.76rem;
-            font-weight: 800;
-            padding: 6px 12px;
-            border-radius: 12px;
-            margin-top: 4px;
-            width: 100%;
-            box-sizing: border-box;
-        }
-        </style>
-        """),
-        unsafe_allow_html=True,
-    )
-
-    st.markdown("<div class='gcal-tds-banner'>", unsafe_allow_html=True)
+    # 1) 제목 입력 (파란색 하단 언더라인)
+    st.markdown("<div class='gcal-tds-title-wrap'>", unsafe_allow_html=True)
     in_title = st.text_input(
         "일정 제목",
         value=str(target_ev.get("title", "")),
-        placeholder="제목 입력 (예: 부가세 예정고지 안내)",
+        placeholder="부가세 예정고지 안내 (제목 입력)",
         label_visibility="collapsed",
         key=f"dlg_title_{ev_id}",
     )
     st.markdown("</div>", unsafe_allow_html=True)
 
+    # 2) 카테고리 선택 캡슐 (내 스케줄 / 세무기한 / 승인완료 / ★ 중요 핀)
     c_cat, c_urg = st.columns([3.2, 1.2], gap="small")
     cur_type = str(target_ev.get("type", "MY")).upper()
     cat_opts = ["🔵 내 스케줄", "🔴 세무기한", "🟢 승인완료"]
@@ -1506,14 +1532,13 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
         )
     with c_urg:
         in_urgent = st.checkbox(
-            "★ 중요 핀 고정",
+            "★ 중요 핀",
             value=bool(target_ev.get("urgent", False)),
             key=f"dlg_urg_{ev_id}",
         )
 
-    st.divider()
-
-    r1_l, r1_c1, r1_c2, r1_c3 = st.columns([0.75, 1.5, 1.1, 1.2], gap="small")
+    # 3) 시간 · 날짜 · 반복 + 알림/달력 연동 행
+    r1_l, r1_c1, r1_c2, r1_c3 = st.columns([0.72, 1.55, 1.05, 1.2], gap="small")
     max_day = calendar.monthrange(year, month)[1]
     with r1_l:
         st.markdown("<div class='gcal-tds-row-lbl'>시간</div>", unsafe_allow_html=True)
@@ -1546,7 +1571,7 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
             key=f"dlg_rep_{ev_id}",
         )
 
-    _, r1_sub1, r1_sub2, r1_sub3 = st.columns([0.75, 1.35, 1.35, 1.1], gap="small")
+    _, r1_sub1, r1_sub2 = st.columns([0.72, 1.9, 1.9], gap="small")
     with r1_sub1:
         in_alarm = st.checkbox(
             "🔔 정각 홈버튼 & 종 반짝임 알림",
@@ -1555,18 +1580,13 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
         )
     with r1_sub2:
         in_show_cal = st.checkbox(
-            "📅 오늘자 달력에 표시됨",
+            "● 오늘자 달력에 표시됨",
             value=bool(target_ev.get("show_on_cal", True)),
             key=f"dlg_showcal_{ev_id}",
         )
-    with r1_sub3:
-        in_glow = st.checkbox(
-            "✨ 종 반짝임 즉시 시연",
-            value=bool(target_ev.get("alarm_glow", False)),
-            key=f"dlg_glow_{ev_id}",
-        )
 
-    r2_l, r2_r = st.columns([0.75, 3.8], gap="small")
+    # 4) 거래처 행
+    r2_l, r2_r = st.columns([0.72, 3.8], gap="small")
     with r2_l:
         st.markdown("<div class='gcal-tds-row-lbl'>거래처</div>", unsafe_allow_html=True)
     with r2_r:
@@ -1578,16 +1598,17 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
             key=f"dlg_client_{ev_id}",
         )
 
-    r3_l, r3_c1, r3_c2 = st.columns([0.75, 2.0, 1.8], gap="small")
+    # 5) 연결 행
+    r3_l, r3_c1, r3_c2 = st.columns([0.72, 2.0, 1.8], gap="small")
     link_map = {
-        "CALENDAR": "연결 안함 (달력 유지)",
         "AGENT": "[자율 에이전트AI] 화면 바로가기",
         "PAYROLL_EMP": "[인건비 자동화 > 급여명세서] 바로가기",
         "PAYROLL_BIZ": "[인건비 자동화 > 사업소득] 바로가기",
+        "CALENDAR": "연결 안함 (달력 유지)",
     }
-    cur_lt = str(target_ev.get("link_target", "CALENDAR"))
+    cur_lt = str(target_ev.get("link_target", "AGENT"))
     if cur_lt not in link_map:
-        cur_lt = "CALENDAR"
+        cur_lt = "AGENT"
     with r3_l:
         st.markdown(
             "<div class='gcal-tds-row-lbl' style='background:#E5F7F0;color:#00A86B;'>연결</div>",
@@ -1602,10 +1623,6 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
             label_visibility="collapsed",
             key=f"dlg_link_{ev_id}",
         )
-        if in_link_target != "CALENDAR":
-            if st.button(f"{link_map[in_link_target]} 이동 ▸", key=f"dlg_btn_jump_{ev_id}"):
-                _jump_to_target_mode(in_link_target)
-                st.rerun()
     with r3_c2:
         in_location = st.text_input(
             "위치 / 미팅 방법",
@@ -1615,14 +1632,15 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
             key=f"dlg_loc_{ev_id}",
         )
 
-    r4_l, r4_r = st.columns([0.75, 3.8], gap="small")
+    # 6) 체크 행 (하위 세부 체크항목)
+    r4_l, r4_r = st.columns([0.72, 3.8], gap="small")
     sub_tasks = list(target_ev.get("sub_tasks", []))
     with r4_l:
         st.markdown("<div class='gcal-tds-row-lbl'>체크</div>", unsafe_allow_html=True)
     with r4_r:
         done_sub_cnt = sum(1 for s in sub_tasks if s.get("done"))
         st.caption(
-            f"**하위 세부 체크항목 추가 ({done_sub_cnt}/{len(sub_tasks)} 완료)** — 등록 시 할 일 옆에 `0/N` 진행률 배지로 표시됩니다."
+            f"**하위 세부 체크항목 추가 ({done_sub_cnt}/{len(sub_tasks)} 완료)** (등록 시 할일 옆에 0/N 진행률 표시)"
         )
         updated_subs: List[Dict[str, Any]] = []
         for s_idx, s_item in enumerate(sub_tasks):
@@ -1657,7 +1675,8 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
                         day_evs.append(target_ev)
                     st.rerun()
 
-    r5_l, r5_r = st.columns([0.75, 3.8], gap="small")
+    # 7) 메모 행
+    r5_l, r5_r = st.columns([0.72, 3.8], gap="small")
     with r5_l:
         st.markdown("<div class='gcal-tds-row-lbl'>메모</div>", unsafe_allow_html=True)
     with r5_r:
@@ -1665,26 +1684,27 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
             "상세 메모",
             value=str(target_ev.get("desc", "")),
             placeholder="상세 설명 또는 Google Drive / 로컬 첨부파일 추가",
-            height=72,
+            height=68,
             label_visibility="collapsed",
             key=f"dlg_desc_{ev_id}",
         )
         in_attach = st.text_input(
             "첨부파일명",
             value=str(target_ev.get("attachment", "")),
-            placeholder="＋ 첨부파일명 입력 또는 파일 추가",
+            placeholder="+ 첨부파일명 입력 또는 파일 추가",
             label_visibility="collapsed",
             key=f"dlg_att_{ev_id}",
         )
 
     st.divider()
 
+    # 8) 하단 푸터 (김범준 · 한가함 · 기본 공개 설정 + 취소 / 저장)
     f_left, f_del, f_can, f_save = st.columns([2.6, 0.8, 0.8, 1.0], gap="small")
     with f_left:
         st.markdown(
             _html("""
-            <div style="display:flex;align-items:center;gap:8px;padding-top:8px;font-size:0.80rem;font-weight:700;color:#4E5968;">
-                <span style="width:12px;height:12px;border-radius:50%;background:#3182F6;display:inline-block;"></span>
+            <div style="display:flex;align-items:center;gap:8px;padding-top:8px;font-size:0.82rem;font-weight:800;color:#4E5968;">
+                <span style="width:14px;height:14px;border-radius:50%;background:#3182F6;display:inline-block;"></span>
                 <span>김범준 · 한가함 · 기본 공개 설정</span>
             </div>
             """),
@@ -1701,7 +1721,7 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
             cstate["active_detail_ev_id"] = None
             st.rerun()
     with f_save:
-        if st.button("저장", type="primary", width="stretch", key=f"dlg_btn_save_{ev_id}"):
+        if st.button("저장", width="stretch", key=f"dlg_btn_save_{ev_id}"):
             final_title = in_title.strip() or "세무 상세 일정"
             new_type = "TAX" if "세무기한" in sel_cat_lbl else ("DONE" if "승인완료" in sel_cat_lbl else "MY")
             norm_t = _normalize_time_str(in_time)
@@ -1716,7 +1736,7 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
                 "time": norm_t,
                 "repeat": in_repeat,
                 "alarm": bool(in_alarm),
-                "alarm_glow": bool(in_glow),
+                "alarm_glow": False,
                 "show_on_cal": bool(in_show_cal),
                 "urgent": bool(in_urgent),
                 "client": in_client.strip() or "내 스케줄",
@@ -1733,13 +1753,15 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
             new_d_int = int(in_day)
             if is_new:
                 month_schedules.setdefault(new_d_int, []).append(target_ev)
+                st.session_state[inp_key] = ""
+                st.session_state[time_key] = ""
             elif new_d_int != day_num:
                 month_schedules[day_num] = [x for x in day_evs if str(x.get("id")) != str(ev_id)]
                 month_schedules.setdefault(new_d_int, []).append(target_ev)
 
             cstate["selected_day"] = new_d_int
             cstate["active_detail_ev_id"] = None
-            st.toast(f"'{final_title}' 상세정보가 저장되었어요.", icon="✅")
+            st.toast(f"'{final_title}' 상세일정이 저장되었어요.", icon="✅")
             st.rerun()
 
 
@@ -1898,7 +1920,7 @@ def render_calendar_main() -> None:
                             raw_evs = month_schedules.get(day_num, [])
                             cal_evs = [
                                 e for e in _sort_day_events(raw_evs)
-                                if e.get("show_on_cal", True)
+                                if e.get("show_on_cal", False)
                             ]
                             pills_html = ""
                             for ev in cal_evs[:3]:
@@ -1925,7 +1947,6 @@ def render_calendar_main() -> None:
                             if st.button(
                                 btn_lbl,
                                 key=f"cal_sel_d_{year}_{month}_{day_num}",
-                                type="primary" if is_sel else "secondary",
                                 width="stretch",
                             ):
                                 cstate["selected_day"] = day_num
@@ -1945,7 +1966,7 @@ def render_calendar_main() -> None:
             )
         with c_m_right:
             with st.container(key="cal_add_btn_wrap"):
-                if st.button("＋ 일정 추가하기", type="primary", key="btn_cal_open_add_schedule"):
+                if st.button("＋ 일정 추가하기", key="btn_cal_open_add_schedule"):
                     new_modal_id = f"m_{int(datetime.now().timestamp() * 1000)}"
                     _open_schedule_detail_dialog(year, month, selected_day, new_modal_id)
 
@@ -2048,6 +2069,7 @@ def render_calendar_main() -> None:
                         has_dtl = bool(ev.get("has_detail") or subs)
                         dtl_circle_html = "<span class='tds-blue-circle-dtl'>상세</span>" if has_dtl else ""
 
+                        # 종(Bell): 반드시 [알림]을 켜서 등록한 할 일(alarm=True)에만 표시!
                         bell_html = ""
                         if ev.get("alarm"):
                             sparkle_cls = "sparkle" if _is_alarm_due(ev, is_sel_today) else ""
@@ -2119,7 +2141,7 @@ def render_calendar_main() -> None:
                                     ]
                                     st.rerun()
 
-            # 하단 고정 영역: 한 줄 일체형 대화입력 독(Dock) 바 (시안과 100% 동일)
+            # ══════ 하단 고정 영역: 한 줄 일체형 대화입력 독(Dock) 바 (on_change 제거 -> Tab 이동 & 버튼 클릭 100% 보장) ══════
             with st.container(key="todo_bottom_dock_a"):
                 d_c1, d_c2, d_c3, d_c4, d_c5 = st.columns([2.25, 0.95, 0.78, 0.78, 0.78], gap="small")
                 inp_key = f"dock_chat_inp_{year}_{month}_{selected_day}"
@@ -2132,7 +2154,6 @@ def render_calendar_main() -> None:
                             placeholder="",
                             label_visibility="collapsed",
                             key=inp_key,
-                            on_change=_submit_dock_todo,
                         )
                 with d_c2:
                     with st.container(key=f"dock_time_wrap_{year}_{month}_{selected_day}"):
@@ -2143,83 +2164,77 @@ def render_calendar_main() -> None:
                             key=time_key,
                         )
                 with d_c3:
-                    alarm_on = bool(cstate.get("dock_alarm", True))
+                    # [알림] 버튼: 클릭 시 할 일이 적혀 있으면 알림(종)을 켜서 즉시 등록, 비어 있으면 알림 모드 토글
                     if st.button(
                         "알림",
-                        type="primary" if alarm_on else "secondary",
                         width="stretch",
                         key=f"btn_dock_alarm_{year}_{month}_{selected_day}",
-                        help="해당 시간에 홈버튼 및 종 아이콘으로 알림 울림 (클릭하여 켜기/끄기)",
-                    ):
-                        cstate["dock_alarm"] = not alarm_on
-                        st.toast(f"시간 알림이 {'켜졌어요 🔔' if cstate['dock_alarm'] else '꺼졌어요'}")
-                        st.rerun()
-                with d_c4:
-                    cal_on = bool(cstate.get("dock_cal", True))
-                    if st.button(
-                        "달력",
-                        type="primary" if cal_on else "secondary",
-                        width="stretch",
-                        key=f"btn_dock_cal_{year}_{month}_{selected_day}",
-                        help="클릭 시 입력한 일정을 오늘자 달력에 즉시 표시하거나 달력 연동 모드를 전환합니다",
+                        help="클릭 시 해당 할 일에 종(알림) 기능을 켜서 등록합니다",
                     ):
                         draft_txt = str(st.session_state.get(inp_key, "")).strip()
                         if draft_txt:
-                            cstate["dock_cal"] = True
-                            _add_schedule_from_dock(force_show_on_cal=True)
-                            st.toast(f"{month}월 {selected_day}일 달력에 일정이 등록되었어요 📅")
+                            _add_schedule_from_dock(force_alarm=True)
+                            st.toast("알림(🔔)이 설정된 할 일이 등록되었어요!")
                             st.rerun()
                         else:
-                            cstate["dock_cal"] = not cal_on
-                            st.toast(f"달력 표시 연동이 {'켜졌어요 📅' if cstate['dock_cal'] else '꺼졌어요'}")
+                            cstate["dock_alarm"] = not bool(cstate.get("dock_alarm", False))
+                            st.toast(f"알림 기능이 {'활성화(ON) 🔔' if cstate['dock_alarm'] else '해제(OFF)'} 되었어요. 할 일을 입력하고 Enter를 쳐보세요.")
                             st.rerun()
-                with d_c5:
+                with d_c4:
+                    # [달력] 버튼: 클릭 시 할 일이 적혀 있으면 오늘 달력에 즉시 표시, 비어 있으면 달력 표시 모드 토글
                     if st.button(
-                        "상세",
-                        type="primary",
+                        "달력",
                         width="stretch",
-                        key=f"btn_dock_detail_{year}_{month}_{selected_day}",
-                        help="클릭 시 화면 중앙에 상세정보 입력창을 띄웁니다",
+                        key=f"btn_dock_cal_{year}_{month}_{selected_day}",
+                        help="클릭 시 해당 할 일을 메인화면 오늘 달력에 표시합니다",
                     ):
                         draft_txt = str(st.session_state.get(inp_key, "")).strip()
-                        raw_t_val = str(st.session_state.get(time_key, "")).strip()
-                        norm_t_val = _normalize_time_str(raw_t_val)
-                        new_id = f"dtl_{int(datetime.now().timestamp() * 1000)}"
                         if draft_txt:
-                            month_schedules.setdefault(selected_day, []).append({
-                                "id": new_id,
-                                "type": "MY",
-                                "time": norm_t_val,
-                                "title": draft_txt,
-                                "client": "",
-                                "category": "내 스케줄",
-                                "ai_status": "작업 완료, 승인요청중",
-                                "done": False,
-                                "alarm": bool(cstate.get("dock_alarm", True)),
-                                "alarm_glow": False,
-                                "show_on_cal": bool(cstate.get("dock_cal", True)),
-                                "urgent": False,
-                                "has_detail": True,
-                                "repeat": "반복 안함",
-                                "location": "",
-                                "link_target": "CALENDAR",
-                                "link_label": "",
-                                "attachment": "",
-                                "sub_tasks": [],
-                                "desc": "",
-                            })
-                            st.session_state[inp_key] = ""
+                            _add_schedule_from_dock(force_show_on_cal=True)
+                            st.toast(f"{month}월 {selected_day}일 메인 달력에 일정이 표시되었어요 📅")
+                            st.rerun()
+                        else:
+                            # 만약 입력칸이 비어 있고 직전에 등록한 할 일이 있다면 그 할 일을 달력에 즉시 표시
+                            if raw_day_evs and not raw_day_evs[-1].get("show_on_cal"):
+                                raw_day_evs[-1]["show_on_cal"] = True
+                                st.toast(f"'{raw_day_evs[-1].get('title')}' 일정이 메인 달력에 표시되었어요 📅")
+                                st.rerun()
+                            else:
+                                cstate["dock_cal"] = not bool(cstate.get("dock_cal", False))
+                                st.toast(f"달력 표시 기능이 {'활성화(ON) 📅' if cstate['dock_cal'] else '해제(OFF)'} 되었어요.")
+                                st.rerun()
+                with d_c5:
+                    # [상세] 버튼: 클릭 시 메인 화면은 그대로 두고 중앙에 상세입력 모달 활성화
+                    if st.button(
+                        "상세",
+                        width="stretch",
+                        key=f"btn_dock_detail_{year}_{month}_{selected_day}",
+                        help="클릭 시 메인 화면 중앙에 상세입력 창을 띄웁니다",
+                    ):
+                        new_id = f"dtl_{int(datetime.now().timestamp() * 1000)}"
                         _open_schedule_detail_dialog(year, month, selected_day, new_id)
+
+                # 오직 키보드 Enter를 쳤을 때만 작동하는 숨김 제출 트리거 버튼
+                with st.container(key=f"btn_dock_enter_submit_{year}_{month}_{selected_day}"):
+                    if st.button("엔터등록", key=f" hidden_enter_btn_{year}_{month}_{selected_day}"):
+                        if _add_schedule_from_dock():
+                            st.rerun()
 
     render_floating_kakao_todo_overlay()
 
 
 def render_floating_kakao_todo_overlay() -> None:
-    """우측 하단 플로팅 미소 홈버튼(드래그 이동 지원) + 직각 네모 말풍선 + 60% 확장 To-Do 오버레이"""
+    """
+    1) 하단 독(Dock)의 Tab 키 이동(할일입력 -> 시간입력) 및 Enter 키 전용 등록 제어
+    2) [알림], [달력], [상세] 3D 푸른색 입체 버튼 스타일 강제 고정 (빨간색 원천 제거)
+    3) 우측 하단 플로팅 미소 홈버튼(드래그 이동 지원) + 직각 네모 말풍선 + 60% 확장 To-Do 오버레이
+    """
     cstate = _init_calendar_state()
     todos = cstate.get("kakao_todos", [])
     panel_open_init = bool(cstate.get("panel_open", False))
     silent_cnt = int(cstate.get("silent_read_count", 2))
+    alarm_active_js = "true" if cstate.get("dock_alarm") else "false"
+    cal_active_js = "true" if cstate.get("dock_cal") else "false"
     kst_today_iso = get_kst_today().isoformat()
     user_nm = str(st.session_state.get("current_workspace") or "범준").strip() or "범준"
     if user_nm.startswith("익명"):
@@ -2243,7 +2258,100 @@ def render_floating_kakao_todo_overlay() -> None:
             const CURRENT_USER = {user_nm_json};
             const SILENT_CNT = {silent_cnt};
             const SERVER_KST_ISO = {kst_iso_json};
+            const DOCK_ALARM_ON = {alarm_active_js};
+            const DOCK_CAL_ON = {cal_active_js};
 
+            // ══════ [핵심 1] 하단 독(Dock) 키보드(Tab / Enter) 제어 & 푸른 3D 입체 버튼 강제 적용 ══════
+            function enforceDockBehaviorAndBlue3D() {{
+                const dockEl = parentDoc.querySelector('.st-key-todo_bottom_dock_a');
+                if (!dockEl) return;
+
+                // 1) Press Enter to apply 문구 요소 발견 즉시 제거
+                parentDoc.querySelectorAll('[data-testid="InputInstructions"]').forEach(el => {{
+                    el.style.display = "none";
+                    el.remove();
+                }});
+
+                // 2) [알림], [달력], [상세] 버튼에 빨간색을 지우고 시안과 100% 동일한 푸른색 3D 입체 스타일 강제 부여
+                const btnConfigs = [
+                    {{ selector: '[class*="st-key-btn_dock_alarm_"] button', active: DOCK_ALARM_ON }},
+                    {{ selector: '[class*="st-key-btn_dock_cal_"] button', active: DOCK_CAL_ON }},
+                    {{ selector: '[class*="st-key-btn_dock_detail_"] button', active: true }}
+                ];
+                btnConfigs.forEach(cfg => {{
+                    const btn = dockEl.querySelector(cfg.selector);
+                    if (!btn) return;
+                    btn.style.setProperty("background", "#3182F6", "important");
+                    btn.style.setProperty("background-color", "#3182F6", "important");
+                    btn.style.setProperty("color", "#FFFFFF", "important");
+                    btn.style.setProperty("border", cfg.active ? "2px solid #1D4ED8" : "1.5px solid #60A5FA", "important");
+                    btn.style.setProperty("border-radius", "13px", "important");
+                    btn.style.setProperty("height", "38px", "important");
+                    btn.style.setProperty("min-height", "38px", "important");
+                    btn.style.setProperty("font-weight", "800", "important");
+                    btn.style.setProperty("box-shadow", "0 4px 0 #1B64DA, 0 5px 10px rgba(49, 130, 246, 0.25)", "important");
+
+                    if (!btn._bound3DPress) {{
+                        btn._bound3DPress = true;
+                        btn.addEventListener("mousedown", function() {{
+                            this.style.setProperty("background", "#184EB2", "important");
+                            this.style.setProperty("background-color", "#184EB2", "important");
+                            this.style.setProperty("box-shadow", "0 0px 0 #144094, inset 0 3px 5px rgba(10,34,82,0.45)", "important");
+                            this.style.setProperty("transform", "translateY(4px)", "important");
+                        }});
+                        const restore3D = function(el) {{
+                            el.style.setProperty("background", "#3182F6", "important");
+                            el.style.setProperty("background-color", "#3182F6", "important");
+                            el.style.setProperty("box-shadow", "0 4px 0 #1B64DA, 0 5px 10px rgba(49, 130, 246, 0.25)", "important");
+                            el.style.setProperty("transform", "translateY(0px)", "important");
+                        }};
+                        btn.addEventListener("mouseup", function() {{ restore3D(this); }});
+                        btn.addEventListener("mouseleave", function() {{ restore3D(this); }});
+                    }}
+                }});
+
+                // 3) 할 일 입력칸에서 Tab 누르면 시간입력칸으로 포커스 이동, Enter 누르면 그때만 체크리스트에 등록!
+                const chatInp = dockEl.querySelector('[class*="st-key-dock_chat_wrap_"] input');
+                const timeInp = dockEl.querySelector('[class*="st-key-dock_time_wrap_"] input');
+                const hiddenSubmitBtn = dockEl.querySelector('[class*="st-key-btn_dock_enter_submit_"] button');
+
+                if (chatInp && !chatInp._boundKeyNav) {{
+                    chatInp._boundKeyNav = true;
+                    chatInp.addEventListener("keydown", function(ev) {{
+                        if (ev.key === "Tab" && !ev.shiftKey) {{
+                            ev.preventDefault();
+                            ev.stopPropagation();
+                            if (timeInp) {{
+                                timeInp.focus();
+                                timeInp.select();
+                            }}
+                        }} else if (ev.key === "Enter" && !ev.isComposing) {{
+                            ev.preventDefault();
+                            if (hiddenSubmitBtn) {{
+                                setTimeout(function() {{ hiddenSubmitBtn.click(); }}, 60);
+                            }}
+                        }}
+                    }}, true);
+                }}
+
+                if (timeInp && !timeInp._boundKeyNav) {{
+                    timeInp._boundKeyNav = true;
+                    timeInp.addEventListener("keydown", function(ev) {{
+                        if (ev.key === "Enter" && !ev.isComposing) {{
+                            ev.preventDefault();
+                            if (hiddenSubmitBtn) {{
+                                setTimeout(function() {{ hiddenSubmitBtn.click(); }}, 60);
+                            }}
+                        }}
+                    }}, true);
+                }}
+            }}
+
+            enforceDockBehaviorAndBlue3D();
+            setTimeout(enforceDockBehaviorAndBlue3D, 150);
+            setTimeout(enforceDockBehaviorAndBlue3D, 400);
+
+            // ══════ [핵심 2] 우측 하단 플로팅 미소 홈버튼 & 60% To-Do 오버레이 ══════
             let styleEl = parentDoc.getElementById("tds-kakao-floating-style");
             if (!styleEl) {{
                 styleEl = parentDoc.createElement("style");
@@ -2861,6 +2969,7 @@ def render_floating_kakao_todo_overlay() -> None:
                         parentWin._tdsCalCleanupTimer = null;
                         return;
                     }}
+                    enforceDockBehaviorAndBlue3D();
                     try {{
                         const kstNow = new Date(new Date().toLocaleString("en-US", {{ timeZone: "Asia/Seoul" }}));
                         const y = kstNow.getFullYear();
@@ -2874,7 +2983,7 @@ def render_floating_kakao_todo_overlay() -> None:
                             if (todayBtn) todayBtn.click();
                         }}
                     }} catch (err) {{}}
-                }}, 1000);
+                }}, 600);
             }}
 
             function escHtml(v) {{
