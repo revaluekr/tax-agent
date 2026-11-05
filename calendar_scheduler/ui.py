@@ -22,7 +22,7 @@ import ui_theme as _ui_theme
 _WEEKDAYS_SHORT = ("월", "화", "수", "목", "금", "토", "일")
 _WEEKDAYS_FULL = ("월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일")
 _SUN_FIRST_HEADERS = ("일", "월", "화", "수", "목", "금", "토")
-_STATE_SCHEMA_VERSION = "v21_collapsible_ai_simulator_and_remove_sb_footer_btns"
+_STATE_SCHEMA_VERSION = "v22_clean_empty_kakao_todos_production_ready"
 
 
 def _html(s: str) -> str:
@@ -314,170 +314,64 @@ def _default_schedules_for_month(year: int, month: int, today_d: date) -> Dict[i
 def _default_kakao_todos(today_d: date) -> List[Dict[str, Any]]:
     """
     우측 하단 60% 확장 패널에 표시할 카카오톡 백그라운드 자동화 To-Do 리스트 초기값.
-    - 메인 화면 우측 Today To Do(사용자 직접 입력 할 일)와는 100% 분리되어 오직 AI 카톡 자동화 작업만 표시합니다.
+    - 샘플 데이터를 모두 비워 초기 실행 시 0건(빈 리스트)으로 깔끔하게 시작합니다.
+    - 실제 카카오톡 자동 AI 감시 엔진(또는 좌측 AI 백그라운드 시뮬레이터)에서 이벤트가 발생하면 실시간으로 추가됩니다.
     """
-    yr = today_d.year
-    mo = today_d.month
-    return [
-        {
-            "id": "ktodo_1",
-            "status_code": "READY",
-            "status": "작업 완료, 승인요청중",
-            "category": "세법 검토 카톡 완성",
-            "client": "(주)모",
-            "recipient": "범준",
-            "time_ago": "방금 전",
-            "bubble_msg": "범준님, (주)모 회사에 보낼 세법 검토 카톡이 완성되었습니다",
-            "title": "(주)모 — 가족 단기 아르바이트 인건비 필요경비 및 4대보험 검토 답변",
-            "kakao_original": "[카톡 수신] 세무사님, 저희 매장에 배우자랑 대학생 아들이 주말마다 일하는데 인건비 신고하면 비용 처리 다 되나요?",
-            "workflow_steps": [
-                {"step": "① 카톡 문의 수신 및 가족 인건비 쟁점 분석", "done": True},
-                {"step": "② 소득세법 필요경비 및 4대보험 가입 예외 규정 검토", "done": True},
-                {"step": "③ 대표님 발송용 카톡 답장 초안 및 검토문서 생성 완료", "done": True},
-            ],
-            "ai_result": (
-                "안녕하세요 대표님, 문의하신 가족 인건비 기준 안내드립니다.\n"
-                "1. [비용 처리] 실제 근무 기록과 급여 계좌이체 증빙이 명확하면 가족이라도 인건비 필요경비 인정이 가능합니다.\n"
-                "2. [4대보험] 배우자 및 동거 친족은 고용·산재보험 대상에서 제외되며, 월 60시간 이상 근무 시 국민연금·건강보험만 가입합니다.\n"
-                "※ 법령 기준의 원론적 안내이며, 구체적 급여액은 담당자 확인 후 안내드리겠습니다."
-            ),
-            "preview": (
-                "안녕하세요 대표님, 문의하신 가족 인건비 기준 안내드립니다.\n"
-                "1. [비용 처리] 실제 근무 기록과 급여 계좌이체 증빙이 명확하면 가족이라도 인건비 필요경비 인정이 가능합니다.\n"
-                "2. [4대보험] 배우자 및 동거 친족은 고용·산재보험 대상에서 제외되며, 월 60시간 이상 근무 시 국민연금·건강보험만 가입합니다."
-            ),
-            "attachment": f"(주)모_{yr}년_가족인건비_및_통합고용세액공제_검토안내.pdf",
-            "target_mode": "AGENT",
-            "action_label": "카톡 답장 복사 & 승인완료",
-            "checked": True,
-        },
-        {
-            "id": "ktodo_2",
-            "status_code": "READY",
-            "status": "작업 완료, 승인요청중",
-            "category": "요청 서류 준비 완료",
-            "client": "(주)갑",
-            "recipient": "범준",
-            "time_ago": "3분 전",
-            "bubble_msg": "범준님, (주)갑 회사로부터 요청받은 서류를 다운받아 보낼 준비가 끝났습니다",
-            "title": "(주)갑 — 국세완납증명서 및 부가세 과세표준증명원 다운로드·검증 완료",
-            "kakao_original": "[카톡 수신] 은행 대출 연장 때문에 국세완납증명서랑 부가세 과세표준증명원 급하게 부탁드려요!",
-            "workflow_steps": [
-                {"step": "① 카톡 필요서류(국세완납·부가세과세표준증명원) 요청 감지", "done": True},
-                {"step": "② 홈택스 증명서 PDF 자동 발급 및 전용 폴더 저장", "done": True},
-                {"step": "③ PDF 사업자번호 일치 검증 완료 · 카톡 전송 대기", "done": True},
-            ],
-            "ai_result": (
-                "📁 저장 폴더: C:\\tax_automation\\거래처_데이터\\02_(주)갑\\4_발급서류_보관함\\(주)갑_증명서.pdf\n"
-                "🛡️ [안전 검증 완료] PDF 사업자번호(214-86-*****) == (주)갑 사업자번호 100% 일치 확인"
-            ),
-            "preview": (
-                "📁 저장 폴더: C:\\tax_automation\\거래처_데이터\\02_(주)갑\\4_발급서류_보관함\\(주)갑_증명서.pdf\n"
-                "🛡️ [안전 검증 완료] PDF 사업자번호(214-86-*****) == (주)갑 사업자번호 100% 일치 확인"
-            ),
-            "attachment": f"(주)갑_국세완납_부가세과세표준증명원_{today_d.strftime('%Y%m%d')}.pdf",
-            "target_mode": "CALENDAR",
-            "action_label": "서류 파일 복사 & 승인완료",
-            "checked": True,
-        },
-        {
-            "id": "ktodo_3",
-            "status_code": "READY",
-            "status": "작업 완료, 승인요청중",
-            "category": "사업소득 자동 입력 완료",
-            "client": "(주)한빛디자인",
-            "recipient": "범준",
-            "time_ago": "8분 전",
-            "bubble_msg": "범준님, (주)한빛디자인 카톡 인건비 자료를 사업소득 화면에 자동 작성했습니다",
-            "title": "(주)한빛디자인 — 프리랜서 김지훈(150만 원) 사업소득 화면 자동 드래그&드롭 완료",
-            "kakao_original": "[카톡 수신] 외주 디자이너 김지훈([RRN Omitted]) 세전 150만 원 이체했습니다. 사업소득 신고 부탁드려요.",
-            "workflow_steps": [
-                {"step": "① 카톡 인건비 문자(성명·주민번호·지급액) 추출", "done": True},
-                {"step": "② 3.3% 원천징수 세액(소득세 45,000원·지방세 4,500원) 계산", "done": True},
-                {"step": "③ [인건비 자동화 > 사업소득] 테이블 자동 입력 완료", "done": True},
-            ],
-            "ai_result": (
-                "✅ 에이전트AI [인건비 자동화 > 사업소득] 화면에 자동 입력 완료\n"
-                "• 지급총액: 1,500,000원 / 소득세: 45,000원 / 지방세: 4,500원 / 실지급액: 1,450,500원"
-            ),
-            "preview": (
-                "✅ 에이전트AI [인건비 자동화 > 사업소득] 화면에 자동 입력 완료\n"
-                "• 지급총액: 1,500,000원 / 소득세: 45,000원 / 지방세: 4,500원 / 실지급액: 1,450,500원"
-            ),
-            "attachment": f"(주)한빛디자인_{yr}{mo:02d}_사업소득지급명세서.xlsx",
-            "target_mode": "PAYROLL_BIZ",
-            "action_label": "사업소득 화면 확인 & 승인완료",
-            "checked": True,
-        },
-        {
-            "id": "ktodo_4",
-            "status_code": "WORKING",
-            "status": "백그라운드 작업중",
-            "category": "급여대장 파일 자동 변환중",
-            "client": "(주)대성테크",
-            "recipient": "범준",
-            "time_ago": "진행률 75%",
-            "bubble_msg": "범준님, (주)대성테크 급여대장 파일을 폴더에 저장하고 급여명세서로 작성 중입니다",
-            "title": f"(주)대성테크 — 카톡 수신 '{mo}월_급여대장_세전자료.xlsx' 폴더 저장 및 급여명세서 입력중",
-            "kakao_original": f"[카톡 파일 수신] {mo}월_급여대장_세전자료.xlsx (임직원 8명)",
-            "workflow_steps": [
-                {"step": f"① 카톡 첨부파일('{mo}월_급여대장_세전자료.xlsx') 수신 감지", "done": True},
-                {"step": "② 거래처 지정 폴더 자동 분류 및 파일 저장 완료", "done": True},
-                {"step": "③ [인건비 자동화 > 급여명세서] 임직원 8명 데이터 자동 입력 중...", "done": False},
-            ],
-            "ai_result": "⏳ 지정 폴더 저장 완료 → 에이전트AI 급여명세서 화면에 자동 드래그&드롭 중입니다. (완료 시 말풍선 알림이 표시됩니다)",
-            "preview": "⏳ 지정 폴더 저장 완료 → 에이전트AI 급여명세서 화면에 자동 드래그&드롭 중입니다.",
-            "attachment": f"(주)대성테크_{yr}{mo:02d}_급여대장_세전자료.xlsx",
-            "target_mode": "PAYROLL_EMP",
-            "action_label": "작업 즉시 완료시키기 (시연)",
-            "checked": False,
-        },
-        {
-            "id": "ktodo_5",
-            "status_code": "APPROVED",
-            "status": "사용자 승인완료",
-            "category": "급여명세서 자동작성 완료",
-            "client": "(주)성진",
-            "recipient": "범준",
-            "time_ago": "10:15 승인됨",
-            "bubble_msg": "",
-            "title": f"(주)성진 — {mo}월 급여대장 엑셀 폴더 저장 및 급여명세서 2명 자동 작성",
-            "kakao_original": f"[카톡 파일 수신] (주)성진_{mo}월급여대장.xlsx",
-            "workflow_steps": [
-                {"step": "① 카톡 급여대장 엑셀 수신 및 폴더 저장", "done": True},
-                {"step": "② 급여명세서 2명분 4대보험·원천세 자동 계산 완료", "done": True},
-                {"step": "③ 사용자 최종 확인 및 승인 완료", "done": True},
-            ],
-            "ai_result": "✅ 사용자 승인완료 · 급여명세서 완성본 생성이 완료되었습니다.",
-            "preview": "✅ 사용자 승인완료 · 급여명세서 완성본 생성이 완료되었습니다.",
-            "attachment": f"(주)성진_{yr}{mo:02d}_급여명세서_완성본.zip",
-            "target_mode": "PAYROLL_EMP",
-            "action_label": "승인 완료됨",
-            "checked": True,
-        },
-        {
-            "id": "ktodo_6",
-            "status_code": "APPROVED",
-            "status": "사용자 승인완료",
-            "category": "통상적 메시지 자동 닫기",
-            "client": "(주)케이물산 외 1곳",
-            "recipient": "범준",
-            "time_ago": "09:45 자동처리",
-            "bubble_msg": "",
-            "title": "(주)케이물산 — \"네 세무사님 확인했습니다 감사합니다!\" (답변 없이 숫자 1 자동 소거)",
-            "kakao_original": "[카톡 수신] 네 세무사님 확인했습니다 감사합니다!",
-            "workflow_steps": [
-                {"step": "① 카톡 메시지 수신 및 문맥 분석 (단순 감사/확인 인사)", "done": True},
-                {"step": "② 별도 회신 불필요 판별 · 읽음 처리(1 소거) 후 자동 닫기 완료", "done": True},
-            ],
-            "ai_result": "✅ 답변이 필요 없는 통상적 메시지로 확인되어 백그라운드에서 읽음 처리 후 창을 닫았습니다.",
-            "preview": "✅ 답변이 필요 없는 통상적 메시지로 확인되어 백그라운드에서 읽음 처리 후 창을 닫았습니다.",
-            "attachment": "자동 읽음 처리 로그 (1 소거 완료)",
-            "target_mode": "CALENDAR",
-            "action_label": "자동 종결됨",
-            "checked": True,
-        },
-    ]
+    return []
+
+
+def push_kakao_background_todo(
+    title: str,
+    client: str = "",
+    category: str = "AI 카톡 자동화",
+    status_code: str = "READY",
+    kakao_original: str = "",
+    workflow_steps: List[Dict[str, Any]] | None = None,
+    ai_result: str = "",
+    attachment: str = "",
+    bubble_msg: str = "",
+    target_mode: str = "CALENDAR",
+    action_label: str = "카톡 답장 복사 & 승인완료",
+) -> Dict[str, Any]:
+    """
+    실제 카카오톡 자동 AI 시스템에서 새로운 카톡 작업을 수신·처리했을 때
+    백그라운드 To-Do 리스트(kakao_todos)와 우측 하단 홈버튼 말풍선에 즉시 등록하는 공식 연동 함수입니다.
+    """
+    cstate = _init_calendar_state()
+    status_map = {
+        "WORKING": "백그라운드 작업중",
+        "READY": "작업 완료, 승인요청중",
+        "APPROVED": "사용자 승인완료",
+    }
+    norm_code = str(status_code or "READY").upper()
+    new_item = {
+        "id": f"kt_{int(datetime.now().timestamp() * 1000)}",
+        "status_code": norm_code,
+        "status": status_map.get(norm_code, "작업 완료, 승인요청중"),
+        "category": category,
+        "client": client,
+        "recipient": "범준",
+        "time_ago": "방금 전",
+        "bubble_msg": bubble_msg or f"범준님, {client or '거래처'} 카톡 자동화 작업이 완료되었습니다",
+        "title": title,
+        "kakao_original": kakao_original or f"[카톡 수신] {title}",
+        "workflow_steps": workflow_steps or [
+            {"step": "① 카카오톡 메시지/파일 수신 및 요청사항 분석", "done": True},
+            {"step": "② 세법·증빙 검토 및 백그라운드 자동 작업 수행", "done": norm_code != "WORKING"},
+            {"step": "③ 발송용 카톡 답장 초안 및 첨부자료 준비 완료", "done": norm_code == "READY" or norm_code == "APPROVED"},
+        ],
+        "ai_result": ai_result,
+        "preview": ai_result,
+        "attachment": attachment,
+        "target_mode": target_mode,
+        "action_label": action_label,
+        "checked": norm_code == "APPROVED",
+    }
+    cstate.setdefault("kakao_todos", []).insert(0, new_item)
+    if norm_code == "READY":
+        cstate["bubble_visible"] = True
+        cstate["bubble_idx"] = 0
+    return new_item
 
 
 def _status_pill_cls(ev: Dict[str, Any]) -> tuple[str, str, str]:
@@ -1856,9 +1750,9 @@ def _init_calendar_state() -> Dict[str, Any]:
                 ym_key: _default_schedules_for_month(today_d.year, today_d.month, today_d),
             },
             "kakao_todos": _default_kakao_todos(today_d),
-            "silent_read_count": 2,
+            "silent_read_count": 0,
             "panel_open": False,
-            "bubble_visible": True,
+            "bubble_visible": False,
             "bubble_idx": 0,
             "todo_filter": "전체",
             "show_add_modal": False,
@@ -1877,7 +1771,7 @@ def _init_calendar_state() -> Dict[str, Any]:
             "active_detail_ev_id": None,
         }
     cstate = st.session_state["cal_scheduler_state"]
-    cstate.setdefault("silent_read_count", 2)
+    cstate.setdefault("silent_read_count", 0)
     cstate.setdefault("urgent_first", False)
     cstate.setdefault("hide_completed", False)
     cstate.setdefault("dock_alarm", False)
@@ -3026,7 +2920,7 @@ def render_floating_kakao_todo_overlay() -> None:
     cstate = _init_calendar_state()
     todos = cstate.get("kakao_todos", [])
     panel_open_init = bool(cstate.get("panel_open", False))
-    silent_cnt = int(cstate.get("silent_read_count", 2))
+    silent_cnt = int(cstate.get("silent_read_count", 0))
     dock_reset_seq = int(cstate.get("dock_reset_seq", 0))
     dock_ctx_key = f"{cstate.get('year')}_{cstate.get('month')}_{cstate.get('selected_day')}_{dock_reset_seq}"
     kst_today_iso = get_kst_today().isoformat()
@@ -4848,7 +4742,10 @@ def render_floating_kakao_todo_overlay() -> None:
                 }});
 
                 const cardsHtml = filtered.length === 0
-                    ? `<div style="padding:44px;text-align:center;color:#8B95A1;font-weight:700;">해당 상태의 카톡 자동화 내역이 없어요.</div>`
+                    ? `<div style="padding:56px 24px;text-align:center;color:#8B95A1;font-weight:700;line-height:1.6;">
+                        <div style="font-size:0.95rem;color:#E2E8F0;font-weight:800;margin-bottom:6px;">현재 대기 중인 AI 카톡 백그라운드 작업이 없습니다</div>
+                        <div style="font-size:0.78rem;color:#6B7684;">실시간 카카오톡이 수신되면 AI가 백그라운드에서 작업을 마친 뒤 이곳과 홈버튼 말풍선으로 알려드립니다.</div>
+                       </div>`
                     : filtered.map(item => {{
                         const sCode = getStatusCode(item);
                         const steps = Array.isArray(item.workflow_steps) ? item.workflow_steps : [];
