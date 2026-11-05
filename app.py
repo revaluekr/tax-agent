@@ -2992,7 +2992,7 @@ if "anon_workspace_id" not in st.session_state:
     _cleanup_stale_anon_workspaces(max_age_sec=86400)
 
 if "app_top_mode" not in st.session_state:
-    st.session_state.app_top_mode = "AGENT"
+    st.session_state.app_top_mode = "CALENDAR"   # 첫 화면(메인) = 달력
 
 def _detect_any_room_button_click() -> None:
     """
