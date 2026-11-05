@@ -21,7 +21,7 @@ import ui_theme as _ui_theme
 _WEEKDAYS_SHORT = ("월", "화", "수", "목", "금", "토", "일")
 _WEEKDAYS_FULL = ("월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일")
 _SUN_FIRST_HEADERS = ("일", "월", "화", "수", "목", "금", "토")
-_STATE_SCHEMA_VERSION = "v9_fixed_dock_toggles_and_dialog_subtasks"
+_STATE_SCHEMA_VERSION = "v10_enter_on_dock_buttons_and_blue_modal"
 
 
 def _html(s: str) -> str:
@@ -1475,43 +1475,81 @@ section[data-testid="stSidebar"] .st-key-btn_cal_go_today div.stButton > button 
     border-radius: 10px !important;
 }
 
-/* ══════ 화면 중앙 상세입력 창 (st.dialog Toss Web TDS Surface) ══════ */
+/* ══════ 화면 중앙 상세입력 창 (주변 배경 어둡지 않게 유지 + 푸른색 바탕 + 순백색 입력칸) ══════ */
+div[data-testid="stDialog"],
+div[data-testid="stModal"],
+div[data-baseweb="modal"],
+div[data-testid="stDialog"] > div:first-child {
+    background: transparent !important;
+    background-color: transparent !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+}
+div[data-testid="stDialog"] div[role="dialog"],
 div[data-testid="stDialog"] > div > div {
     border-radius: 28px !important;
     padding: 24px 28px !important;
-    border: 1px solid #E5E8EB !important;
-    box-shadow: 0 24px 64px -12px rgba(0, 27, 55, 0.22) !important;
-    background: #FFFFFF !important;
+    border: 2px solid #90C2FF !important;
+    box-shadow: 0 20px 50px rgba(49, 130, 246, 0.18), 0 4px 16px rgba(0, 27, 55, 0.08) !important;
+    background: #E8F3FF !important;
+    background-color: #E8F3FF !important;
     max-width: 780px !important;
 }
+/* 상세일정 모달 내부 모든 입력칸·드롭다운·텍스트영역을 순백색(#FFFFFF)으로 강조 */
+div[data-testid="stDialog"] [data-testid="stTextInput"] > div > div,
+div[data-testid="stDialog"] [data-testid="stSelectbox"] > div > div,
+div[data-testid="stDialog"] [data-testid="stTextArea"] > div > div,
+div[data-testid="stDialog"] [data-baseweb="input"],
+div[data-testid="stDialog"] [data-baseweb="select"] > div,
+div[data-testid="stDialog"] [data-baseweb="textarea"] {
+    background: #FFFFFF !important;
+    background-color: #FFFFFF !important;
+    border: 1px solid #C9E2FF !important;
+    border-radius: 12px !important;
+    box-shadow: 0 2px 6px rgba(49, 130, 246, 0.05) !important;
+}
+div[data-testid="stDialog"] input,
+div[data-testid="stDialog"] textarea {
+    background: #FFFFFF !important;
+    color: #191F28 !important;
+}
 .gcal-tds-title-wrap [data-testid="stTextInput"] > div > div {
-    background: transparent !important;
-    border: none !important;
+    background: #FFFFFF !important;
+    background-color: #FFFFFF !important;
+    border: 1.5px solid #90C2FF !important;
     border-bottom: 3px solid #3182F6 !important;
-    border-radius: 0 !important;
-    padding-left: 0 !important;
-    box-shadow: none !important;
+    border-radius: 14px !important;
+    padding-left: 12px !important;
+    box-shadow: 0 2px 8px rgba(49, 130, 246, 0.06) !important;
 }
 .gcal-tds-title-wrap [data-testid="stTextInput"] input {
-    font-size: 1.55rem !important;
+    font-size: 1.35rem !important;
     font-weight: 800 !important;
     color: #191F28 !important;
-    padding-left: 2px !important;
+    padding-left: 4px !important;
 }
 .gcal-tds-row-lbl {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    background: #E8F3FF;
+    background: #FFFFFF;
     color: #3182F6;
     font-size: 0.76rem;
     font-weight: 800;
     padding: 8px 10px;
     border-radius: 999px;
-    border: none;
+    border: 1px solid #90C2FF;
     margin-top: 2px;
     width: 100%;
     box-sizing: border-box;
+    box-shadow: 0 2px 6px rgba(49, 130, 246, 0.06);
+}
+div[data-testid="stDialog"] [class*="st-key-dlg_btn_add_sub_"] div.stButton > button {
+    background: #FFFFFF !important;
+    color: #3182F6 !important;
+    font-weight: 800 !important;
+    border: 1px solid #90C2FF !important;
+    border-radius: 10px !important;
 }
 div[data-testid="stDialog"] [class*="st-key-dlg_btn_save_"] div.stButton > button {
     background: #3182F6 !important;
@@ -1524,10 +1562,10 @@ div[data-testid="stDialog"] [class*="st-key-dlg_btn_save_"] div.stButton > butto
     background: #1B64DA !important;
 }
 div[data-testid="stDialog"] [class*="st-key-dlg_btn_cancel_"] div.stButton > button {
-    background: #F2F4F6 !important;
+    background: #FFFFFF !important;
     color: #191F28 !important;
     font-weight: 700 !important;
-    border: none !important;
+    border: 1px solid #C9E2FF !important;
     border-radius: 10px !important;
 }
 div[data-testid="stDialog"] [class*="st-key-dlg_btn_delete_"] div.stButton > button {
@@ -1613,7 +1651,7 @@ def _commit_dock_schedule_on_enter() -> None:
     하단 독(Dock)에서:
     1) 사용자가 [Enter] 키를 쳤을 때(__ENTER_COMMIT_TGL_...__): 할 일 + 시간 + [알림]·[달력] 상태를 즉시 등록합니다.
     2) 사용자가 [상세] 버튼을 눌렀을 때(__DTL_OPEN_TGL_...__): 입력한 내용과 시간을 pending_detail_draft에 담아
-       상세 모달을 오픈합니다 (시간이 15:00으로 바뀌지 않고 입력한 시간 그대로 전달됨).
+       상세 모달을 오픈합니다.
     3) 단순 Tab 키 이동이나 blur일 때(NONE): 등록하지 않고 입력값을 보존합니다.
     """
     cstate = _init_calendar_state()
@@ -1744,9 +1782,9 @@ def _delete_sub_task_in_dialog(ev_id: str, del_idx: int) -> None:
 @st.dialog("📋 상세일정 설정", width="large")
 def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str) -> None:
     """
-    화면 중앙 상세입력 모달 (Toss Web TDS):
+    화면 중앙 상세입력 모달 (푸른색 바탕 + 순백색 입력칸 + 투명 배경 유지):
     - 하단 독에서 입력한 내용·시간(시:분)·알림·달력 상태를 그대로 이어받아 표시합니다.
-    - '연결' 행을 제거하여 깔끔하게 구성했습니다.
+    - '연결' 행 및 좌측 하단 '김범준 · 한가함 · 기본 공개 설정' 문구를 모두 제거했습니다.
     - '체크' 란에서 [+ 항목 추가] 클릭 시 창이 닫히지 않고 즉시 아래에 체크 항목 한 줄이 추가됩니다.
     """
     cstate = _init_calendar_state()
@@ -1820,7 +1858,7 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
             for s in list(target_ev.get("sub_tasks", []))
         ]
 
-    # 1) 제목 입력 (파란색 하단 언더라인)
+    # 1) 제목 입력 (순백색 입력칸 + 파란색 포인트 보더)
     st.markdown("<div class='gcal-tds-title-wrap'>", unsafe_allow_html=True)
     in_title = st.text_input(
         "일정 제목",
@@ -1991,18 +2029,8 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
 
     st.divider()
 
-    # 7) 하단 푸터 (김범준 · 한가함 · 기본 공개 설정 + 취소 / 저장)
-    f_left, f_del, f_can, f_save = st.columns([2.6, 0.8, 0.8, 1.0], gap="small")
-    with f_left:
-        st.markdown(
-            _html("""
-            <div style="display:flex;align-items:center;gap:8px;padding-top:8px;font-size:0.82rem;font-weight:700;color:#4E5968;">
-                <span style="width:14px;height:14px;border-radius:50%;background:#3182F6;display:inline-block;"></span>
-                <span>김범준 · 한가함 · 기본 공개 설정</span>
-            </div>
-            """),
-            unsafe_allow_html=True,
-        )
+    # 7) 하단 푸터 (좌측 문구 제거, 우측 취소 / 저장 버튼만 배치)
+    _, f_del, f_can, f_save = st.columns([2.6, 0.8, 0.8, 1.0], gap="small")
     with f_del:
         if not is_new:
             if st.button("삭제", width="stretch", key=f"dlg_btn_delete_{ev_id}"):
@@ -2021,7 +2049,6 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
             st.rerun()
     with f_save:
         if st.button("저장", width="stretch", key=f"dlg_btn_save_{ev_id}"):
-            # 혹시 입력창에 적고 [+ 항목 추가]를 아직 안 누른 텍스트가 있으면 함께 반영
             leftover_sub = str(st.session_state.get(f"dlg_new_sub_inp_{ev_id}", "")).strip()
             updated_subs = list(st.session_state.get(subs_state_key, []))
             if leftover_sub:
@@ -2520,7 +2547,7 @@ def render_calendar_main() -> None:
                                     ]
                                     st.rerun()
 
-            # ══════ 하단 고정 영역: 5개 컬럼 고정 (툴팁 제거, Tab 시 시간칸 이동, Enter 시에만 등록) ══════
+            # ══════ 하단 고정 영역: 5개 컬럼 고정 (할 일 → 시간 → [알림]/[달력] 클릭 후 바로 Enter 치면 즉시 등록!) ══════
             with st.container(key="todo_bottom_dock_a"):
                 d_c1, d_c2, d_c3, d_c4, d_c5 = st.columns([2.20, 0.92, 0.78, 0.78, 0.78], gap="small")
                 inp_key = f"dock_chat_inp_{year}_{month}_{selected_day}"
@@ -2572,10 +2599,9 @@ def render_calendar_main() -> None:
 
 def render_floating_kakao_todo_overlay() -> None:
     """
-    1) 초기 화면 및 모달 닫힘 상태에서 [알림], [달력], [상세] 버튼 3종 모두 깔끔한 평면(Flat) 상태 보장
-    2) [알림], [달력] 버튼 클릭 시 캡처 단계에서 즉시 오목 입체(Sunken) 다중 토글 작동
-    3) [상세] 버튼 클릭 시 현재 입력된 내용 + [시:분] 시간 + [알림]·[달력] 상태를 그대로 담아 모달 오픈
-    4) 오직 Enter 키를 쳤을 때만 할 일 + 오늘 기준 시간 + 선택된 [알림]·[달력] 상태로 즉시 등록
+    1) 할일 입력 → 시간 입력 → [알림] 또는 [달력] 클릭 후 바로 Enter를 치더라도,
+       버튼 클릭이 취소되지 않고 즉시 할일이 상단 Today To Do에 등록되도록 전역 Enter 핸들러 적용
+    2) 상세 모달 오픈 시 주변 배경이 어두워지지 않도록(투명 유지) 처리하고 모달 바탕은 푸른색(#E8F3FF), 입력칸은 흰색(#FFFFFF)으로 스타일링
     """
     cstate = _init_calendar_state()
     todos = cstate.get("kakao_todos", [])
@@ -2609,7 +2635,6 @@ def render_floating_kakao_todo_overlay() -> None:
             const SERVER_KST_ISO = {kst_iso_json};
             const DOCK_CTX_KEY = {dock_ctx_json};
 
-            // 이전 iframe에서 실행 중이던 구버전 타이머가 있으면 즉시 제거 (구버전 스타일 덮어쓰기 방지)
             if (parentWin._tdsCalCleanupTimer) {{
                 parentWin.clearInterval(parentWin._tdsCalCleanupTimer);
                 parentWin._tdsCalCleanupTimer = null;
@@ -2626,7 +2651,6 @@ def render_floating_kakao_todo_overlay() -> None:
                     allowEnterCommit: false
                 }};
             }} else {{
-                // 모달이 닫혀 있는 기본 화면에서는 [상세] 버튼이 절대 눌려 있지 않도록 강제 초기화
                 if (!parentDoc.querySelector('div[data-testid="stDialog"]')) {{
                     parentWin._tdsDockToggleState.dtl = false;
                 }}
@@ -2872,9 +2896,25 @@ def render_floating_kakao_todo_overlay() -> None:
             }}
 
             // 전역 문서 캡처 핸들러:
-            // 1) [알림], [달력] 버튼 클릭 시 React까지 이벤트가 가지 않도록 최상단에서 가로채어 즉시 Sunken 입체 토글!
-            // 2) [상세] 버튼 클릭 시 현재 입력된 할 일 + [시:분] + [알림]·[달력] 상태를 묶어 모달 오픈!
-            // 3) 할 일 입력칸에서 Tab이나 마우스로 포커스가 빠질 때(blur/focusout) 자동 등록되는 현상 완전 차단!
+            // 1) [알림], [달력] 버튼 클릭 시:
+            //    - mousedown에서 preventDefault()로 포커스가 버튼에 갇히지 않게 하고
+            //    - click에서 Sunken 입체 토글 후 포커스를 할 일 입력칸(또는 시간칸)으로 유지하여
+            //      그 상태에서 바로 Enter를 치면 버튼이 취소되지 않고 즉시 할 일이 등록되게 함!
+            if (parentWin._tdsGlobalDocMousedownHandler) {{
+                parentDoc.removeEventListener("mousedown", parentWin._tdsGlobalDocMousedownHandler, true);
+            }}
+            parentWin._tdsGlobalDocMousedownHandler = function(ev) {{
+                const t = ev.target;
+                if (!t || !t.closest) return;
+                const dockEl = parentDoc.querySelector('.st-key-todo_bottom_dock_a');
+                if (!dockEl || !dockEl.contains(t)) return;
+                const isDockBtn = t.closest('[class*="st-key-btn_dock_alarm_"] button, [class*="st-key-btn_dock_cal_"] button, [class*="st-key-btn_dock_detail_"] button');
+                if (isDockBtn) {{
+                    ev.preventDefault();
+                }}
+            }};
+            parentDoc.addEventListener("mousedown", parentWin._tdsGlobalDocMousedownHandler, true);
+
             if (parentWin._tdsGlobalDocClickHandler) {{
                 parentDoc.removeEventListener("click", parentWin._tdsGlobalDocClickHandler, true);
             }}
@@ -2916,6 +2956,39 @@ def render_floating_kakao_todo_overlay() -> None:
                 }}
             }};
             parentDoc.addEventListener("click", parentWin._tdsGlobalDocClickHandler, true);
+
+            // 전역 Enter 키 캡처 핸들러:
+            // 할일 입력 → 시간 입력 → [알림]/[달력] 버튼 클릭 직후 마우스를 다시 입력칸에 대지 않고
+            // 바로 Enter 키를 쳐도 버튼이 취소되지 않고 즉시 할일이 등록되도록 보장!
+            if (parentWin._tdsGlobalDocKeydownHandler) {{
+                parentDoc.removeEventListener("keydown", parentWin._tdsGlobalDocKeydownHandler, true);
+            }}
+            parentWin._tdsGlobalDocKeydownHandler = function(ev) {{
+                if (ev.key !== "Enter" || ev.isComposing) return;
+                const dState = parentWin._tdsDockToggleState;
+                if (dState && dState.allowEnterCommit) return;
+
+                // 모달 창이 열려 있을 때는 모달 내부 동작 우선
+                if (parentDoc.querySelector('div[data-testid="stDialog"]')) return;
+
+                const dockEl = parentDoc.querySelector('.st-key-todo_bottom_dock_a');
+                if (!dockEl) return;
+                const chatInp = dockEl.querySelector('[class*="st-key-dock_chat_wrap_"] input');
+                if (!chatInp) return;
+
+                const rawTitle = stripDockTokenSuffix(chatInp.value || "").trim();
+                const activeEl = parentDoc.activeElement;
+                const isInsideDock = activeEl && dockEl.contains(activeEl);
+                const isBodyOrNonInput = !activeEl || activeEl === parentDoc.body || (activeEl.tagName !== "INPUT" && activeEl.tagName !== "TEXTAREA" && activeEl.tagName !== "SELECT");
+
+                if (rawTitle && (isInsideDock || isBodyOrNonInput)) {{
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    ev.stopImmediatePropagation();
+                    triggerReactCommitPayload(chatInp, "ENTER");
+                }}
+            }};
+            parentDoc.addEventListener("keydown", parentWin._tdsGlobalDocKeydownHandler, true);
 
             if (parentWin._tdsGlobalBlurHandler) {{
                 ["focusout", "blur", "change"].forEach(evtName => {{
@@ -2967,7 +3040,6 @@ def render_floating_kakao_todo_overlay() -> None:
                     }}
                 }}
 
-                // 모달이 실제로 열려 있을 때만 [상세] 버튼이 눌려 보이게 하고, 기본 화면에서는 항상 평면(Flat) 유지!
                 const isDialogOpen = !!parentDoc.querySelector('div[data-testid="stDialog"]');
                 dState.dtl = isDialogOpen;
 
@@ -2975,8 +3047,8 @@ def render_floating_kakao_todo_overlay() -> None:
                 applyButtonVisualState(calBtn, dState.cal);
                 applyButtonVisualState(dtlBtn, isDialogOpen);
 
-                if (chatInp && !chatInp._boundStrictEnterV9) {{
-                    chatInp._boundStrictEnterV9 = true;
+                if (chatInp && !chatInp._boundStrictEnterV10) {{
+                    chatInp._boundStrictEnterV10 = true;
                     chatInp.addEventListener("keydown", function(ev) {{
                         if (ev.key === "Tab" && !ev.shiftKey) {{
                             ev.preventDefault();
@@ -3646,7 +3718,6 @@ def render_floating_kakao_todo_overlay() -> None:
                     const curIso = `${{y}}-${{m}}-${{d}}`;
                     const curHm = `${{hh}}:${{mm}}`;
 
-                    // 오늘 KST 시각 도달 시 종 아이콘 실시간 반짝임 활성화
                     parentDoc.querySelectorAll(".tds-bell-pure[data-alarm-time]").forEach(bellEl => {{
                         const alarmHm = bellEl.getAttribute("data-alarm-time") || "";
                         if (!alarmHm || curHm >= alarmHm) {{
