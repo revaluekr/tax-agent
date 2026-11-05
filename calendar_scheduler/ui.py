@@ -22,7 +22,7 @@ import ui_theme as _ui_theme
 _WEEKDAYS_SHORT = ("월", "화", "수", "목", "금", "토", "일")
 _WEEKDAYS_FULL = ("월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일")
 _SUN_FIRST_HEADERS = ("일", "월", "화", "수", "목", "금", "토")
-_STATE_SCHEMA_VERSION = "v20_home_fab_genie_motion_and_oneclick_blue_dtl_circle"
+_STATE_SCHEMA_VERSION = "v21_collapsible_ai_simulator_and_remove_sb_footer_btns"
 
 
 def _html(s: str) -> str:
@@ -2518,11 +2518,8 @@ def render_calendar_sidebar() -> None:
             cstate["_sync_sb_from_cstate"] = True
             st.rerun()
 
-    with st.container(border=True):
-        sim_pill = "<span style='font-size:0.66rem;font-weight:800;padding:2px 8px;border-radius:999px;background:#FFF5E5;color:#D97706;'>체험버튼</span>"
-        st.markdown(_ui_theme.sb_title("zap", "카톡 백그라운드 시뮬레이터", sim_pill), unsafe_allow_html=True)
-        st.caption("버튼을 누르면 우측 하단 **웃는 얼굴 홈버튼**과 **네모 말풍선**이 반응합니다.")
-
+    with st.expander("⚡ AI 백그라운드 시뮬레이터", expanded=False):
+        st.caption("버튼을 누르면 우측 하단 **홈버튼**과 **네모 말풍선**이 반응합니다.")
         sim_buttons = [
             (1, "💬 ① '네 확인했습니다' 수신 · 무응답 1소거"),
             (2, "📄 ② (주)갑 서류요청 카톡 · 다운+말풍선"),
@@ -2539,23 +2536,13 @@ def render_calendar_sidebar() -> None:
     with st.container(border=True):
         st.markdown(
             _html("""
-            <div style="display:flex;align-items:center;justify-content:space-between;font-size:0.74rem;color:#8B95A1;margin-bottom:8px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;font-size:0.74rem;color:#8B95A1;">
                 <span>카톡 감시 엔진</span>
                 <span style="font-weight:800;color:#00A660;background:#E5F9F0;padding:2px 8px;border-radius:999px;"><span style="color:#00C471;">●</span> 실시간 켜짐</span>
             </div>
             """),
             unsafe_allow_html=True,
         )
-        f_c1, f_c2 = st.columns(2)
-        with f_c1:
-            open_lbl = "To-Do 닫기" if cstate.get("panel_open") else "To-Do 열기"
-            if st.button(open_lbl, width="stretch", key="btn_sb_footer_open_todo"):
-                cstate["panel_open"] = not cstate.get("panel_open", False)
-                st.rerun()
-        with f_c2:
-            if st.button("초기화", width="stretch", key="btn_sb_footer_reset_demo"):
-                st.session_state.pop("cal_scheduler_state", None)
-                st.rerun()
 
 
 def render_calendar_main() -> None:
