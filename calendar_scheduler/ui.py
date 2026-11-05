@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
 달력 스케줄러 + Today To Do (메인 할 일과 카톡 백그라운드 To-Do 완전 분리) +
-카톡 백그라운드 To-Do 블랙(딥 차콜) 컨셉 오버레이 + 연한 소프트 스카이블루(#E4F0FF) 상세입력 모달 +
-달력 날짜 셀 더블클릭 시 상세일정 설정 오픈 & ◀ 11월 ▶ 월 이동 완비 (calendar_scheduler/ui.py)
+카톡 백그라운드 To-Do 블랙(딥 차콜) 컨셉 오버레이 + 시안 A 토스 아이스 블루(#DCEBFF) 상세입력 모달 +
+월별 실제 세무기한 자동 배치(시간 표기 제거) + 말풍선/달력 셀 더블클릭 오픈 (calendar_scheduler/ui.py)
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ import ui_theme as _ui_theme
 _WEEKDAYS_SHORT = ("월", "화", "수", "목", "금", "토", "일")
 _WEEKDAYS_FULL = ("월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일")
 _SUN_FIRST_HEADERS = ("일", "월", "화", "수", "목", "금", "토")
-_STATE_SCHEMA_VERSION = "v12_skyblue_modal_dblclick_and_month_nav"
+_STATE_SCHEMA_VERSION = "v13_option_a_iceblue_modal_and_monthly_tax_cal"
 
 
 def _html(s: str) -> str:
@@ -40,134 +40,274 @@ def get_kst_now_hm() -> str:
     return datetime.now(ZoneInfo("Asia/Seoul")).strftime("%H:%M")
 
 
+def _make_tax_ev(
+    ev_id: str,
+    title: str,
+    client: str,
+    desc: str,
+    repeat: str = "매월 반복",
+    urgent: bool = False,
+    has_detail: bool = False,
+    sub_tasks: List[Dict[str, Any]] | None = None,
+) -> Dict[str, Any]:
+    """세무기한(빨간 배지) 기본 일정 딕셔너리 생성 헬퍼 (앞쪽 시간 표기 없음)"""
+    return {
+        "id": ev_id,
+        "type": "TAX",
+        "time": "",
+        "title": title,
+        "client": client,
+        "category": "세무기한",
+        "ai_status": "작업 완료, 승인요청중",
+        "done": False,
+        "alarm": False,
+        "alarm_glow": False,
+        "show_on_cal": True,
+        "urgent": urgent,
+        "has_detail": has_detail,
+        "repeat": repeat,
+        "location": "홈택스 / 위택스",
+        "link_target": "CALENDAR",
+        "link_label": "",
+        "attachment": "",
+        "sub_tasks": list(sub_tasks) if sub_tasks else [],
+        "desc": desc,
+    }
+
+
 def _default_schedules_for_month(year: int, month: int, today_d: date) -> Dict[int, List[Dict[str, Any]]]:
     """
-    당해 연월의 기본 세무기한 일정을 생성합니다.
-    - 오늘자(focus_day) 임의 할 일 리스트는 모두 비워 Today To Do가 0건으로 시작합니다.
+    1월~12월 각 달의 실제 대한민국 세법상 정기 세무기한 일정을 정확한 날짜에 자동 배치합니다.
+    - 모든 세무기한(TAX) 일정은 시간 문자열을 비워('time': '') 달력 셀에 제목만 깔끔하게 표시합니다.
     """
     last_day = calendar.monthrange(year, month)[1]
+    prev_m = 12 if month == 1 else (month - 1)
 
     data: Dict[int, List[Dict[str, Any]]] = {
         10: [
-            {
-                "id": f"sch_{year}_{month}_10_1",
-                "type": "TAX",
-                "time": "18:00",
-                "title": "원천세 · 지방소득세 신고납부",
-                "client": "전체 기장 거래처",
-                "category": "세무기한",
-                "ai_status": "작업 완료, 승인요청중",
-                "done": False,
-                "alarm": False,
-                "alarm_glow": False,
-                "show_on_cal": True,
-                "urgent": True,
-                "has_detail": True,
-                "repeat": "매월 반복",
-                "location": "홈택스 / 위택스",
-                "link_target": "PAYROLL_EMP",
-                "link_label": "[인건비 자동화 > 급여명세서] 바로가기",
-                "attachment": "",
-                "sub_tasks": [
+            _make_tax_ev(
+                ev_id=f"sch_{year}_{month}_10_1",
+                title="원천세 · 지방소득세 신고납부",
+                client="전체 기장 거래처",
+                desc="원천징수이행상황신고서 마감 및 거래처별 납부서 카톡 일괄 안내",
+                repeat="매월 반복",
+                urgent=True,
+                has_detail=True,
+                sub_tasks=[
                     {"title": "원천징수이행상황신고서 마감 검증", "done": True},
                     {"title": "거래처별 납부서 카톡 일괄 안내", "done": False},
                 ],
-                "desc": "원천징수이행상황신고서 마감 및 거래처별 납부서 카톡 일괄 안내",
-            },
-            {
-                "id": f"sch_{year}_{month}_10_2",
-                "type": "TAX",
-                "time": "18:00",
-                "title": f"4대보험 {max(1, month - 1)}월분 납부기한",
-                "client": "전체 기장 거래처",
-                "category": "세무기한",
-                "ai_status": "작업 완료, 승인요청중",
-                "done": False,
-                "alarm": False,
-                "alarm_glow": False,
-                "show_on_cal": True,
-                "urgent": False,
-                "has_detail": False,
-                "repeat": "매월 반복",
-                "location": "",
-                "link_target": "CALENDAR",
-                "link_label": "",
-                "attachment": "",
-                "sub_tasks": [],
-                "desc": "국민연금·건강보험·고용·산재보험 당월 고지분 납부 마감",
-            },
-        ],
-        25: [
-            {
-                "id": f"sch_{year}_{month}_25_1",
-                "type": "TAX",
-                "time": "18:00",
-                "title": "개별소비세 · 증권거래세 신고",
-                "client": "해당 법인 거래처",
-                "category": "세무기한",
-                "ai_status": "작업 완료, 승인요청중",
-                "done": False,
-                "alarm": False,
-                "alarm_glow": False,
-                "show_on_cal": True,
-                "urgent": False,
-                "has_detail": False,
-                "repeat": "매월 반복",
-                "location": "",
-                "link_target": "CALENDAR",
-                "link_label": "",
-                "attachment": "",
-                "sub_tasks": [],
-                "desc": "당월분 개별소비세 및 증권거래세 정기 신고·납부 기한",
-            },
+            ),
+            _make_tax_ev(
+                ev_id=f"sch_{year}_{month}_10_2",
+                title=f"4대보험 {prev_m}월분 납부기한",
+                client="전체 기장 거래처",
+                desc="국민연금·건강보험·고용·산재보험 당월 고지분 납부 마감",
+                repeat="매월 반복",
+            ),
         ],
         last_day: [
-            {
-                "id": f"sch_{year}_{month}_{last_day}_1",
-                "type": "TAX",
-                "time": "18:00",
-                "title": "종합소득세 중간예납 납부기한",
-                "client": "개인사업자 거래처",
-                "category": "세무기한",
-                "ai_status": "작업 완료, 승인요청중",
-                "done": False,
-                "alarm": False,
-                "alarm_glow": False,
-                "show_on_cal": True,
-                "urgent": True,
-                "has_detail": False,
-                "repeat": "반복 안함",
-                "location": "",
-                "link_target": "CALENDAR",
-                "link_label": "",
-                "attachment": "",
-                "sub_tasks": [],
-                "desc": "종합소득세 중간예납 고지세액 납부 안내 및 추계신고 대상 점검",
-            },
-            {
-                "id": f"sch_{year}_{month}_{last_day}_2",
-                "type": "TAX",
-                "time": "18:00",
-                "title": "일용근로·간이지급명세서 제출",
-                "client": "인건비 신고 거래처",
-                "category": "세무기한",
-                "ai_status": "작업 완료, 승인요청중",
-                "done": False,
-                "alarm": False,
-                "alarm_glow": False,
-                "show_on_cal": True,
-                "urgent": False,
-                "has_detail": False,
-                "repeat": "매월 반복",
-                "location": "",
-                "link_target": "PAYROLL_BIZ",
-                "link_label": "[인건비 자동화 > 사업소득] 바로가기",
-                "attachment": "",
-                "sub_tasks": [],
-                "desc": "일용근로소득 및 거주자 사업소득 간이지급명세서 정기 제출 기한",
-            },
+            _make_tax_ev(
+                ev_id=f"sch_{year}_{month}_{last_day}_common",
+                title="일용근로·간이지급명세서 제출",
+                client="인건비 신고 거래처",
+                desc="일용근로소득 및 거주자 사업소득 간이지급명세서 정기 제출 기한",
+                repeat="매월 반복",
+            ),
         ],
     }
+
+    # 월별 실제 정기 세무기한 추가 배치
+    if month == 1:
+        data.setdefault(25, []).append(
+            _make_tax_ev(
+                ev_id=f"sch_{year}_1_25_vat",
+                title="부가가치세 제2기 확정신고·납부",
+                client="법인·개인 과세사업자 거래처",
+                desc="전년도 제2기 부가가치세 확정신고 및 납부 마감",
+                repeat="매년 반복",
+                urgent=True,
+            )
+        )
+        data[last_day].insert(
+            0,
+            _make_tax_ev(
+                ev_id=f"sch_{year}_1_{last_day}_half",
+                title="근로소득 간이지급명세서(하반기) 제출",
+                client="상시근로자 고용 거래처",
+                desc="전년도 하반기(7~12월) 근로소득 간이지급명세서 제출 마감",
+                repeat="매년 반복",
+                urgent=True,
+            ),
+        )
+    elif month == 2:
+        data[10].append(
+            _make_tax_ev(
+                ev_id=f"sch_{year}_2_10_exempt",
+                title="면세사업자 사업장현황신고",
+                client="병·의원·학원 등 면세사업자",
+                desc="전년도 귀속 개인 면세사업자 사업장현황신고 및 수입금액 검토",
+                repeat="매년 반복",
+                urgent=True,
+            )
+        )
+    elif month == 3:
+        data[10].append(
+            _make_tax_ev(
+                ev_id=f"sch_{year}_3_10_yearend",
+                title="연말정산 지급명세서 제출·환급신청",
+                client="전체 원천징수 거래처",
+                desc="근로·퇴직·사업소득 지급명세서 제출 및 연말정산 환급신청 마감",
+                repeat="매년 반복",
+                urgent=True,
+            )
+        )
+        data[last_day].insert(
+            0,
+            _make_tax_ev(
+                ev_id=f"sch_{year}_3_{last_day}_corp",
+                title="12월 결산법인 법인세 정기신고·납부",
+                client="12월 결산 법인 거래처",
+                desc="12월 결산법인 법인세 과세표준 및 세액신고서 제출·납부 마감",
+                repeat="매년 반복",
+                urgent=True,
+            ),
+        )
+    elif month == 4:
+        data.setdefault(25, []).append(
+            _make_tax_ev(
+                ev_id=f"sch_{year}_4_25_vat",
+                title="부가가치세 제1기 예정신고·납부",
+                client="법인 및 예정고지 대상 개인거래처",
+                desc="제1기 부가가치세 예정신고(법인) 및 예정고지세액 납부(개인) 마감",
+                repeat="매년 반복",
+                urgent=True,
+            )
+        )
+        data[last_day].insert(
+            0,
+            _make_tax_ev(
+                ev_id=f"sch_{year}_4_{last_day}_localcorp",
+                title="법인지방소득세 확정신고·납부",
+                client="12월 결산 법인 거래처",
+                desc="12월 결산법인 법인지방소득세 위택스 확정신고 및 납부 마감",
+                repeat="매년 반복",
+                urgent=True,
+            ),
+        )
+    elif month == 5:
+        data[last_day].insert(
+            0,
+            _make_tax_ev(
+                ev_id=f"sch_{year}_5_{last_day}_inc",
+                title="종합소득세·개인지방소득세 확정신고",
+                client="개인사업자 및 종소세 신고 대상",
+                desc="전년도 귀속 종합소득세 및 개인지방소득세 확정신고·납부 마감",
+                repeat="매년 반복",
+                urgent=True,
+            ),
+        )
+    elif month == 6:
+        data[last_day].insert(
+            0,
+            _make_tax_ev(
+                ev_id=f"sch_{year}_6_{last_day}_sincere",
+                title="성실신고확인 대상 종합소득세 신고",
+                client="성실신고확인 대상 개인거래처",
+                desc="성실신고확인서 첨부 대상 사업자 종합소득세 확정신고·납부 마감",
+                repeat="매년 반복",
+                urgent=True,
+            ),
+        )
+    elif month == 7:
+        data.setdefault(25, []).append(
+            _make_tax_ev(
+                ev_id=f"sch_{year}_7_25_vat",
+                title="부가가치세 제1기 확정신고·납부",
+                client="법인·개인 과세사업자 거래처",
+                desc="당해 제1기 부가가치세 확정신고 및 납부 마감",
+                repeat="매년 반복",
+                urgent=True,
+            )
+        )
+        data[last_day].insert(
+            0,
+            _make_tax_ev(
+                ev_id=f"sch_{year}_7_{last_day}_half1",
+                title="근로소득 간이지급명세서(상반기) 제출",
+                client="상시근로자 고용 거래처",
+                desc="당해 상반기(1~6월) 근로소득 간이지급명세서 제출 마감",
+                repeat="매년 반복",
+                urgent=True,
+            ),
+        )
+    elif month == 8:
+        data[last_day].insert(
+            0,
+            _make_tax_ev(
+                ev_id=f"sch_{year}_8_{last_day}_corp_mid",
+                title="12월 결산법인 법인세 중간예납",
+                client="12월 결산 법인 거래처",
+                desc="12월 결산법인 법인세 중간예납 신고 및 납부 마감",
+                repeat="매년 반복",
+                urgent=True,
+            ),
+        )
+    elif month == 9:
+        data[last_day].insert(
+            0,
+            _make_tax_ev(
+                ev_id=f"sch_{year}_9_{last_day}_prop",
+                title="재산세(토지·주택 2기분) 납부기한",
+                client="부동산 보유 거래처",
+                desc="9월 정기분 재산세(토지 및 주택 2기분) 고지세액 납부 안내",
+                repeat="매년 반복",
+            ),
+        )
+    elif month == 10:
+        data.setdefault(25, []).append(
+            _make_tax_ev(
+                ev_id=f"sch_{year}_10_25_vat",
+                title="부가가치세 제2기 예정신고·납부",
+                client="법인 및 예정고지 대상 개인거래처",
+                desc="제2기 부가가치세 예정신고(법인) 및 예정고지세액 납부(개인) 마감",
+                repeat="매년 반복",
+                urgent=True,
+            )
+        )
+    elif month == 11:
+        data.setdefault(25, []).append(
+            _make_tax_ev(
+                ev_id=f"sch_{year}_11_25_excise",
+                title="개별소비세 · 교통에너지환경세 신고",
+                client="해당 과세물품 거래처",
+                desc="전월분 개별소비세 및 교통·에너지·환경세 정기 신고·납부 기한",
+                repeat="매월 반복",
+            )
+        )
+        data[last_day].insert(
+            0,
+            _make_tax_ev(
+                ev_id=f"sch_{year}_11_{last_day}_inc_mid",
+                title="종합소득세 중간예납 납부기한",
+                client="개인사업자 거래처",
+                desc="종합소득세 중간예납 고지세액 납부 안내 및 추계신고 대상 점검",
+                repeat="매년 반복",
+                urgent=True,
+            ),
+        )
+    elif month == 12:
+        data.setdefault(15, []).append(
+            _make_tax_ev(
+                ev_id=f"sch_{year}_12_15_comp_prop",
+                title="종합부동산세 납부기한",
+                client="종부세 대상 법인·개인 거래처",
+                desc="당해 귀속 종합부동산세 고지세액 확인 및 특례·합산배제 신고·납부",
+                repeat="매년 반복",
+                urgent=True,
+            )
+        )
+
     return data
 
 
@@ -462,8 +602,7 @@ def _parse_dock_raw_payload(raw_val: str) -> tuple[str, bool | None, bool | None
 def _shift_calendar_month(cstate: Dict[str, Any], delta: int) -> None:
     """
     ◀ / ▶ 화살표 클릭 시 이전 달 또는 다음 달로 연·월 이동.
-    - 이미 렌더링된 사이드바 위젯 키(cal_sb_year_sel, cal_sb_month_sel)를 직접 수정하면 StreamlitAPIException이 발생하므로,
-      _sync_sb_from_cstate 플래그를 켜서 다음 리런 최상단(사이드바 위젯 생성 직전)에 안전하게 동기화합니다.
+    - 사이드바 셀렉트박스 위젯 충돌 방지를 위해 _sync_sb_from_cstate 플래그로 다음 리런 최상단에서 안전하게 동기화합니다.
     """
     cur_y = int(cstate.get("year", get_kst_today().year))
     cur_m = int(cstate.get("month", get_kst_today().month))
@@ -1550,7 +1689,7 @@ section[data-testid="stSidebar"] .st-key-btn_cal_go_today div.stButton > button 
     border-radius: 10px !important;
 }
 
-/* ══════ 화면 중앙 상세입력 창 (바깥 배경은 어두워지지 않게 유지 + 모달 본체는 100% 불투명 연한 소프트 스카이블루 #E4F0FF + 순백색 #FFFFFF 라벨/입력칸) ══════ */
+/* ══════ 화면 중앙 상세입력 창 (시안 A: 토스 아이스 블루 틴트 #DCEBFF + 보더 #3182F6 + 순백색 #FFFFFF 입력칸) ══════ */
 div[data-testid="stDialog"],
 div[data-testid="stModal"],
 div[data-baseweb="modal"] {
@@ -1561,22 +1700,18 @@ div[data-baseweb="modal"] {
 }
 div[data-testid="stDialog"] div[role="dialog"],
 div[data-testid="stModal"] div[role="dialog"],
+div[data-testid="stDialog"] [aria-label="dialog"],
 div[role="dialog"][aria-modal="true"] {
-    border-radius: 26px !important;
+    border-radius: 24px !important;
     padding: 24px 28px !important;
-    border: 2px solid #90C2FF !important;
-    box-shadow: 0 22px 54px rgba(25, 31, 40, 0.16), 0 4px 16px rgba(49, 130, 246, 0.12) !important;
-    background: #E4F0FF !important;
-    background-color: #E4F0FF !important;
+    border: 2.5px solid #3182F6 !important;
+    box-shadow: 0 22px 54px rgba(25, 31, 40, 0.16), 0 4px 16px rgba(49, 130, 246, 0.14) !important;
+    background: #DCEBFF !important;
+    background-color: #DCEBFF !important;
     opacity: 1 !important;
     backdrop-filter: none !important;
     -webkit-backdrop-filter: none !important;
     max-width: 780px !important;
-}
-div[data-testid="stDialog"] div[role="dialog"] > div,
-div[data-testid="stDialog"] div[role="dialog"] [data-testid="stVerticalBlockBorderWrapper"] {
-    background: #E4F0FF !important;
-    background-color: #E4F0FF !important;
 }
 /* 상세일정 모달 내부 모든 입력칸·드롭다운·텍스트영역을 순백색(#FFFFFF)으로 강조 */
 div[data-testid="stDialog"] [data-testid="stTextInput"] > div > div,
@@ -1587,7 +1722,7 @@ div[data-testid="stDialog"] [data-baseweb="select"] > div,
 div[data-testid="stDialog"] [data-baseweb="textarea"] {
     background: #FFFFFF !important;
     background-color: #FFFFFF !important;
-    border: 1px solid #B8D8FF !important;
+    border: 1.5px solid #90C2FF !important;
     border-radius: 12px !important;
     box-shadow: 0 2px 6px rgba(49, 130, 246, 0.05) !important;
 }
@@ -1623,7 +1758,7 @@ div[data-testid="stDialog"] textarea {
     font-weight: 800;
     padding: 8px 10px;
     border-radius: 999px;
-    border: 1px solid #90C2FF;
+    border: 1.5px solid #90C2FF;
     margin-top: 2px;
     width: 100%;
     box-sizing: border-box;
@@ -1633,7 +1768,7 @@ div[data-testid="stDialog"] [class*="st-key-dlg_btn_add_sub_"] div.stButton > bu
     background: #FFFFFF !important;
     color: #3182F6 !important;
     font-weight: 800 !important;
-    border: 1px solid #90C2FF !important;
+    border: 1.5px solid #90C2FF !important;
     border-radius: 10px !important;
 }
 div[data-testid="stDialog"] [class*="st-key-dlg_btn_save_"] div.stButton > button {
@@ -1650,7 +1785,7 @@ div[data-testid="stDialog"] [class*="st-key-dlg_btn_cancel_"] div.stButton > but
     background: #FFFFFF !important;
     color: #191F28 !important;
     font-weight: 700 !important;
-    border: 1px solid #B8D8FF !important;
+    border: 1.5px solid #90C2FF !important;
     border-radius: 10px !important;
 }
 div[data-testid="stDialog"] [class*="st-key-dlg_btn_delete_"] div.stButton > button {
@@ -1879,8 +2014,8 @@ def _delete_sub_task_in_dialog(ev_id: str, del_idx: int) -> None:
 @st.dialog("📋 상세일정 설정", width="large")
 def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str) -> None:
     """
-    화면 중앙 상세입력 모달 (100% 불투명 연한 소프트 스카이블루 #E4F0FF 바탕 + 순백색 #FFFFFF 라벨/입력칸 + 투명 외부 배경):
-    - 하단 독 [상세] 클릭, [+ 일정 추가하기] 클릭, 또는 달력 날짜 셀 더블클릭 시 활성화됩니다.
+    화면 중앙 상세입력 모달 (시안 A: 토스 아이스 블루 틴트 #DCEBFF + 보더 #3182F6 + 순백색 #FFFFFF 라벨/입력칸):
+    - 모달 포털 DOM을 직접 탐색하여 어떤 Streamlit 버전에서도 #DCEBFF 배경이 100% 반영되도록 보장합니다.
     """
     cstate = _init_calendar_state()
     cstate["dock_dtl"] = False
@@ -1952,6 +2087,78 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
             {"title": str(s.get("title", "")), "done": bool(s.get("done", False))}
             for s in list(target_ev.get("sub_tasks", []))
         ]
+
+    # 모달 내부 앵커 및 시안 A(#DCEBFF 아이스 블루 틴트 + #3182F6 보더) 강제 주입 스크립트
+    st.markdown("<div id='tds-dlg-iceblue-anchor' style='display:none;'></div>", unsafe_allow_html=True)
+    components.html(
+        """
+        <script>
+        (function() {
+            const pDoc = window.parent.document;
+            const pWin = window.parent;
+            function applyOptionAIceBlueModal() {
+                const anchor = pDoc.getElementById("tds-dlg-iceblue-anchor") || pDoc.querySelector(".gcal-tds-title-wrap");
+                if (!anchor) return;
+                const dlgRoot = anchor.closest('div[data-testid="stDialog"], div[data-testid="stModal"], div[data-baseweb="modal"]');
+                let cur = anchor.parentElement;
+                let modalCard = null;
+                while (cur && cur !== pDoc.body) {
+                    const r = cur.getBoundingClientRect();
+                    if (r.width >= 320 && r.width <= Math.min(920, pWin.innerWidth * 0.90) && r.height >= 260) {
+                        modalCard = cur;
+                    }
+                    cur = cur.parentElement;
+                }
+                if (!modalCard && dlgRoot) {
+                    modalCard = dlgRoot.querySelector('div[role="dialog"], [aria-label="dialog"]') || dlgRoot.querySelector('div > div');
+                }
+                if (modalCard) {
+                    modalCard.style.setProperty("background", "#DCEBFF", "important");
+                    modalCard.style.setProperty("background-color", "#DCEBFF", "important");
+                    modalCard.style.setProperty("opacity", "1", "important");
+                    modalCard.style.setProperty("border", "2.5px solid #3182F6", "important");
+                    modalCard.style.setProperty("border-radius", "24px", "important");
+                    modalCard.style.setProperty("box-shadow", "0 22px 54px rgba(25, 31, 40, 0.18), 0 4px 16px rgba(49, 130, 246, 0.14)", "important");
+
+                    // 모달 카드 안쪽의 레이아웃 래퍼들이 흰색으로 덮지 않도록 투명화
+                    let inner = anchor.parentElement;
+                    while (inner && inner !== modalCard) {
+                        inner.style.setProperty("background", "transparent", "important");
+                        inner.style.setProperty("background-color", "transparent", "important");
+                        inner = inner.parentElement;
+                    }
+                    const hdr = modalCard.querySelector('[data-testid="stDialogHeader"]');
+                    if (hdr) {
+                        hdr.style.setProperty("background", "transparent", "important");
+                        hdr.style.setProperty("background-color", "transparent", "important");
+                    }
+
+                    // 모달 바깥쪽 전체화면 배경(Backdrop)은 어두워지지 않게 투명 처리
+                    let anc = modalCard.parentElement;
+                    while (anc && anc !== pDoc.body) {
+                        anc.style.setProperty("background", "transparent", "important");
+                        anc.style.setProperty("background-color", "transparent", "important");
+                        anc.style.setProperty("backdrop-filter", "none", "important");
+                        Array.from(anc.children).forEach(ch => {
+                            if (ch !== modalCard && !ch.contains(modalCard)) {
+                                ch.style.setProperty("background", "transparent", "important");
+                                ch.style.setProperty("background-color", "transparent", "important");
+                            }
+                        });
+                        if (anc === dlgRoot) break;
+                        anc = anc.parentElement;
+                    }
+                }
+            }
+            applyOptionAIceBlueModal();
+            setTimeout(applyOptionAIceBlueModal, 40);
+            setTimeout(applyOptionAIceBlueModal, 140);
+            setTimeout(applyOptionAIceBlueModal, 320);
+        })();
+        </script>
+        """,
+        height=0,
+    )
 
     # 1) 제목 입력 (순백색 입력칸 + 파란색 포인트 보더)
     st.markdown("<div class='gcal-tds-title-wrap'>", unsafe_allow_html=True)
@@ -2151,7 +2358,7 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
 
             final_title = in_title.strip() or "세무 상세 일정"
             new_type = "TAX" if "세무기한" in sel_cat_lbl else ("DONE" if "승인완료" in sel_cat_lbl else "MY")
-            norm_t = _normalize_time_str(in_time)
+            norm_t = "" if new_type == "TAX" else _normalize_time_str(in_time)
 
             all_subs_done = bool(updated_subs) and all(s.get("done") for s in updated_subs)
             is_done_final = True if (new_type == "DONE" or all_subs_done) else bool(target_ev.get("done", False))
@@ -2286,7 +2493,7 @@ def render_calendar_sidebar() -> None:
 
 
 def render_calendar_main() -> None:
-    """메인 화면: 좌측 풀사이즈 달력(더블클릭 시 상세모달 오픈) + 우측 Today To Do & ◀ 11월 ▶ 월 이동"""
+    """메인 화면: 좌측 풀사이즈 달력(월별 실제 세무일정 자동 배치 & 더블클릭 시 상세모달 오픈) + 우측 Today To Do"""
     cstate = _init_calendar_state()
     cstate["dock_dtl"] = False
     today_d = get_kst_today()
@@ -2395,8 +2602,12 @@ def render_calendar_main() -> None:
                             pills_html = ""
                             for ev in cal_evs[:3]:
                                 p_cls = _ev_pill_cls(ev)
-                                t_p = _normalize_time_str(str(ev.get("time", "")))
-                                prefix_t = f"{t_p} " if t_p else ""
+                                # 빨간색 세무기한(p_cls == 'red')은 앞쪽에 시간을 절대 표시하지 않고 제목만 깔끔하게 노출
+                                if p_cls == "red" or str(ev.get("type", "")).upper() == "TAX":
+                                    prefix_t = ""
+                                else:
+                                    t_p = _normalize_time_str(str(ev.get("time", "")))
+                                    prefix_t = f"{t_p} " if t_p else ""
                                 pills_html += f"<div class='tds-cal-ev-pill {p_cls}'>{_html_lib.escape(prefix_t + str(ev.get('title', '')))}</div>"
                             if len(cal_evs) > 3:
                                 pills_html += f"<div class='tds-cal-ev-more'>+{len(cal_evs) - 3}건</div>"
@@ -2561,7 +2772,7 @@ def render_calendar_main() -> None:
                         ev_id_str = str(ev.get("id", f"ev_{idx_e}"))
                         is_done = bool(ev.get("done", False))
                         ev_title_esc = _html_lib.escape(str(ev.get("title", "")))
-                        t_norm = _normalize_time_str(str(ev.get("time", "")))
+                        t_norm = "" if str(ev.get("type", "")).upper() == "TAX" else _normalize_time_str(str(ev.get("time", "")))
 
                         subs = ev.get("sub_tasks", []) or []
                         sub_badge_html = ""
@@ -2694,10 +2905,9 @@ def render_calendar_main() -> None:
 
 def render_floating_kakao_todo_overlay() -> None:
     """
-    1) 상세일정 설정 모달: 뒤쪽 달력이 절대 비치지 않는 100% 불투명 연한 소프트 스카이블루(#E4F0FF) + 순백색(#FFFFFF) 라벨/입력칸 강제 보장
-    2) 달력 날짜 네모칸 더블클릭(dblclick 또는 빠른 2회 클릭) 시 즉시 상세일정 설정 모달 오픈
-    3) '11월' 양옆 ◀ ▶ 버튼 클릭 시 최상단 문서 캡처 단계에서 즉시 이전 달 / 다음 달 이동 트리거 작동
-    4) 카톡 백그라운드 To-Do 블랙(딥 차콜) 컨셉 및 기존 파란 홈버튼(#3898FF) 고정 유지
+    1) 상세일정 설정 모달: 시안 A 토스 아이스 블루(#DCEBFF) + 보더(#3182F6) + 순백색(#FFFFFF) 입력칸 강제 보장
+    2) 홈버튼 위 말구름(#tds-kakao-square-bubble) 더블클릭 시 60% 큰 화면(블랙 패널)으로 즉시 전환
+    3) 달력 날짜 네모칸 더블클릭 시 상세일정 설정 오픈 & '11월' 양옆 ◀ ▶ 월 이동 작동
     """
     cstate = _init_calendar_state()
     todos = cstate.get("kakao_todos", [])
@@ -2815,18 +3025,56 @@ def render_floating_kakao_todo_overlay() -> None:
                 }}
             }}
 
-            function enforceSkyBlueDialogSurface() {{
-                const dlgCard = parentDoc.querySelector('div[data-testid="stDialog"] div[role="dialog"], div[role="dialog"][aria-modal="true"]');
-                if (!dlgCard) return;
-                dlgCard.style.setProperty("background", "#E4F0FF", "important");
-                dlgCard.style.setProperty("background-color", "#E4F0FF", "important");
-                dlgCard.style.setProperty("opacity", "1", "important");
-                dlgCard.style.setProperty("border", "2px solid #90C2FF", "important");
-                dlgCard.style.setProperty("border-radius", "26px", "important");
-                dlgCard.style.setProperty("box-shadow", "0 22px 54px rgba(25, 31, 40, 0.16), 0 4px 16px rgba(49, 130, 246, 0.12)", "important");
-                if (dlgCard.firstElementChild) {{
-                    dlgCard.firstElementChild.style.setProperty("background", "#E4F0FF", "important");
-                    dlgCard.firstElementChild.style.setProperty("background-color", "#E4F0FF", "important");
+            function enforceOptionAIceBlueDialogSurface() {{
+                const anchor = parentDoc.getElementById("tds-dlg-iceblue-anchor") || parentDoc.querySelector(".gcal-tds-title-wrap");
+                if (!anchor) return;
+                const dlgRoot = anchor.closest('div[data-testid="stDialog"], div[data-testid="stModal"], div[data-baseweb="modal"]');
+                let cur = anchor.parentElement;
+                let modalCard = null;
+                while (cur && cur !== parentDoc.body) {{
+                    const r = cur.getBoundingClientRect();
+                    if (r.width >= 320 && r.width <= Math.min(920, parentWin.innerWidth * 0.90) && r.height >= 260) {{
+                        modalCard = cur;
+                    }}
+                    cur = cur.parentElement;
+                }}
+                if (!modalCard && dlgRoot) {{
+                    modalCard = dlgRoot.querySelector('div[role="dialog"], [aria-label="dialog"]') || dlgRoot.querySelector('div > div');
+                }}
+                if (modalCard) {{
+                    modalCard.style.setProperty("background", "#DCEBFF", "important");
+                    modalCard.style.setProperty("background-color", "#DCEBFF", "important");
+                    modalCard.style.setProperty("opacity", "1", "important");
+                    modalCard.style.setProperty("border", "2.5px solid #3182F6", "important");
+                    modalCard.style.setProperty("border-radius", "24px", "important");
+                    modalCard.style.setProperty("box-shadow", "0 22px 54px rgba(25, 31, 40, 0.18), 0 4px 16px rgba(49, 130, 246, 0.14)", "important");
+
+                    let inner = anchor.parentElement;
+                    while (inner && inner !== modalCard) {{
+                        inner.style.setProperty("background", "transparent", "important");
+                        inner.style.setProperty("background-color", "transparent", "important");
+                        inner = inner.parentElement;
+                    }}
+                    const hdr = modalCard.querySelector('[data-testid="stDialogHeader"]');
+                    if (hdr) {{
+                        hdr.style.setProperty("background", "transparent", "important");
+                        hdr.style.setProperty("background-color", "transparent", "important");
+                    }}
+
+                    let anc = modalCard.parentElement;
+                    while (anc && anc !== parentDoc.body) {{
+                        anc.style.setProperty("background", "transparent", "important");
+                        anc.style.setProperty("background-color", "transparent", "important");
+                        anc.style.setProperty("backdrop-filter", "none", "important");
+                        Array.from(anc.children).forEach(ch => {{
+                            if (ch !== modalCard && !ch.contains(modalCard)) {{
+                                ch.style.setProperty("background", "transparent", "important");
+                                ch.style.setProperty("background-color", "transparent", "important");
+                            }}
+                        }});
+                        if (anc === dlgRoot) break;
+                        anc = anc.parentElement;
+                    }}
                 }}
             }}
 
@@ -3026,10 +3274,6 @@ def render_floating_kakao_todo_overlay() -> None:
             }};
             parentDoc.addEventListener("mousedown", parentWin._tdsGlobalDocMousedownHandler, true);
 
-            // 전역 문서 캡처 클릭 & 더블클릭 핸들러:
-            // 1) '11월' 양옆 ◀(#tds-cal-prev-month-btn) / ▶(#tds-cal-next-month-btn) 클릭 시 즉시 이전달/다음달 이동
-            // 2) 달력 날짜 셀 더블클릭(또는 550ms 이내 2회 연속 클릭) 시 해당 날짜의 상세일정 설정 모달 즉시 오픈
-            // 3) 하단 독 [알림], [달력], [상세] 버튼 제어
             if (parentWin._tdsGlobalDocClickHandler) {{
                 parentDoc.removeEventListener("click", parentWin._tdsGlobalDocClickHandler, true);
             }}
@@ -3125,13 +3369,28 @@ def render_floating_kakao_todo_overlay() -> None:
             }};
             parentDoc.addEventListener("click", parentWin._tdsGlobalDocClickHandler, true);
 
-            // 네이티브 dblclick 이벤트도 함께 감지하여 달력 날짜 셀 더블클릭 즉시 반응 보장
+            // 네이티브 dblclick 이벤트 감지:
+            // - 달력 날짜 셀 더블클릭 시 상세일정 설정 오픈
+            // - 홈버튼 위 말구름(#tds-kakao-square-bubble) 더블클릭 시 큰 화면(60% 오버레이)으로 전환
             if (parentWin._tdsGlobalDocDblClickHandler) {{
                 parentDoc.removeEventListener("dblclick", parentWin._tdsGlobalDocDblClickHandler, true);
             }}
             parentWin._tdsGlobalDocDblClickHandler = function(ev) {{
                 const t = ev.target;
                 if (!t || !t.closest) return;
+
+                const bubbleEl = t.closest("#tds-kakao-square-bubble");
+                if (bubbleEl && !t.closest("#tds-sb-dismiss") && !t.closest("#tds-sb-next")) {{
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    ev.stopImmediatePropagation();
+                    if (parentWin._tdsKakaoState) {{
+                        parentWin._tdsKakaoState.open = true;
+                        renderOverlay();
+                    }}
+                    return;
+                }}
+
                 const calDayWrap = t.closest('[class*="st-key-cal_sel_d_"]');
                 if (calDayWrap) {{
                     const clsStr = calDayWrap.className || "";
@@ -3194,7 +3453,7 @@ def render_floating_kakao_todo_overlay() -> None:
             }});
 
             function bindDockMultiToggleAndKeys() {{
-                enforceSkyBlueDialogSurface();
+                enforceOptionAIceBlueDialogSurface();
 
                 const dockEl = parentDoc.querySelector('.st-key-todo_bottom_dock_a');
                 if (!dockEl) return;
@@ -3232,8 +3491,8 @@ def render_floating_kakao_todo_overlay() -> None:
                 applyButtonVisualState(calBtn, dState.cal);
                 applyButtonVisualState(dtlBtn, isDialogOpen);
 
-                if (chatInp && !chatInp._boundStrictEnterV12) {{
-                    chatInp._boundStrictEnterV12 = true;
+                if (chatInp && !chatInp._boundStrictEnterV13) {{
+                    chatInp._boundStrictEnterV13 = true;
                     chatInp.addEventListener("keydown", function(ev) {{
                         if (ev.key === "Tab" && !ev.shiftKey) {{
                             ev.preventDefault();
@@ -3716,7 +3975,7 @@ def render_floating_kakao_todo_overlay() -> None:
                     color: #FFFFFF;
                 }}
 
-                /* [2]-2 직각 네모 말풍선 (border: 2px solid #3182F6, border-radius: 6px) */
+                /* [2]-2 직각 네모 말풍선 (더블클릭 시 60% 큰 화면으로 전환) */
                 #tds-kakao-square-bubble {{
                     background: #FFFFFF;
                     border: 2px solid #3182F6;
@@ -3728,6 +3987,7 @@ def render_floating_kakao_todo_overlay() -> None:
                     max-width: 90vw;
                     padding: 16px;
                     position: relative;
+                    cursor: pointer;
                 }}
                 #tds-kakao-square-bubble.hidden {{
                     display: none !important;
@@ -4207,7 +4467,7 @@ def render_floating_kakao_todo_overlay() -> None:
                         </div>
                     </div>
 
-                    <div id="tds-kakao-square-bubble" class="${{showBubble ? '' : 'hidden'}}">
+                    <div id="tds-kakao-square-bubble" class="${{showBubble ? '' : 'hidden'}}" title="더블클릭하면 전체 체크리스트 화면이 열립니다">
                         <div class="tds-sb-top">
                             <span class="tds-sb-badge">${{escHtml(bCat)}}</span>
                             <button class="tds-sb-dismiss" id="tds-sb-dismiss">✕</button>
@@ -4236,6 +4496,7 @@ def render_floating_kakao_todo_overlay() -> None:
                 const minBtn = parentDoc.getElementById("tds-kp-minimize");
                 const backdropEl = parentDoc.getElementById("tds-kakao-backdrop");
                 const approveAllBtn = parentDoc.getElementById("tds-kp-approve-all");
+                const sbBubble = parentDoc.getElementById("tds-kakao-square-bubble");
                 const sbDismiss = parentDoc.getElementById("tds-sb-dismiss");
                 const sbNext = parentDoc.getElementById("tds-sb-next");
                 const sbOpen = parentDoc.getElementById("tds-sb-open");
@@ -4245,6 +4506,28 @@ def render_floating_kakao_todo_overlay() -> None:
                 if (closeBtn) closeBtn.onclick = function() {{ stObj.open = false; renderOverlay(); }};
                 if (minBtn) minBtn.onclick = function() {{ stObj.open = false; renderOverlay(); }};
                 if (backdropEl) backdropEl.onclick = function() {{ stObj.open = false; renderOverlay(); }};
+
+                // 홈버튼 위 말구름 더블클릭(또는 빠른 2회 클릭) 시 60% 큰 화면으로 즉시 전환
+                if (sbBubble) {{
+                    sbBubble.ondblclick = function(e) {{
+                        if (e.target && e.target.closest && (e.target.closest("#tds-sb-dismiss") || e.target.closest("#tds-sb-next"))) return;
+                        e.preventDefault();
+                        e.stopPropagation();
+                        stObj.open = true;
+                        renderOverlay();
+                    }};
+                    sbBubble.onclick = function(e) {{
+                        if (e.target && e.target.closest && (e.target.closest("#tds-sb-dismiss") || e.target.closest("#tds-sb-next") || e.target.closest("#tds-sb-open"))) return;
+                        const nowMs = Date.now();
+                        const prevTs = stObj._lastBubbleClickTs || 0;
+                        stObj._lastBubbleClickTs = nowMs;
+                        if ((nowMs - prevTs) < 450) {{
+                            stObj._lastBubbleClickTs = 0;
+                            stObj.open = true;
+                            renderOverlay();
+                        }}
+                    }};
+                }}
 
                 if (sbDismiss) {{
                     sbDismiss.onclick = function(e) {{
