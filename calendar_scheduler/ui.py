@@ -22,7 +22,7 @@ import ui_theme as _ui_theme
 _WEEKDAYS_SHORT = ("월", "화", "수", "목", "금", "토", "일")
 _WEEKDAYS_FULL = ("월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일")
 _SUN_FIRST_HEADERS = ("일", "월", "화", "수", "목", "금", "토")
-_STATE_SCHEMA_VERSION = "v14_kakao_accordion_and_ux_enhancements"
+_STATE_SCHEMA_VERSION = "v15_outer_whisper_skyblue_and_elevated_white_boards"
 
 
 def _html(s: str) -> str:
@@ -882,10 +882,17 @@ CALENDAR_MAIN_CSS = """
 [data-testid="stApp"],
 [data-testid="stApp"] [data-testid="stMain"],
 [data-testid="stApp"] [data-testid="stAppScrollToBottomContainer"],
-[data-testid="stApp"] [data-testid="stBottom"] > div {
-    background: #F4F6FA !important;
+[data-testid="stApp"] [data-testid="stBottom"] > div,
+header[data-testid="stHeader"] {
+    background: #F4F9FF !important;
+    background-color: #F4F9FF !important;
     font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, sans-serif !important;
     letter-spacing: -0.02em !important;
+}
+section[data-testid="stSidebar"] {
+    background: #FFFFFF !important;
+    border-right: 1px solid #E4ECF7 !important;
+    box-shadow: 4px 0 22px rgba(25, 60, 125, 0.04) !important;
 }
 
 /* 1. 모든 입력창의 'Press Enter to apply' 문구 및 하단 독 버튼 툴팁 완전 삭제 */
@@ -934,7 +941,7 @@ div[data-testid="InputInstructions"],
 }
 .tds-cal-kpi-card {
     background: #FFFFFF;
-    border: 1px solid #E5E8EB;
+    border: 1px solid #E2ECF8;
     border-radius: 16px;
     height: 74px;
     min-height: 74px;
@@ -944,12 +951,12 @@ div[data-testid="InputInstructions"],
     display: flex;
     align-items: center;
     justify-content: space-between;
-    box-shadow: 0 2px 10px rgba(0, 27, 55, 0.04);
-    transition: box-shadow 0.16s ease, transform 0.16s ease;
+    box-shadow: 0 10px 26px rgba(25, 60, 125, 0.06), 0 2px 8px rgba(25, 60, 125, 0.03);
+    transition: box-shadow 0.18s ease, transform 0.18s ease;
 }
 .tds-cal-kpi-card:hover {
-    box-shadow: 0 6px 18px rgba(49, 130, 246, 0.10);
-    transform: translateY(-1px);
+    box-shadow: 0 14px 32px rgba(49, 130, 246, 0.12), 0 4px 10px rgba(25, 60, 125, 0.05);
+    transform: translateY(-2px);
 }
 .tds-cal-kpi-left {
     display: flex;
@@ -1112,13 +1119,12 @@ div[data-testid="InputInstructions"],
     background: #1B64DA !important;
 }
 
-/* [5]-1 좌측 달력 본체 & 우측 할 일 카드: 30% 반투명 글래스모피즘 통일 */
+/* [5]-1 좌측 달력 본체 & 우측 할 일 카드: 순백색(#FFFFFF) 보드 + 초미세 하늘빛 바깥 배경(#F4F9FF) 위로 떠오르는 입체 그림자 */
 [data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-cal_glass_surface {
-    background: rgba(255, 255, 255, 0.30) !important;
-    backdrop-filter: blur(22px) saturate(180%) !important;
-    -webkit-backdrop-filter: blur(22px) saturate(180%) !important;
-    border: 1px solid #E5E8EB !important;
-    box-shadow: 0 2px 10px rgba(0, 27, 55, 0.04) !important;
+    background: #FFFFFF !important;
+    background-color: #FFFFFF !important;
+    border: 1px solid #E2ECF8 !important;
+    box-shadow: 0 12px 32px rgba(25, 60, 125, 0.06), 0 3px 10px rgba(25, 60, 125, 0.03) !important;
     border-radius: 28px !important;
     padding: 18px 20px 22px 20px !important;
     min-height: 830px !important;
@@ -1126,11 +1132,10 @@ div[data-testid="InputInstructions"],
 }
 
 [data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-cal_right_todo_card {
-    background: rgba(255, 255, 255, 0.30) !important;
-    backdrop-filter: blur(22px) saturate(180%) !important;
-    -webkit-backdrop-filter: blur(22px) saturate(180%) !important;
-    border: 1px solid #E5E8EB !important;
-    box-shadow: 0 2px 10px rgba(0, 27, 55, 0.04) !important;
+    background: #FFFFFF !important;
+    background-color: #FFFFFF !important;
+    border: 1px solid #E2ECF8 !important;
+    box-shadow: 0 12px 32px rgba(25, 60, 125, 0.06), 0 3px 10px rgba(25, 60, 125, 0.03) !important;
     border-radius: 28px !important;
     padding: 22px 20px 18px 20px !important;
     min-height: 830px !important;
@@ -1160,7 +1165,7 @@ div[data-testid="InputInstructions"],
 /* 달력 날짜 셀 (146px 풀사이즈) */
 .tds-cal-day-card {
     background: #FFFFFF;
-    border: 1px solid #E5E8EB;
+    border: 1px solid #E5ECF5;
     border-radius: 20px;
     height: 146px;
     min-height: 146px;
@@ -1169,23 +1174,24 @@ div[data-testid="InputInstructions"],
     display: flex;
     flex-direction: column;
     justify-content: space-between;
-    box-shadow: 0 2px 10px rgba(0, 27, 55, 0.04);
+    box-shadow: 0 4px 14px rgba(25, 60, 125, 0.045), 0 1px 4px rgba(0, 27, 55, 0.03);
     transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
     margin-bottom: 6px;
     overflow: hidden;
 }
 .tds-cal-day-card:hover {
     transform: translateY(-2px);
-    box-shadow: 0 6px 18px rgba(49, 130, 246, 0.10);
+    border-color: #B8D4FF;
+    box-shadow: 0 8px 20px rgba(49, 130, 246, 0.11);
 }
 .tds-cal-day-card.selected {
     background: #FFFFFF !important;
     border: 2px solid #3182F6 !important;
-    box-shadow: 0 6px 18px rgba(49, 130, 246, 0.10);
+    box-shadow: 0 8px 22px rgba(49, 130, 246, 0.13);
 }
 .tds-cal-day-card.empty {
-    background: rgba(255, 255, 255, 0.18);
-    border: 1px dashed #E5E8EB;
+    background: #F9FBFF;
+    border: 1px solid #EDF3FA;
     box-shadow: none;
 }
 .tds-cal-day-top {
@@ -1332,8 +1338,8 @@ div[data-testid="InputInstructions"],
     padding: 32px 20px;
     border-radius: 22px;
     background: #FFFFFF;
-    border: 1px solid #E5E8EB;
-    box-shadow: 0 2px 10px rgba(0, 27, 55, 0.04);
+    border: 1px solid #E2ECF8;
+    box-shadow: 0 8px 24px rgba(25, 60, 125, 0.05), 0 2px 6px rgba(25, 60, 125, 0.03);
     text-align: center;
     margin-top: 4px;
 }
@@ -1366,7 +1372,7 @@ div[data-testid="InputInstructions"],
     height: 58px;
     min-height: 58px;
     background: #FFFFFF;
-    border: 1px solid #E5E8EB;
+    border: 1px solid #E2ECF8;
     border-radius: 18px;
     padding: 0 16px;
     box-sizing: border-box;
@@ -1374,8 +1380,8 @@ div[data-testid="InputInstructions"],
     align-items: center;
     justify-content: space-between;
     gap: 10px;
-    box-shadow: 0 2px 10px rgba(0, 27, 55, 0.04);
-    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    box-shadow: 0 6px 18px rgba(25, 60, 125, 0.05), 0 2px 6px rgba(0, 27, 55, 0.03);
+    transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
     user-select: none;
 }
 .tds-todo-card-pure:hover {
@@ -2253,21 +2259,36 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
             key=f"dlg_client_{ev_id}",
         )
 
-    # 5) 체크 행 (하위 세부 체크항목 — [+ 항목 추가] 클릭 시 창이 닫히지 않고 즉시 아래에 한 줄씩 추가됨)
+    # 5) 체크 행 (좌측 [체크] 라벨 알약과 우측 입력칸을 1:1 수평 정렬 + [+ 항목 추가] 클릭 시 즉시 아래에 한 줄씩 추가됨)
     r4_l, r4_r = st.columns([0.72, 3.8], gap="small")
     cur_sub_tasks: List[Dict[str, Any]] = list(st.session_state.get(subs_state_key, []))
+    for s_idx, s_item in enumerate(cur_sub_tasks):
+        chk_key = f"dlg_sub_chk_{ev_id}_{s_idx}_{s_item.get('title', '')}"
+        if chk_key in st.session_state:
+            s_item["done"] = bool(st.session_state[chk_key])
+    done_sub_cnt = sum(1 for s in cur_sub_tasks if s.get("done"))
+
     with r4_l:
         st.markdown("<div class='gcal-tds-row-lbl'>체크</div>", unsafe_allow_html=True)
     with r4_r:
-        for s_idx, s_item in enumerate(cur_sub_tasks):
-            chk_key = f"dlg_sub_chk_{ev_id}_{s_idx}_{s_item.get('title', '')}"
-            if chk_key in st.session_state:
-                s_item["done"] = bool(st.session_state[chk_key])
-
-        done_sub_cnt = sum(1 for s in cur_sub_tasks if s.get("done"))
-        st.caption(
-            f"**하위 세부 체크항목 추가 ({done_sub_cnt}/{len(cur_sub_tasks)} 완료)** (등록 시 할일 옆에 0/N 진행률 표시)"
-        )
+        ns_c1, ns_c2 = st.columns([4.2, 1.3], gap="small")
+        with ns_c1:
+            st.text_input(
+                "새 세부 체크항목 추가",
+                placeholder=f"세부 체크항목 입력... (현재 {done_sub_cnt}/{len(cur_sub_tasks)} 완료)",
+                label_visibility="collapsed",
+                key=f"dlg_new_sub_inp_{ev_id}",
+                on_change=_add_sub_task_in_dialog,
+                args=(ev_id,),
+            )
+        with ns_c2:
+            st.button(
+                "＋ 항목 추가",
+                width="stretch",
+                key=f"dlg_btn_add_sub_{ev_id}",
+                on_click=_add_sub_task_in_dialog,
+                args=(ev_id,),
+            )
 
         for s_idx, s_item in enumerate(cur_sub_tasks):
             sc_chk, sc_del = st.columns([5.5, 0.8], gap="small")
@@ -2288,25 +2309,6 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
                 )
 
         st.session_state[subs_state_key] = cur_sub_tasks
-
-        ns_c1, ns_c2 = st.columns([4.2, 1.3], gap="small")
-        with ns_c1:
-            st.text_input(
-                "새 세부 체크항목 추가",
-                placeholder="세부 체크항목 입력...",
-                label_visibility="collapsed",
-                key=f"dlg_new_sub_inp_{ev_id}",
-                on_change=_add_sub_task_in_dialog,
-                args=(ev_id,),
-            )
-        with ns_c2:
-            st.button(
-                "＋ 항목 추가",
-                width="stretch",
-                key=f"dlg_btn_add_sub_{ev_id}",
-                on_click=_add_sub_task_in_dialog,
-                args=(ev_id,),
-            )
 
     # 6) 메모 행
     r5_l, r5_r = st.columns([0.72, 3.8], gap="small")
