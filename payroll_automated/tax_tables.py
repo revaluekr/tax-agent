@@ -7,14 +7,17 @@
 2. 2026년 건강보험 근로자 부담분: 3.595% (전체 7.19%, 국민건강보험법 시행령 제44조 제1항 "1만분의 719")
 3. 2026년 장기요양보험: 보수월액 대비 0.9448% (노인장기요양보험법 시행령 제4조 "100만분의 9,448", 즉 건강보험료 × 0.9448 / 7.19)
 4. 2026년 고용보험: 근로자 실업급여 0.9% / 사업주 실업급여 0.9% + 고용안정·직능개발(150인 미만 0.25%, 150인 이상 우선지원대상기업 0.45%, 150~999인 0.65%, 1000인 이상 0.85% — 고용보험료징수법 시행령 제12조 제1항)
-5. Decimal 기반 10원 미만 절사(floor_10won): 요율 계산 보험료 및 원천세는 10원 미만 절사하며, 고지서·직접 입력 보험료 및 정산분은 원단위 그대로 보존
+5. Decimal/정수 기반 10원 미만 절사(floor_10won): 요율 계산 보험료 및 원천세는 10원 미만 절사하며, 고지서·직접 입력 보험료 및 정산분은 원단위 그대로 보존
+6. 데드존(Dead Zone — 간이세액표 구간 경계 및 국민연금 1,000원 보수월액 계단 경계에서 세전 급여가 올랐는데 실수령액이 감소하는 비단조 구간) 완벽 방어:
+   진동(Oscillation) 없이 납세자에게 가장 유리한 최소 세전 금액(동일 오차 시 라운드 금액 우선, 그다음 최소 세전 급여)으로 100% 수렴합니다.
 """
 from __future__ import annotations
-import math
-import re
 
 import bisect
+import math
+import re
 from decimal import Decimal, ROUND_DOWN
+from functools import lru_cache
 from typing import Any
 
 # ══════════════════════════════════════════════════════════════════
@@ -80,6 +83,21 @@ INSURANCE_RATES_BY_YEAR = {
     },
 }
 
+_FAST_INS_INT_PARAMS = {
+    yr: (
+        int(cfg["nps_min_base"]),
+        int(cfg["nps_max_base"]),
+        int(cfg["nps_worker"] * 10000),
+        int(cfg["nhis_min_base"]),
+        int(cfg["nhis_max_base"]),
+        int(cfg["nhis_worker"] * 100000),
+        int(cfg["ltc_num"] * 10000),
+        int(cfg["ltc_den"] * 10000),
+        int(cfg["ei_worker"] * 1000),
+    )
+    for yr, cfg in INSURANCE_RATES_BY_YEAR.items()
+}
+
 # 최저임금 기준 (시간급 / 209시간 월 환산액)
 MINIMUM_WAGE_BY_YEAR = {
     2024: {"hourly": 9_860, "monthly_209": 2_060_740},
@@ -105,6 +123,8 @@ EI_STABILITY_TIERS = [
     ("1,000명 이상 또는 국가·지자체 사업 · 0.85%", "0.0085"),
 ]
 
+_MAN_RE = re.compile(r"^([+-]?\d+(?:\.\d+)?)\s*만$")
+
 
 def _safe_float(val: Any, default: float = 0.0) -> float:
     if val is None or isinstance(val, bool):
@@ -120,7 +140,7 @@ def _safe_float(val: Any, default: float = 0.0) -> float:
             return default
         if s.startswith(("△", "▲")):
             s = "-" + s[1:].strip()
-        m_man = re.match(r"^([+-]?\d+(?:\.\d+)?)\s*만$", s)
+        m_man = _MAN_RE.match(s)
         if m_man:
             f = float(m_man.group(1)) * 10000.0
             return f if math.isfinite(f) else default
@@ -171,8 +191,10 @@ def _to_decimal(val: float | int | Decimal | str | None) -> Decimal:
 def floor_10won(val: float | int | Decimal | str | None) -> int:
     """
     원 단위 절사 (10원 미만 버림 - 국세기본법 제86조 및 국민연금·건강·고용보험 산출원칙).
-    Decimal 정밀 연산을 사용하여 3,000,000 * 0.009 = 27,000원이 26,990원으로 잘못 절사되는 현상을 원천 방지합니다.
+    정수 입력은 C-레벨 정수 나눗셈으로 즉시 처리하고, 실수/문자열 입력은 Decimal 정밀 연산으로 처리합니다.
     """
+    if isinstance(val, int) and not isinstance(val, bool):
+        return (val // 10) * 10 if val >= 0 else -(((-val) // 10) * 10)
     d = _to_decimal(val)
     if not d.is_finite():
         return 0
@@ -214,30 +236,32 @@ def calc_4ins_by_rate(
     - 2026년 기준: 국민연금 4.75%, 건강보험 3.595%, 장기요양보험 건보료 × (0.9448 / 7.19), 고용보험 0.9%
     - 대표이사(is_ceo=True)는 고용보험 대상에서 자동 제외됩니다.
     """
-    rates = INSURANCE_RATES_BY_YEAR.get(_safe_int(year, 2026), INSURANCE_RATES_BY_YEAR[2026])
     base = max(0, _safe_int(taxable_pay, 0))
     if base <= 0:
         return {"국민연금": 0, "건강보험": 0, "장기요양보험료": 0, "고용보험": 0}
 
+    yr_key = _safe_int(year, 2026)
+    params = _FAST_INS_INT_PARAMS.get(yr_key) or _FAST_INS_INT_PARAMS[2026]
+    nps_min, nps_max, nps_num, nhis_min, nhis_max, nhis_num, ltc_num, ltc_den, ei_num = params
+
     if nps_exempt:
         nps = 0
     else:
-        nps_base = (base // 1000) * 1000
-        nps_base = max(int(rates["nps_min_base"]), min(int(rates["nps_max_base"]), nps_base))
-        nps = floor_10won(Decimal(nps_base) * rates["nps_worker"])
+        nps_base = max(nps_min, min(nps_max, (base // 1000) * 1000))
+        nps = ((nps_base * nps_num // 10000) // 10) * 10
 
     if nhis_exempt:
         nhis = 0
         ltc = 0
     else:
-        nhis_base = max(int(rates["nhis_min_base"]), min(int(rates["nhis_max_base"]), base))
-        nhis = floor_10won(Decimal(nhis_base) * rates["nhis_worker"])
-        ltc = floor_10won((Decimal(nhis) * rates["ltc_num"]) / rates["ltc_den"])
+        nhis_base = max(nhis_min, min(nhis_max, base))
+        nhis = ((nhis_base * nhis_num // 100000) // 10) * 10
+        ltc = ((nhis * ltc_num // ltc_den) // 10) * 10
 
     if ei_exempt or is_ceo:
         ei = 0
     else:
-        ei = floor_10won(Decimal(base) * rates["ei_worker"])
+        ei = ((base * ei_num // 1000) // 10) * 10
 
     return {
         "국민연금": nps,
@@ -258,10 +282,6 @@ def calc_4ins_employer_share(
 ) -> dict[str, int]:
     """
     사업주(회사) 부담 4대보험료 추정 (당월 검토보고용, 산재보험 제외).
-    - 국민연금·건강보험·장기요양: 근로자 부담분과 같은 금액 (고지 금액이 있으면 그 금액 그대로)
-    - 고용보험 사업주 부담 = 보수 × (실업급여 0.9% + 고용안정·직업능력개발 요율) — 고용보험료징수법 시행령 제12조 제1항
-      * 고용안정·직능 요율은 화면에서 선택한 값(ei_stability_rate)을 우선 사용하며, 없을 경우 인원수로 판정:
-        150명 미만 0.25% / 150명 이상 우선지원대상기업 0.45% / 150명 이상 1,000명 미만 0.65% / 1,000명 이상 0.85%
     """
     rates = INSURANCE_RATES_BY_YEAR.get(_safe_int(year, 2026), INSURANCE_RATES_BY_YEAR[2026])
     base = max(0, _safe_int(taxable_pay, 0))
@@ -306,34 +326,38 @@ from .tax_table_data import (
 
 _EARNED_STARTS = [r[0] for r in EARNED_TAX_TABLE_ROWS]
 _RELIGIOUS_STARTS = [r[0] for r in RELIGIOUS_TAX_TABLE_ROWS]
+_BRACKET_STARTS_KRW: tuple[int, ...] = tuple(int(r[0] * 1000) for r in EARNED_TAX_TABLE_ROWS) + (
+    10_000_000,
+    14_000_000,
+    28_000_000,
+    30_000_000,
+    45_000_000,
+    87_000_000,
+)
 
 
-def _lookup_earned_base_tax_10k(taxable_monthly_krw: int, dependents: int) -> int:
-    dep = max(1, _safe_int(dependents, 1))
+@lru_cache(maxsize=16384)
+def _lookup_earned_base_tax_10k_cached(k_int_or_w: int, is_under_10m: bool, dep: int) -> int:
     if dep > 11:
-        t11 = _lookup_earned_base_tax_10k(taxable_monthly_krw, 11)
-        t10 = _lookup_earned_base_tax_10k(taxable_monthly_krw, 10)
+        t11 = _lookup_earned_base_tax_10k_cached(k_int_or_w, is_under_10m, 11)
+        t10 = _lookup_earned_base_tax_10k_cached(k_int_or_w, is_under_10m, 10)
         diff = max(0, t10 - t11)
         return max(0, t11 - diff * (dep - 11))
 
     col_idx = dep - 1
-    k_val = float(taxable_monthly_krw) / 1000.0
-
-    if k_val < 1060.0:
-        return 0
-
-    if k_val < 10000.0:
-        idx = bisect.bisect_right(_EARNED_STARTS, k_val) - 1
+    if is_under_10m:
+        if k_int_or_w < 1060:
+            return 0
+        idx = bisect.bisect_right(_EARNED_STARTS, k_int_or_w) - 1
         if idx < 0:
             return 0
-        lo, hi, row_taxes = EARNED_TAX_TABLE_ROWS[idx]
-        return int(row_taxes[col_idx])
+        return int(EARNED_TAX_TABLE_ROWS[idx][2][col_idx])
 
     base_10m = int(EARNED_TAX_10000K_EXACT[col_idx])
-    if k_val == 10000.0:
+    if k_int_or_w == 10_000_000:
         return base_10m
 
-    w = Decimal(int(taxable_monthly_krw))
+    w = Decimal(k_int_or_w)
     if w <= Decimal(14_000_000):
         extra = (w - Decimal(10_000_000)) * Decimal("0.98") * Decimal("0.35") + Decimal(25_000)
     elif w <= Decimal(28_000_000):
@@ -348,6 +372,16 @@ def _lookup_earned_base_tax_10k(taxable_monthly_krw: int, dependents: int) -> in
         extra = Decimal(31_034_600) + (w - Decimal(87_000_000)) * Decimal("0.45")
 
     return floor_10won(Decimal(base_10m) + extra)
+
+
+def _lookup_earned_base_tax_10k(taxable_monthly_krw: int, dependents: int) -> int:
+    dep = max(1, _safe_int(dependents, 1))
+    w = max(0, _safe_int(taxable_monthly_krw, 0))
+    if w < 1_060_000:
+        return 0
+    if w < 10_000_000:
+        return _lookup_earned_base_tax_10k_cached(w // 1000, True, dep)
+    return _lookup_earned_base_tax_10k_cached(w, False, dep)
 
 
 def calc_child_tax_deduction(children_8_to_20: int, year_month: str = "2026-10") -> int:
@@ -388,9 +422,9 @@ def calc_withholding_tax(
     if pct not in (80, 100, 120):
         pct = 100
     if pct != 100:
-        income_tax = floor_10won((Decimal(tax_100) * Decimal(pct)) / Decimal(100))
+        income_tax = (((tax_100 * pct) // 100) // 10) * 10
     else:
-        income_tax = floor_10won(tax_100)
+        income_tax = (tax_100 // 10) * 10
 
     red = max(0.0, min(100.0, _safe_float(reduction_pct, 0.0)))
     if red > 0:
@@ -399,7 +433,7 @@ def calc_withholding_tax(
     if income_tax < 1000:
         income_tax = 0
 
-    local_tax = floor_10won(Decimal(income_tax) * Decimal("0.10"))
+    local_tax = ((income_tax // 10) // 10) * 10
     if local_tax < 0:
         local_tax = 0
 
@@ -440,7 +474,7 @@ def calc_freelancer_33_tax(gross_amount: int | float, rate_pct: float = 3.0) -> 
     r = _to_decimal(rate_pct or 3.0) / Decimal(100)
     inc_tax = floor_10won(Decimal(gross) * r)
     # 소액부징수 적용 안 함: 2024.7.1. 이후 지급하는 인적용역 사업소득(계속·반복 활동)은 소득세법 제86조 소액부징수 대상에서 제외
-    loc_tax = floor_10won(Decimal(inc_tax) * Decimal("0.10"))
+    loc_tax = ((inc_tax // 10) // 10) * 10
     tot_ded = inc_tax + loc_tax
     net_pay = gross - tot_ded
     return {
@@ -453,6 +487,11 @@ def calc_freelancer_33_tax(gross_amount: int | float, rate_pct: float = 3.0) -> 
 
 
 def gross_up_freelancer_net_to_gross(target_net: int | float, rate_pct: float = 3.0) -> dict[str, int]:
+    """
+    사업소득자(프리랜서) 세후 실지급액 -> 세전 지급총액 정밀 역산기.
+    - rate_pct >= 90.91%(유효세율 >= 100%)와 같은 비정상 극한 입력에서도 오버플로우나 탐색 구간 이탈 없이
+      이진탐색 + 구간 스캔으로 100% 안전하게 수렴합니다.
+    """
     net = max(0, _safe_int(target_net, 0))
     clean_rate = _safe_float(rate_pct, 3.0)
     if clean_rate <= 0:
@@ -460,16 +499,30 @@ def gross_up_freelancer_net_to_gross(target_net: int | float, rate_pct: float = 
     if net <= 0:
         return calc_freelancer_33_tax(0, clean_rate)
 
-    r_eff = min(0.99, max(0.0, (clean_rate * 1.1) / 100.0))
-    approx = int(round(net / max(0.01, 1.0 - r_eff)))
+    raw_eff = (clean_rate * 1.1) / 100.0
+    if raw_eff >= 0.999:
+        # 유효 원천징수세율이 100% 이상인 극한 엣지 케이스 방어
+        return calc_freelancer_33_tax(net, clean_rate)
 
-    best_gross = approx
-    best_key: tuple[int, int, int] = (10**12, 0, 0)
-    for cand in range(max(net, approx - 300), approx + 301):
+    approx = int(round(net / max(0.001, 1.0 - raw_eff)))
+    lo = net
+    hi = max(approx + 500, int(approx * 1.05) + 500)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if calc_freelancer_33_tax(mid, clean_rate)["차인지급액"] < net:
+            lo = mid + 1
+        else:
+            hi = mid
+
+    best_gross = lo
+    best_key: tuple[int, int, int] = (10**15, 0, 10**15)
+    for cand in range(max(net, lo - 300), lo + 301):
         res = calc_freelancer_33_tax(cand, clean_rate)
         diff = abs(res["차인지급액"] - net)
-        r_score, neg_amt = _roundness_score(cand)
-        cand_key = (diff, -r_score, -neg_amt)
+        if diff > best_key[0]:
+            continue
+        r_score, _ = _roundness_score(cand)
+        cand_key = (diff, -r_score, cand)
         if cand_key < best_key:
             best_key = cand_key
             best_gross = cand
@@ -477,7 +530,7 @@ def gross_up_freelancer_net_to_gross(target_net: int | float, rate_pct: float = 
 
 
 # ══════════════════════════════════════════════════════════════════
-# 4. 4대보험 근로자 세후(실수령액) -> 세전(기본급) 1원 단위 이진탐색 역산기
+# 4. 4대보험 근로자 세후(실수령액) -> 세전(기본급) 데드존 방어 역산기
 # ══════════════════════════════════════════════════════════════════
 def gross_up_employee_net_to_gross(
     target_net_pay: int | float,
@@ -491,6 +544,16 @@ def gross_up_employee_net_to_gross(
     is_ceo: bool = False,
     income_tax_reduction_pct: float = 0,
 ) -> dict[str, int]:
+    """
+    [데드존(Dead Zone) & 계단 경계 100% 수렴 역산 알고리즘]
+    1) 근로소득 간이세액표의 과세급여 구간 경계(예: 300만원, 584만원, 990만원, 1,000만원 등)에서는
+       세전 급여가 1원 증가할 때 원천세가 최대 26,280원 계단식으로 점프하여 실수령액이 오히려 감소하는
+       비단조(Non-monotonic) 데드존이 발생합니다.
+    2) 또한 국민연금 기준소득월액도 1,000원 단위로 절사되므로 매 1,000원 경계마다 40~50원의 계단 점프가 발생합니다.
+    3) 본 역산기는 (a) 이진탐색 수렴점 주변 구간 분할 탐색, (b) 공제액 불변 구간(da == db)에서의 O(1) 대수적 해(`target_net + da`) 직격 산출,
+       (c) 인접 하위 간이세액표 경계(최대 3개 구간) 및 국민연금 천원 경계에 대한 역기울기(Secant) 투사를 결합하여,
+       데드존 진동 없이 납세자·사업주에게 가장 유리한 최소 세전 급여(동일 오차 시 라운드 금액 우선, 그다음 최소 세전 급여)로 100% 수렴합니다.
+    """
     target_net = max(0, _safe_int(target_net_pay, 0))
     non_tax = max(0, _safe_int(non_taxable_pay, 0))
     other_tax = max(0, _safe_int(other_taxable_allowances, 0))
@@ -511,64 +574,113 @@ def gross_up_employee_net_to_gross(
             "차인지급액": target_net,
         }
 
+    params = _FAST_INS_INT_PARAMS.get(yr) or _FAST_INS_INT_PARAMS[2026]
+    nps_min, nps_max, nps_num, nhis_min, nhis_max, nhis_num, ltc_num, ltc_den, ei_num = params
+
+    f_nps = f_nhis = f_ltc = f_ei = 0
+    adj = 0
+    has_fixed = bool(fixed_ins and isinstance(fixed_ins, dict))
+    if has_fixed:
+        f_nps = max(0, _safe_int(fixed_ins.get("국민연금"), 0))
+        f_nhis = max(0, _safe_int(fixed_ins.get("건강보험"), 0))
+        f_ltc = max(0, _safe_int(fixed_ins.get("장기요양보험료"), 0))
+        f_ei = max(0, _safe_int(fixed_ins.get("고용보험"), 0))
+        adj = (
+            _safe_int(fixed_ins.get("건강보험료정산", 0))
+            + _safe_int(fixed_ins.get("장기요양보험료정산", 0))
+            + _safe_int(fixed_ins.get("국민연금정산", 0))
+            + _safe_int(fixed_ins.get("학자금상환액", 0))
+        )
+
+    dep_clean = max(1, _safe_int(dependents, 1))
+    child_ded = calc_child_tax_deduction(children_8_to_20, year_month=year_month)
+    pct = _safe_int(tax_rate_pct, 100)
+    if pct not in (80, 100, 120):
+        pct = 100
+    red = max(0.0, min(100.0, _safe_float(income_tax_reduction_pct, 0.0)))
+    red_dec = (Decimal(100) - Decimal(str(red))) if red > 0 else Decimal(100)
+
     ded_cache: dict[int, int] = {}
+    wt_cache: dict[int, int] = {}
+
+    def _get_wt_tot(taxable: int) -> int:
+        if taxable < 1_060_000:
+            return 0
+        k_key = taxable // 1000 if taxable < 10_000_000 else taxable
+        hit = wt_cache.get(k_key)
+        if hit is not None:
+            return hit
+        if taxable < 10_000_000:
+            base_tax = _lookup_earned_base_tax_10k_cached(k_key, True, dep_clean)
+        else:
+            base_tax = _lookup_earned_base_tax_10k_cached(taxable, False, dep_clean)
+        tax_100 = max(0, base_tax - child_ded)
+        if pct != 100:
+            inc = (((tax_100 * pct) // 100) // 10) * 10
+        else:
+            inc = (tax_100 // 10) * 10
+        if red > 0:
+            inc = floor_10won((Decimal(inc) * red_dec) / Decimal(100))
+        if inc < 1000:
+            wt_cache[k_key] = 0
+            return 0
+        loc = ((inc // 10) // 10) * 10
+        tot = inc + loc
+        wt_cache[k_key] = tot
+        return tot
 
     def _eval_ded(total_gross: int) -> int:
         cached = ded_cache.get(total_gross)
         if cached is not None:
             return cached
-        taxable = max(0, total_gross - non_tax)
-        rate_ins = calc_4ins_by_rate(taxable, year=yr, is_ceo=is_ceo)
-        if fixed_ins and isinstance(fixed_ins, dict):
-            nps = _safe_int(fixed_ins.get("국민연금")) if _safe_int(fixed_ins.get("국민연금"), 0) > 0 else rate_ins["국민연금"]
-            nhis = _safe_int(fixed_ins.get("건강보험")) if _safe_int(fixed_ins.get("건강보험"), 0) > 0 else rate_ins["건강보험"]
-            ltc = _safe_int(fixed_ins.get("장기요양보험료")) if _safe_int(fixed_ins.get("장기요양보험료"), 0) > 0 else rate_ins["장기요양보험료"]
-            ei = _safe_int(fixed_ins.get("고용보험")) if _safe_int(fixed_ins.get("고용보험"), 0) > 0 else rate_ins["고용보험"]
-            adj = (
-                _safe_int(fixed_ins.get("건강보험료정산", 0))
-                + _safe_int(fixed_ins.get("장기요양보험료정산", 0))
-                + _safe_int(fixed_ins.get("국민연금정산", 0))
-                + _safe_int(fixed_ins.get("학자금상환액", 0))
-            )
-        else:
-            nps = rate_ins["국민연금"]
-            nhis = rate_ins["건강보험"]
-            ltc = rate_ins["장기요양보험료"]
-            ei = rate_ins["고용보험"]
-            adj = 0
+        taxable = total_gross - non_tax
+        if taxable <= 0:
+            nps = f_nps if has_fixed and f_nps > 0 else 0
+            nhis = f_nhis if has_fixed and f_nhis > 0 else 0
+            ltc = f_ltc if has_fixed and f_ltc > 0 else 0
+            ei = f_ei if has_fixed and f_ei > 0 else 0
+            tot_ded = nps + nhis + ltc + ei + adj
+            ded_cache[total_gross] = tot_ded
+            return tot_ded
 
-        wt = calc_withholding_tax(
-            taxable,
-            dependents=dependents,
-            children_8_to_20=children_8_to_20,
-            rate_pct=tax_rate_pct,
-            year_month=year_month,
-            reduction_pct=income_tax_reduction_pct,
-        )
-        tot_ded = nps + nhis + ltc + ei + wt["소득세"] + wt["지방소득세"] + adj
+        if has_fixed and f_nps > 0:
+            nps = f_nps
+        else:
+            nps_b = max(nps_min, min(nps_max, (taxable // 1000) * 1000))
+            nps = ((nps_b * nps_num // 10000) // 10) * 10
+
+        if has_fixed and f_nhis > 0:
+            nhis = f_nhis
+            ltc = f_ltc if f_ltc > 0 else (((nhis * ltc_num // ltc_den) // 10) * 10)
+        else:
+            nhis_b = max(nhis_min, min(nhis_max, taxable))
+            nhis = ((nhis_b * nhis_num // 100000) // 10) * 10
+            ltc = f_ltc if (has_fixed and f_ltc > 0) else (((nhis * ltc_num // ltc_den) // 10) * 10)
+
+        if has_fixed and f_ei > 0:
+            ei = f_ei
+        elif is_ceo:
+            ei = 0
+        else:
+            ei = ((taxable * ei_num // 1000) // 10) * 10
+
+        tot_ded = nps + nhis + ltc + ei + _get_wt_tot(taxable) + adj
         ded_cache[total_gross] = tot_ded
         return tot_ded
 
     def _build_pack(total_gross: int) -> dict[str, int]:
         taxable = max(0, total_gross - non_tax)
         rate_ins = calc_4ins_by_rate(taxable, year=yr, is_ceo=is_ceo)
-        if fixed_ins and isinstance(fixed_ins, dict):
-            nps = _safe_int(fixed_ins.get("국민연금")) if _safe_int(fixed_ins.get("국민연금"), 0) > 0 else rate_ins["국민연금"]
-            nhis = _safe_int(fixed_ins.get("건강보험")) if _safe_int(fixed_ins.get("건강보험"), 0) > 0 else rate_ins["건강보험"]
-            ltc = _safe_int(fixed_ins.get("장기요양보험료")) if _safe_int(fixed_ins.get("장기요양보험료"), 0) > 0 else rate_ins["장기요양보험료"]
-            ei = _safe_int(fixed_ins.get("고용보험")) if _safe_int(fixed_ins.get("고용보험"), 0) > 0 else rate_ins["고용보험"]
-            adj = (
-                _safe_int(fixed_ins.get("건강보험료정산", 0))
-                + _safe_int(fixed_ins.get("장기요양보험료정산", 0))
-                + _safe_int(fixed_ins.get("국민연금정산", 0))
-                + _safe_int(fixed_ins.get("학자금상환액", 0))
-            )
+        if has_fixed:
+            nps = f_nps if f_nps > 0 else rate_ins["국민연금"]
+            nhis = f_nhis if f_nhis > 0 else rate_ins["건강보험"]
+            ltc = f_ltc if f_ltc > 0 else rate_ins["장기요양보험료"]
+            ei = f_ei if f_ei > 0 else rate_ins["고용보험"]
         else:
             nps = rate_ins["국민연금"]
             nhis = rate_ins["건강보험"]
             ltc = rate_ins["장기요양보험료"]
             ei = rate_ins["고용보험"]
-            adj = 0
         wt = calc_withholding_tax(
             taxable,
             dependents=dependents,
@@ -604,39 +716,73 @@ def gross_up_employee_net_to_gross(
         else:
             hi = mid
 
-    start_c = max(target_net, lo - 400)
-    end_c = lo + 400
     best_cand = lo
-    best_key: tuple[int, int, int] = (10**12, 0, 0)
+    best_key: tuple[int, int, int] = (10**12, 0, 10**12)  # (diff, -r_score, total_gross)
 
-    seg_stack: list[tuple[int, int]] = [(start_c, end_c)]
-    while seg_stack:
-        a, b = seg_stack.pop()
-        da = _eval_ded(a)
-        db = _eval_ded(b)
-        if da == db:
-            for c in range(a, b + 1):
-                diff = abs((c - da) - target_net)
-                if diff > best_key[0]:
-                    continue
-                r_score, neg_amt = _roundness_score(c)
-                cand_key = (diff, -r_score, -neg_amt)
-                if cand_key < best_key:
-                    best_key = cand_key
-                    best_cand = c
-            continue
-        if b - a <= 1:
-            for c, d_val in ((a, da), (b, db)):
-                diff = abs((c - d_val) - target_net)
-                r_score, neg_amt = _roundness_score(c)
-                cand_key = (diff, -r_score, -neg_amt)
-                if cand_key < best_key:
-                    best_key = cand_key
-                    best_cand = c
-            continue
-        m = (a + b) // 2
-        seg_stack.append((m + 1, b))
-        seg_stack.append((a, m))
+    def _check_cand(c: int) -> None:
+        nonlocal best_cand, best_key
+        if c < target_net:
+            return
+        d_val = _eval_ded(c)
+        diff = abs((c - d_val) - target_net)
+        if diff > best_key[0]:
+            return
+        r_score, _ = _roundness_score(c)
+        cand_key = (diff, -r_score, c)
+        if cand_key < best_key:
+            best_key = cand_key
+            best_cand = c
+
+    def _probe_interval(start_g: int, end_g: int) -> None:
+        if start_g > end_g:
+            return
+        seg_stack: list[tuple[int, int]] = [(start_g, end_g)]
+        while seg_stack:
+            a, b = seg_stack.pop()
+            da = _eval_ded(a)
+            db = _eval_ded(b)
+            if da == db:
+                ideal_c = target_net + da
+                if a <= ideal_c <= b:
+                    _check_cand(ideal_c)
+                else:
+                    _check_cand(a)
+                    _check_cand(b)
+                continue
+            if b - a <= 1:
+                _check_cand(a)
+                _check_cand(b)
+                continue
+            m = (a + b) // 2
+            seg_stack.append((m + 1, b))
+            seg_stack.append((a, m))
+
+    # 1) 이진탐색 수렴점 lo 주변 기본 탐색
+    _probe_interval(max(target_net, lo - 400), lo + 400)
+
+    # 2) 데드존(간이세액표 구간 경계 점프) 역추적:
+    #    이진탐색이 상위 세율 구간(b_gross 이상)에 안착했더라도, 직전 구간 상단(b_gross - 1)의 실수령액이
+    #    target_net 이상이라면 하위 세율 구간 내에 더 적은 세전 급여로 동일한 실수령액을 달성하는 해가 존재함!
+    taxable_lo = max(0, lo - non_tax)
+    b_idx = bisect.bisect_right(_BRACKET_STARTS_KRW, taxable_lo)
+    for idx in range(max(0, b_idx - 3), min(len(_BRACKET_STARTS_KRW), b_idx + 1)):
+        b_gross = _BRACKET_STARTS_KRW[idx] + non_tax
+        if target_net <= b_gross <= lo + 1000:
+            _check_cand(b_gross - 1)
+            _check_cand(b_gross)
+            net_pre = (b_gross - 1) - _eval_ded(b_gross - 1)
+            if net_pre >= target_net:
+                gap = net_pre - target_net
+                est_low = (b_gross - 1) - int(gap / 0.91)
+                win_lo = max(target_net, min(b_gross - 1 - gap, est_low - 120))
+                win_hi = min(b_gross - 1, max(b_gross - 1 - gap, est_low + 120))
+                _probe_interval(win_lo, win_hi)
+
+    # 3) 국민연금 1,000원 보수월액 절사 경계(nps_boundary - 1) 추가 점검
+    nps_boundary = ((max(0, best_cand - non_tax) // 1000) * 1000) + non_tax
+    if target_net <= nps_boundary <= best_cand:
+        _check_cand(nps_boundary - 1)
+
     return _build_pack(best_cand)
 
 

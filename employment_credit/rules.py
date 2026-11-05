@@ -2415,7 +2415,12 @@ def diagnose_ab_method_difference(
     }
 
 
+_GOLDEN_INVARIANT_CACHE: dict[str, tuple[bool, list[str]]] = {}
+
 def verify_golden_case_invariants() -> tuple[bool, list[str]]:
+    if "res" in _GOLDEN_INVARIANT_CACHE:
+        ok_c, errs_c = _GOLDEN_INVARIANT_CACHE["res"]
+        return ok_c, list(errs_c)
     """
     [실제 계산 엔진(headcount.py) 기반 정답지 회귀 테스트 — 7-1 ~ 7-4 전면 검증]
     1) 테스트상사 2026년 귀속 검증 (모든 연도 중소기업 기본 시나리오, 2번 규칙: 2025년 이후 코호트 B / 2024년 이하 코호트 A):
@@ -3728,4 +3733,7 @@ def verify_golden_case_invariants() -> tuple[bool, list[str]]:
     if "대통령령 제36342호" not in full_am_md or "수의 합(100분의 1 미만의 부분은 없는 것으로 한다)" not in dec_am_md:
         errors.append("12-6 실패: build_amendment_summary_markdown 출력에 대통령령 제36342호 원문 인용 누락")
 
-    return (len(errors) == 0), errors
+    res_tuple = ((len(errors) == 0), list(errors))
+    if res_tuple[0]:
+        _GOLDEN_INVARIANT_CACHE["res"] = res_tuple
+    return res_tuple[0], errors

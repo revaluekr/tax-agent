@@ -37,23 +37,48 @@ load_dotenv()
 RUNTIME_API_KEYS_FILE = os.path.join(".workspace_storage", "runtime_api_keys.json")
 
 _RT_KEYS_CACHE: dict = {"mtime": None, "data": {}}
+_RT_KEYS_LOCK = threading.RLock()
+_HTTP_SESSION_LOCAL = threading.local()
+
+_ORIG_REQUESTS_GET = requests.get
+_ORIG_REQUESTS_POST = requests.post
+
+def _get_http_session() -> requests.Session:
+    sess = getattr(_HTTP_SESSION_LOCAL, "session", None)
+    if sess is None:
+        sess = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(pool_connections=16, pool_maxsize=32)
+        sess.mount("http://", adapter)
+        sess.mount("https://", adapter)
+        _HTTP_SESSION_LOCAL.session = sess
+    return sess
+
+def _http_get(url: str, **kwargs):
+    if requests.get is not _ORIG_REQUESTS_GET:
+        return requests.get(url, **kwargs)
+    return _get_http_session().get(url, **kwargs)
+
+def _http_post(url: str, **kwargs):
+    if requests.post is not _ORIG_REQUESTS_POST:
+        return requests.post(url, **kwargs)
+    return _get_http_session().post(url, **kwargs)
 
 def _read_runtime_keys_cached() -> dict:
-    """runtime_api_keys.json을 파일이 바뀐 경우에만 다시 읽습니다 (화면 새로고침마다 수십 번 디스크를 읽지 않도록)."""
-    try:
-        mt = os.path.getmtime(RUNTIME_API_KEYS_FILE)
-    except OSError:
-        _RT_KEYS_CACHE["mtime"], _RT_KEYS_CACHE["data"] = None, {}
-        return {}
-    if _RT_KEYS_CACHE["mtime"] != mt:
+    with _RT_KEYS_LOCK:
         try:
-            with open(RUNTIME_API_KEYS_FILE, "r", encoding="utf-8") as rf:
-                data = json.load(rf)
-            _RT_KEYS_CACHE["data"] = data if isinstance(data, dict) else {}
-        except Exception:
-            _RT_KEYS_CACHE["data"] = {}
-        _RT_KEYS_CACHE["mtime"] = mt
-    return _RT_KEYS_CACHE["data"]
+            mt = os.path.getmtime(RUNTIME_API_KEYS_FILE)
+        except OSError:
+            _RT_KEYS_CACHE["mtime"], _RT_KEYS_CACHE["data"] = None, {}
+            return {}
+        if _RT_KEYS_CACHE["mtime"] != mt:
+            try:
+                with open(RUNTIME_API_KEYS_FILE, "r", encoding="utf-8") as rf:
+                    data = json.load(rf)
+                _RT_KEYS_CACHE["data"] = data if isinstance(data, dict) else {}
+            except Exception:
+                _RT_KEYS_CACHE["data"] = {}
+            _RT_KEYS_CACHE["mtime"] = mt
+        return dict(_RT_KEYS_CACHE["data"])
 
 _CONFIG_MOD = None
 _CONFIG_TRIED = False
@@ -158,7 +183,7 @@ def _search_law_data_raw(keyword: str, target: str, search_mode: int = None, law
         params["sort"] = "ddes"
 
     try:
-        resp = requests.get(url, params=params, timeout=15)
+        resp = _http_get(url, params=params, timeout=15)
         resp.encoding = "utf-8"
         if resp.status_code != 200:
             return []
@@ -261,7 +286,7 @@ def _format_article(art, only_hang=None) -> str:
 
 def _fetch_xml_root(url: str, params: dict):
     try:
-        resp = requests.get(url, params=params, timeout=20)
+        resp = _http_get(url, params=params, timeout=20)
         resp.encoding = "utf-8"
         if resp.status_code != 200:
             return None
@@ -488,7 +513,7 @@ def get_law_content(doc_id: str, target: str = "law", query_filter: str = "") ->
     }
 
     try:
-        resp = requests.get(url, params=params, timeout=20)
+        resp = _http_get(url, params=params, timeout=20)
         resp.encoding = "utf-8"
         if resp.status_code != 200:
             return f"❌ 원문 조회 실패 (HTTP {resp.status_code})"
@@ -648,7 +673,7 @@ def get_bok_exchange_rate(start_date: str, end_date: str, currency: str = "USD")
 
     url = f"https://ecos.bok.or.kr/api/StatisticSearch/{bok_key}/json/kr/1/30/731Y001/D/{s_date}/{e_date}/{item_code}"
     try:
-        resp = requests.get(url, timeout=10).json()
+        resp = _http_get(url, timeout=10).json()
         rows = resp.get("StatisticSearch", {}).get("row", [])
         if not rows:
             return f"해당 기간({s_date}~{e_date})의 {currency} 환율 데이터가 없습니다. (휴일인 경우 직전 영업일을 포함해 5~7일 구간으로 조회하세요)"
@@ -679,7 +704,7 @@ def get_bok_base_rate(start_date: str, end_date: str) -> str:
         s_date = s_raw
     url = f"https://ecos.bok.or.kr/api/StatisticSearch/{bok_key}/json/kr/1/30/722Y001/D/{s_date}/{e_date}/0101000"
     try:
-        resp = requests.get(url, timeout=10).json()
+        resp = _http_get(url, timeout=10).json()
         rows = resp.get("StatisticSearch", {}).get("row", [])
         if not rows:
             return f"해당 기간({s_date}~{e_date})의 기준금리 데이터가 없습니다."
@@ -716,8 +741,11 @@ def search_industry_code(keyword: str) -> str:
                     return "⚠️ 프로젝트 폴더에 'industry_codes.xlsx' 파일이 없습니다. 임의로 6자리 코드를 생성하지 마세요."
 
         df = _INDUSTRY_DF_CACHE
+        with _INDUSTRY_LOCK:
+            if "_search_blob" not in df.columns:
+                df["_search_blob"] = df.apply(lambda r: " ".join(str(v) for v in r.values if str(v).strip()), axis=1)
         kw = keyword.strip()
-        mask = df.apply(lambda row: kw in " ".join(row.values), axis=1)
+        mask = df["_search_blob"].str.contains(re.escape(kw), case=False, na=False)
         matched = df[mask]
 
         if matched.empty:
@@ -725,7 +753,7 @@ def search_industry_code(keyword: str) -> str:
 
         lines = [f"🏢 [국세청 업종코드 마스터 DB 검색 결과: '{keyword}' (총 {len(matched)}건 중 상위 15건)]"]
         for _, row in matched.head(15).iterrows():
-            row_str = " | ".join([f"{col}: {val}" for col, val in row.items() if str(val).strip()])
+            row_str = " | ".join([f"{col}: {val}" for col, val in row.items() if col != "_search_blob" and str(val).strip()])
             lines.append(f"- {row_str}")
         return "\n".join(lines)
     except Exception as e:
@@ -754,7 +782,7 @@ def _load_dart_corp_codes() -> list[dict]:
         try:
             if not os.path.exists(cache_file):
                 url = f"https://opendart.fss.or.kr/api/corpCode.xml?crtfc_key={dart_key}"
-                resp = requests.get(url, timeout=25)
+                resp = _http_get(url, timeout=25)
                 with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
                     xml_name = z.namelist()[0]
                     xml_bytes = z.read(xml_name)
@@ -811,7 +839,7 @@ def get_dart_corp_info(corp_name: str, bsns_year: str = "") -> str:
 
     try:
         info_url = "https://opendart.fss.or.kr/api/company.json"
-        info_res = requests.get(info_url, params={"crtfc_key": dart_key, "corp_code": corp_code}, timeout=10).json()
+        info_res = _http_get(info_url, params={"crtfc_key": dart_key, "corp_code": corp_code}, timeout=10).json()
         if info_res.get("status") == "000":
             output.append(
                 f"\n■ 1. 기업개황:\n"
@@ -825,7 +853,7 @@ def get_dart_corp_info(corp_name: str, bsns_year: str = "") -> str:
 
     try:
         list_url = "https://opendart.fss.or.kr/api/list.json"
-        list_res = requests.get(list_url, params={
+        list_res = _http_get(list_url, params={
             "crtfc_key": dart_key,
             "corp_code": corp_code,
             "page_count": 8
@@ -853,7 +881,7 @@ def get_dart_corp_info(corp_name: str, bsns_year: str = "") -> str:
     for yr in years_to_try:
         try:
             fin_url = "https://opendart.fss.or.kr/api/fnlttSinglAcnt.json"
-            fin_res = requests.get(fin_url, params={
+            fin_res = _http_get(fin_url, params={
                 "crtfc_key": dart_key,
                 "corp_code": corp_code,
                 "bsns_year": yr,
@@ -878,66 +906,58 @@ def get_dart_corp_info(corp_name: str, bsns_year: str = "") -> str:
     if not fin_found:
         output.append("\n■ 3. 주요 재무제표 요약: 정기 사업보고서 제출 대상이 아니거나 비상장 외감법인(감사보고서 원문 공시 대상)입니다. 위 2번 공시 목록의 감사보고서 링크를 참고하세요.")
 
-    try:
-        sh_url = "https://opendart.fss.or.kr/api/hyslrSttus.json"
-        sh_res = requests.get(sh_url, params={
-            "crtfc_key": dart_key,
-            "corp_code": corp_code,
-            "bsns_year": active_year,
-            "reprt_code": "11011"
-        }, timeout=10).json()
-        if sh_res.get("status") == "000" and sh_res.get("list"):
-            output.append(f"\n■ 4. 최대주주 및 특수관계인 지분현황 ({active_year}년 기준):")
-            for row in sh_res.get("list", [])[:15]:
-                nm = row.get("nm", "-")
-                rel = row.get("relate", "-")
-                stock_knd = row.get("stock_knd", "보통주")
-                trmend_cnt = row.get("trmend_posesn_stock_co", "-")
-                trmend_rt = row.get("trmend_posesn_stock_qota_rt", "-")
-                output.append(f"- 주주명: {nm} (관계: {rel} | {stock_knd}) -> 기말주식수: {trmend_cnt}주 (지분율: {trmend_rt}%)")
-    except Exception:
-        pass
+    from concurrent.futures import ThreadPoolExecutor as _DartPool
+    _common_dart_params = {
+        "crtfc_key": dart_key,
+        "corp_code": corp_code,
+        "bsns_year": active_year,
+        "reprt_code": "11011",
+    }
 
-    try:
-        div_url = "https://opendart.fss.or.kr/api/alotMatter.json"
-        div_res = requests.get(div_url, params={
-            "crtfc_key": dart_key,
-            "corp_code": corp_code,
-            "bsns_year": active_year,
-            "reprt_code": "11011"
-        }, timeout=10).json()
-        if div_res.get("status") == "000" and div_res.get("list"):
-            output.append(f"\n■ 5. 배당에 관한 주요 사항 ({active_year}년 기준):")
-            for row in div_res.get("list", []):
-                se = row.get("se", "-")
-                stock_knd = row.get("stock_knd", "")
-                thstrm = row.get("thstrm", "-")
-                frmtrm = row.get("frmtrm", "-")
-                lwfr = row.get("lwfr", "-")
-                label = f"{se} ({stock_knd})" if stock_knd else se
-                output.append(f"- {label}: 당기 {thstrm} | 전기 {frmtrm} | 전전기 {lwfr}")
-    except Exception:
-        pass
+    def _fetch_dart_json(ep_url: str) -> dict:
+        try:
+            return _http_get(ep_url, params=_common_dart_params, timeout=10).json()
+        except Exception:
+            return {}
 
-    try:
-        inv_url = "https://opendart.fss.or.kr/api/otrCprInvstmntSttus.json"
-        inv_res = requests.get(inv_url, params={
-            "crtfc_key": dart_key,
-            "corp_code": corp_code,
-            "bsns_year": active_year,
-            "reprt_code": "11011"
-        }, timeout=10).json()
-        if inv_res.get("status") == "000" and inv_res.get("list"):
-            output.append(f"\n■ 6. 타법인 출자(자회사·관계기업 지분) 현황 ({active_year}년 기준, 상위 15건):")
-            for row in inv_res.get("list", [])[:15]:
-                inv_prm = row.get("inv_prm", "-")
-                inv_purp = row.get("invstmnt_purps", "-")
-                trmend_blce_acnt = row.get("trmend_blce_acnt_amount", "-")
-                trmend_qota_rt = row.get("trmend_blce_qota_rt", "-")
-                recent_ni = row.get("recent_bsns_year_fnnr_sttus_thstrm_ntpf", "-")
-                output.append(f"- 피출자법인: {inv_prm} (목적: {inv_purp}) | 지분율: {trmend_qota_rt}% | 기말장부가액: {trmend_blce_acnt} | 최근연도 당기순이익: {recent_ni}")
-    except Exception:
-        pass
+    with _DartPool(max_workers=3) as _dp:
+        _f_sh = _dp.submit(_fetch_dart_json, "https://opendart.fss.or.kr/api/hyslrSttus.json")
+        _f_div = _dp.submit(_fetch_dart_json, "https://opendart.fss.or.kr/api/alotMatter.json")
+        _f_inv = _dp.submit(_fetch_dart_json, "https://opendart.fss.or.kr/api/otrCprInvstmntSttus.json")
+        sh_res = _f_sh.result()
+        div_res = _f_div.result()
+        inv_res = _f_inv.result()
+
+    if sh_res.get("status") == "000" and sh_res.get("list"):
+        output.append(f"\n■ 4. 최대주주 및 특수관계인 지분현황 ({active_year}년 기준):")
+        for row in sh_res.get("list", [])[:15]:
+            nm = row.get("nm", "-")
+            rel = row.get("relate", "-")
+            stock_knd = row.get("stock_knd", "보통주")
+            trmend_cnt = row.get("trmend_posesn_stock_co", "-")
+            trmend_rt = row.get("trmend_posesn_stock_qota_rt", "-")
+            output.append(f"- 주주명: {nm} (관계: {rel} | {stock_knd}) -> 기말주식수: {trmend_cnt}주 (지분율: {trmend_rt}%)")
+
+    if div_res.get("status") == "000" and div_res.get("list"):
+        output.append(f"\n■ 5. 배당에 관한 주요 사항 ({active_year}년 기준):")
+        for row in div_res.get("list", []):
+            se = row.get("se", "-")
+            stock_knd = row.get("stock_knd", "")
+            thstrm = row.get("thstrm", "-")
+            frmtrm = row.get("frmtrm", "-")
+            lwfr = row.get("lwfr", "-")
+            label = f"{se} ({stock_knd})" if stock_knd else se
+            output.append(f"- {label}: 당기 {thstrm} | 전기 {frmtrm} | 전전기 {lwfr}")
+
+    if inv_res.get("status") == "000" and inv_res.get("list"):
+        output.append(f"\n■ 6. 타법인 출자(자회사·관계기업 지분) 현황 ({active_year}년 기준, 상위 15건):")
+        for row in inv_res.get("list", [])[:15]:
+            inv_prm = row.get("inv_prm", "-")
+            inv_purp = row.get("invstmnt_purps", "-")
+            trmend_blce_acnt = row.get("trmend_blce_acnt_amount", "-")
+            trmend_qota_rt = row.get("trmend_blce_qota_rt", "-")
+            recent_ni = row.get("recent_bsns_year_fnnr_sttus_thstrm_ntpf", "-")
+            output.append(f"- 피출자법인: {inv_prm} (목적: {inv_purp}) | 지분율: {trmend_qota_rt}% | 기말장부가액: {trmend_blce_acnt} | 최근연도 당기순이익: {recent_ni}")
 
     return "\n".join(output)[:14000]
 
@@ -965,7 +985,7 @@ def get_nts_biz_status(biz_numbers_text: str) -> str:
     url = f"https://api.odcloud.kr/api/nts-businessman/v1/status?serviceKey={encoded_key}"
 
     try:
-        resp = requests.post(
+        resp = _http_post(
             url,
             json={"b_no": b_nos},
             headers={"Content-Type": "application/json", "Accept": "application/json"},
@@ -1037,7 +1057,7 @@ def verify_nts_biz_info(b_no: str, start_dt: str, p_nm: str, b_nm: str = "") -> 
     }
 
     try:
-        resp = requests.post(
+        resp = _http_post(
             url,
             json=payload,
             headers={"Content-Type": "application/json", "Accept": "application/json"},
@@ -1133,7 +1153,7 @@ def get_molit_real_estate_trade(property_type: str, region: str, deal_ymd: str, 
 
     def _fetch_xml(ep_url: str):
         full_url = f"{ep_url}?serviceKey={encoded_key}&LAWD_CD={lawd_cd}&DEAL_YMD={ymd}&numOfRows=200&pageNo=1"
-        return requests.get(full_url, timeout=15)
+        return _http_get(full_url, timeout=15)
 
     try:
         resp = _fetch_xml(endpoint)
@@ -1145,14 +1165,10 @@ def get_molit_real_estate_trade(property_type: str, region: str, deal_ymd: str, 
         if resp.status_code != 200:
             return f"❌ 국토교통부 API 호출 실패 (HTTP {resp.status_code}): 공공데이터포털 활용신청 동기화 대기 중이거나 키 오류입니다."
 
-        root = ET.fromstring(resp.text)
-        result_code = (root.findtext(".//resultCode") or "").strip()
-        result_msg = (root.findtext(".//resultMsg") or "").strip()
-
-        if result_code not in ["00", "000", "0000", ""]:
-            return f"❌ 국토부 API 응답 오류 (코드 {result_code}): {result_msg}"
-
-        items = root.findall(".//item")
+        items_dict_list, err_msg = _parse_data_go_kr_items(resp.text, f"국토교통부 {type_label}")
+        if err_msg:
+            return err_msg
+        items = items_dict_list
         if not items:
             return f"조회된 [{type_label}] 실거래 내역이 없습니다. (지역코드: {lawd_cd}, 계약연월: {ymd})"
 
@@ -1247,7 +1263,7 @@ def get_molit_real_estate_rent(property_type: str, region: str, deal_ymd: str, f
     full_url = f"{endpoint}?serviceKey={encoded_key}&LAWD_CD={lawd_cd}&DEAL_YMD={ymd}&numOfRows=200&pageNo=1"
 
     try:
-        resp = requests.get(full_url, timeout=15)
+        resp = _http_get(full_url, timeout=15)
         if resp.status_code != 200:
             return (
                 f"❌ 국토교통부 전월세 API 호출 실패 (HTTP {resp.status_code}): "
@@ -1360,7 +1376,7 @@ def _address_to_pnu(address: str, vworld_key: str) -> tuple[str, str]:
     s_url = "https://api.vworld.kr/req/search"
     for cat in ("parcel", "road"):
         try:
-            s_res = requests.get(s_url, params={
+            s_res = _http_get(s_url, params={
                 "service": "search", "request": "search", "version": "2.0",
                 "query": raw, "type": "address", "category": cat,
                 "format": "json", "key": vworld_key,
@@ -1383,7 +1399,7 @@ def _address_to_pnu(address: str, vworld_key: str) -> tuple[str, str]:
     for addr_type in ("parcel", "PARCEL", "road", "ROAD"):
         try:
             g_url = "https://api.vworld.kr/req/address"
-            g_res = requests.get(g_url, params={
+            g_res = _http_get(g_url, params={
                 "service": "address", "request": "getcoord", "version": "2.0",
                 "crs": "epsg:4326", "address": raw,
                 "refine": "true", "simple": "false", "format": "json",
@@ -1453,7 +1469,7 @@ def get_vworld_official_price(address_or_pnu: str, stdr_year: str = "") -> str:
         # 1차: 직접 호출 (로컬 PC 한국 IP에서는 즉시 통과)
         for direct_u in (url_nodom, url_dom):
             try:
-                r = requests.get(direct_u, headers=browser_headers, timeout=5)
+                r = _http_get(direct_u, headers=browser_headers, timeout=5)
                 if r.status_code == 200:
                     parsed = _parse_vworld_payload(r.text)
                     if parsed:
@@ -1477,7 +1493,7 @@ def get_vworld_official_price(address_or_pnu: str, stdr_year: str = "") -> str:
         ]
         for p_url in proxy_candidates:
             try:
-                r = requests.get(p_url, headers=browser_headers, timeout=8)
+                r = _http_get(p_url, headers=browser_headers, timeout=8)
                 if r.status_code == 200:
                     parsed = _parse_vworld_payload(r.text)
                     if parsed:
@@ -1709,7 +1725,7 @@ def get_building_ledger_info(address_or_pnu: str) -> str:
         last_err = ""
         for u in urls:
             try:
-                r = requests.get(u, timeout=15)
+                r = _http_get(u, timeout=15)
                 if r.status_code != 200:
                     last_err = (
                         f"❌ 건축물대장 API 호출 실패 (HTTP {r.status_code}): "
@@ -1839,7 +1855,7 @@ def get_comwel_workplace_info(biz_no: str, insurance_type: str = "all") -> str:
                 f"?serviceKey={encoded_key}&v_saeopjaDrno={bno}&opaBoheomFg={fg}&pageNo=1&numOfRows=20"
             )
             try:
-                resp = requests.get(ep, timeout=15)
+                resp = _http_get(ep, timeout=15)
                 if resp.status_code != 200:
                     return (
                         f"❌ 근로복지공단 API 호출 실패 (HTTP {resp.status_code}): "
@@ -1935,7 +1951,7 @@ def get_nps_workplace_info(
                 f"https://apis.data.go.kr/B490001/gySjbPstateInfoService/getGySjBoheomBsshItem"
                 f"?serviceKey={encoded_key}&v_saeopjaDrno={bno10}&opaBoheomFg=1&pageNo=1&numOfRows=5"
             )
-            cw_r = requests.get(cw_ep, timeout=8)
+            cw_r = _http_get(cw_ep, timeout=8)
             if cw_r.status_code == 200:
                 cw_items, _ = _parse_data_go_kr_items(cw_r.text, "근로복지공단")
                 if cw_items:
@@ -1968,7 +1984,7 @@ def get_nps_workplace_info(
 
     for idx, b_url in enumerate(base_urls):
         try:
-            r = requests.get(f"{b_url}?{q_params}", timeout=15)
+            r = _http_get(f"{b_url}?{q_params}", timeout=15)
             last_status = r.status_code
             if r.status_code != 200:
                 continue
@@ -2049,7 +2065,7 @@ def get_nps_workplace_info(
         if not seq_val:
             return {}
         try:
-            dr = requests.get(f"{det_ep}?serviceKey={encoded_key}&seq={seq_val}", timeout=10)
+            dr = _http_get(f"{det_ep}?serviceKey={encoded_key}&seq={seq_val}", timeout=10)
             if dr.status_code == 200:
                 d_items, _ = _parse_data_go_kr_items(dr.text, "국민연금 상세")
                 if d_items:
@@ -2090,18 +2106,24 @@ def get_nps_workplace_info(
         nw_cnt = int(re.sub(r"\D", "", str(dd.get("nwAcqzrCnt") or "0")) or 0)
         lss_cnt = int(re.sub(r"\D", "", str(dd.get("lssJnngpCnt") or "0")) or 0)
 
-        # 1) 국민연금 (API 실제 고지 원문 수치: 총 9.0%, 사업주 4.5% / 근로자 4.5%)
+        # 연도별 법정요율 분기 (2026년~ 국민연금 9.5%[노사 각 4.75%], 건강보험 7.19%[노사 각 3.595%], 장기요양 0.9448/7.19 / ~2025년 국민연금 9.0%, 건강보험 7.09%, 장기요양 12.95%)
+        is_2026_plus = yr.isdigit() and int(yr) >= 2026
+        nps_rate_tot = 0.095 if is_2026_plus else 0.09
+        nhis_rate_tot = 0.0719 if is_2026_plus else 0.0709
+        ltc_ratio = (0.9448 / 7.19) if is_2026_plus else 0.1295
+
+        # 1) 국민연금 (API 실제 고지 원문 수치)
         nps_emp_owner = nps_total // 2
         nps_worker = nps_total - nps_emp_owner
-        est_payroll = int(round(nps_total / 0.09)) if nps_total > 0 else 0
+        est_payroll = int(round(nps_total / nps_rate_tot)) if nps_total > 0 else 0
 
-        # 2) 건강보험 (법정요율 7.09%: 사업주 3.545% / 근로자 3.545%)
-        nhis_total = int(round(est_payroll * 0.0709))
+        # 2) 건강보험 (법정요율: 2026년~ 7.19% / ~2025년 7.09%)
+        nhis_total = int(round(est_payroll * nhis_rate_tot))
         nhis_owner = nhis_total // 2
         nhis_worker = nhis_total - nhis_owner
 
-        # 3) 노인장기요양보험 (건강보험료의 12.95%: 사업주 50% / 근로자 50%)
-        ltc_total = int(round(nhis_total * 0.1295))
+        # 3) 노인장기요양보험 (건강보험료 대비 2026년~ 13.14%[0.9448/7.19] / ~2025년 12.95%)
+        ltc_total = int(round(nhis_total * ltc_ratio))
         ltc_owner = ltc_total // 2
         ltc_worker = ltc_total - ltc_owner
 
@@ -2237,7 +2259,7 @@ def get_customs_exchange_rate(aply_bgn_dt: str, imex_type: str = "2", currency: 
             f"?serviceKey={encoded_key}&aplyBgnDt={dt_clean}&weekFxrtTpcd={tp_code}"
         )
         try:
-            resp = requests.get(ep, timeout=15)
+            resp = _http_get(ep, timeout=15)
             if resp.status_code != 200:
                 return (
                     f"❌ 관세청 과세환율 API 호출 실패 (HTTP {resp.status_code}): "
@@ -2344,7 +2366,7 @@ def get_bizinfo_support_projects(
 
     url = "https://www.bizinfo.go.kr/uss/rss/bizinfoApi.do?" + urllib.parse.urlencode(params)
     try:
-        resp = requests.get(url, timeout=15)
+        resp = _http_get(url, timeout=15)
         if resp.status_code != 200:
             return f"❌ 기업마당 지원사업 API 호출 실패 (HTTP {resp.status_code})"
         raw_txt = resp.text.strip()
@@ -2367,7 +2389,7 @@ def get_bizinfo_support_projects(
         if not items and clean_tags:
             params.pop("hashtags", None)
             url_fallback = "https://www.bizinfo.go.kr/uss/rss/bizinfoApi.do?" + urllib.parse.urlencode(params)
-            resp2 = requests.get(url_fallback, timeout=15)
+            resp2 = _http_get(url_fallback, timeout=15)
             if resp2.status_code == 200 and resp2.text.strip().startswith("{"):
                 data2 = json.loads(resp2.text.strip())
                 items = data2.get("jsonArray") or []

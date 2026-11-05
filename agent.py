@@ -514,23 +514,25 @@ load_dotenv()
 RUNTIME_API_KEYS_FILE = os.path.join(".workspace_storage", "runtime_api_keys.json")
 
 _RT_KEYS_CACHE: dict = {"mtime": None, "data": {}}
+_RT_KEYS_LOCK = threading.RLock()
 
 def _read_runtime_keys_cached() -> dict:
-    """runtime_api_keys.json을 파일이 바뀐 경우에만 다시 읽습니다 (화면 새로고침마다 수십 번 디스크를 읽지 않도록)."""
-    try:
-        mt = os.path.getmtime(RUNTIME_API_KEYS_FILE)
-    except OSError:
-        _RT_KEYS_CACHE["mtime"], _RT_KEYS_CACHE["data"] = None, {}
-        return {}
-    if _RT_KEYS_CACHE["mtime"] != mt:
+    """runtime_api_keys.json을 파일이 바뀐 경우에만 다시 읽습니다 (멀티스레드 RLock 보호)."""
+    with _RT_KEYS_LOCK:
         try:
-            with open(RUNTIME_API_KEYS_FILE, "r", encoding="utf-8") as rf:
-                data = json.load(rf)
-            _RT_KEYS_CACHE["data"] = data if isinstance(data, dict) else {}
-        except Exception:
-            _RT_KEYS_CACHE["data"] = {}
-        _RT_KEYS_CACHE["mtime"] = mt
-    return _RT_KEYS_CACHE["data"]
+            mt = os.path.getmtime(RUNTIME_API_KEYS_FILE)
+        except OSError:
+            _RT_KEYS_CACHE["mtime"], _RT_KEYS_CACHE["data"] = None, {}
+            return {}
+        if _RT_KEYS_CACHE["mtime"] != mt:
+            try:
+                with open(RUNTIME_API_KEYS_FILE, "r", encoding="utf-8") as rf:
+                    data = json.load(rf)
+                _RT_KEYS_CACHE["data"] = data if isinstance(data, dict) else {}
+            except Exception:
+                _RT_KEYS_CACHE["data"] = {}
+            _RT_KEYS_CACHE["mtime"] = mt
+        return dict(_RT_KEYS_CACHE["data"])
 
 def _get_secret_or_env(key_name: str) -> str:
     """1순위: 모달에서 저장한 런타임 보안키(.workspace_storage/runtime_api_keys.json) -> 2순위: st.secrets -> 3순위: 환경변수(.env)에서 실시간으로 읽어옵니다."""
@@ -746,10 +748,17 @@ def _cache_get(key: tuple):
 def _cache_set(key: tuple, val) -> None:
     if val is None:
         return
+    now = time.time()
     with _LAW_CACHE_LOCK:
         if len(_LAW_MEMORY_CACHE) > 800:
-            _LAW_MEMORY_CACHE.clear()
-        _LAW_MEMORY_CACHE[key] = (time.time(), val)
+            expired = [k for k, (ts, _) in _LAW_MEMORY_CACHE.items() if (now - ts) >= _LAW_CACHE_TTL_SEC]
+            for k in expired:
+                _LAW_MEMORY_CACHE.pop(k, None)
+            if len(_LAW_MEMORY_CACHE) > 800:
+                oldest = sorted(_LAW_MEMORY_CACHE.items(), key=lambda x: x[1][0])[:200]
+                for k, _ in oldest:
+                    _LAW_MEMORY_CACHE.pop(k, None)
+        _LAW_MEMORY_CACHE[key] = (now, val)
 
 def register_prewarmed_law_ids(law_prom_map: dict) -> None:
     """
@@ -892,8 +901,11 @@ def _load_all_usage_store() -> dict:
 
 def _save_all_usage_store(store: dict) -> None:
     try:
-        with open(USAGE_FILE_PATH, "w", encoding="utf-8") as f:
+        os.makedirs(os.path.dirname(USAGE_FILE_PATH), exist_ok=True)
+        tmp_path = f"{USAGE_FILE_PATH}.tmp.{os.getpid()}.{threading.get_ident()}"
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(store, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, USAGE_FILE_PATH)
     except Exception as e:
         print(f"⚠️ 사용량 기록 저장 오류: {e}")
 
@@ -1064,7 +1076,12 @@ def _norm(text: str) -> str:
 def _record(kind: str, text: str) -> str:
     trace = _TOOL_TRACE.get()
     if trace is not None:
-        trace[kind].append(text or "")
+        s_txt = text or ""
+        trace[kind].append(s_txt)
+        trace.setdefault(f"_norm_{kind}_list", []).append(_norm(s_txt))
+        trace.pop(f"_norm_{kind}_blob", None)
+        if kind == "detail":
+            trace.setdefault("_letters_detail_list", []).append(re.sub(r"[^0-9A-Za-z가-힣]", "", s_txt))
     return text
 
 def _record_law_articles(text: str) -> None:
@@ -1182,6 +1199,8 @@ _PROMULGATION_TRAIL_RE = re.compile(
     r"(?:법률|대통령령|총리령|기획재정부령|행정안전부령|고용노동부령|부령)\s*제\s*\d+\s*호(?:\s*\([^)]*\))?|\d{4}\.\s*\d{1,2}\.\s*\d{1,2}\.?))+$"
 )
 _RESOLVE_LAW_CACHE: dict[str, str | None] = {}
+_RESOLVE_LAW_LOCK = threading.RLock()
+_ARTICLE_REFS_LINE_CACHE: dict[tuple[str, int], list[tuple]] = {}
 
 def _known_law_titles(trace: dict = None) -> list[str]:
     if not trace:
@@ -1192,43 +1211,66 @@ def _known_law_titles(trace: dict = None) -> list[str]:
     return sorted(set(_BASE_KNOWN_LAW_TITLES) | extra, key=len, reverse=True)
 
 def _resolve_law_name(prefix: str, titles: list[str] | tuple[str, ...]):
-    cleaned_prefix = _PROMULGATION_TRAIL_RE.sub("", (prefix or "").strip()).strip()
+    p_str = (prefix or "").strip()
+    if not p_str:
+        return None
+    use_cache = len(titles) == len(_BASE_KNOWN_LAW_TITLES)
+    if use_cache and p_str in _RESOLVE_LAW_CACHE:
+        return _RESOLVE_LAW_CACHE[p_str]
+    if any(ch in p_str for ch in "()<>0123456789"):
+        cleaned_prefix = _PROMULGATION_TRAIL_RE.sub("", p_str).strip()
+    else:
+        cleaned_prefix = p_str
     tail = _norm(cleaned_prefix)[-45:]
     if not tail:
         return None
-    use_cache = len(titles) == len(_BASE_KNOWN_LAW_TITLES)
     if use_cache and tail in _RESOLVE_LAW_CACHE:
         return _RESOLVE_LAW_CACHE[tail]
     m_same = _SAME_LAW_RE.search(tail)
     if m_same:
         res = _resolve_law_name(m_same.group(1) + m_same.group(2), titles)
-        if use_cache and len(_RESOLVE_LAW_CACHE) < 4096:
-            _RESOLVE_LAW_CACHE[tail] = res
+        if use_cache:
+            with _RESOLVE_LAW_LOCK:
+                if len(_RESOLVE_LAW_CACHE) < 8192:
+                    _RESOLVE_LAW_CACHE[tail] = res
+                    _RESOLVE_LAW_CACHE[p_str] = res
         return res
     for suf in _REF_SKIP_SUFFIX:
         if tail == suf or (tail.endswith(suf) and not _HANGUL_END_RE.search(tail[:-len(suf)])):
-            if use_cache and len(_RESOLVE_LAW_CACHE) < 4096:
-                _RESOLVE_LAW_CACHE[tail] = None
+            if use_cache:
+                with _RESOLVE_LAW_LOCK:
+                    if len(_RESOLVE_LAW_CACHE) < 8192:
+                        _RESOLVE_LAW_CACHE[tail] = None
             return None
     for alias_key, resolved_full in _ALIAS_RESOLVED_PAIRS:
         if tail.endswith(alias_key):
-            if use_cache and len(_RESOLVE_LAW_CACHE) < 4096:
-                _RESOLVE_LAW_CACHE[tail] = resolved_full
+            if use_cache:
+                with _RESOLVE_LAW_LOCK:
+                    if len(_RESOLVE_LAW_CACHE) < 8192:
+                        _RESOLVE_LAW_CACHE[tail] = resolved_full
+                        _RESOLVE_LAW_CACHE[p_str] = resolved_full
             return resolved_full
     for t in titles:
         if tail.endswith(t):
-            if use_cache and len(_RESOLVE_LAW_CACHE) < 4096:
-                _RESOLVE_LAW_CACHE[tail] = t
+            if use_cache:
+                with _RESOLVE_LAW_LOCK:
+                    if len(_RESOLVE_LAW_CACHE) < 8192:
+                        _RESOLVE_LAW_CACHE[tail] = t
+                        _RESOLVE_LAW_CACHE[p_str] = t
             return t
     m = _PARTIAL_LAW_RE.search(tail)
     if not m:
-        if use_cache and len(_RESOLVE_LAW_CACHE) < 4096:
-            _RESOLVE_LAW_CACHE[tail] = None
+        if use_cache:
+            with _RESOLVE_LAW_LOCK:
+                if len(_RESOLVE_LAW_CACHE) < 8192:
+                    _RESOLVE_LAW_CACHE[tail] = None
         return None
     partial = m.group(1)
     if partial in _REF_SKIP_SUFFIX:
-        if use_cache and len(_RESOLVE_LAW_CACHE) < 4096:
-            _RESOLVE_LAW_CACHE[tail] = None
+        if use_cache:
+            with _RESOLVE_LAW_LOCK:
+                if len(_RESOLVE_LAW_CACHE) < 8192:
+                    _RESOLVE_LAW_CACHE[tail] = None
         return None
     res = partial
     if len(partial) >= 3:
@@ -1236,8 +1278,11 @@ def _resolve_law_name(prefix: str, titles: list[str] | tuple[str, ...]):
             if t.endswith(partial):
                 res = t
                 break
-    if use_cache and len(_RESOLVE_LAW_CACHE) < 4096:
-        _RESOLVE_LAW_CACHE[tail] = res
+    if use_cache:
+        with _RESOLVE_LAW_LOCK:
+            if len(_RESOLVE_LAW_CACHE) < 8192:
+                _RESOLVE_LAW_CACHE[tail] = res
+                _RESOLVE_LAW_CACHE[p_str] = res
     return res
 
 _EXEC_STD = re.compile(r"(?<![\d의])(\d{1,3}(?:의\d{1,2})?-\d{1,3}(?:의\d{1,2})?-\d{1,3})(?![\d])")
@@ -1245,6 +1290,18 @@ _EXEC_STD = re.compile(r"(?<![\d의])(\d{1,3}(?:의\d{1,2})?-\d{1,3}(?:의\d{1,2
 # [보강 ③] 마크다운 표 등에서 콜론(:)이 빠진 [조문 조세특례제한법 제29조의8] 또는 [조문조세특례제한법...] 형태까지 모두 인식
 _TAG = re.compile(
     r"\[(판례|심판례|헌재|헌재결정례|해석례|예규|조문|부칙|별표)(?:\s*[:：]\s*|\s*)(?=[가-힣A-Za-z0-9「])([^\]]+)\]"
+)
+_BACKTICK_LINKED_TAG_RE = re.compile(
+    r"`+(\[\[?(?:판례|심판례|헌재|헌재결정례|해석례|예규|조문|부칙|별표|행정해석)[^\]`]+\]\]?\(https?://[^)\s`]+\))`+"
+)
+_BACKTICK_PLAIN_TAG_RE = re.compile(
+    r"`+(\[(?:판례|심판례|헌재|헌재결정례|해석례|예규|조문|부칙|별표|행정해석)[^\]`]+\])`+"
+)
+_NORM_TAG_SPACE_RE = re.compile(
+    r"\[(판례|심판례|헌재|헌재결정례|해석례|예규|조문|부칙|별표)(?:\s*[:：]\s*|\s+)(?=[가-힣A-Za-z0-9「])([^\]]+)\]"
+)
+_NORM_TAG_NOSPACE_RE = re.compile(
+    r"\[(판례|심판례|헌재|헌재결정례|해석례|예규|조문|부칙|별표)(?=[가-힣A-Za-z0-9「])([^\]:：\n]+)\]"
 )
 
 def _normalize_citation_tags(text: str) -> str:
@@ -1257,54 +1314,53 @@ def _normalize_citation_tags(text: str) -> str:
     if not text:
         return ""
     s = str(text)
-    # 백틱으로 감싸진 이미 링크된 태그 제거: `[[조문: ...]](https://...)` -> [[조문: ...]](https://...)
-    s = re.sub(
-        r"`+(\[\[?(?:판례|심판례|헌재|헌재결정례|해석례|예규|조문|부칙|별표|행정해석)[^\]`]+\]\]?\(https?://[^)\s`]+\))`+",
-        r"\1",
-        s,
-    )
-    # 백틱으로 감싸진 일반 법령 태그 제거: `[조문: ...]` -> [조문: ...]
-    s = re.sub(
-        r"`+(\[(?:판례|심판례|헌재|헌재결정례|해석례|예규|조문|부칙|별표|행정해석)[^\]`]+\])`+",
-        r"\1",
-        s,
-    )
-    s = re.sub(
-        r"\[(판례|심판례|헌재|헌재결정례|해석례|예규|조문|부칙|별표)(?:\s*[:：]\s*|\s+)(?=[가-힣A-Za-z0-9「])([^\]]+)\]",
-        r"[\1: \2]",
-        s
-    )
-    s = re.sub(
-        r"\[(판례|심판례|헌재|헌재결정례|해석례|예규|조문|부칙|별표)(?=[가-힣A-Za-z0-9「])([^\]:：\n]+)\]",
-        r"[\1: \2]",
-        s
-    )
+    if "`" in s:
+        s = _BACKTICK_LINKED_TAG_RE.sub(r"\1", s)
+        s = _BACKTICK_PLAIN_TAG_RE.sub(r"\1", s)
+    if "[" in s:
+        s = _NORM_TAG_SPACE_RE.sub(r"[\1: \2]", s)
+        s = _NORM_TAG_NOSPACE_RE.sub(r"[\1: \2]", s)
     return s
 
 _AUTHORITY = re.compile(r"대법원|판시|판례|심판원|조세심판|심판례|결정례|헌법재판소|헌재|예규|집행기준|유권해석|해석례|질의회신")
 _NEGATION = re.compile(r"없음|없습니다|없으며|없고|없어|확인되지|확인하지 못|찾지 못|미조회|조회되지|조회하지 못")
 _TEMPLATE_LABELS = ("상세 법리 및 기준 검토", "상세법리 및 기준검토", "실무 적용 및 리스크 주의사항", "실무적용 및 리스크 주의사항", "근거자료 및 검색방법", "근거 자료 및 검색 방법", "관련법령")
 _QUOTE = re.compile(r"[“\"]([^”\"]{12,})[”\"]")
+_LETTERS_RE = re.compile(r"[^0-9A-Za-z가-힣]")
+_QUOTE_SPLIT_RE = re.compile(r"…|\.\.\.|⋯|중략")
 
 def _letters(text: str) -> str:
-    return re.sub(r"[^0-9A-Za-z가-힣]", "", text or "")
+    return _LETTERS_RE.sub("", text or "")
 
-def _quote_mismatches(line: str, case_nos: list, details: list) -> list[str]:
+def _quote_mismatches(line: str, case_nos: list, details: list, trace: dict = None) -> list[str]:
     bad = []
-    pool = [d for d in details if any(n in _norm(d) for n in case_nos)] if case_nos else details
-    pool_letters = [_letters(d) for d in pool]
+    if trace is not None and len(trace.get("_letters_detail_list") or []) == len(details) and len(trace.get("_norm_detail_list") or []) == len(details):
+        norm_details = trace["_norm_detail_list"]
+        let_details = trace["_letters_detail_list"]
+        if case_nos:
+            pool_letters = [let_details[idx] for idx, nd in enumerate(norm_details) if any(n in nd for n in case_nos)]
+        else:
+            pool_letters = let_details
+    else:
+        pool = [d for d in details if any(n in _norm(d) for n in case_nos)] if case_nos else details
+        pool_letters = [_letters(d) for d in pool]
     for q in _QUOTE.findall(line):
-        segments = [seg for seg in re.split(r"…|\.\.\.|⋯|중략", q) if len(_letters(seg)) >= 10]
+        segments = [seg for seg in _QUOTE_SPLIT_RE.split(q) if len(_letters(seg)) >= 10]
         for seg in segments:
-            if not any(_letters(seg) in t for t in pool_letters):
+            seg_let = _letters(seg)
+            if not any(seg_let in t for t in pool_letters):
                 bad.append("판례 인용문이 조회한 원문과 다름: \"" + q[:25] + "…\"")
                 break
     return bad
 
+_CASE_FAST_HINT_RE = re.compile(r"\d{2}\s*(?:재두|재다|가합|가단|구합|구단|헌바|헌마|헌가|헌나|헌라|헌사|헌아|두|누|다|도|나|후|허|므|구|부|노|고단|고합|서|중|광|전|인|경|지|관|조)")
+
 def _find_case_numbers(text: str) -> list[str]:
+    if not text or not _CASE_FAST_HINT_RE.search(text):
+        return []
     cited = []
     for pat in _CASE_NO_PATTERNS:
-        for m in pat.finditer(text or ""):
+        for m in pat.finditer(text):
             no = "".join(m.groups())
             if no not in cited:
                 cited.append(no)
@@ -1317,23 +1373,30 @@ _LAW_END_NORM_RE = re.compile(r"(법률?|령|규칙)$")
 _STRIP_TRAIL_PUNCT_RE = re.compile(r"[\s「」『』\[\]:(),·ㆍ]+$")
 
 def _find_article_refs_with_kind(text: str, trace: dict = None, titles: list[str] | None = None) -> list[tuple]:
-    if not text or "제" not in text:
+    if not text or "제" not in text or "조" not in text:
         return []
     if titles is None:
         titles = _known_law_titles(trace)
+    cache_key = (text, len(titles)) if len(text) <= 240 else None
+    if cache_key is not None and cache_key in _ARTICLE_REFS_LINE_CACHE:
+        return list(_ARTICLE_REFS_LINE_CACHE[cache_key])
     refs = []
     last_end = 0
     for m in _ARTICLE_NO.finditer(text):
         prefix = text[max(last_end, m.start() - 75):m.start()]
         last_end = m.end()
         raw_r = prefix.rstrip()
-        is_addendum = bool(_ADDENDUM_SUFFIX_RE.search(raw_r)) or ("부칙" in raw_r[-35:])
-        stripped = _ADDENDUM_SUFFIX_RE.sub("", raw_r)
-        stripped = _PROMULGATION_TRAIL_RE.sub("", stripped)
+        has_buchik = "부칙" in raw_r[-35:]
+        is_addendum = has_buchik and bool(_ADDENDUM_SUFFIX_RE.search(raw_r) or has_buchik)
+        stripped = _ADDENDUM_SUFFIX_RE.sub("", raw_r) if has_buchik else raw_r
+        if any(ch in stripped for ch in "()<>0123456789"):
+            stripped = _PROMULGATION_TRAIL_RE.sub("", stripped)
         stripped = _STRIP_TRAIL_PUNCT_RE.sub("", stripped)
-        stripped = _ADDENDUM_SUFFIX_RE.sub("", stripped)
-        stripped = _PROMULGATION_TRAIL_RE.sub("", stripped)
-        stripped = _STRIP_TRAIL_PUNCT_RE.sub("", stripped)
+        if has_buchik and "부칙" in stripped:
+            stripped = _ADDENDUM_SUFFIX_RE.sub("", stripped)
+            if any(ch in stripped for ch in "()<>0123456789"):
+                stripped = _PROMULGATION_TRAIL_RE.sub("", stripped)
+            stripped = _STRIP_TRAIL_PUNCT_RE.sub("", stripped)
         if not stripped or not _LAW_END_NORM_RE.search(_norm(stripped)):
             continue
         name = _resolve_law_name(stripped, titles)
@@ -1342,6 +1405,10 @@ def _find_article_refs_with_kind(text: str, trace: dict = None, titles: list[str
         ref = (name, int(m.group(1)), int(m.group(2) or 0), is_addendum)
         if ref not in refs:
             refs.append(ref)
+    if cache_key is not None:
+        with _RESOLVE_LAW_LOCK:
+            if len(_ARTICLE_REFS_LINE_CACHE) < 8192:
+                _ARTICLE_REFS_LINE_CACHE[cache_key] = list(refs)
     return refs
 
 def _find_article_refs(text: str, trace: dict = None) -> list[tuple]:
@@ -1365,8 +1432,16 @@ def _scan_violations(answer: str, trace: dict) -> list[tuple]:
     - 부칙 조문(is_addendum=True)은 `trace["fetched_addenda"]`에 있을 때만 통과시켜,
       부칙 제34조·제2조·제11조 허용이 본칙 제34조·제2조·제11조 허용으로 번지는 현상을 100% 차단합니다.
     """
-    detail_blob = _norm(" ".join(trace["detail"]))
-    list_blob = _norm(" ".join(trace["list"]))
+    if trace.get("_norm_detail_blob") is not None and len(trace.get("_norm_detail_list") or []) == len(trace["detail"]):
+        detail_blob = trace["_norm_detail_blob"]
+    else:
+        detail_blob = _norm(" ".join(trace["detail"]))
+        trace["_norm_detail_blob"] = detail_blob
+    if trace.get("_norm_list_blob") is not None and len(trace.get("_norm_list_list") or []) == len(trace["list"]):
+        list_blob = trace["_norm_list_blob"]
+    else:
+        list_blob = _norm(" ".join(trace["list"]))
+        trace["_norm_list_blob"] = list_blob
     fetched = trace["articles"]
     fetched_addenda = trace.get("fetched_addenda", set())
     fetched_laws = trace.get("fetched_laws", set()) | {t for (t, _, _) in fetched}
@@ -1483,7 +1558,7 @@ def _scan_violations(answer: str, trace: dict) -> list[tuple]:
 
         line_cases = _find_case_numbers(line) + [n for k, v in _TAG.findall(line) if k != "조문" for n in _find_case_numbers(v)]
         if (line_cases or inherited_ok or _TAG.search(line)) and _QUOTE.search(line):
-            problems.extend(_quote_mismatches(line, line_cases or parent_cases, trace["detail"]))
+            problems.extend(_quote_mismatches(line, line_cases or parent_cases, trace["detail"], trace=trace))
 
         if not in_refs_section and not problems:
             body = line
@@ -2563,6 +2638,7 @@ PAID_PRO_MODEL_IDS = (
 
 # 504(서버 시간 초과)·응답 지연이 난 모델은 일정 시간 건너뛰어, 질문마다 같은 모델에서 수십 초씩 허비하지 않게 합니다.
 _SLOW_MODEL_UNTIL: dict[str, float] = {}
+_SLOW_MODEL_LOCK = threading.RLock()
 _SLOW_MODEL_TTL_SEC = 900
 
 def _is_slow_error(e: Exception) -> bool:
@@ -2570,13 +2646,15 @@ def _is_slow_error(e: Exception) -> bool:
     return bool(re.search(r"\b504\b|DEADLINE_EXCEEDED|timed? ?out|ReadTimeout", s, flags=re.IGNORECASE))
 
 def _mark_slow_model(model_id: str) -> None:
-    _SLOW_MODEL_UNTIL[model_id] = time.time() + _SLOW_MODEL_TTL_SEC
+    with _SLOW_MODEL_LOCK:
+        _SLOW_MODEL_UNTIL[model_id] = time.time() + _SLOW_MODEL_TTL_SEC
 
 def _skip_slow_models(model_ids: list[str]) -> list[str]:
     """최근 응답 지연 모델을 뒤로 미룹니다(모두 지연 상태면 원래 순서 유지)."""
     now = time.time()
-    fast = [m for m in model_ids if _SLOW_MODEL_UNTIL.get(m, 0) <= now]
-    slow = [m for m in model_ids if _SLOW_MODEL_UNTIL.get(m, 0) > now]
+    with _SLOW_MODEL_LOCK:
+        fast = [m for m in model_ids if _SLOW_MODEL_UNTIL.get(m, 0) <= now]
+        slow = [m for m in model_ids if _SLOW_MODEL_UNTIL.get(m, 0) > now]
     return fast + slow if fast else list(model_ids)
 
 def _is_model_not_found(e: Exception) -> bool:
@@ -3201,30 +3279,74 @@ def _check_safe_pow_exponent(exp_node: ast.AST) -> None:
         return
     raise ValueError("거듭제곱 지수는 상수(-1000 ~ 1000)만 허용됩니다.")
 
+_THOUSANDS_FULL_RE = re.compile(r"(?<![\d.])\d{1,3}(?:,\d{3})+(?![\d])")
+_THOUSANDS_2PLUS_RE = re.compile(r"(?<![\d.])\d{1,3}(?:,\d{3}){2,}(?![\d])")
+_INNER_CALL_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_.]*)\(([^()\[\]]*)\)")
+_INNER_LIST_RE = re.compile(r"\[([^\[\]]*)\]")
+
+def _clean_call_inner_commas(func_name: str, inner: str) -> str:
+    if re.search(r",\s+", inner):
+        parts = re.split(r",\s+", inner)
+        cleaned_parts = [_THOUSANDS_FULL_RE.sub(lambda m: m.group(0).replace(",", ""), p) for p in parts]
+        return ", ".join(cleaned_parts)
+    fn = func_name.split(".")[-1]
+    raw_parts = inner.split(",")
+    if fn in ("min", "max", "pow"):
+        if len(raw_parts) <= 2:
+            return inner
+        cand2 = _THOUSANDS_2PLUS_RE.sub(lambda m: m.group(0).replace(",", ""), inner)
+        if cand2.count(",") >= 1:
+            return cand2
+        if (
+            len(raw_parts) == 4
+            and len(raw_parts[1]) == 3 and raw_parts[1].isdigit()
+            and len(raw_parts[3]) == 3 and raw_parts[3].isdigit()
+            and (raw_parts[1] == "000" or raw_parts[3] == "000")
+        ):
+            return f"{raw_parts[0]}{raw_parts[1]}, {raw_parts[2]}{raw_parts[3]}"
+        return inner
+    if fn == "round":
+        if len(raw_parts) >= 3:
+            first_arg = _THOUSANDS_FULL_RE.sub(lambda m: m.group(0).replace(",", ""), ",".join(raw_parts[:-1]))
+            return f"{first_arg}, {raw_parts[-1]}"
+        return inner
+    return _THOUSANDS_FULL_RE.sub(lambda m: m.group(0).replace(",", ""), inner)
+
 def _strip_thousands_commas_safely(expr: str) -> str:
     r"""
-    1) `min(100,200)`(공백 없는 2인자 함수), `min(1500000, 2000000)`, `round(x, 2)` 등 이미 유효한 파이썬 수식은
-       단일 숫자 튜플(`1,500,000`)이 아닌 한 원형 그대로 보존하여 `min(100,200)`이 `min(100200)`으로 깨지는 현상을 원천 방지합니다.
-    2) `min(1,500,000, 2,000,000)`이나 `1,500,000 * 0.15`처럼 천 단위 구분 쉼표가 섞여 있을 때는
-       2그룹 이상 천 단위 숫자(`\d{1,3}(?:,\d{3}){2,}`)를 먼저 정제한 뒤 재검증하고, 필요시 나머지 천 단위 쉼표를 제거합니다.
+    [AST·문맥 인식 천 단위 쉼표 정제기]
+    1) 함수 호출 내부(`min(a,b)`, `max(1,200,300)`, `min(1,500,000, 2,000,000)`, `round(1,234,567.89, 1)`)와
+       괄호 밖 사칙연산(`+ 1,000,000`)을 분리하여 처리합니다.
+    2) `max(100,200) + min(300, 400)`처럼 공백 없는 다중 인자 함수와 공백 있는 함수가 한 수식에 공존하더라도
+       인자 구분자 쉼표가 천 단위 쉼표로 오인되어 숫자가 합쳐지는 현상을 100% 차단합니다.
     """
     s = (expr or "").strip()
-    if not s:
-        return ""
+    if not s or "," not in s:
+        return s
 
-    # 1단계: 백만 단위 이상(쉼표 2개 이상: 1,500,000) 숫자는 무조건 천 단위 구분자이므로 최우선 제거
-    s_clean = re.sub(r"(?<![\d.])\d{1,3}(?:,\d{3}){2,}(?![\d])", lambda m: m.group(0).replace(",", ""), s)
-    # 2단계: 같은 괄호 안에 `, ` (쉼표+공백) 인자 구분자가 함께 존재할 때의 공백 없는 천 단위 쉼표(예: min(100,000, 200,000)) 제거
-    if re.search(r",\s+", s_clean):
-        s_clean = re.sub(r"(?<![\d.])\d{1,3}(?:,\d{3})+(?![\d])", lambda m: m.group(0).replace(",", ""), s_clean)
-    try:
-        tree = ast.parse(s_clean, mode="eval")
-        if not isinstance(tree.body, ast.Tuple):
-            return s_clean
-    except SyntaxError:
-        pass
-    # 3단계: 괄호 밖 일반 사칙연산의 천 단위 쉼표(예: 100,000 * 0.15) 제거
-    return re.sub(r"(?<![\d.])\d{1,3}(?:,\d{3})+(?![\d])", lambda m: m.group(0).replace(",", ""), s_clean)
+    def _repl_call(m: re.Match) -> str:
+        fn = m.group(1)
+        inner = m.group(2)
+        cleaned_inner = _clean_call_inner_commas(fn, inner).replace(",", "\x00")
+        return f"{fn}({cleaned_inner})"
+
+    cur = s
+    for _ in range(6):
+        nxt = _INNER_CALL_RE.sub(_repl_call, cur)
+        if nxt == cur:
+            break
+        cur = nxt
+
+    def _repl_list(m: re.Match) -> str:
+        inner = m.group(1)
+        if re.search(r",\s+", inner):
+            parts = [_THOUSANDS_FULL_RE.sub(lambda x: x.group(0).replace(",", ""), p) for p in re.split(r",\s+", inner)]
+            return "[" + "\x00 ".join(parts) + "]"
+        return "[" + inner.replace(",", "\x00") + "]"
+
+    cur = _INNER_LIST_RE.sub(_repl_list, cur)
+    cur = _THOUSANDS_FULL_RE.sub(lambda m: m.group(0).replace(",", ""), cur)
+    return cur.replace("\x00", ",")
 
 def _validate_safe_math_ast(expr: str) -> None:
     """
@@ -3503,6 +3625,14 @@ def _build_direct_law_url(kind: str, val: str, trace: dict, rev_id_map: dict, me
         return f"https://www.law.go.kr/행정규칙/{urllib.parse.quote(clean_name)}"
     return ""
 
+_UNLINKED_CITATION_TAG_RE = re.compile(
+    r"(?<!\[)\[(판례|심판례|헌재|헌재결정례|해석례|예규|조문|부칙|별표)(?:\s*[:：]\s*|\s*)(?=[가-힣A-Za-z0-9「])([^\]]+)\](?!\]|\(\s*https?://)"
+)
+_REF_BULLET_LINE_RE = re.compile(r"^(\s*(?:[-*•◦‣]|\d+\.)\s+)(.+)$")
+_TRAILING_TAG_STRIP_RE = re.compile(
+    r"\s*\[(?:판례|심판례|헌재|헌재결정례|해석례|예규|조문|부칙|별표)(?:\s*[:：]\s*|\s*)(?=[가-힣A-Za-z0-9「])[^\]]+\]\s*$"
+)
+
 def _inject_direct_law_links(text: str, trace: dict = None) -> str:
     """
     1) 본문의 [조문:...], [부칙:...], [별표:...], [판례:...], [헌재:...], [심판례:...], [해석례:...], [예규:...] 태그(콜론 누락 포함)에 100% 검증된 법제처 원문 직링크를 결합합니다.
@@ -3520,14 +3650,19 @@ def _inject_direct_law_links(text: str, trace: dict = None) -> str:
             rev_id_map[_norm(case_no)] = str(doc_id).strip()
         meta_map = trace.get("meta_map") or {}
 
+    local_url_memo: dict[tuple[str, str], str] = {}
+
     def _replace_tag_with_link(match: re.Match) -> str:
         kind = match.group(1).strip()
         val = match.group(2).strip()
+        m_key = (kind, val)
+        if m_key in local_url_memo:
+            return local_url_memo[m_key]
         canonical_tag = f"[{kind}: {val}]"
         url = _build_direct_law_url(kind, val, trace, rev_id_map, meta_map, known_titles=known_titles)
-        if url:
-            return f"[{canonical_tag}]({url})"
-        return canonical_tag
+        res_str = f"[{canonical_tag}]({url})" if url else canonical_tag
+        local_url_memo[m_key] = res_str
+        return res_str
 
     lines = text.split("\n")
     in_refs = False
@@ -3543,11 +3678,7 @@ def _inject_direct_law_links(text: str, trace: dict = None) -> str:
             continue
 
         if not in_refs:
-            linked_line = re.sub(
-                r"(?<!\[)\[(판례|심판례|헌재|헌재결정례|해석례|예규|조문|부칙|별표)(?:\s*[:：]\s*|\s*)(?=[가-힣A-Za-z0-9「])([^\]]+)\](?!\]|\(\s*https?://)",
-                _replace_tag_with_link,
-                line
-            )
+            linked_line = _UNLINKED_CITATION_TAG_RE.sub(_replace_tag_with_link, line) if "[" in line else line
             out_lines.append(linked_line)
             continue
 

@@ -1169,26 +1169,26 @@ def _compute_report_cache_sig(s: dict, tax_yr: int) -> str:
     사원표(year_recs/people), 사업자정보, 합산사업장, 기신고 기초값, 추가입력, 계산기준, 법령 세무진단 의견 해시를 모두 결합하여
     단 1글자·1원이라도 바뀌면 즉시 새로 생성하고, 변동이 없으면 캐시에서 0.001초 만에 반환합니다.
     """
-    payload = {
-        "built_sig": s.get("built_sig"),
-        "tax_yr": tax_yr,
-        "pm_basis": s.get("pm_basis"),
-        "scheme_2026": s.get("scheme_2026"),
-        "biz": s.get("biz"),
-        "corp_size_default": s.get("corp_size_default"),
-        "corp_size_by_year": s.get("corp_size_by_year"),
-        "corp_size_user_set": s.get("corp_size_user_set"),
-        "sub_biz": s.get("sub_biz_list"),
-        "prev_summary": s.get("prev_summary"),
-        "add_in": s.get("additional_inputs"),
-        "year_recs": s.get("year_recs"),
-        "audit": s.get("pro_audit_comment"),
-    }
-    try:
-        raw_json = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str, separators=(",", ":"))
-    except TypeError:
-        raw_json = json.dumps(_sig_norm_keys(payload), sort_keys=True, ensure_ascii=False, default=str, separators=(",", ":"))
-    return hashlib.sha256(raw_json.encode("utf-8")).hexdigest()[:24]
+    from .ui_common import _fast_update_hash
+    h = hashlib.sha256()
+    yr_recs = s.get("year_recs")
+    cs_by_yr = s.get("corp_size_by_year")
+    _fast_update_hash(h, (
+        s.get("built_sig"),
+        tax_yr,
+        s.get("pm_basis"),
+        s.get("scheme_2026"),
+        s.get("biz"),
+        s.get("corp_size_default"),
+        {str(k): v for k, v in cs_by_yr.items()} if isinstance(cs_by_yr, dict) else cs_by_yr,
+        s.get("corp_size_user_set"),
+        s.get("sub_biz_list"),
+        s.get("prev_summary"),
+        s.get("additional_inputs"),
+        {str(k): v for k, v in yr_recs.items()} if isinstance(yr_recs, dict) else yr_recs,
+        s.get("pro_audit_comment"),
+    ))
+    return h.hexdigest()[:24]
 
 
 def _sig_norm_keys(obj):

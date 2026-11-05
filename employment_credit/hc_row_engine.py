@@ -297,17 +297,19 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
         youth_flags_b2a.append(yf2a)
         youth_flags_b3a.append(yf3a)
 
-    row_sum_frac = sum((_to_frac(v) for v in months if v), Fraction(0))
-    yth_b1_frac = sum((_to_frac(v) for v, f in zip(months, youth_flags_b1) if v and f), Fraction(0))
-    yth_b2_frac = sum((_to_frac(v) for v, f in zip(months, youth_flags_b2) if v and f), Fraction(0))
-    yth_b3_frac = sum((_to_frac(v) for v, f in zip(months, youth_flags_b3) if v and f), Fraction(0))
-    yth_b2a_frac = sum((_to_frac(v) for v, f in zip(months, youth_flags_b2a) if v and f), Fraction(0))
-    yth_b3a_frac = sum((_to_frac(v) for v, f in zip(months, youth_flags_b3a) if v and f), Fraction(0))
+    # 고속 정수 스케일(×100) 합산: 월별 가중치(1.0, 0.75, 0.5, 0.0)는 ×100 시 정확한 정수이므로 Fraction 생성 없이 100% 무오차 절사 가능
+    def _trunc2_sum(val_sum: float, div_n: int) -> float:
+        scaled = round(val_sum * 10000)
+        if abs(scaled - round(val_sum * 100) * 100) <= 1:
+            return ((int(round(val_sum * 100)) * 100) // (div_n * 100)) / 100.0
+        return trunc2(_to_frac(val_sum) / div_n)
 
-    row_sum = float(row_sum_frac)
-    yth_sum_b1 = float(yth_b1_frac)
-    yth_sum_b2 = float(yth_b2_frac)
-    yth_sum_b3 = float(yth_b3_frac)
+    row_sum = round(sum(v for v in months if v), 6)
+    yth_sum_b1 = round(sum(v for v, f in zip(months, youth_flags_b1) if v and f), 6)
+    yth_sum_b2 = round(sum(v for v, f in zip(months, youth_flags_b2) if v and f), 6)
+    yth_sum_b3 = round(sum(v for v, f in zip(months, youth_flags_b3) if v and f), 6)
+    yth_b2a_frac = round(sum(v for v, f in zip(months, youth_flags_b2a) if v and f), 6)
+    yth_b3a_frac = round(sum(v for v, f in zip(months, youth_flags_b3a) if v and f), 6)
 
     gen_sum_b1 = round(max(0.0, row_sum - yth_sum_b1), 4)
     gen_sum_b2 = round(max(0.0, row_sum - yth_sum_b2), 4)
@@ -315,20 +317,20 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
 
     # ── A방식(합계 후 절사 시 개인행 참고용 반올림) vs B방식(사원별 100분의 1 미만 절사, 청년등외 = 전체 - 청년등) 동시 산출 ──
     # B방식 사원별 절사값 (별지 제10호의10서식 ⑩ = ② − ⑨)
-    B_b1_reg = trunc2(row_sum_frac / months_in_year)
-    B_b1_yth = trunc2(yth_b1_frac / months_in_year)
+    B_b1_reg = _trunc2_sum(row_sum, months_in_year)
+    B_b1_yth = _trunc2_sum(yth_sum_b1, months_in_year)
     B_b1_gen = round(max(0.0, B_b1_reg - B_b1_yth), 2)
 
     B_b2_reg = B_b1_reg
-    B_b2_yth = trunc2(yth_b2_frac / months_in_year)
+    B_b2_yth = _trunc2_sum(yth_sum_b2, months_in_year)
     B_b2_gen = round(max(0.0, B_b2_reg - B_b2_yth), 2)
 
     B_b3_reg = B_b1_reg
-    B_b3_yth = trunc2(yth_b3_frac / months_in_year)
+    B_b3_yth = _trunc2_sum(yth_sum_b3, months_in_year)
     B_b3_gen = round(max(0.0, B_b3_reg - B_b3_yth), 2)
 
-    B_b2_yth_act = trunc2(yth_b2a_frac / months_in_year)
-    B_b3_yth_act = trunc2(yth_b3a_frac / months_in_year)
+    B_b2_yth_act = _trunc2_sum(yth_b2a_frac, months_in_year)
+    B_b3_yth_act = _trunc2_sum(yth_b3a_frac, months_in_year)
 
     # A방식 개인행 표시값 (연도 합계에서 1회 절사하므로 개인행은 소수 둘째 자리 반올림 참고값)
     A_b1_reg = round(row_sum / months_in_year, 2)

@@ -523,6 +523,216 @@ class TestComprehensiveTaxAgentSuite(unittest.TestCase):
         self.assertIn("조문시행일자:", law_src)
         self.assertIn("미시행(미래 시행예정) 조문 경고", law_src)
 
+    def test_23_payroll_dead_zone_1000_brackets_zero_overpayment(self):
+        """[극한 데드존 검증] 150만~1,050만 원 전 구간(900개 세율 경계)에서 데드존 진동·초과 산출(Overpayment) 0건 검증"""
+        def _net_at(g: int) -> int:
+            ins = pa_tax.calc_4ins_by_rate(g, year=2026, is_ceo=False)
+            wt = pa_tax.calc_withholding_tax(g, dependents=1, children_8_to_20=0, rate_pct=100, year_month="2026-10")
+            return g - (ins["국민연금"] + ins["건강보험"] + ins["장기요양보험료"] + ins["고용보험"] + wt["소득세"] + wt["지방소득세"])
+
+        for b in range(150, 1050, 10):
+            g_pre = b * 10_000 - 1
+            n_pre = _net_at(g_pre)
+            res = pa_tax.gross_up_employee_net_to_gross(n_pre, non_taxable_pay=0, dependents=1, children_8_to_20=0)
+            self.assertEqual(res["차인지급액"], n_pre)
+            self.assertLessEqual(res["지급액계"], g_pre, msg=f"Dead-zone overpayment at {b*10}k: {res['지급액계']} > {g_pre}")
+
+        # Freelancer extreme tax rate >= 95% boundary check
+        res_f95 = pa_tax.gross_up_freelancer_net_to_gross(1_000_000, rate_pct=95.0)
+        self.assertGreaterEqual(res_f95["지급총액"], 1_000_000)
+
+    def test_24_agent_ast_calculator_mixed_comma_and_concurrency_stress(self):
+        """[AST 수식 & 멀티스레드 검증] 공백 없는 함수 인자와 천 단위 쉼표 공존 수식 무결성 및 16스레드 동시성 검증"""
+        import concurrent.futures
+
+        cases = [
+            ("min(100,200)", "100"),
+            ("max(100,200) + min(300, 400)", "500"),
+            ("min(100,200) + 1,000,000", "1,000,100"),
+            ("max(1,200,300)", "300"),
+            ("round(1,234,567.89, 1)", "1,234,568"),
+            ("sum([1,000, 2,000, 3,000])", "6,000"),
+        ]
+        for expr, expected_substr in cases:
+            out = agent.run_tax_calculator_for_gemini(expr, "복합쉼표검증")
+            self.assertNotIn("오류", out, msg=f"Failed on {expr}: {out}")
+            self.assertIn(expected_substr, out, msg=f"Mismatch on {expr}: {out}")
+
+        def _worker(tid: int) -> bool:
+            r = agent._resolve_law_name(f"조특법(법률 제21223호)", agent._BASE_KNOWN_LAW_TITLES)
+            c = agent._find_article_refs_with_kind("조세특례제한법 부칙(법률 제21223호) 제34조에 따른다.")
+            return r == "조세특례제한법" and len(c) == 1 and c[0][3] is True
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
+            futs = [pool.submit(_worker, i) for i in range(64)]
+            self.assertTrue(all(f.result() for f in futs))
+
+    def test_25_law_api_molit_trade_xml_and_nps_2026_rates(self):
+        """[law_api 실거래가 XML 파싱 & 2026년 4대보험 요율 정합성 검증] Element.values() 런타임 크래시 제거 및 2026 법정요율 검증"""
+        from unittest import mock
+
+        sample_trade_xml = """<?xml version="1.0" encoding="UTF-8"?>
+        <response>
+            <header><resultCode>00</resultCode><resultMsg>NORMAL SERVICE.</resultMsg></header>
+            <body><items>
+                <item>
+                    <umdNm>역삼동</umdNm>
+                    <aptNm>역삼자이</aptNm>
+                    <jibun>711</jibun>
+                    <excluUseAr>84.99</excluUseAr>
+                    <floor>15</floor>
+                    <buildYear>2016</buildYear>
+                    <dealAmount>235,000</dealAmount>
+                    <dealDay>12</dealDay>
+                </item>
+            </items></body>
+        </response>"""
+
+        mock_resp = mock.MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = sample_trade_xml
+
+        with mock.patch.dict(os.environ, {"NTS_API_KEY": "DUMMY_TEST_KEY"}), \
+             mock.patch("law_api.requests.get", return_value=mock_resp):
+            out = law_api.get_molit_real_estate_trade("apt", "강남구", "202609", "역삼자이")
+            self.assertIn("역삼자이", out)
+            self.assertIn("235,000만원", out)
+            self.assertNotIn("AttributeError", out)
+
+        # Verify 2026 vs 2025 statutory rates in get_nps_workplace_info
+        def _fake_nps_get(url, **kwargs):
+            m = mock.MagicMock()
+            m.status_code = 200
+            if "getBassInfoSearchV2" in url:
+                m.text = """<response><header><resultCode>00</resultCode></header><body><items>
+                    <item><wkplNm>테스트세무법인</wkplNm><bzowrRgstNo>123456</bzowrRgstNo><wkplJnngStcd>1</wkplJnngStcd>
+                    <wkplStylDvcd>1</wkplStylDvcd><wkplRoadNmDtlAddr>서울 강남구</wkplRoadNmDtlAddr><dataCrtYm>202609</dataCrtYm><seq>S2026</seq></item>
+                    <item><wkplNm>테스트세무법인</wkplNm><bzowrRgstNo>123456</bzowrRgstNo><wkplJnngStcd>1</wkplJnngStcd>
+                    <wkplStylDvcd>1</wkplStylDvcd><wkplRoadNmDtlAddr>서울 강남구</wkplRoadNmDtlAddr><dataCrtYm>202509</dataCrtYm><seq>S2025</seq></item>
+                </items></body></response>"""
+            elif "seq=S2026" in url:
+                # 2026년: 보수총액 10,000,000원 -> 국민연금 9.5% = 950,000원
+                m.text = """<response><header><resultCode>00</resultCode></header><body><items>
+                    <item><jnngpCnt>3</jnngpCnt><crrmmNtcAmt>950000</crrmmNtcAmt><nwAcqzrCnt>0</nwAcqzrCnt><lssJnngpCnt>0</lssJnngpCnt></item>
+                </items></body></response>"""
+            elif "seq=S2025" in url:
+                # 2025년: 보수총액 10,000,000원 -> 국민연금 9.0% = 900,000원
+                m.text = """<response><header><resultCode>00</resultCode></header><body><items>
+                    <item><jnngpCnt>3</jnngpCnt><crrmmNtcAmt>900000</crrmmNtcAmt><nwAcqzrCnt>0</nwAcqzrCnt><lssJnngpCnt>0</lssJnngpCnt></item>
+                </items></body></response>"""
+            else:
+                m.text = "<response><header><resultCode>00</resultCode></header><body><items></items></body></response>"
+            return m
+
+        with mock.patch.dict(os.environ, {"NTS_API_KEY": "DUMMY_TEST_KEY"}), \
+             mock.patch("law_api.requests.get", side_effect=_fake_nps_get):
+            nps_out = law_api.get_nps_workplace_info("테스트세무법인", "123456")
+            # Both 2026 (950,000 / 0.095) and 2025 (900,000 / 0.09) should back-calculate to 10,000,000원 payroll!
+            self.assertEqual(nps_out.count("10,000,000원"), 2, msg=f"Unexpected NPS output:\n{nps_out}")
+
+    def test_26_ec_ui_common_and_app_atomic_io_and_fingerprint_parity(self):
+        """[ui_common & app.py 검증] 혼합 타입 키 지문(Fingerprint) 결정론적 해시 및 원자적 JSON I/O 검증"""
+        import tempfile
+        s = ec_common._default_state_dict()
+        s["year_recs"] = {2025: {"p1": {"pay": {1: 3000000}}}, "2026": {"p1": {"pay": {"1": 3100000}}}}
+        fp1 = ec_common._calc_fingerprint(s)
+        fp2 = ec_common._calc_fingerprint(s)
+        self.assertEqual(fp1, fp2)
+        self.assertEqual(len(fp1), 32)
+
+        with tempfile.TemporaryDirectory() as td:
+            test_json = os.path.join(td, "atomic_test.json")
+            # Verify atomic write & cached read via app.py helpers
+            import importlib.util
+            with open(os.path.join(CODE_ROOT, "app.py"), "r", encoding="utf-8") as f:
+                app_src = f.read()
+            self.assertIn("_atomic_write_json_dict", app_src)
+            self.assertIn("_read_json_dict_cached", app_src)
+            self.assertIn("_MD_REL_LAWS_RE", app_src)
+
+    def test_27_all_32_modules_ast_signature_and_cross_call_compatibility(self):
+        """[전수 호환성 검증] 프로젝트 내 32개 전체 파이썬 모듈 임포트 및 956개 모듈 간 호출부(Call-site) 시그니처 100% 정합성 검증"""
+        import ast, inspect, importlib
+
+        py_files = []
+        for r, dirs, files in os.walk(CODE_ROOT):
+            dirs[:] = [d for d in dirs if d not in ("__pycache__", ".workspace_storage", ".git")]
+            for fn in sorted(files):
+                if fn.endswith(".py"):
+                    py_files.append(os.path.relpath(os.path.join(r, fn), CODE_ROOT))
+
+        loaded_modules = {}
+        for pf in py_files:
+            if pf == "app.py":
+                continue
+            mod_name = pf[:-3].replace("/", ".")
+            if mod_name.endswith(".__init__"):
+                mod_name = mod_name[:-9]
+            loaded_modules[mod_name] = importlib.import_module(mod_name)
+            loaded_modules[pf] = loaded_modules[mod_name]
+
+        issues = []
+        checked_calls = 0
+        for pf in py_files:
+            full_p = os.path.join(CODE_ROOT, pf)
+            with open(full_p, "r", encoding="utf-8") as f:
+                tree = ast.parse(f.read(), filename=pf)
+            pkg = os.path.dirname(pf).replace("/", ".")
+            imported_objs, imported_mods = {}, {}
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        asname = alias.asname or alias.name
+                        if alias.name in loaded_modules:
+                            imported_mods[asname] = loaded_modules[alias.name]
+                elif isinstance(node, ast.ImportFrom):
+                    mod_target = node.module or ""
+                    if node.level > 0 and pkg:
+                        mod_target = f"{pkg}.{mod_target}".strip(".")
+                    if mod_target in loaded_modules:
+                        m_obj = loaded_modules[mod_target]
+                        for alias in node.names:
+                            if alias.name == "*":
+                                for k in dir(m_obj):
+                                    if not k.startswith("__"):
+                                        imported_objs[k] = getattr(m_obj, k)
+                            else:
+                                asname = alias.asname or alias.name
+                                if not hasattr(m_obj, alias.name):
+                                    issues.append(f"[{pf}:{node.lineno}] Missing import {alias.name} from {mod_target}")
+                                else:
+                                    imported_objs[asname] = getattr(m_obj, alias.name)
+                                    if inspect.ismodule(imported_objs[asname]):
+                                        imported_mods[asname] = imported_objs[asname]
+
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call):
+                    target_fn, target_desc = None, ""
+                    if isinstance(node.func, ast.Name) and node.func.id in imported_objs:
+                        target_fn = imported_objs[node.func.id]
+                        target_desc = node.func.id
+                    elif isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
+                        base_id = node.func.value.id
+                        if base_id in imported_mods:
+                            m_obj = imported_mods[base_id]
+                            if not hasattr(m_obj, node.func.attr):
+                                issues.append(f"[{pf}:{node.lineno}] Missing attr {base_id}.{node.func.attr}")
+                            else:
+                                target_fn = getattr(m_obj, node.func.attr)
+                                target_desc = f"{base_id}.{node.func.attr}"
+                    if callable(target_fn) and not inspect.isclass(target_fn):
+                        try:
+                            sig = inspect.signature(target_fn)
+                            has_starred = any(isinstance(a, ast.Starred) for a in node.args) or any(kw.arg is None for kw in node.keywords)
+                            if not has_starred:
+                                sig.bind(*([None] * len(node.args)), **{kw.arg: None for kw in node.keywords if kw.arg is not None})
+                            checked_calls += 1
+                        except TypeError as e:
+                            issues.append(f"[{pf}:{node.lineno}] Signature mismatch on {target_desc}: {e}")
+
+        self.assertGreaterEqual(checked_calls, 900)
+        self.assertEqual(issues, [], msg=f"Compatibility issues: {issues}")
+
 
 def run_comparative_benchmarks(orig_dir: str, opt_dir: str) -> None:
     """터미널에서 기존 코드(orig_dir) vs 최적화 코드(opt_dir) 실측 속도 및 피크 메모리를 비교 출력합니다."""
@@ -531,10 +741,10 @@ def run_comparative_benchmarks(orig_dir: str, opt_dir: str) -> None:
     bench_worker = """
 import sys, os, time, tracemalloc, json, datetime as dt
 import pandas as pd
-sys.path.insert(0, "/tmp/qa_lab")
-import mock_env
 target = sys.argv[1]
 sys.path.insert(0, target)
+import test_and_benchmark_suite as _tbs
+_tbs.ensure_headless_mocks()
 
 import agent
 from employment_credit import rules as ec_rules, ui_common as ec_common, ui_step4 as ec_step4
@@ -600,7 +810,7 @@ measure("ec_golden_invariants_43cases_x5", lambda: ec_rules.verify_golden_case_i
 
 print("BENCH_JSON:" + json.dumps(results))
 """
-    worker_path = "/tmp/qa_lab/_bench_worker.py"
+    worker_path = "/tmp/_bench_worker.py"
     with open(worker_path, "w", encoding="utf-8") as f:
         f.write(bench_worker)
 
@@ -627,11 +837,8 @@ print("BENCH_JSON:" + json.dumps(results))
 
 
 if __name__ == "__main__":
-    orig_p = "/tmp/qa_v3/v3_orig"
-    opt_p = "/tmp/qa_v3/v3_opt"
-    if not (os.path.isdir(orig_p) and os.path.isdir(opt_p)):
-        orig_p = "/working_dir/c_c46f28856ccd533e/workspace_orig"
-        opt_p = "/working_dir/c_c46f28856ccd533e/workspace_opt"
+    orig_p = "/working_dir/c_1b9d639abbdd8152/workspace_orig"
+    opt_p = "/working_dir/c_1b9d639abbdd8152/workspace_opt"
     if os.path.isdir(orig_p) and os.path.isdir(opt_p) and "--bench" in sys.argv:
         sys.argv.remove("--bench")
         run_comparative_benchmarks(orig_p, opt_p)

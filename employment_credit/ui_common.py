@@ -15,6 +15,7 @@ import csv
 import json
 import copy
 import hashlib
+import pickle
 import time
 import urllib.request
 import streamlit as st
@@ -177,8 +178,10 @@ def _write_ec_to_disk(s: dict | None = None) -> None:
         path = _ec_disk_path(ws_id)
         if saved.get(ws_id) == digest and os.path.exists(path):
             return                                   # 바뀐 내용이 없으면 쓰지 않음
-        with open(path, "w", encoding="utf-8") as f:
+        tmp_path = f"{path}.tmp.{os.getpid()}"
+        with open(tmp_path, "w", encoding="utf-8") as f:
             f.write(text)
+        os.replace(tmp_path, path)
         saved[ws_id] = digest
     except Exception:
         pass
@@ -615,10 +618,17 @@ def _pdf_sig_norm(obj):
     return str(obj)
 
 
+_FP_MEMO_BOX: list = [None, None, None, None]  # [people_ref, recs_ref, sub_tuple, hex_str]
+
+def _fast_norm_top_keys(obj):
+    if isinstance(obj, dict):
+        return {str(k): v for k, v in obj.items()}
+    return obj
+
 def _fast_json_dumps_norm(payload: dict) -> str:
-    """일반 상태에서는 C-레벨 json.dumps를 바로 실행하고, 숫자·문자열 혼합 키나 특수 타입(set/bytes)이 있을 때만 _pdf_sig_norm으로 폴백합니다."""
+    """최상위 연도 매핑(year_recs, corp_size_by_year)의 int/str 혼합 키를 얕은 변환으로 먼저 정제하여 C-레벨 json.dumps가 TypeError 없이 즉시 실행되도록 보장합니다."""
     try:
-        return json.dumps(payload, sort_keys=True, default=str, ensure_ascii=False, separators=(",", ":"))
+        return json.dumps(payload, sort_keys=False, default=str, ensure_ascii=False, separators=(",", ":"))
     except TypeError:
         return json.dumps(_pdf_sig_norm(payload), sort_keys=True, default=str, ensure_ascii=False, separators=(",", ":"))
 
@@ -655,6 +665,28 @@ def _pdf_memo(s: dict, kind: str, build_fn, *args, **kwargs) -> bytes:
     return data
 
 
+
+def _norm_mixed_dict_keys(obj):
+    if isinstance(obj, dict):
+        return {str(k): _norm_mixed_dict_keys(v) for k, v in sorted(obj.items(), key=lambda kv: str(kv[0]))}
+    if isinstance(obj, (list, tuple)):
+        return [_norm_mixed_dict_keys(v) for v in obj]
+    if isinstance(obj, set):
+        return sorted(str(v) for v in obj)
+    if isinstance(obj, float) and not math.isfinite(obj):
+        return None
+    if isinstance(obj, (bytes, bytearray)):
+        return "b:" + hashlib.md5(bytes(obj)).hexdigest()
+    return obj
+
+def _fast_update_hash(h, obj) -> None:
+    try:
+        h.update(pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL))
+    except Exception:
+        raw = json.dumps(_norm_mixed_dict_keys(obj), sort_keys=True, default=str, ensure_ascii=False, separators=(",", ":"))
+        h.update(raw.encode("utf-8"))
+
+
 def _calc_fingerprint(s: dict) -> str | None:
     try:
         files_meta = sorted(
@@ -662,22 +694,25 @@ def _calc_fingerprint(s: dict) -> str | None:
             for n, f in (s.get("files") or {}).items()
         )
         wht_years = sorted(str(k) for k, v in (((s.get("ext") or {}).get("wht")) or {}).items() if v)
-        blob = _fast_json_dumps_norm({
-                "people": s.get("people"),
-                "year_recs": s.get("year_recs"),
-                "biz": s.get("biz"),
-                "corp_size_default": s.get("corp_size_default"),
-                "corp_size_by_year": s.get("corp_size_by_year"),
-                "corp_size_user_set": s.get("corp_size_user_set"),
-                "sub_biz_list": s.get("sub_biz_list"),
-                "tax_year": s.get("tax_year"),
-                "assume_year_end": s.get("assume_year_end"),
-                "include_unpaid_hire_month": s.get("include_unpaid_hire_month"),
-                "manual_extra_years": s.get("manual_extra_years"),
-                "files": files_meta,
-                "wht_years": wht_years,
-            })
-        return hashlib.md5(blob.encode("utf-8")).hexdigest()
+        h = hashlib.md5()
+        yr_recs = s.get("year_recs")
+        cs_by_yr = s.get("corp_size_by_year")
+        _fast_update_hash(h, (
+            s.get("people"),
+            {str(k): v for k, v in yr_recs.items()} if isinstance(yr_recs, dict) else yr_recs,
+            s.get("biz"),
+            s.get("corp_size_default"),
+            {str(k): v for k, v in cs_by_yr.items()} if isinstance(cs_by_yr, dict) else cs_by_yr,
+            s.get("corp_size_user_set"),
+            s.get("sub_biz_list"),
+            s.get("tax_year"),
+            s.get("assume_year_end"),
+            s.get("include_unpaid_hire_month"),
+            s.get("manual_extra_years"),
+            files_meta,
+            wht_years,
+        ))
+        return h.hexdigest()
     except Exception:
         return None          # 지문을 못 만들면 재사용하지 않고 항상 새로 계산
 
@@ -698,7 +733,6 @@ def _cohort_youth_map(s: dict, cohort_year: int) -> dict[str, bool]:
     if cache is not None and cohort_year in cache["cohort"]:
         return dict(cache["cohort"][cohort_year])
     out = _cohort_youth_map_uncached(s, cohort_year)
-    cache, _ = _calc_cache(s)                      # 계산 중 상태가 바뀌었을 수 있으므로 다시 확인
     if cache is not None:
         cache["cohort"][cohort_year] = dict(out)
     return out
@@ -2909,11 +2943,12 @@ def _build_year_rows(s: dict, year: int) -> tuple[list[dict], dict, dict]:
             s["year_recs"][year].setdefault(pid, P.new_year_rec())
     cache, _ = _calc_cache(s)
     if cache is not None and year in cache["rows"]:
-        return copy.deepcopy(cache["rows"][year])
+        c_rows, c_comp, c_tot = cache["rows"][year]
+        return [dict(r) for r in c_rows], dict(c_comp), dict(c_tot)
     result = _build_year_rows_uncached(s, year)
-    cache, _ = _calc_cache(s)
     if cache is not None:
-        cache["rows"][year] = copy.deepcopy(result)
+        c_rows, c_comp, c_tot = result
+        cache["rows"][year] = ([dict(r) for r in c_rows], dict(c_comp), dict(c_tot))
     return result
 
 

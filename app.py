@@ -654,38 +654,65 @@ _CITED_ARTICLE_TAG_RE = re.compile(
 
 RUNTIME_API_KEYS_FILE = os.path.join(".workspace_storage", "runtime_api_keys.json")
 
-_RT_KEYS_CACHE: dict = {"mtime": None, "data": {}}
+_APP_IO_LOCK = threading.RLock()
+_JSON_FILE_CACHE: dict[str, tuple[float, dict]] = {}
+_LAST_ANON_CLEANUP_TS: float = 0.0
+
+
+def _read_json_dict_cached(path: str) -> dict:
+    """지정된 JSON 파일을 mtime 기반으로 캐싱하여 읽고, 스레드 안전한 얕은 복사본을 반환합니다."""
+    with _APP_IO_LOCK:
+        try:
+            mt = os.path.getmtime(path)
+        except OSError:
+            _JSON_FILE_CACHE.pop(path, None)
+            return {}
+        cached = _JSON_FILE_CACHE.get(path)
+        if cached is None or cached[0] != mt:
+            try:
+                with open(path, "r", encoding="utf-8") as rf:
+                    data = json.load(rf)
+                val = data if isinstance(data, dict) else {}
+            except Exception:
+                val = {}
+            _JSON_FILE_CACHE[path] = (mt, val)
+            return dict(val)
+        return dict(cached[1])
+
+
+def _atomic_write_json_dict(path: str, payload: dict) -> None:
+    """임시 파일 기록 후 os.replace로 원자적(Atomic) 교체를 수행하여 멀티스레드/멀티세션 파일 손상을 방지합니다."""
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    tmp_path = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
+    with _APP_IO_LOCK:
+        with open(tmp_path, "w", encoding="utf-8") as wf:
+            json.dump(payload, wf, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, path)
+        try:
+            mt = os.path.getmtime(path)
+            _JSON_FILE_CACHE[path] = (mt, dict(payload))
+        except OSError:
+            _JSON_FILE_CACHE.pop(path, None)
 
 
 def _load_runtime_api_keys() -> dict:
     """runtime_api_keys.json을 파일이 바뀐 경우에만 다시 읽습니다 (화면 새로고침마다 디스크를 반복해서 읽지 않도록). 돌려주는 값은 복사본."""
-    try:
-        mt = os.path.getmtime(RUNTIME_API_KEYS_FILE)
-    except OSError:
-        _RT_KEYS_CACHE["mtime"], _RT_KEYS_CACHE["data"] = None, {}
-        return {}
-    if _RT_KEYS_CACHE["mtime"] != mt:
-        try:
-            with open(RUNTIME_API_KEYS_FILE, "r", encoding="utf-8") as rf:
-                data = json.load(rf)
-            _RT_KEYS_CACHE["data"] = data if isinstance(data, dict) else {}
-        except Exception:
-            _RT_KEYS_CACHE["data"] = {}
-        _RT_KEYS_CACHE["mtime"] = mt
-    return dict(_RT_KEYS_CACHE["data"])
+    return _read_json_dict_cached(RUNTIME_API_KEYS_FILE)
+
 
 def _save_runtime_api_keys(new_entries: dict) -> None:
-    os.makedirs(".workspace_storage", exist_ok=True)
-    cur = _load_runtime_api_keys()
-    for k, v in (new_entries or {}).items():
-        if v is None:
-            continue
-        vs = str(v).strip()
-        if vs:
-            cur[k] = vs
-            os.environ[k] = vs
-    with open(RUNTIME_API_KEYS_FILE, "w", encoding="utf-8") as wf:
-        json.dump(cur, wf, ensure_ascii=False, indent=2)
+    with _APP_IO_LOCK:
+        cur = _load_runtime_api_keys()
+        for k, v in (new_entries or {}).items():
+            if v is None:
+                continue
+            vs = str(v).strip()
+            if vs:
+                cur[k] = vs
+                os.environ[k] = vs
+        _atomic_write_json_dict(RUNTIME_API_KEYS_FILE, cur)
 
 # 앱 구동 시 런타임 저장 키가 있으면 os.environ에도 동기화
 for _rk, _rv in _load_runtime_api_keys().items():
@@ -1035,18 +1062,11 @@ def generate_banner_law_diff_table(
     return "❌ 신·구법 비교표 생성 중 일시적인 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."
 
 def load_room_law_ack() -> dict:
-    if os.path.exists(ROOM_LAW_ACK_PATH):
-        try:
-            with open(ROOM_LAW_ACK_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {}
+    return _read_json_dict_cached(ROOM_LAW_ACK_PATH)
 
 def save_room_law_ack(ack_data: dict) -> None:
     try:
-        with open(ROOM_LAW_ACK_PATH, "w", encoding="utf-8") as f:
-            json.dump(ack_data, f, ensure_ascii=False, indent=2)
+        _atomic_write_json_dict(ROOM_LAW_ACK_PATH, ack_data if isinstance(ack_data, dict) else {})
     except Exception:
         pass
 
@@ -1166,13 +1186,7 @@ DEFAULT_API_EXPIRY_CONFIG = {
 }
 
 def load_api_expiry_dates() -> dict:
-    saved = {}
-    if os.path.exists(EXPIRY_FILE_PATH):
-        try:
-            with open(EXPIRY_FILE_PATH, "r", encoding="utf-8") as f:
-                saved = json.load(f)
-        except Exception:
-            pass
+    saved = _read_json_dict_cached(EXPIRY_FILE_PATH)
     result = {}
     for code, info in DEFAULT_API_EXPIRY_CONFIG.items():
         env_val = os.getenv(info["secret_key"], "").strip()
@@ -1181,8 +1195,7 @@ def load_api_expiry_dates() -> dict:
 
 def save_api_expiry_dates(expiry_dict: dict) -> None:
     try:
-        with open(EXPIRY_FILE_PATH, "w", encoding="utf-8") as f:
-            json.dump(expiry_dict, f, ensure_ascii=False, indent=2)
+        _atomic_write_json_dict(EXPIRY_FILE_PATH, expiry_dict if isinstance(expiry_dict, dict) else {})
     except Exception as e:
         print(f"⚠️ 만료일 저장 오류: {e}")
 
@@ -1267,7 +1280,11 @@ def _cleanup_stale_anon_workspaces(max_age_sec: int = 86400) -> None:
     과거 공용 임시 파일(`default_public`)을 정리하여 디스크 용량을 쾌적하게 유지합니다.
     (비밀번호를 설정한 `ws_*.json` 파일은 절대 건드리지 않습니다.)
     """
+    global _LAST_ANON_CLEANUP_TS
     now_ts = time.time()
+    if (now_ts - _LAST_ANON_CLEANUP_TS) < 600.0:
+        return
+    _LAST_ANON_CLEANUP_TS = now_ts
     try:
         legacy_pub_hash = hashlib.sha256(b"default_public").hexdigest()[:16]
         legacy_pub_path = os.path.join(STORAGE_DIR, f"ws_{legacy_pub_hash}.json")
@@ -1385,8 +1402,10 @@ def save_workspace_to_disk(workspace_id: str, force_overwrite_room: str = ""):
                 "room_files": st.session_state.room_files,
                 "room_diff_banners": st.session_state.get("room_diff_banners", {r_id: "" for r_id in ROOM_IDS})
             }
-            with open(path, "w", encoding="utf-8") as f:
+            tmp_path = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, path)
     except Exception as e:
         print(f"⚠️ 자동 저장 오류: {e}")
 
@@ -1454,8 +1473,10 @@ def sync_all_rooms_state(workspace_id: str) -> bool:
                 disk_data["room_files"] = st.session_state.room_files
                 disk_data["room_diff_banners"] = st.session_state.get("room_diff_banners", {r_id: "" for r_id in ROOM_IDS})
                 path = get_storage_path(workspace_id)
-                with open(path, "w", encoding="utf-8") as f:
+                tmp_path = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
+                with open(tmp_path, "w", encoding="utf-8") as f:
                     json.dump(disk_data, f, ensure_ascii=False, indent=2)
+                os.replace(tmp_path, path)
     except Exception as e:
         print(f"⚠️ 멀티룸 상태 동기화 오류: {e}")
     return any_updated
@@ -1516,8 +1537,10 @@ def _background_agent_worker(
                 room_msgs.append({"role": "assistant", "content": response_text})
                 disk_data["chat_rooms"][room_id] = room_msgs
                 path = get_storage_path(ws_id)
-                with open(path, "w", encoding="utf-8") as f:
+                tmp_path = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
+                with open(tmp_path, "w", encoding="utf-8") as f:
                     json.dump(disk_data, f, ensure_ascii=False, indent=2)
+                os.replace(tmp_path, path)
             # 락(lock) 내부에서 response와 status="done"을 원자적(Atomic)으로 설정
             task_info["response"] = response_text
             task_info["status"] = "done"
@@ -1670,15 +1693,38 @@ def _escape_tilde_outside_urls(text: str) -> str:
         parts[idx] = parts[idx].replace("~", "&#126;")
     return "".join(parts)
 
+_MD_BOLD_RE = re.compile(r"\*\*([^\*\n]+?)\*\*")
+_MD_REL_LAWS_RE = re.compile(r"(###\s*3\.\s*관련\s*법령[^\n]*\n)(.*)", flags=re.DOTALL)
+_MATH_TAG_COLON_RE = re.compile(
+    r"\[(판례|심판례|헌재|헌재결정례|해석례|예규|조문|부칙|별표)(?:\s*[:：]\s*|\s+)(?=[가-힣A-Za-z0-9「])([^\]]+)\]"
+)
+_MATH_TAG_NOCOLON_RE = re.compile(
+    r"\[(판례|심판례|헌재|헌재결정례|해석례|예규|조문|부칙|별표)(?=[가-힣A-Za-z0-9「])([^\]:：\n]+)\]"
+)
+_MATH_TAG_LINK_RE = re.compile(
+    rf"\[(\[(?:판례|심판례|헌재|헌재결정례|해석례|예규|조문|부칙|별표)\s*:\s*[^\]]+\])\]\((https?://{_URL_BODY_PAT})\)"
+)
+_MATH_LAW_LINK_RE = re.compile(
+    rf"\[([^\n]+?)\]\((https?://(?:www\.)?law\.go\.kr/{_URL_BODY_PAT})\)"
+)
+_MATH_BLOCK_DOLLAR_RE = re.compile(r"\$\$(.*?)\$\$", flags=re.DOTALL)
+_MATH_INLINE_DOLLAR_RE = re.compile(r"\$([^$\n]+)\$")
+_MATH_TEXT_CMD_RE = re.compile(r"\\text(?:bf|rm|it)?\{([^}]*)\}")
+_MATH_FRAC_CMD_RE = re.compile(r"\\frac\{([^}]*)\}\{([^}]*)\}")
+_MATH_MODIFIER_CMD_RE = re.compile(r"\\(left|right|quad|qquad|mathrm|mathbf)\b")
+_COPY_BOLD_STAR_RE = re.compile(r"\*\*(.*?)\*\*")
+_COPY_BOLD_UNDER_RE = re.compile(r"__(.*?)__")
+_COPY_HEADING_RE = re.compile(r"(?m)^#{1,6}\s*(.+)$")
+
+
 def _format_markdown_for_screen(md_text: str) -> str:
     if not md_text:
         return ""
 
     s = _escape_tilde_outside_urls(md_text)
-    s = re.sub(r"\*\*([^\*\n]+?)\*\*", r"<strong>\1</strong>", s)
+    s = _MD_BOLD_RE.sub(r"<strong>\1</strong>", s)
 
-    pattern_rel = re.compile(r"(###\s*3\.\s*관련\s*법령[^\n]*\n)(.*)", flags=re.DOTALL)
-    m = pattern_rel.search(s)
+    m = _MD_REL_LAWS_RE.search(s)
     if m:
         heading_part = m.group(1)
         rest_body = m.group(2)
@@ -1705,43 +1751,30 @@ def _sanitize_math_text(text: str) -> str:
     """
     if not text:
         return ""
-    s = text
-    s = re.sub(
-        r"\[(판례|심판례|헌재|헌재결정례|해석례|예규|조문|부칙|별표)(?:\s*[:：]\s*|\s+)(?=[가-힣A-Za-z0-9「])([^\]]+)\]",
-        r"[\1: \2]",
-        s
-    )
-    s = re.sub(
-        r"\[(판례|심판례|헌재|헌재결정례|해석례|예규|조문|부칙|별표)(?=[가-힣A-Za-z0-9「])([^\]:：\n]+)\]",
-        r"[\1: \2]",
-        s
-    )
-    s = re.sub(rf"\[(\[(?:판례|심판례|헌재|헌재결정례|해석례|예규|조문|부칙|별표)\s*:\s*[^\]]+\])\]\((https?://{_URL_BODY_PAT})\)", r"\1", s)
-    s = re.sub(rf"\[([^\n]+?)\]\((https?://(?:www\.)?law\.go\.kr/{_URL_BODY_PAT})\)", r"\1", s)
+    s = _MATH_TAG_COLON_RE.sub(r"[\1: \2]", text)
+    s = _MATH_TAG_NOCOLON_RE.sub(r"[\1: \2]", s)
+    s = _MATH_TAG_LINK_RE.sub(r"\1", s)
+    s = _MATH_LAW_LINK_RE.sub(r"\1", s)
 
-    s = re.sub(r"\$\$(.*?)\$\$", r"\1", s, flags=re.DOTALL)
-    s = re.sub(r"\$([^$\n]+)\$", r"\1", s)
-    s = re.sub(r"\\text(?:bf|rm|it)?\{([^}]*)\}", r"\1", s)
-    s = re.sub(r"\\frac\{([^}]*)\}\{([^}]*)\}", r"(\1/\2)", s)
+    s = _MATH_BLOCK_DOLLAR_RE.sub(r"\1", s)
+    s = _MATH_INLINE_DOLLAR_RE.sub(r"\1", s)
+    s = _MATH_TEXT_CMD_RE.sub(r"\1", s)
+    s = _MATH_FRAC_CMD_RE.sub(r"(\1/\2)", s)
     s = s.replace(r"\times", " × ").replace(r"\div", " ÷ ").replace(r"\cdot", "·")
     s = s.replace(r"\%", "%").replace(r"\_", "_").replace(r"\,", ",")
-    s = re.sub(r"\\(left|right|quad|qquad|mathrm|mathbf)\b", "", s)
+    s = _MATH_MODIFIER_CMD_RE.sub("", s)
     s = s.replace("−", " - ").replace("–", " - ").replace("—", " - ").replace("∼", "~")
     s = s.replace("→", " -> ").replace("↔", " <-> ").replace("≧", ">=").replace("≦", "<=")
     return s
 
 def _extract_clean_copy_text(report_text: str) -> str:
     cleaned = _sanitize_math_text(report_text)
-    lines = []
-    for line in cleaned.split("\n"):
-        if line.strip().startswith(">"):
-            continue
-        lines.append(line)
+    lines = [line for line in cleaned.split("\n") if not line.strip().startswith(">")]
     body = "\n".join(lines).strip()
     # 카톡·메신저 붙여넣기 시 별표(**)나 샵(###)이 노출되지 않도록 깔끔한 순수 텍스트로 정제
-    body = re.sub(r"\*\*(.*?)\*\*", r"\1", body)
-    body = re.sub(r"__(.*?)__", r"\1", body)
-    body = re.sub(r"(?m)^#{1,6}\s*(.+)$", r"[\1]", body)
+    body = _COPY_BOLD_STAR_RE.sub(r"\1", body)
+    body = _COPY_BOLD_UNDER_RE.sub(r"\1", body)
+    body = _COPY_HEADING_RE.sub(r"[\1]", body)
     return body.strip()
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -2538,14 +2571,12 @@ def _load_manager_google_config() -> dict:
     return cfg
 
 def _save_manager_google_config(email_str: str, pin_plain: str) -> None:
-    os.makedirs(STORAGE_DIR, exist_ok=True)
     payload = {
         "email": email_str.strip().lower(),
         "pin_hash": _hash_manager_secret(pin_plain),
         "updated_at": datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")
     }
-    with open(MANAGER_AUTH_FILE, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+    _atomic_write_json_dict(MANAGER_AUTH_FILE, payload)
 
 def _get_streamlit_logged_google_email() -> str:
     try:
