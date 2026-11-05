@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """
 달력 스케줄러 + Today To Do (메인 할 일과 카톡 백그라운드 To-Do 완전 분리) +
-카톡 백그라운드 To-Do 블랙(딥 차콜) 컨셉 오버레이 + 푸른색 바탕 상세입력 모달 (calendar_scheduler/ui.py)
+카톡 백그라운드 To-Do 블랙(딥 차콜) 컨셉 오버레이 + 연한 소프트 스카이블루(#E4F0FF) 상세입력 모달 +
+달력 날짜 셀 더블클릭 시 상세일정 설정 오픈 & ◀ 11월 ▶ 월 이동 완비 (calendar_scheduler/ui.py)
 """
 from __future__ import annotations
 
@@ -21,7 +22,7 @@ import ui_theme as _ui_theme
 _WEEKDAYS_SHORT = ("월", "화", "수", "목", "금", "토", "일")
 _WEEKDAYS_FULL = ("월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일")
 _SUN_FIRST_HEADERS = ("일", "월", "화", "수", "목", "금", "토")
-_STATE_SCHEMA_VERSION = "v11_separated_todos_and_dark_kakao_panel"
+_STATE_SCHEMA_VERSION = "v12_skyblue_modal_dblclick_and_month_nav"
 
 
 def _html(s: str) -> str:
@@ -174,7 +175,6 @@ def _default_kakao_todos(today_d: date) -> List[Dict[str, Any]]:
     """
     우측 하단 60% 확장 패널에 표시할 카카오톡 백그라운드 자동화 To-Do 리스트 초기값.
     - 메인 화면 우측 Today To Do(사용자 직접 입력 할 일)와는 100% 분리되어 오직 AI 카톡 자동화 작업만 표시합니다.
-    - 각 항목마다 AI가 수행한 단계별 작업순서(workflow_steps)가 표시되며, 준비 완료(READY) 시에만 말풍선 알림을 띄웁니다.
     """
     yr = today_d.year
     mo = today_d.month
@@ -308,8 +308,8 @@ def _default_kakao_todos(today_d: date) -> List[Dict[str, Any]]:
                 {"step": "② 급여명세서 2명분 4대보험·원천세 자동 계산 완료", "done": True},
                 {"step": "③ 사용자 최종 확인 및 승인 완료", "done": True},
             ],
-            "ai_result": f"✅ 사용자 승인완료 · 급여명세서 완성본 생성이 완료되었습니다.",
-            "preview": f"✅ 사용자 승인완료 · 급여명세서 완성본 생성이 완료되었습니다.",
+            "ai_result": "✅ 사용자 승인완료 · 급여명세서 완성본 생성이 완료되었습니다.",
+            "preview": "✅ 사용자 승인완료 · 급여명세서 완성본 생성이 완료되었습니다.",
             "attachment": f"(주)성진_{yr}{mo:02d}_급여명세서_완성본.zip",
             "target_mode": "PAYROLL_EMP",
             "action_label": "승인 완료됨",
@@ -417,9 +417,20 @@ def _is_alarm_due(ev: Dict[str, Any], is_today_selected: bool = True) -> bool:
 def _parse_dock_raw_payload(raw_val: str) -> tuple[str, bool | None, bool | None, str | None, str]:
     """
     JS에서 전달한 인코딩 문자열을 파싱하여
-    (순수 제목, 알림 토글 여부, 달력 토글 여부, 시간 문자열, 액션 모드['ENTER' | 'DETAIL' | 'NONE'])를 반환합니다.
+    (순수 제목, 알림 토글 여부, 달력 토글 여부, 시간/부가 문자열, 액션 모드['ENTER' | 'DETAIL' | 'MONTH_PREV' | 'MONTH_NEXT' | 'DBLCLICK_DAY' | 'NONE'])를 반환합니다.
     """
     s = str(raw_val or "").strip()
+
+    m_mshift = re.search(r"__MONTH_SHIFT_(PREV|NEXT)__$", s)
+    if m_mshift:
+        clean_title = s[: m_mshift.start()].strip()
+        mode_str = "MONTH_PREV" if m_mshift.group(1) == "PREV" else "MONTH_NEXT"
+        return clean_title, None, None, None, mode_str
+
+    m_dbl = re.search(r"__CAL_DBLCLICK_DAY_(\d+)__$", s)
+    if m_dbl:
+        clean_title = s[: m_dbl.start()].strip()
+        return clean_title, None, None, m_dbl.group(1), "DBLCLICK_DAY"
 
     m_enter = re.search(r"__ENTER_COMMIT_TGL_A([01])_C([01])(?:_T([0-9:]*))?__$", s)
     if m_enter:
@@ -449,7 +460,11 @@ def _parse_dock_raw_payload(raw_val: str) -> tuple[str, bool | None, bool | None
 
 
 def _shift_calendar_month(cstate: Dict[str, Any], delta: int) -> None:
-    """◀ / ▶ 화살표 클릭 시 이전 달 또는 다음 달로 연·월 이동"""
+    """
+    ◀ / ▶ 화살표 클릭 시 이전 달 또는 다음 달로 연·월 이동.
+    - 이미 렌더링된 사이드바 위젯 키(cal_sb_year_sel, cal_sb_month_sel)를 직접 수정하면 StreamlitAPIException이 발생하므로,
+      _sync_sb_from_cstate 플래그를 켜서 다음 리런 최상단(사이드바 위젯 생성 직전)에 안전하게 동기화합니다.
+    """
     cur_y = int(cstate.get("year", get_kst_today().year))
     cur_m = int(cstate.get("month", get_kst_today().month))
     new_m = cur_m + delta
@@ -464,8 +479,7 @@ def _shift_calendar_month(cstate: Dict[str, Any], delta: int) -> None:
     cstate["month"] = new_m
     last_d = calendar.monthrange(new_y, new_m)[1]
     cstate["selected_day"] = min(int(cstate.get("selected_day", 1)), last_d)
-    st.session_state["cal_sb_year_sel"] = new_y
-    st.session_state["cal_sb_month_sel"] = new_m
+    cstate["_sync_sb_from_cstate"] = True
 
 
 def _push_kakao_biz_income_to_payroll(company: str, name: str, rrn: str, gross_won: int, is_net: bool = False) -> None:
@@ -901,6 +915,11 @@ div[data-testid="InputInstructions"],
     padding: 0;
     box-shadow: 0 2px 6px rgba(0, 27, 55, 0.04);
     transition: all 0.15s ease;
+    position: relative;
+    z-index: 20;
+}
+.tds-soft-arrow-btn svg {
+    pointer-events: none;
 }
 .tds-soft-arrow-btn:hover {
     background: #E8F3FF;
@@ -914,14 +933,13 @@ div[data-testid="InputInstructions"],
 
 /* 숨김 월 이동 트리거 버튼 래퍼 */
 [data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-cal_hidden_month_nav_wrap {
-    position: absolute !important;
-    width: 0 !important;
-    height: 0 !important;
+    position: fixed !important;
+    left: -9999px !important;
+    top: -9999px !important;
+    width: 1px !important;
+    height: 1px !important;
     overflow: hidden !important;
     opacity: 0 !important;
-    pointer-events: none !important;
-    margin: 0 !important;
-    padding: 0 !important;
 }
 
 [data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-cal_add_btn_wrap {
@@ -1532,25 +1550,33 @@ section[data-testid="stSidebar"] .st-key-btn_cal_go_today div.stButton > button 
     border-radius: 10px !important;
 }
 
-/* ══════ 화면 중앙 상세입력 창 (주변 배경 어둡지 않게 유지 + 푸른색 바탕 + 순백색 입력칸) ══════ */
+/* ══════ 화면 중앙 상세입력 창 (바깥 배경은 어두워지지 않게 유지 + 모달 본체는 100% 불투명 연한 소프트 스카이블루 #E4F0FF + 순백색 #FFFFFF 라벨/입력칸) ══════ */
 div[data-testid="stDialog"],
 div[data-testid="stModal"],
-div[data-baseweb="modal"],
-div[data-testid="stDialog"] > div:first-child {
+div[data-baseweb="modal"] {
     background: transparent !important;
     background-color: transparent !important;
     backdrop-filter: none !important;
     -webkit-backdrop-filter: none !important;
 }
 div[data-testid="stDialog"] div[role="dialog"],
-div[data-testid="stDialog"] > div > div {
-    border-radius: 28px !important;
+div[data-testid="stModal"] div[role="dialog"],
+div[role="dialog"][aria-modal="true"] {
+    border-radius: 26px !important;
     padding: 24px 28px !important;
     border: 2px solid #90C2FF !important;
-    box-shadow: 0 20px 50px rgba(49, 130, 246, 0.18), 0 4px 16px rgba(0, 27, 55, 0.08) !important;
-    background: #E8F3FF !important;
-    background-color: #E8F3FF !important;
+    box-shadow: 0 22px 54px rgba(25, 31, 40, 0.16), 0 4px 16px rgba(49, 130, 246, 0.12) !important;
+    background: #E4F0FF !important;
+    background-color: #E4F0FF !important;
+    opacity: 1 !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
     max-width: 780px !important;
+}
+div[data-testid="stDialog"] div[role="dialog"] > div,
+div[data-testid="stDialog"] div[role="dialog"] [data-testid="stVerticalBlockBorderWrapper"] {
+    background: #E4F0FF !important;
+    background-color: #E4F0FF !important;
 }
 /* 상세일정 모달 내부 모든 입력칸·드롭다운·텍스트영역을 순백색(#FFFFFF)으로 강조 */
 div[data-testid="stDialog"] [data-testid="stTextInput"] > div > div,
@@ -1561,7 +1587,7 @@ div[data-testid="stDialog"] [data-baseweb="select"] > div,
 div[data-testid="stDialog"] [data-baseweb="textarea"] {
     background: #FFFFFF !important;
     background-color: #FFFFFF !important;
-    border: 1px solid #C9E2FF !important;
+    border: 1px solid #B8D8FF !important;
     border-radius: 12px !important;
     box-shadow: 0 2px 6px rgba(49, 130, 246, 0.05) !important;
 }
@@ -1585,12 +1611,14 @@ div[data-testid="stDialog"] textarea {
     color: #191F28 !important;
     padding-left: 4px !important;
 }
+/* 좌측 시간·거래처·체크·메모 라벨: 순백색(#FFFFFF) 바탕 캡슐 */
 .gcal-tds-row-lbl {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    background: #FFFFFF;
-    color: #3182F6;
+    background: #FFFFFF !important;
+    background-color: #FFFFFF !important;
+    color: #3182F6 !important;
     font-size: 0.76rem;
     font-weight: 800;
     padding: 8px 10px;
@@ -1622,7 +1650,7 @@ div[data-testid="stDialog"] [class*="st-key-dlg_btn_cancel_"] div.stButton > but
     background: #FFFFFF !important;
     color: #191F28 !important;
     font-weight: 700 !important;
-    border: 1px solid #C9E2FF !important;
+    border: 1px solid #B8D8FF !important;
     border-radius: 10px !important;
 }
 div[data-testid="stDialog"] [class*="st-key-dlg_btn_delete_"] div.stButton > button {
@@ -1673,6 +1701,10 @@ def _init_calendar_state() -> Dict[str, Any]:
             "dock_reset_seq": 0,
             "pending_detail_draft": None,
             "open_detail_from_dock": False,
+            "open_detail_for_day": None,
+            "_last_cal_click_day": None,
+            "_last_cal_click_ts": 0.0,
+            "_sync_sb_from_cstate": False,
             "active_detail_ev_id": None,
         }
     cstate = st.session_state["cal_scheduler_state"]
@@ -1685,9 +1717,12 @@ def _init_calendar_state() -> Dict[str, Any]:
     cstate.setdefault("dock_reset_seq", 0)
     cstate.setdefault("pending_detail_draft", None)
     cstate.setdefault("open_detail_from_dock", False)
+    cstate.setdefault("open_detail_for_day", None)
+    cstate.setdefault("_last_cal_click_day", None)
+    cstate.setdefault("_last_cal_click_ts", 0.0)
+    cstate.setdefault("_sync_sb_from_cstate", False)
     cstate.setdefault("active_detail_ev_id", None)
 
-    # 혹시 이전에 섞여 있던 사용자 직접 입력 알림(todo_alarm_...)이 kakao_todos에 남아 있다면 완전 제거
     cstate["kakao_todos"] = [
         t for t in cstate.get("kakao_todos", [])
         if not str(t.get("id", "")).startswith("todo_alarm_")
@@ -1699,8 +1734,7 @@ def _init_calendar_state() -> Dict[str, Any]:
         cstate["year"] = today_d.year
         cstate["month"] = today_d.month
         cstate["selected_day"] = today_d.day
-        st.session_state["cal_sb_year_sel"] = today_d.year
-        st.session_state["cal_sb_month_sel"] = today_d.month
+        cstate["_sync_sb_from_cstate"] = True
 
     ym_key = f"{int(cstate['year']):04d}-{int(cstate['month']):02d}"
     if ym_key not in cstate["schedules_by_ym"]:
@@ -1712,13 +1746,11 @@ def _init_calendar_state() -> Dict[str, Any]:
 
 def _commit_dock_schedule_on_enter() -> None:
     """
-    하단 독(Dock)에서:
-    1) 사용자가 [Enter] 키를 쳤을 때(__ENTER_COMMIT_TGL_...__):
-       우측 Today To Do 리스트(및 [달력] 선택 시 좌측 달력)에만 등록하며,
-       홈버튼의 카톡 백그라운드 To-Do(kakao_todos)에는 절대 추가하지 않습니다 (역할 완전 분리!).
-    2) 사용자가 [상세] 버튼을 눌렀을 때(__DTL_OPEN_TGL_...__): 입력한 내용과 시간을 pending_detail_draft에 담아
-       상세 모달을 오픈합니다.
-    3) 단순 Tab 키 이동이나 blur일 때(NONE): 등록하지 않고 입력값을 보존합니다.
+    하단 독(Dock)에서 전달되는 액션을 처리합니다:
+    1) ENTER (__ENTER_COMMIT_TGL_...__): 우측 Today To Do 리스트(및 [달력] 선택 시 좌측 달력)에만 등록 (백그라운드 To-Do와 완전 분리)
+    2) DETAIL (__DTL_OPEN_TGL_...__): 입력한 내용과 시간을 pending_detail_draft에 담아 상세일정 설정 모달 오픈
+    3) MONTH_PREV / MONTH_NEXT: ◀ / ▶ 월 이동 실행
+    4) DBLCLICK_DAY: 달력 날짜 셀 더블클릭 시 해당 날짜로 상세일정 설정 모달 오픈
     """
     cstate = _init_calendar_state()
     year = int(cstate["year"])
@@ -1728,19 +1760,42 @@ def _commit_dock_schedule_on_enter() -> None:
     time_key = f"dock_time_inp_{year}_{month}_{sel_day}"
 
     raw_val = str(st.session_state.get(inp_key, "")).strip()
-    clean_txt, js_alarm, js_cal, js_time, action_mode = _parse_dock_raw_payload(raw_val)
+    clean_txt, js_alarm, js_cal, js_extra, action_mode = _parse_dock_raw_payload(raw_val)
 
     if action_mode == "NONE":
         if clean_txt != raw_val:
             st.session_state[inp_key] = clean_txt
         return
 
-    raw_time = js_time if js_time is not None else str(st.session_state.get(time_key, "")).strip()
+    if action_mode == "MONTH_PREV":
+        st.session_state[inp_key] = clean_txt
+        _shift_calendar_month(cstate, -1)
+        return
+
+    if action_mode == "MONTH_NEXT":
+        st.session_state[inp_key] = clean_txt
+        _shift_calendar_month(cstate, 1)
+        return
+
+    if action_mode == "DBLCLICK_DAY":
+        st.session_state[inp_key] = clean_txt
+        max_d = calendar.monthrange(year, month)[1]
+        target_d = min(max_d, max(1, int(js_extra or sel_day)))
+        cstate["selected_day"] = target_d
+        cstate["pending_detail_draft"] = {
+            "title": clean_txt,
+            "time": "",
+            "alarm": False,
+            "show_on_cal": True,
+        }
+        cstate["open_detail_for_day"] = target_d
+        return
+
+    raw_time = js_extra if js_extra is not None else str(st.session_state.get(time_key, "")).strip()
     norm_t = _normalize_time_str(raw_time)
     is_alarm = js_alarm if js_alarm is not None else bool(cstate.get("dock_alarm", False))
     is_cal = js_cal if js_cal is not None else bool(cstate.get("dock_cal", False))
 
-    # [상세] 버튼 클릭으로 진입한 경우: 입력한 제목·시간·알림·달력 상태를 그대로 상세모달로 전달
     if action_mode == "DETAIL":
         st.session_state[inp_key] = clean_txt
         cstate["dock_alarm"] = is_alarm
@@ -1755,7 +1810,6 @@ def _commit_dock_schedule_on_enter() -> None:
         cstate["open_detail_from_dock"] = True
         return
 
-    # [Enter] 키로 직접 등록한 경우 (우측 Today To Do 전용 — 백그라운드 To-Do와 절대 연동되지 않음)
     if not clean_txt:
         st.session_state[inp_key] = ""
         return
@@ -1792,7 +1846,6 @@ def _commit_dock_schedule_on_enter() -> None:
     }
     month_schedules.setdefault(sel_day, []).append(new_ev)
 
-    # 등록 완료 후 입력칸 및 버튼 3개 모두 평면(Flat) 기본 상태로 초기화
     st.session_state[inp_key] = ""
     st.session_state[time_key] = ""
     cstate["dock_alarm"] = False
@@ -1826,8 +1879,8 @@ def _delete_sub_task_in_dialog(ev_id: str, del_idx: int) -> None:
 @st.dialog("📋 상세일정 설정", width="large")
 def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str) -> None:
     """
-    화면 중앙 상세입력 모달 (푸른색 바탕 + 순백색 입력칸 + 투명 배경 유지):
-    - 메인 화면 우측 Today To Do 및 달력에만 저장되며, 카톡 백그라운드 To-Do와는 완전 분리되어 있습니다.
+    화면 중앙 상세입력 모달 (100% 불투명 연한 소프트 스카이블루 #E4F0FF 바탕 + 순백색 #FFFFFF 라벨/입력칸 + 투명 외부 배경):
+    - 하단 독 [상세] 클릭, [+ 일정 추가하기] 클릭, 또는 달력 날짜 셀 더블클릭 시 활성화됩니다.
     """
     cstate = _init_calendar_state()
     cstate["dock_dtl"] = False
@@ -2071,7 +2124,7 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
 
     st.divider()
 
-    # 7) 하단 푸터 (좌측 문구 제거, 우측 취소 / 저장 버튼만 배치)
+    # 7) 하단 푸터 (우측 취소 / 저장 버튼만 배치)
     _, f_del, f_can, f_save = st.columns([2.6, 0.8, 0.8, 1.0], gap="small")
     with f_del:
         if not is_new:
@@ -2148,16 +2201,18 @@ def render_calendar_sidebar() -> None:
     today_d = get_kst_today()
     wd_str = _WEEKDAYS_SHORT[today_d.weekday()]
 
+    # 메인 화면 ◀ 11월 ▶ 화살표로 월을 이동한 경우 사이드바 셀렉트박스 위젯 생성 직전에 안전하게 동기화!
+    if cstate.pop("_sync_sb_from_cstate", False):
+        st.session_state["cal_sb_year_sel"] = int(cstate["year"])
+        st.session_state["cal_sb_month_sel"] = int(cstate["month"])
+
     with st.container(border=True):
         today_pill = f"<span style='font-size:0.68rem;font-weight:800;padding:2px 9px;border-radius:999px;background:#E5F9F0;color:#00A660;font-variant-numeric:tabular-nums;'>{today_d.strftime('%Y.%m.%d')} ({wd_str})</span>"
         st.markdown(_ui_theme.sb_title("calendar", "달력 기준일 · 월 이동", today_pill), unsafe_allow_html=True)
 
         c_y, c_m = st.columns(2)
-        yr_opts = [today_d.year - 1, today_d.year, today_d.year + 1]
         cur_y = int(cstate.get("year", today_d.year))
-        if cur_y not in yr_opts:
-            yr_opts.append(cur_y)
-            yr_opts.sort()
+        yr_opts = sorted(list({today_d.year - 2, today_d.year - 1, today_d.year, today_d.year + 1, today_d.year + 2, cur_y}))
         with c_y:
             sel_y = st.selectbox(
                 "연도",
@@ -2187,8 +2242,7 @@ def render_calendar_sidebar() -> None:
             cstate["year"] = today_d.year
             cstate["month"] = today_d.month
             cstate["selected_day"] = today_d.day
-            st.session_state["cal_sb_year_sel"] = today_d.year
-            st.session_state["cal_sb_month_sel"] = today_d.month
+            cstate["_sync_sb_from_cstate"] = True
             st.rerun()
 
     with st.container(border=True):
@@ -2232,14 +2286,14 @@ def render_calendar_sidebar() -> None:
 
 
 def render_calendar_main() -> None:
-    """메인 화면: 좌측 풀사이즈 달력(상단 74px 3대 현황 카드 포함) + 우측 Today To Do & 하단 평면/입체 다중토글 독(Dock)"""
+    """메인 화면: 좌측 풀사이즈 달력(더블클릭 시 상세모달 오픈) + 우측 Today To Do & ◀ 11월 ▶ 월 이동"""
     cstate = _init_calendar_state()
     cstate["dock_dtl"] = False
     today_d = get_kst_today()
 
     st.markdown(CALENDAR_MAIN_CSS, unsafe_allow_html=True)
 
-    # 숨김 처리된 이전 달 / 다음 달 이동 트리거 버튼 (우측 ◀ 11월 ▶ 버튼과 연동)
+    # 숨김 처리된 이전 달 / 다음 달 이동 트리거 버튼
     with st.container(key="cal_hidden_month_nav_wrap"):
         if st.button("이전달", key="btn_cal_m_prev"):
             _shift_calendar_month(cstate, -1)
@@ -2256,10 +2310,14 @@ def render_calendar_main() -> None:
         ym_key, _default_schedules_for_month(year, month, today_d)
     )
 
-    # 하단 독에서 [상세] 버튼을 눌러 입력한 내용·시간·알림·달력이 전달된 경우 즉시 모달 오픈
+    # 1) 하단 독 [상세] 버튼 클릭 또는 2) 달력 날짜 네모칸 더블클릭 시 상세일정 설정 모달 즉시 오픈
+    dbl_day = cstate.pop("open_detail_for_day", None)
     if cstate.pop("open_detail_from_dock", False):
         new_dtl_id = f"dtl_{int(datetime.now().timestamp() * 1000)}"
         _open_schedule_detail_dialog(year, month, selected_day, new_dtl_id)
+    elif dbl_day is not None:
+        new_dbl_id = f"dbl_{int(datetime.now().timestamp() * 1000)}"
+        _open_schedule_detail_dialog(year, month, int(dbl_day), new_dbl_id)
 
     # [5]-1 좌측 상단 3대 현황 카드용 실시간 집계 (일정 / AI작업중 / 작업완료, 승인요청)
     total_month_ev_cnt = sum(len(evs) for evs in month_schedules.values())
@@ -2345,7 +2403,7 @@ def render_calendar_main() -> None:
 
                             st.markdown(
                                 _html(f"""
-                                <div class="tds-cal-day-card {'selected' if is_sel else ''}">
+                                <div class="tds-cal-day-card {'selected' if is_sel else ''}" data-cal-day="{day_num}">
                                     <div class="tds-cal-day-top">
                                         <span class="tds-cal-day-num {dow_cls}">{day_num}</span>
                                         {today_badge}
@@ -2355,13 +2413,29 @@ def render_calendar_main() -> None:
                                 """),
                                 unsafe_allow_html=True,
                             )
-                            # [5]-1 날짜 셀 아래에 '1일 (0건)' 같은 별도 버튼을 절대 노출하지 않고 투명 오버레이로 처리
+                            # 단일 클릭 시 날짜 선택 / 빠른 2회 클릭(더블클릭) 시 상세일정 설정 모달 오픈
                             if st.button(
                                 " ",
                                 key=f"cal_sel_d_{year}_{month}_{day_num}",
                                 width="stretch",
                             ):
+                                now_ts = datetime.now().timestamp()
+                                prev_d = cstate.get("_last_cal_click_day")
+                                prev_ts = float(cstate.get("_last_cal_click_ts", 0.0))
                                 cstate["selected_day"] = day_num
+                                if prev_d == day_num and (now_ts - prev_ts) < 0.70:
+                                    cstate["_last_cal_click_day"] = None
+                                    cstate["_last_cal_click_ts"] = 0.0
+                                    cstate["pending_detail_draft"] = {
+                                        "title": "",
+                                        "time": "",
+                                        "alarm": False,
+                                        "show_on_cal": True,
+                                    }
+                                    cstate["open_detail_for_day"] = day_num
+                                else:
+                                    cstate["_last_cal_click_day"] = day_num
+                                    cstate["_last_cal_click_ts"] = now_ts
                                 st.rerun()
 
     with col_side:
@@ -2620,9 +2694,10 @@ def render_calendar_main() -> None:
 
 def render_floating_kakao_todo_overlay() -> None:
     """
-    1) 메인 화면 Today To Do와 카톡 백그라운드 To-Do 완전 분리 (서로 연동되지 않으며, AI 카톡 작업순서 체크리스트 표시)
-    2) 카톡 백그라운드 To-Do 60% 확장 패널: 블랙(딥 차콜, #121417 / #1A1F26) 컨셉 및 진한 다크 톤 버튼·배지 적용
-    3) 우측 하단 플로팅 홈버튼(#tds-kakao-home-fab): 기존 디자인과 파란 색상(#3898FF, 66x66px 스쿼클, 흰색 원+세로 두 눈 캐릭터) 100% 유지!
+    1) 상세일정 설정 모달: 뒤쪽 달력이 절대 비치지 않는 100% 불투명 연한 소프트 스카이블루(#E4F0FF) + 순백색(#FFFFFF) 라벨/입력칸 강제 보장
+    2) 달력 날짜 네모칸 더블클릭(dblclick 또는 빠른 2회 클릭) 시 즉시 상세일정 설정 모달 오픈
+    3) '11월' 양옆 ◀ ▶ 버튼 클릭 시 최상단 문서 캡처 단계에서 즉시 이전 달 / 다음 달 이동 트리거 작동
+    4) 카톡 백그라운드 To-Do 블랙(딥 차콜) 컨셉 및 기존 파란 홈버튼(#3898FF) 고정 유지
     """
     cstate = _init_calendar_state()
     todos = cstate.get("kakao_todos", [])
@@ -2679,6 +2754,8 @@ def render_floating_kakao_todo_overlay() -> None:
 
             function stripDockTokenSuffix(val) {{
                 return String(val || "")
+                    .replace(/__MONTH_SHIFT_(?:PREV|NEXT)__$/, "")
+                    .replace(/__CAL_DBLCLICK_DAY_\\d+__$/, "")
                     .replace(/__ENTER_COMMIT_TGL_A[01]_C[01](?:_T[0-9:]*)?__$/, "")
                     .replace(/__DTL_OPEN_TGL_A[01]_C[01](?:_T[0-9:]*)?__$/, "")
                     .replace(/__TGL_A[01]_C[01](?:_T[0-9:]*)?__$/, "");
@@ -2738,6 +2815,21 @@ def render_floating_kakao_todo_overlay() -> None:
                 }}
             }}
 
+            function enforceSkyBlueDialogSurface() {{
+                const dlgCard = parentDoc.querySelector('div[data-testid="stDialog"] div[role="dialog"], div[role="dialog"][aria-modal="true"]');
+                if (!dlgCard) return;
+                dlgCard.style.setProperty("background", "#E4F0FF", "important");
+                dlgCard.style.setProperty("background-color", "#E4F0FF", "important");
+                dlgCard.style.setProperty("opacity", "1", "important");
+                dlgCard.style.setProperty("border", "2px solid #90C2FF", "important");
+                dlgCard.style.setProperty("border-radius", "26px", "important");
+                dlgCard.style.setProperty("box-shadow", "0 22px 54px rgba(25, 31, 40, 0.16), 0 4px 16px rgba(49, 130, 246, 0.12)", "important");
+                if (dlgCard.firstElementChild) {{
+                    dlgCard.firstElementChild.style.setProperty("background", "#E4F0FF", "important");
+                    dlgCard.firstElementChild.style.setProperty("background-color", "#E4F0FF", "important");
+                }}
+            }}
+
             function readCurrentDualTimeFromDOM() {{
                 const dState = parentWin._tdsDockToggleState;
                 const dualBox = parentDoc.querySelector(".tds-dual-time-box");
@@ -2748,6 +2840,33 @@ def render_floating_kakao_todo_overlay() -> None:
                     if (mEl) dState.minStr = sanitizeMinDigits(mEl.value);
                 }}
                 return formatDualTimeForCommit(dState.hourStr, dState.minStr);
+            }}
+
+            function sendCustomTokenViaChatInp(tokenSuffix) {{
+                const chatInp = parentDoc.querySelector('.st-key-todo_bottom_dock_a [class*="st-key-dock_chat_wrap_"] input');
+                if (!chatInp) return false;
+                const dState = parentWin._tdsDockToggleState;
+                const rawTitle = stripDockTokenSuffix(chatInp.value || "").trim();
+                const encodedVal = rawTitle + tokenSuffix;
+
+                dState.allowEnterCommit = true;
+                const nativeSetter = Object.getOwnPropertyDescriptor(parentWin.HTMLInputElement.prototype, "value").set;
+                nativeSetter.call(chatInp, encodedVal);
+                chatInp.dispatchEvent(new Event("input", {{ bubbles: true }}));
+
+                setTimeout(function() {{
+                    chatInp.focus();
+                    chatInp.dispatchEvent(new KeyboardEvent("keydown", {{
+                        key: "Enter",
+                        code: "Enter",
+                        keyCode: 13,
+                        which: 13,
+                        bubbles: true,
+                        cancelable: true
+                    }}));
+                    setTimeout(function() {{ dState.allowEnterCommit = false; }}, 350);
+                }}, 20);
+                return true;
             }}
 
             function triggerReactCommitPayload(chatInp, modeTag) {{
@@ -2796,29 +2915,6 @@ def render_floating_kakao_todo_overlay() -> None:
                     }}));
                     setTimeout(function() {{ dState.allowEnterCommit = false; }}, 350);
                 }}, 25);
-            }}
-
-            function bindMonthArrowButtons() {{
-                const prevBtn = parentDoc.getElementById("tds-cal-prev-month-btn");
-                const nextBtn = parentDoc.getElementById("tds-cal-next-month-btn");
-                if (prevBtn && !prevBtn._boundClick) {{
-                    prevBtn._boundClick = true;
-                    prevBtn.addEventListener("click", function(e) {{
-                        e.preventDefault();
-                        e.stopPropagation();
-                        const stPrev = parentDoc.querySelector('.st-key-btn_cal_m_prev button');
-                        if (stPrev) stPrev.click();
-                    }});
-                }}
-                if (nextBtn && !nextBtn._boundClick) {{
-                    nextBtn._boundClick = true;
-                    nextBtn.addEventListener("click", function(e) {{
-                        e.preventDefault();
-                        e.stopPropagation();
-                        const stNext = parentDoc.querySelector('.st-key-btn_cal_m_next button');
-                        if (stNext) stNext.click();
-                    }});
-                }}
             }}
 
             function mountSplitTimeBox(dockEl, chatInp) {{
@@ -2930,12 +3026,69 @@ def render_floating_kakao_todo_overlay() -> None:
             }};
             parentDoc.addEventListener("mousedown", parentWin._tdsGlobalDocMousedownHandler, true);
 
+            // 전역 문서 캡처 클릭 & 더블클릭 핸들러:
+            // 1) '11월' 양옆 ◀(#tds-cal-prev-month-btn) / ▶(#tds-cal-next-month-btn) 클릭 시 즉시 이전달/다음달 이동
+            // 2) 달력 날짜 셀 더블클릭(또는 550ms 이내 2회 연속 클릭) 시 해당 날짜의 상세일정 설정 모달 즉시 오픈
+            // 3) 하단 독 [알림], [달력], [상세] 버튼 제어
             if (parentWin._tdsGlobalDocClickHandler) {{
                 parentDoc.removeEventListener("click", parentWin._tdsGlobalDocClickHandler, true);
             }}
             parentWin._tdsGlobalDocClickHandler = function(ev) {{
                 const t = ev.target;
                 if (!t || !t.closest) return;
+
+                // 1) ◀ 이전 달 버튼 클릭
+                const prevMonthBtn = t.closest("#tds-cal-prev-month-btn");
+                if (prevMonthBtn) {{
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    ev.stopImmediatePropagation();
+                    const stPrev = parentDoc.querySelector('.st-key-btn_cal_m_prev button');
+                    if (stPrev) {{
+                        stPrev.click();
+                    }} else {{
+                        sendCustomTokenViaChatInp("__MONTH_SHIFT_PREV__");
+                    }}
+                    return;
+                }}
+
+                // 2) ▶ 다음 달 버튼 클릭
+                const nextMonthBtn = t.closest("#tds-cal-next-month-btn");
+                if (nextMonthBtn) {{
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    ev.stopImmediatePropagation();
+                    const stNext = parentDoc.querySelector('.st-key-btn_cal_m_next button');
+                    if (stNext) {{
+                        stNext.click();
+                    }} else {{
+                        sendCustomTokenViaChatInp("__MONTH_SHIFT_NEXT__");
+                    }}
+                    return;
+                }}
+
+                // 3) 달력 날짜 셀 빠른 2회 클릭(더블클릭) 감지
+                const calDayWrap = t.closest('[class*="st-key-cal_sel_d_"]');
+                if (calDayWrap) {{
+                    const clsStr = calDayWrap.className || "";
+                    const mDay = clsStr.match(/st-key-cal_sel_d_\\d+_\\d+_(\\d+)/);
+                    if (mDay) {{
+                        const clickedDay = mDay[1];
+                        const nowMs = Date.now();
+                        const prevClick = parentWin._tdsLastCalDayClick || {{ day: null, ts: 0 }};
+                        parentWin._tdsLastCalDayClick = {{ day: clickedDay, ts: nowMs }};
+                        if (prevClick.day === clickedDay && (nowMs - prevClick.ts) < 550) {{
+                            parentWin._tdsLastCalDayClick = {{ day: null, ts: 0 }};
+                            ev.preventDefault();
+                            ev.stopPropagation();
+                            ev.stopImmediatePropagation();
+                            sendCustomTokenViaChatInp(`__CAL_DBLCLICK_DAY_${{clickedDay}}__`);
+                            return;
+                        }}
+                    }}
+                }}
+
+                // 4) 하단 독 버튼 제어
                 const dockEl = parentDoc.querySelector('.st-key-todo_bottom_dock_a');
                 if (!dockEl || !dockEl.contains(t)) return;
 
@@ -2971,6 +3124,27 @@ def render_floating_kakao_todo_overlay() -> None:
                 }}
             }};
             parentDoc.addEventListener("click", parentWin._tdsGlobalDocClickHandler, true);
+
+            // 네이티브 dblclick 이벤트도 함께 감지하여 달력 날짜 셀 더블클릭 즉시 반응 보장
+            if (parentWin._tdsGlobalDocDblClickHandler) {{
+                parentDoc.removeEventListener("dblclick", parentWin._tdsGlobalDocDblClickHandler, true);
+            }}
+            parentWin._tdsGlobalDocDblClickHandler = function(ev) {{
+                const t = ev.target;
+                if (!t || !t.closest) return;
+                const calDayWrap = t.closest('[class*="st-key-cal_sel_d_"]');
+                if (calDayWrap) {{
+                    const clsStr = calDayWrap.className || "";
+                    const mDay = clsStr.match(/st-key-cal_sel_d_\\d+_\\d+_(\\d+)/);
+                    if (mDay) {{
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        ev.stopImmediatePropagation();
+                        sendCustomTokenViaChatInp(`__CAL_DBLCLICK_DAY_${{mDay[1]}}__`);
+                    }}
+                }}
+            }};
+            parentDoc.addEventListener("dblclick", parentWin._tdsGlobalDocDblClickHandler, true);
 
             if (parentWin._tdsGlobalDocKeydownHandler) {{
                 parentDoc.removeEventListener("keydown", parentWin._tdsGlobalDocKeydownHandler, true);
@@ -3020,7 +3194,7 @@ def render_floating_kakao_todo_overlay() -> None:
             }});
 
             function bindDockMultiToggleAndKeys() {{
-                bindMonthArrowButtons();
+                enforceSkyBlueDialogSurface();
 
                 const dockEl = parentDoc.querySelector('.st-key-todo_bottom_dock_a');
                 if (!dockEl) return;
@@ -3058,8 +3232,8 @@ def render_floating_kakao_todo_overlay() -> None:
                 applyButtonVisualState(calBtn, dState.cal);
                 applyButtonVisualState(dtlBtn, isDialogOpen);
 
-                if (chatInp && !chatInp._boundStrictEnterV11) {{
-                    chatInp._boundStrictEnterV11 = true;
+                if (chatInp && !chatInp._boundStrictEnterV12) {{
+                    chatInp._boundStrictEnterV12 = true;
                     chatInp.addEventListener("keydown", function(ev) {{
                         if (ev.key === "Tab" && !ev.shiftKey) {{
                             ev.preventDefault();
@@ -3186,7 +3360,6 @@ def render_floating_kakao_todo_overlay() -> None:
                     align-items: center;
                     gap: 14px;
                 }}
-                /* 패널 헤더 이모티콘 박스: 딥 차콜 원형 아이콘 */
                 .tds-kp-char-circle {{
                     width: 42px;
                     height: 42px;
@@ -3265,7 +3438,6 @@ def render_floating_kakao_todo_overlay() -> None:
                     color: #FFFFFF;
                 }}
 
-                /* 상단 상태 탭 바 (진한 다크 틴트 배지) */
                 .tds-kp-tabs-bar {{
                     background: #121417;
                     border-bottom: 1px solid #232A34;
@@ -3326,7 +3498,6 @@ def render_floating_kakao_todo_overlay() -> None:
                     color: #60A5FA;
                 }}
 
-                /* 본문 다크 카드 리스트 */
                 .tds-kp-body {{
                     flex: 1;
                     overflow-y: auto;
@@ -3423,7 +3594,6 @@ def render_floating_kakao_todo_overlay() -> None:
                     margin-bottom: 10px;
                     font-weight: 600;
                 }}
-                /* AI 단계별 작업순서 체크리스트 박스 */
                 .tds-kp-steps-box {{
                     background: #151A22;
                     border: 1px solid #263040;
@@ -3929,12 +4099,10 @@ def render_floating_kakao_todo_overlay() -> None:
 
             function renderOverlay() {{
                 const stObj = parentWin._tdsKakaoState;
-                // 메인 Today To Do 항목은 절대 포함하지 않고 순수 AI 카톡 백그라운드 항목만 필터링
                 const allTodos = (stObj.todos || []).filter(t => String(t.id || "").indexOf("todo_alarm_") !== 0 && t.client !== "Today To Do");
                 const workingList = allTodos.filter(t => getStatusCode(t) === "WORKING");
                 const readyList = allTodos.filter(t => getStatusCode(t) === "READY");
                 const approvedList = allTodos.filter(t => getStatusCode(t) === "APPROVED");
-                // 홈버튼 배지와 말풍선은 준비가 완료되어 승인을 기다리는 건(readyList) + 작업중 건 기준
                 const totalAttention = readyList.length + workingList.length;
 
                 const filtered = allTodos.filter(t => {{
@@ -3994,7 +4162,6 @@ def render_floating_kakao_todo_overlay() -> None:
                         `;
                     }}).join("");
 
-                // 자료와 메시지가 준비된 READY 항목이 있을 때만 말풍선 알림 표시
                 let showBubble = (readyList.length > 0 && !stObj.open && !stObj.bubbleDismissed);
                 if (stObj.bubbleIdx >= readyList.length) stObj.bubbleIdx = 0;
                 const bItem = readyList[stObj.bubbleIdx] || {{}};
