@@ -21,7 +21,7 @@ import ui_theme as _ui_theme
 _WEEKDAYS_SHORT = ("월", "화", "수", "목", "금", "토", "일")
 _WEEKDAYS_FULL = ("월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일")
 _SUN_FIRST_HEADERS = ("일", "월", "화", "수", "목", "금", "토")
-_STATE_SCHEMA_VERSION = "v8_split_time_and_month_arrows"
+_STATE_SCHEMA_VERSION = "v9_fixed_dock_toggles_and_dialog_subtasks"
 
 
 def _html(s: str) -> str:
@@ -325,7 +325,7 @@ def _ev_pill_cls(ev: Dict[str, Any]) -> str:
 
 
 def _normalize_time_str(raw_t: str) -> str:
-    """사용자 입력 시간 문자열(예: '1430', '9:30', '14:30', '')을 숫자 전용 'HH:MM' 또는 ''로 정규화"""
+    """사용자 입력 시간 문자열(예: '1430', '4:30', '04:30', '')을 숫자 전용 'HH:MM' 또는 ''로 정규화"""
     s = str(raw_t or "").strip()
     if not s or s in ("일정", "기한", ":"):
         return ""
@@ -368,7 +368,7 @@ def _is_alarm_due(ev: Dict[str, Any], is_today_selected: bool = True) -> bool:
     """
     종 반짝임(노랑-주황-빨강) 작동 조건 (오늘 KST 시간 기준):
     - 반드시 [알림]이 켜져 있고(alarm=True), 완료되지 않았으며,
-    - 시간이 입력되어 있고 오늘 현재 시각(KST)이 해당 시간 이상이거나(정각 도달), 상세모달에서 시연을 켠 경우 작동
+    - 시간이 입력되어 있고 오늘 현재 시각(KST)이 해당 시간 이상이거나(정각 도달), 시간이 미지정인 알림일 때 작동
     """
     if not ev.get("alarm") or ev.get("done"):
         return False
@@ -376,25 +376,33 @@ def _is_alarm_due(ev: Dict[str, Any], is_today_selected: bool = True) -> bool:
         return True
     t_norm = _normalize_time_str(str(ev.get("time", "")))
     if not t_norm:
-        return False
+        return True
     now_hm = get_kst_now_hm()
     return now_hm >= t_norm
 
 
-def _parse_dock_raw_payload(raw_val: str) -> tuple[str, bool | None, bool | None, str | None, bool]:
+def _parse_dock_raw_payload(raw_val: str) -> tuple[str, bool | None, bool | None, str | None, str]:
     """
-    JS에서 Enter 제출 시 인코딩한 문자열('제목__ENTER_COMMIT_TGL_A1_C1_T14:30__') 또는
-    상세모달 오픈용 문자열('제목__TGL_A1_C1_T14:30__')을 파싱하여
-    (순수 제목, 알림 토글 여부, 달력 토글 여부, 시간 문자열, Enter 명시적 커밋 여부)를 반환합니다.
+    JS에서 전달한 인코딩 문자열을 파싱하여
+    (순수 제목, 알림 토글 여부, 달력 토글 여부, 시간 문자열, 액션 모드['ENTER' | 'DETAIL' | 'NONE'])를 반환합니다.
     """
     s = str(raw_val or "").strip()
+
     m_enter = re.search(r"__ENTER_COMMIT_TGL_A([01])_C([01])(?:_T([0-9:]*))?__$", s)
     if m_enter:
         clean_title = s[: m_enter.start()].strip()
         a_on = (m_enter.group(1) == "1")
         c_on = (m_enter.group(2) == "1")
         t_str = (m_enter.group(3) or "").strip()
-        return clean_title, a_on, c_on, t_str, True
+        return clean_title, a_on, c_on, t_str, "ENTER"
+
+    m_dtl = re.search(r"__DTL_OPEN_TGL_A([01])_C([01])(?:_T([0-9:]*))?__$", s)
+    if m_dtl:
+        clean_title = s[: m_dtl.start()].strip()
+        a_on = (m_dtl.group(1) == "1")
+        c_on = (m_dtl.group(2) == "1")
+        t_str = (m_dtl.group(3) or "").strip()
+        return clean_title, a_on, c_on, t_str, "DETAIL"
 
     m_draft = re.search(r"__TGL_A([01])_C([01])(?:_T([0-9:]*))?__$", s)
     if m_draft:
@@ -402,9 +410,9 @@ def _parse_dock_raw_payload(raw_val: str) -> tuple[str, bool | None, bool | None
         a_on = (m_draft.group(1) == "1")
         c_on = (m_draft.group(2) == "1")
         t_str = (m_draft.group(3) or "").strip()
-        return clean_title, a_on, c_on, t_str, False
+        return clean_title, a_on, c_on, t_str, "NONE"
 
-    return s, None, None, None, False
+    return s, None, None, None, "NONE"
 
 
 def _shift_calendar_month(cstate: Dict[str, Any], delta: int) -> None:
@@ -1438,11 +1446,13 @@ div[data-testid="InputInstructions"],
 [data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-todo_bottom_dock_a button * {
     color: #FFFFFF !important;
     font-weight: 800 !important;
+    pointer-events: none !important;
 }
 /* 클릭하여 활성화된(ON) 상태일 때만 안으로 꾹 들어간 오목 입체(Sunken) 스타일! */
-[data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-todo_bottom_dock_a button.tds-dock-btn-sunken {
-    background: #1B64DA !important;
-    background-color: #1B64DA !important;
+[data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-todo_bottom_dock_a button.tds-dock-btn-sunken,
+[data-testid="stApp"] [data-testid="stMainBlockContainer"] [class*="st-key-btn_dock_"] button.tds-dock-btn-sunken {
+    background: #1854BA !important;
+    background-color: #1854BA !important;
     border: 2px solid #0F3882 !important;
     box-shadow: inset 0 4px 7px rgba(10, 32, 78, 0.65), inset 0 1px 2px rgba(10, 32, 78, 0.85) !important;
     padding-top: 3px !important;
@@ -1565,6 +1575,9 @@ def _init_calendar_state() -> Dict[str, Any]:
             "dock_alarm": False,
             "dock_cal": False,
             "dock_dtl": False,
+            "dock_reset_seq": 0,
+            "pending_detail_draft": None,
+            "open_detail_from_dock": False,
             "active_detail_ev_id": None,
         }
     cstate = st.session_state["cal_scheduler_state"]
@@ -1574,6 +1587,9 @@ def _init_calendar_state() -> Dict[str, Any]:
     cstate.setdefault("dock_alarm", False)
     cstate.setdefault("dock_cal", False)
     cstate.setdefault("dock_dtl", False)
+    cstate.setdefault("dock_reset_seq", 0)
+    cstate.setdefault("pending_detail_draft", None)
+    cstate.setdefault("open_detail_from_dock", False)
     cstate.setdefault("active_detail_ev_id", None)
 
     if cstate.get("_last_kst_today_iso") != today_iso:
@@ -1594,9 +1610,11 @@ def _init_calendar_state() -> Dict[str, Any]:
 
 def _commit_dock_schedule_on_enter() -> None:
     """
-    하단 독(Dock)에서 사용자가 오직 [Enter] 키를 쳤을 때만 호출되어 할 일을 등록합니다.
-    - Tab 키나 마우스 포커스 이동(blur)으로 인해 호출된 경우에는 __ENTER_COMMIT_TGL_...__ 토큰이 없으므로
-      절대 상단 Today To Do로 등록하지 않고 입력값을 그대로 유지합니다.
+    하단 독(Dock)에서:
+    1) 사용자가 [Enter] 키를 쳤을 때(__ENTER_COMMIT_TGL_...__): 할 일 + 시간 + [알림]·[달력] 상태를 즉시 등록합니다.
+    2) 사용자가 [상세] 버튼을 눌렀을 때(__DTL_OPEN_TGL_...__): 입력한 내용과 시간을 pending_detail_draft에 담아
+       상세 모달을 오픈합니다 (시간이 15:00으로 바뀌지 않고 입력한 시간 그대로 전달됨).
+    3) 단순 Tab 키 이동이나 blur일 때(NONE): 등록하지 않고 입력값을 보존합니다.
     """
     cstate = _init_calendar_state()
     year = int(cstate["year"])
@@ -1606,23 +1624,37 @@ def _commit_dock_schedule_on_enter() -> None:
     time_key = f"dock_time_inp_{year}_{month}_{sel_day}"
 
     raw_val = str(st.session_state.get(inp_key, "")).strip()
-    clean_txt, js_alarm, js_cal, js_time, is_explicit_enter = _parse_dock_raw_payload(raw_val)
+    clean_txt, js_alarm, js_cal, js_time, action_mode = _parse_dock_raw_payload(raw_val)
 
-    # Tab 키 이동이나 단순 blur로 인해 on_change가 호출된 경우 등록 차단 (입력 텍스트 보존)
-    if not is_explicit_enter:
+    if action_mode == "NONE":
         if clean_txt != raw_val:
             st.session_state[inp_key] = clean_txt
         return
 
+    raw_time = js_time if js_time is not None else str(st.session_state.get(time_key, "")).strip()
+    norm_t = _normalize_time_str(raw_time)
+    is_alarm = js_alarm if js_alarm is not None else bool(cstate.get("dock_alarm", False))
+    is_cal = js_cal if js_cal is not None else bool(cstate.get("dock_cal", False))
+
+    # [상세] 버튼 클릭으로 진입한 경우: 입력한 제목·시간·알림·달력 상태를 그대로 상세모달로 전달
+    if action_mode == "DETAIL":
+        st.session_state[inp_key] = clean_txt
+        cstate["dock_alarm"] = is_alarm
+        cstate["dock_cal"] = is_cal
+        cstate["dock_dtl"] = False
+        cstate["pending_detail_draft"] = {
+            "title": clean_txt,
+            "time": norm_t,
+            "alarm": is_alarm,
+            "show_on_cal": is_cal,
+        }
+        cstate["open_detail_from_dock"] = True
+        return
+
+    # [Enter] 키로 직접 등록한 경우
     if not clean_txt:
         st.session_state[inp_key] = ""
         return
-
-    raw_time = js_time if js_time is not None else str(st.session_state.get(time_key, "")).strip()
-    norm_t = _normalize_time_str(raw_time)
-
-    is_alarm = js_alarm if js_alarm is not None else bool(cstate.get("dock_alarm", False))
-    is_cal = js_cal if js_cal is not None else bool(cstate.get("dock_cal", False))
 
     today_d = get_kst_today()
     ym_key = f"{year:04d}-{month:02d}"
@@ -1684,15 +1716,41 @@ def _commit_dock_schedule_on_enter() -> None:
     cstate["dock_alarm"] = False
     cstate["dock_cal"] = False
     cstate["dock_dtl"] = False
+    cstate["pending_detail_draft"] = None
+    cstate["dock_reset_seq"] = int(cstate.get("dock_reset_seq", 0)) + 1
+
+
+def _add_sub_task_in_dialog(ev_id: str) -> None:
+    """상세 모달 내부에서 [+ 항목 추가] 클릭 또는 Enter 시 모달을 닫지 않고 하위 체크항목을 한 줄 추가합니다."""
+    subs_key = f"dlg_subs_state_{ev_id}"
+    inp_key = f"dlg_new_sub_inp_{ev_id}"
+    new_txt = str(st.session_state.get(inp_key, "")).strip()
+    if new_txt:
+        cur_list = list(st.session_state.get(subs_key, []))
+        cur_list.append({"title": new_txt, "done": False})
+        st.session_state[subs_key] = cur_list
+        st.session_state[inp_key] = ""
+
+
+def _delete_sub_task_in_dialog(ev_id: str, del_idx: int) -> None:
+    """상세 모달 내부에서 하위 체크항목의 [✕] 클릭 시 모달을 닫지 않고 해당 줄만 삭제합니다."""
+    subs_key = f"dlg_subs_state_{ev_id}"
+    cur_list = list(st.session_state.get(subs_key, []))
+    if 0 <= del_idx < len(cur_list):
+        cur_list.pop(del_idx)
+        st.session_state[subs_key] = cur_list
 
 
 @st.dialog("📋 상세일정 설정", width="large")
 def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str) -> None:
     """
-    시안 이미지(구글 캘린더 + 토스 글래스)와 100% 동일한 화면 중앙 상세입력 모달.
-    - 메인 화면은 뒤쪽에 그대로 유지된 채 중앙에 활성화됩니다.
+    화면 중앙 상세입력 모달 (Toss Web TDS):
+    - 하단 독에서 입력한 내용·시간(시:분)·알림·달력 상태를 그대로 이어받아 표시합니다.
+    - '연결' 행을 제거하여 깔끔하게 구성했습니다.
+    - '체크' 란에서 [+ 항목 추가] 클릭 시 창이 닫히지 않고 즉시 아래에 체크 항목 한 줄이 추가됩니다.
     """
     cstate = _init_calendar_state()
+    cstate["dock_dtl"] = False
     today_d = get_kst_today()
     ym_key = f"{year:04d}-{month:02d}"
     month_schedules = cstate["schedules_by_ym"].setdefault(
@@ -1707,20 +1765,36 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
     is_new = False
     if target_ev is None:
         is_new = True
+        pending = cstate.get("pending_detail_draft") or {}
         raw_draft = str(st.session_state.get(inp_key, "")).strip()
         clean_title, js_a, js_c, js_t, _ = _parse_dock_raw_payload(raw_draft)
         if clean_title != raw_draft:
             st.session_state[inp_key] = clean_title
-        init_alarm = js_a if js_a is not None else bool(cstate.get("dock_alarm", False))
-        init_cal = js_c if js_c is not None else bool(cstate.get("dock_cal", False))
-        raw_t_candidate = js_t if js_t else str(st.session_state.get(time_key, ""))
+
+        final_draft_title = str(pending.get("title") if pending.get("title") is not None else clean_title).strip()
+        init_alarm = (
+            bool(pending["alarm"])
+            if "alarm" in pending
+            else (js_a if js_a is not None else bool(cstate.get("dock_alarm", False)))
+        )
+        init_cal = (
+            bool(pending["show_on_cal"])
+            if "show_on_cal" in pending
+            else (js_c if js_c is not None else bool(cstate.get("dock_cal", False)))
+        )
+        raw_t_candidate = (
+            str(pending.get("time") or "")
+            or (js_t if js_t else "")
+            or str(st.session_state.get(time_key, ""))
+        )
         draft_t = _normalize_time_str(raw_t_candidate)
+
         target_ev = {
             "id": ev_id,
             "type": "MY",
-            "time": draft_t or "15:00",
+            "time": draft_t,
             "base_date_iso": today_d.isoformat(),
-            "title": clean_title,
+            "title": final_draft_title,
             "client": "",
             "category": "내 스케줄",
             "ai_status": "작업 완료, 승인요청중",
@@ -1732,12 +1806,19 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
             "has_detail": True,
             "repeat": "반복 안함",
             "location": "",
-            "link_target": "AGENT",
-            "link_label": "[자율 에이전트AI] 화면 바로가기",
+            "link_target": "CALENDAR",
+            "link_label": "",
             "attachment": "",
             "sub_tasks": [],
             "desc": "",
         }
+
+    subs_state_key = f"dlg_subs_state_{ev_id}"
+    if subs_state_key not in st.session_state:
+        st.session_state[subs_state_key] = [
+            {"title": str(s.get("title", "")), "done": bool(s.get("done", False))}
+            for s in list(target_ev.get("sub_tasks", []))
+        ]
 
     # 1) 제목 입력 (파란색 하단 언더라인)
     st.markdown("<div class='gcal-tds-title-wrap'>", unsafe_allow_html=True)
@@ -1789,7 +1870,7 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
         in_time = st.text_input(
             "시간 (HH:MM)",
             value=str(target_ev.get("time", "")),
-            placeholder="15:00",
+            placeholder="00:00 (미입력 시 시간 없음)",
             label_visibility="collapsed",
             key=f"dlg_time_{ev_id}",
         )
@@ -1832,84 +1913,62 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
             key=f"dlg_client_{ev_id}",
         )
 
-    # 5) 연결 행
-    r3_l, r3_c1, r3_c2 = st.columns([0.72, 2.0, 1.8], gap="small")
-    link_map = {
-        "AGENT": "[자율 에이전트AI] 화면 바로가기",
-        "PAYROLL_EMP": "[인건비 자동화 > 급여명세서] 바로가기",
-        "PAYROLL_BIZ": "[인건비 자동화 > 사업소득] 바로가기",
-        "CALENDAR": "연결 안함 (달력 유지)",
-    }
-    cur_lt = str(target_ev.get("link_target", "AGENT"))
-    if cur_lt not in link_map:
-        cur_lt = "AGENT"
-    with r3_l:
-        st.markdown(
-            "<div class='gcal-tds-row-lbl' style='background:#E5F9F0;color:#00A660;'>연결</div>",
-            unsafe_allow_html=True,
-        )
-    with r3_c1:
-        in_link_target = st.selectbox(
-            "업무 화면 연결",
-            options=list(link_map.keys()),
-            index=list(link_map.keys()).index(cur_lt),
-            format_func=lambda k: link_map[k],
-            label_visibility="collapsed",
-            key=f"dlg_link_{ev_id}",
-        )
-    with r3_c2:
-        in_location = st.text_input(
-            "위치 / 미팅 방법",
-            value=str(target_ev.get("location", "")),
-            placeholder="위치 / 미팅 방법 추가",
-            label_visibility="collapsed",
-            key=f"dlg_loc_{ev_id}",
-        )
-
-    # 6) 체크 행 (하위 세부 체크항목)
+    # 5) 체크 행 (하위 세부 체크항목 — [+ 항목 추가] 클릭 시 창이 닫히지 않고 즉시 아래에 한 줄씩 추가됨)
     r4_l, r4_r = st.columns([0.72, 3.8], gap="small")
-    sub_tasks = list(target_ev.get("sub_tasks", []))
+    cur_sub_tasks: List[Dict[str, Any]] = list(st.session_state.get(subs_state_key, []))
     with r4_l:
         st.markdown("<div class='gcal-tds-row-lbl'>체크</div>", unsafe_allow_html=True)
     with r4_r:
-        done_sub_cnt = sum(1 for s in sub_tasks if s.get("done"))
+        for s_idx, s_item in enumerate(cur_sub_tasks):
+            chk_key = f"dlg_sub_chk_{ev_id}_{s_idx}_{s_item.get('title', '')}"
+            if chk_key in st.session_state:
+                s_item["done"] = bool(st.session_state[chk_key])
+
+        done_sub_cnt = sum(1 for s in cur_sub_tasks if s.get("done"))
         st.caption(
-            f"**하위 세부 체크항목 추가 ({done_sub_cnt}/{len(sub_tasks)} 완료)** (등록 시 할일 옆에 0/N 진행률 표시)"
+            f"**하위 세부 체크항목 추가 ({done_sub_cnt}/{len(cur_sub_tasks)} 완료)** (등록 시 할일 옆에 0/N 진행률 표시)"
         )
-        updated_subs: List[Dict[str, Any]] = []
-        for s_idx, s_item in enumerate(sub_tasks):
+
+        for s_idx, s_item in enumerate(cur_sub_tasks):
             sc_chk, sc_del = st.columns([5.5, 0.8], gap="small")
+            chk_key = f"dlg_sub_chk_{ev_id}_{s_idx}_{s_item.get('title', '')}"
             with sc_chk:
                 s_checked = st.checkbox(
                     str(s_item.get("title", "")),
                     value=bool(s_item.get("done", False)),
-                    key=f"dlg_sub_chk_{ev_id}_{s_idx}",
+                    key=chk_key,
                 )
+                cur_sub_tasks[s_idx]["done"] = bool(s_checked)
             with sc_del:
-                rm_sub = st.button("✕", key=f"dlg_sub_del_{ev_id}_{s_idx}")
-            if not rm_sub:
-                updated_subs.append({"title": str(s_item.get("title", "")), "done": s_checked})
+                st.button(
+                    "✕",
+                    key=f"dlg_sub_del_{ev_id}_{s_idx}",
+                    on_click=_delete_sub_task_in_dialog,
+                    args=(ev_id, s_idx),
+                )
+
+        st.session_state[subs_state_key] = cur_sub_tasks
 
         ns_c1, ns_c2 = st.columns([4.2, 1.3], gap="small")
         with ns_c1:
-            new_sub_txt = st.text_input(
+            st.text_input(
                 "새 세부 체크항목 추가",
                 placeholder="세부 체크항목 입력...",
                 label_visibility="collapsed",
                 key=f"dlg_new_sub_inp_{ev_id}",
+                on_change=_add_sub_task_in_dialog,
+                args=(ev_id,),
             )
         with ns_c2:
-            if st.button("＋ 항목 추가", width="stretch", key=f"dlg_btn_add_sub_{ev_id}"):
-                if new_sub_txt and new_sub_txt.strip():
-                    updated_subs.append({"title": new_sub_txt.strip(), "done": False})
-                    target_ev["sub_tasks"] = updated_subs
-                    target_ev["has_detail"] = True
-                    if is_new:
-                        target_ev["title"] = in_title.strip() or "새 상세 일정"
-                        day_evs.append(target_ev)
-                    st.rerun()
+            st.button(
+                "＋ 항목 추가",
+                width="stretch",
+                key=f"dlg_btn_add_sub_{ev_id}",
+                on_click=_add_sub_task_in_dialog,
+                args=(ev_id,),
+            )
 
-    # 7) 메모 행
+    # 6) 메모 행
     r5_l, r5_r = st.columns([0.72, 3.8], gap="small")
     with r5_l:
         st.markdown("<div class='gcal-tds-row-lbl'>메모</div>", unsafe_allow_html=True)
@@ -1932,7 +1991,7 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
 
     st.divider()
 
-    # 8) 하단 푸터 (김범준 · 한가함 · 기본 공개 설정 + 취소 / 저장)
+    # 7) 하단 푸터 (김범준 · 한가함 · 기본 공개 설정 + 취소 / 저장)
     f_left, f_del, f_can, f_save = st.columns([2.6, 0.8, 0.8, 1.0], gap="small")
     with f_left:
         st.markdown(
@@ -1948,16 +2007,26 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
         if not is_new:
             if st.button("삭제", width="stretch", key=f"dlg_btn_delete_{ev_id}"):
                 month_schedules[day_num] = [x for x in day_evs if str(x.get("id")) != str(ev_id)]
+                st.session_state.pop(subs_state_key, None)
                 cstate["active_detail_ev_id"] = None
+                cstate["pending_detail_draft"] = None
                 cstate["dock_dtl"] = False
                 st.rerun()
     with f_can:
         if st.button("취소", width="stretch", key=f"dlg_btn_cancel_{ev_id}"):
+            st.session_state.pop(subs_state_key, None)
             cstate["active_detail_ev_id"] = None
+            cstate["pending_detail_draft"] = None
             cstate["dock_dtl"] = False
             st.rerun()
     with f_save:
         if st.button("저장", width="stretch", key=f"dlg_btn_save_{ev_id}"):
+            # 혹시 입력창에 적고 [+ 항목 추가]를 아직 안 누른 텍스트가 있으면 함께 반영
+            leftover_sub = str(st.session_state.get(f"dlg_new_sub_inp_{ev_id}", "")).strip()
+            updated_subs = list(st.session_state.get(subs_state_key, []))
+            if leftover_sub:
+                updated_subs.append({"title": leftover_sub, "done": False})
+
             final_title = in_title.strip() or "세무 상세 일정"
             new_type = "TAX" if "세무기한" in sel_cat_lbl else ("DONE" if "승인완료" in sel_cat_lbl else "MY")
             norm_t = _normalize_time_str(in_time)
@@ -1976,9 +2045,6 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
                 "show_on_cal": bool(in_show_cal),
                 "urgent": bool(in_urgent),
                 "client": in_client.strip() or "내 스케줄",
-                "link_target": in_link_target,
-                "link_label": link_map.get(in_link_target, ""),
-                "location": in_location.strip(),
                 "sub_tasks": updated_subs,
                 "desc": in_desc.strip(),
                 "attachment": in_attach.strip(),
@@ -1991,15 +2057,39 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
                 month_schedules.setdefault(new_d_int, []).append(target_ev)
                 st.session_state[inp_key] = ""
                 st.session_state[time_key] = ""
+                if in_alarm:
+                    cstate["kakao_todos"].insert(0, {
+                        "id": f"todo_alarm_{ev_id}",
+                        "status_code": "READY",
+                        "status": "작업 완료, 승인요청중",
+                        "category": f"⏰ 오늘 {norm_t or '일정'} 알림",
+                        "client": "Today To Do",
+                        "recipient": "범준",
+                        "time_ago": norm_t or "방금 등록",
+                        "bubble_msg": f"범준님, [{final_title}] 오늘 일정({norm_t or '시간 미지정'}) 알림이 설정되었습니다",
+                        "title": f"[오늘 일정 알림] {final_title} ({norm_t or '시간 미지정'})",
+                        "kakao_original": f"[Today To Do 상세등록 · {month}월 {new_d_int}일] {norm_t} · {final_title}",
+                        "ai_result": "✅ 오늘 지정된 시각에 우측 하단 홈버튼 말풍선과 종 아이콘 반짝임으로 알려드립니다.",
+                        "preview": "✅ 오늘 지정된 시각에 우측 하단 홈버튼 말풍선으로 알려드립니다.",
+                        "attachment": "",
+                        "target_mode": "CALENDAR",
+                        "action_label": "일정 확인 완료",
+                        "checked": False,
+                    })
+                    cstate["bubble_visible"] = True
+                    cstate["bubble_idx"] = 0
             elif new_d_int != day_num:
                 month_schedules[day_num] = [x for x in day_evs if str(x.get("id")) != str(ev_id)]
                 month_schedules.setdefault(new_d_int, []).append(target_ev)
 
+            st.session_state.pop(subs_state_key, None)
             cstate["selected_day"] = new_d_int
             cstate["active_detail_ev_id"] = None
+            cstate["pending_detail_draft"] = None
             cstate["dock_alarm"] = False
             cstate["dock_cal"] = False
             cstate["dock_dtl"] = False
+            cstate["dock_reset_seq"] = int(cstate.get("dock_reset_seq", 0)) + 1
             st.toast(f"'{final_title}' 상세일정이 저장되었어요.", icon="✅")
             st.rerun()
 
@@ -2096,6 +2186,7 @@ def render_calendar_sidebar() -> None:
 def render_calendar_main() -> None:
     """메인 화면: 좌측 풀사이즈 달력(상단 74px 3대 현황 카드 포함) + 우측 Today To Do & 하단 평면/입체 다중토글 독(Dock)"""
     cstate = _init_calendar_state()
+    cstate["dock_dtl"] = False
     today_d = get_kst_today()
 
     st.markdown(CALENDAR_MAIN_CSS, unsafe_allow_html=True)
@@ -2116,6 +2207,11 @@ def render_calendar_main() -> None:
     month_schedules = cstate["schedules_by_ym"].setdefault(
         ym_key, _default_schedules_for_month(year, month, today_d)
     )
+
+    # 하단 독에서 [상세] 버튼을 눌러 입력한 내용·시간·알림·달력이 전달된 경우 즉시 모달 오픈
+    if cstate.pop("open_detail_from_dock", False):
+        new_dtl_id = f"dtl_{int(datetime.now().timestamp() * 1000)}"
+        _open_schedule_detail_dialog(year, month, selected_day, new_dtl_id)
 
     # [5]-1 좌측 상단 3대 현황 카드용 실시간 집계 (일정 / AI작업중 / 작업완료, 승인요청)
     total_month_ev_cnt = sum(len(evs) for evs in month_schedules.values())
@@ -2248,6 +2344,12 @@ def render_calendar_main() -> None:
         with c_m_right:
             with st.container(key="cal_add_btn_wrap"):
                 if st.button("+ 일정 추가하기", key="btn_cal_open_add_schedule"):
+                    cstate["pending_detail_draft"] = {
+                        "title": "",
+                        "time": "",
+                        "alarm": False,
+                        "show_on_cal": True,
+                    }
                     new_modal_id = f"m_{int(datetime.now().timestamp() * 1000)}"
                     _open_schedule_detail_dialog(year, month, selected_day, new_modal_id)
 
@@ -2353,7 +2455,7 @@ def render_calendar_main() -> None:
                         bell_html = ""
                         if ev.get("alarm"):
                             sparkle_cls = "sparkle" if _is_alarm_due(ev, is_sel_today) else ""
-                            bell_html = f"<span class='tds-bell-pure {sparkle_cls}'>{BELL_SVG}</span>"
+                            bell_html = f"<span class='tds-bell-pure {sparkle_cls}' data-alarm-time='{_html_lib.escape(t_norm)}'>{BELL_SVG}</span>"
 
                         time_html = (
                             f"<span class='tds-compact-time {'done' if is_done else ''}'>{_html_lib.escape(t_norm)}</span>"
@@ -2461,7 +2563,7 @@ def render_calendar_main() -> None:
                         width="stretch",
                         key=f"btn_dock_detail_{year}_{month}_{selected_day}",
                     ):
-                        cstate["dock_dtl"] = True
+                        cstate["dock_dtl"] = False
                         new_id = f"dtl_{int(datetime.now().timestamp() * 1000)}"
                         _open_schedule_detail_dialog(year, month, selected_day, new_id)
 
@@ -2470,18 +2572,17 @@ def render_calendar_main() -> None:
 
 def render_floating_kakao_todo_overlay() -> None:
     """
-    1) '11월' 양옆 부드러운 ◀ ▶ 월 이동 버튼 바인딩
-    2) 할 일 입력칸에서 Tab 키 입력 시 상단 To Do로 등록되지 않고 [시 : 분]의 '시간(시)' 칸으로 포커스 이동
-    3) [시 : 분] 분리형 시간 입력칸: 오직 숫자만 입력 가능(한글/영문/기호 원천 차단), '시간'(00~23)과 '분'(00~59) 분리
-    4) 오직 Enter 키를 쳤을 때만 할 일 + 오늘 기준 시간 + 선택된 [알림]·[달력] 상태로 등록
+    1) 초기 화면 및 모달 닫힘 상태에서 [알림], [달력], [상세] 버튼 3종 모두 깔끔한 평면(Flat) 상태 보장
+    2) [알림], [달력] 버튼 클릭 시 캡처 단계에서 즉시 오목 입체(Sunken) 다중 토글 작동
+    3) [상세] 버튼 클릭 시 현재 입력된 내용 + [시:분] 시간 + [알림]·[달력] 상태를 그대로 담아 모달 오픈
+    4) 오직 Enter 키를 쳤을 때만 할 일 + 오늘 기준 시간 + 선택된 [알림]·[달력] 상태로 즉시 등록
     """
     cstate = _init_calendar_state()
     todos = cstate.get("kakao_todos", [])
     panel_open_init = bool(cstate.get("panel_open", False))
     silent_cnt = int(cstate.get("silent_read_count", 2))
-    alarm_init_js = "true" if cstate.get("dock_alarm") else "false"
-    cal_init_js = "true" if cstate.get("dock_cal") else "false"
-    dtl_init_js = "true" if cstate.get("dock_dtl") else "false"
+    dock_reset_seq = int(cstate.get("dock_reset_seq", 0))
+    dock_ctx_key = f"{cstate.get('year')}_{cstate.get('month')}_{cstate.get('selected_day')}_{dock_reset_seq}"
     kst_today_iso = get_kst_today().isoformat()
     user_nm = str(st.session_state.get("current_workspace") or "범준").strip() or "범준"
     if user_nm.startswith("익명"):
@@ -2491,6 +2592,7 @@ def render_floating_kakao_todo_overlay() -> None:
     init_open_js = "true" if panel_open_init else "false"
     user_nm_json = json.dumps(user_nm, ensure_ascii=False)
     kst_iso_json = json.dumps(kst_today_iso, ensure_ascii=False)
+    dock_ctx_json = json.dumps(dock_ctx_key, ensure_ascii=False)
 
     components.html(
         f"""
@@ -2505,21 +2607,35 @@ def render_floating_kakao_todo_overlay() -> None:
             const CURRENT_USER = {user_nm_json};
             const SILENT_CNT = {silent_cnt};
             const SERVER_KST_ISO = {kst_iso_json};
+            const DOCK_CTX_KEY = {dock_ctx_json};
 
-            if (!parentWin._tdsDockToggleState) {{
+            // 이전 iframe에서 실행 중이던 구버전 타이머가 있으면 즉시 제거 (구버전 스타일 덮어쓰기 방지)
+            if (parentWin._tdsCalCleanupTimer) {{
+                parentWin.clearInterval(parentWin._tdsCalCleanupTimer);
+                parentWin._tdsCalCleanupTimer = null;
+            }}
+
+            if (!parentWin._tdsDockToggleState || parentWin._tdsDockToggleState.ctxKey !== DOCK_CTX_KEY) {{
                 parentWin._tdsDockToggleState = {{
-                    alarm: {alarm_init_js},
-                    cal: {cal_init_js},
-                    dtl: {dtl_init_js},
+                    ctxKey: DOCK_CTX_KEY,
+                    alarm: false,
+                    cal: false,
+                    dtl: false,
                     hourStr: "",
                     minStr: "",
                     allowEnterCommit: false
                 }};
+            }} else {{
+                // 모달이 닫혀 있는 기본 화면에서는 [상세] 버튼이 절대 눌려 있지 않도록 강제 초기화
+                if (!parentDoc.querySelector('div[data-testid="stDialog"]')) {{
+                    parentWin._tdsDockToggleState.dtl = false;
+                }}
             }}
 
             function stripDockTokenSuffix(val) {{
                 return String(val || "")
                     .replace(/__ENTER_COMMIT_TGL_A[01]_C[01](?:_T[0-9:]*)?__$/, "")
+                    .replace(/__DTL_OPEN_TGL_A[01]_C[01](?:_T[0-9:]*)?__$/, "")
                     .replace(/__TGL_A[01]_C[01](?:_T[0-9:]*)?__$/, "");
             }}
 
@@ -2562,8 +2678,8 @@ def render_floating_kakao_todo_overlay() -> None:
                 btn.style.setProperty("color", "#FFFFFF", "important");
                 if (isSunken) {{
                     btn.classList.add("tds-dock-btn-sunken");
-                    btn.style.setProperty("background", "#1B64DA", "important");
-                    btn.style.setProperty("background-color", "#1B64DA", "important");
+                    btn.style.setProperty("background", "#1854BA", "important");
+                    btn.style.setProperty("background-color", "#1854BA", "important");
                     btn.style.setProperty("border", "2px solid #0F3882", "important");
                     btn.style.setProperty("box-shadow", "inset 0 4px 7px rgba(10, 32, 78, 0.65), inset 0 1px 2px rgba(10, 32, 78, 0.85)", "important");
                     btn.style.setProperty("padding-top", "3px", "important");
@@ -2577,35 +2693,50 @@ def render_floating_kakao_todo_overlay() -> None:
                 }}
             }}
 
-            function triggerReactEnterCommit(chatInp) {{
+            function readCurrentDualTimeFromDOM() {{
+                const dState = parentWin._tdsDockToggleState;
+                const dualBox = parentDoc.querySelector(".tds-dual-time-box");
+                if (dualBox) {{
+                    const hEl = dualBox.querySelector(".tds-hour-inp");
+                    const mEl = dualBox.querySelector(".tds-min-inp");
+                    if (hEl) dState.hourStr = sanitizeHourDigits(hEl.value);
+                    if (mEl) dState.minStr = sanitizeMinDigits(mEl.value);
+                }}
+                return formatDualTimeForCommit(dState.hourStr, dState.minStr);
+            }}
+
+            function triggerReactCommitPayload(chatInp, modeTag) {{
                 if (!chatInp) return;
                 const dState = parentWin._tdsDockToggleState;
                 const rawTitle = stripDockTokenSuffix(chatInp.value || "").trim();
-                if (!rawTitle) return;
+                if (modeTag === "ENTER" && !rawTitle) return;
 
                 const aBit = dState.alarm ? "1" : "0";
                 const cBit = dState.cal ? "1" : "0";
-                const timeFormatted = formatDualTimeForCommit(dState.hourStr, dState.minStr);
-                const encodedVal = rawTitle + `__ENTER_COMMIT_TGL_A${{aBit}}_C${{cBit}}_T${{timeFormatted}}__`;
+                const timeFormatted = readCurrentDualTimeFromDOM();
+                const prefix = modeTag === "DETAIL" ? "__DTL_OPEN_TGL_" : "__ENTER_COMMIT_TGL_";
+                const encodedVal = rawTitle + `${{prefix}}A${{aBit}}_C${{cBit}}_T${{timeFormatted}}__`;
 
                 dState.allowEnterCommit = true;
                 const nativeSetter = Object.getOwnPropertyDescriptor(parentWin.HTMLInputElement.prototype, "value").set;
                 nativeSetter.call(chatInp, encodedVal);
                 chatInp.dispatchEvent(new Event("input", {{ bubbles: true }}));
 
-                // 등록 후 상태 초기화
-                dState.alarm = false;
-                dState.cal = false;
-                dState.dtl = false;
-                dState.hourStr = "";
-                dState.minStr = "";
-
-                const dualBox = parentDoc.querySelector(".tds-dual-time-box");
-                if (dualBox) {{
-                    const hEl = dualBox.querySelector(".tds-hour-inp");
-                    const mEl = dualBox.querySelector(".tds-min-inp");
-                    if (hEl) hEl.value = "";
-                    if (mEl) mEl.value = "";
+                if (modeTag === "ENTER") {{
+                    dState.alarm = false;
+                    dState.cal = false;
+                    dState.dtl = false;
+                    dState.hourStr = "";
+                    dState.minStr = "";
+                    const dualBox = parentDoc.querySelector(".tds-dual-time-box");
+                    if (dualBox) {{
+                        const hEl = dualBox.querySelector(".tds-hour-inp");
+                        const mEl = dualBox.querySelector(".tds-min-inp");
+                        if (hEl) hEl.value = "";
+                        if (mEl) mEl.value = "";
+                    }}
+                }} else {{
+                    dState.dtl = false;
                 }}
 
                 setTimeout(function() {{
@@ -2618,8 +2749,8 @@ def render_floating_kakao_todo_overlay() -> None:
                         bubbles: true,
                         cancelable: true
                     }}));
-                    setTimeout(function() {{ dState.allowEnterCommit = false; }}, 300);
-                }}, 30);
+                    setTimeout(function() {{ dState.allowEnterCommit = false; }}, 350);
+                }}, 25);
             }}
 
             function bindMonthArrowButtons() {{
@@ -2697,7 +2828,8 @@ def render_floating_kakao_todo_overlay() -> None:
                                 ev.stopPropagation();
                                 ev.stopImmediatePropagation();
                                 syncTimeState();
-                                triggerReactEnterCommit(chatInp);
+                                const curChatInp = parentDoc.querySelector('.st-key-todo_bottom_dock_a [class*="st-key-dock_chat_wrap_"] input');
+                                triggerReactCommitPayload(curChatInp || chatInp, "ENTER");
                                 return;
                             }}
                             if (idx === 0 && ((ev.key === "Tab" && !ev.shiftKey) || ev.key === ":" || (ev.key === "ArrowRight" && this.selectionStart === this.value.length))) {{
@@ -2726,7 +2858,6 @@ def render_floating_kakao_todo_overlay() -> None:
                                 ev.stopPropagation();
                                 return;
                             }}
-                            // 시간 칸에 이미 2자리 숫자가 차 있고 선택영역이 없을 때 숫자를 더 치면 분 칸으로 자연스럽게 연결
                             if (idx === 0 && this.value.length >= 2 && this.selectionStart === this.selectionEnd) {{
                                 ev.preventDefault();
                                 ev.stopPropagation();
@@ -2740,13 +2871,76 @@ def render_floating_kakao_todo_overlay() -> None:
                 return dualBox;
             }}
 
+            // 전역 문서 캡처 핸들러:
+            // 1) [알림], [달력] 버튼 클릭 시 React까지 이벤트가 가지 않도록 최상단에서 가로채어 즉시 Sunken 입체 토글!
+            // 2) [상세] 버튼 클릭 시 현재 입력된 할 일 + [시:분] + [알림]·[달력] 상태를 묶어 모달 오픈!
+            // 3) 할 일 입력칸에서 Tab이나 마우스로 포커스가 빠질 때(blur/focusout) 자동 등록되는 현상 완전 차단!
+            if (parentWin._tdsGlobalDocClickHandler) {{
+                parentDoc.removeEventListener("click", parentWin._tdsGlobalDocClickHandler, true);
+            }}
+            parentWin._tdsGlobalDocClickHandler = function(ev) {{
+                const t = ev.target;
+                if (!t || !t.closest) return;
+                const dockEl = parentDoc.querySelector('.st-key-todo_bottom_dock_a');
+                if (!dockEl || !dockEl.contains(t)) return;
+
+                const dState = parentWin._tdsDockToggleState;
+                const alarmBtn = t.closest('[class*="st-key-btn_dock_alarm_"] button');
+                if (alarmBtn) {{
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    ev.stopImmediatePropagation();
+                    dState.alarm = !dState.alarm;
+                    applyButtonVisualState(alarmBtn, dState.alarm);
+                    return;
+                }}
+
+                const calBtn = t.closest('[class*="st-key-btn_dock_cal_"] button');
+                if (calBtn) {{
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    ev.stopImmediatePropagation();
+                    dState.cal = !dState.cal;
+                    applyButtonVisualState(calBtn, dState.cal);
+                    return;
+                }}
+
+                const dtlBtn = t.closest('[class*="st-key-btn_dock_detail_"] button');
+                if (dtlBtn) {{
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    ev.stopImmediatePropagation();
+                    const chatInp = dockEl.querySelector('[class*="st-key-dock_chat_wrap_"] input');
+                    triggerReactCommitPayload(chatInp, "DETAIL");
+                    return;
+                }}
+            }};
+            parentDoc.addEventListener("click", parentWin._tdsGlobalDocClickHandler, true);
+
+            if (parentWin._tdsGlobalBlurHandler) {{
+                ["focusout", "blur", "change"].forEach(evtName => {{
+                    parentDoc.removeEventListener(evtName, parentWin._tdsGlobalBlurHandler, true);
+                }});
+            }}
+            parentWin._tdsGlobalBlurHandler = function(ev) {{
+                const t = ev.target;
+                if (t && t.closest && t.closest('[class*="st-key-dock_chat_wrap_"]')) {{
+                    if (!parentWin._tdsDockToggleState.allowEnterCommit) {{
+                        ev.stopPropagation();
+                        ev.stopImmediatePropagation();
+                    }}
+                }}
+            }};
+            ["focusout", "blur", "change"].forEach(evtName => {{
+                parentDoc.addEventListener(evtName, parentWin._tdsGlobalBlurHandler, true);
+            }});
+
             function bindDockMultiToggleAndKeys() {{
                 bindMonthArrowButtons();
 
                 const dockEl = parentDoc.querySelector('.st-key-todo_bottom_dock_a');
                 if (!dockEl) return;
 
-                // Press Enter to apply 및 툴팁 완전 제거
                 parentDoc.querySelectorAll('[data-testid="InputInstructions"]').forEach(el => {{
                     el.style.display = "none";
                     el.remove();
@@ -2764,7 +2958,6 @@ def render_floating_kakao_todo_overlay() -> None:
                 const dualBox = mountSplitTimeBox(dockEl, chatInp);
                 const hourInp = dualBox ? dualBox.querySelector(".tds-hour-inp") : null;
 
-                // 만약 입력칸에 내부 토큰 꼬리표가 남아 있으면 화면에서는 깔끔하게 제거
                 if (chatInp && !dState.allowEnterCommit) {{
                     const stripped = stripDockTokenSuffix(chatInp.value || "");
                     if (stripped !== chatInp.value) {{
@@ -2774,74 +2967,16 @@ def render_floating_kakao_todo_overlay() -> None:
                     }}
                 }}
 
+                // 모달이 실제로 열려 있을 때만 [상세] 버튼이 눌려 보이게 하고, 기본 화면에서는 항상 평면(Flat) 유지!
+                const isDialogOpen = !!parentDoc.querySelector('div[data-testid="stDialog"]');
+                dState.dtl = isDialogOpen;
+
                 applyButtonVisualState(alarmBtn, dState.alarm);
                 applyButtonVisualState(calBtn, dState.cal);
-                applyButtonVisualState(dtlBtn, dState.dtl);
+                applyButtonVisualState(dtlBtn, isDialogOpen);
 
-                // [알림] 버튼: 클릭 시 서버 리런을 막고 즉시 안으로 꾹 눌린 오목 입체(Sunken) 토글
-                if (alarmBtn && !alarmBtn._boundMultiToggle) {{
-                    alarmBtn._boundMultiToggle = true;
-                    alarmBtn.addEventListener("click", function(ev) {{
-                        ev.preventDefault();
-                        ev.stopPropagation();
-                        ev.stopImmediatePropagation();
-                        dState.alarm = !dState.alarm;
-                        applyButtonVisualState(alarmBtn, dState.alarm);
-                    }}, true);
-                }}
-
-                // [달력] 버튼: 클릭 시 서버 리런을 막고 즉시 안으로 꾹 눌린 오목 입체(Sunken) 토글
-                if (calBtn && !calBtn._boundMultiToggle) {{
-                    calBtn._boundMultiToggle = true;
-                    calBtn.addEventListener("click", function(ev) {{
-                        ev.preventDefault();
-                        ev.stopPropagation();
-                        ev.stopImmediatePropagation();
-                        dState.cal = !dState.cal;
-                        applyButtonVisualState(calBtn, dState.cal);
-                    }}, true);
-                }}
-
-                // [상세] 버튼: 클릭 시 [상세]도 오목 입체(Sunken) 상태로 만들면서 중앙 상세모달 오픈
-                if (dtlBtn && !dtlBtn._boundMultiToggle) {{
-                    dtlBtn._boundMultiToggle = true;
-                    dtlBtn.addEventListener("mousedown", function() {{
-                        dState.dtl = true;
-                        applyButtonVisualState(dtlBtn, true);
-                        if (chatInp) {{
-                            const rawT = stripDockTokenSuffix(chatInp.value || "").trim();
-                            const aBit = dState.alarm ? "1" : "0";
-                            const cBit = dState.cal ? "1" : "0";
-                            const timeFormatted = formatDualTimeForCommit(dState.hourStr, dState.minStr);
-                            const nativeSetter = Object.getOwnPropertyDescriptor(parentWin.HTMLInputElement.prototype, "value").set;
-                            nativeSetter.call(chatInp, rawT + `__TGL_A${{aBit}}_C${{cBit}}_T${{timeFormatted}}__`);
-                            chatInp.dispatchEvent(new Event("input", {{ bubbles: true }}));
-                        }}
-                    }}, true);
-                }}
-
-                // 할 일 입력칸 제어:
-                // 1) Tab을 누르거나 다른 칸을 클릭해 포커스가 빠질 때(blur/focusout) React가 서버로 제출하는 것을 캡처 단계에서 완전 차단
-                // 2) Tab 누르면 [ 시 : 분 ]의 '시간(시)' 입력칸으로 즉시 포커스 이동
-                // 3) 오직 Enter 키를 쳤을 때만 등록
-                if (!parentWin._tdsGlobalBlurGuardBound) {{
-                    parentWin._tdsGlobalBlurGuardBound = true;
-                    ["focusout", "blur", "change"].forEach(evtName => {{
-                        parentDoc.addEventListener(evtName, function(ev) {{
-                            const t = ev.target;
-                            if (t && t.closest && t.closest('[class*="st-key-dock_chat_wrap_"]')) {{
-                                if (!parentWin._tdsDockToggleState.allowEnterCommit) {{
-                                    ev.stopPropagation();
-                                    ev.stopImmediatePropagation();
-                                }}
-                            }}
-                        }}, true);
-                    }});
-                }}
-
-                if (chatInp && !chatInp._boundStrictEnter) {{
-                    chatInp._boundStrictEnter = true;
-
+                if (chatInp && !chatInp._boundStrictEnterV9) {{
+                    chatInp._boundStrictEnterV9 = true;
                     chatInp.addEventListener("keydown", function(ev) {{
                         if (ev.key === "Tab" && !ev.shiftKey) {{
                             ev.preventDefault();
@@ -2857,7 +2992,7 @@ def render_floating_kakao_todo_overlay() -> None:
                                 ev.preventDefault();
                                 ev.stopPropagation();
                                 ev.stopImmediatePropagation();
-                                triggerReactEnterCommit(chatInp);
+                                triggerReactCommitPayload(chatInp, "ENTER");
                             }}
                         }}
                     }}, true);
@@ -3455,7 +3590,12 @@ def render_floating_kakao_todo_overlay() -> None:
                     serverKstIso: SERVER_KST_ISO
                 }};
             }} else {{
+                const prevLen = (parentWin._tdsKakaoState.todos || []).length;
                 parentWin._tdsKakaoState.todos = TODOS_DATA;
+                if (TODOS_DATA.length > prevLen) {{
+                    parentWin._tdsKakaoState.bubbleDismissed = false;
+                    parentWin._tdsKakaoState.bubbleIdx = 0;
+                }}
                 parentWin._tdsKakaoState.serverKstIso = SERVER_KST_ISO;
                 if (INIT_OPEN !== parentWin._tdsKakaoState._lastServerOpen) {{
                     parentWin._tdsKakaoState.open = INIT_OPEN;
@@ -3482,36 +3622,46 @@ def render_floating_kakao_todo_overlay() -> None:
             }}
 
             parentWin._tdsActiveCalFrame = frameEl;
-            if (!parentWin._tdsCalCleanupTimer) {{
-                parentWin._tdsCalCleanupTimer = parentWin.setInterval(function() {{
-                    const activeFr = parentWin._tdsActiveCalFrame;
-                    if (!activeFr || !parentDoc.body.contains(activeFr)) {{
-                        const r = parentDoc.getElementById("tds-kakao-floating-root");
-                        if (r) r.remove();
-                        if (parentWin._tdsKakaoState) {{
-                            parentWin._tdsKakaoState.customPos = null;
-                            parentWin._tdsKakaoState.open = false;
-                        }}
-                        parentWin.clearInterval(parentWin._tdsCalCleanupTimer);
-                        parentWin._tdsCalCleanupTimer = null;
-                        return;
+            parentWin._tdsCalCleanupTimer = parentWin.setInterval(function() {{
+                const activeFr = parentWin._tdsActiveCalFrame;
+                if (!activeFr || !parentDoc.body.contains(activeFr)) {{
+                    const r = parentDoc.getElementById("tds-kakao-floating-root");
+                    if (r) r.remove();
+                    if (parentWin._tdsKakaoState) {{
+                        parentWin._tdsKakaoState.customPos = null;
+                        parentWin._tdsKakaoState.open = false;
                     }}
-                    bindDockMultiToggleAndKeys();
-                    try {{
-                        const kstNow = new Date(new Date().toLocaleString("en-US", {{ timeZone: "Asia/Seoul" }}));
-                        const y = kstNow.getFullYear();
-                        const m = String(kstNow.getMonth() + 1).padStart(2, "0");
-                        const d = String(kstNow.getDate()).padStart(2, "0");
-                        const curIso = `${{y}}-${{m}}-${{d}}`;
-                        if (parentWin._tdsKakaoState && parentWin._tdsKakaoState.serverKstIso && curIso !== parentWin._tdsKakaoState.serverKstIso) {{
-                            parentWin._tdsKakaoState.serverKstIso = curIso;
-                            const todayBtn = Array.from(parentDoc.querySelectorAll('section[data-testid="stSidebar"] button'))
-                                .find(b => (b.textContent || "").indexOf("오늘 날짜로 즉시 이동") >= 0);
-                            if (todayBtn) todayBtn.click();
+                    parentWin.clearInterval(parentWin._tdsCalCleanupTimer);
+                    parentWin._tdsCalCleanupTimer = null;
+                    return;
+                }}
+                bindDockMultiToggleAndKeys();
+                try {{
+                    const kstNow = new Date(new Date().toLocaleString("en-US", {{ timeZone: "Asia/Seoul" }}));
+                    const y = kstNow.getFullYear();
+                    const m = String(kstNow.getMonth() + 1).padStart(2, "0");
+                    const d = String(kstNow.getDate()).padStart(2, "0");
+                    const hh = String(kstNow.getHours()).padStart(2, "0");
+                    const mm = String(kstNow.getMinutes()).padStart(2, "0");
+                    const curIso = `${{y}}-${{m}}-${{d}}`;
+                    const curHm = `${{hh}}:${{mm}}`;
+
+                    // 오늘 KST 시각 도달 시 종 아이콘 실시간 반짝임 활성화
+                    parentDoc.querySelectorAll(".tds-bell-pure[data-alarm-time]").forEach(bellEl => {{
+                        const alarmHm = bellEl.getAttribute("data-alarm-time") || "";
+                        if (!alarmHm || curHm >= alarmHm) {{
+                            bellEl.classList.add("sparkle");
                         }}
-                    }} catch (err) {{}}
-                }}, 400);
-            }}
+                    }});
+
+                    if (parentWin._tdsKakaoState && parentWin._tdsKakaoState.serverKstIso && curIso !== parentWin._tdsKakaoState.serverKstIso) {{
+                        parentWin._tdsKakaoState.serverKstIso = curIso;
+                        const todayBtn = Array.from(parentDoc.querySelectorAll('section[data-testid="stSidebar"] button'))
+                            .find(b => (b.textContent || "").indexOf("오늘 날짜로 즉시 이동") >= 0);
+                        if (todayBtn) todayBtn.click();
+                    }}
+                }} catch (err) {{}}
+            }}, 350);
 
             function escHtml(v) {{
                 return String(v == null ? "" : v)
