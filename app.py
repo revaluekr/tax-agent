@@ -8,6 +8,8 @@ import hmac
 import hashlib
 import inspect
 import threading
+import html
+import secrets
 import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
@@ -1249,6 +1251,154 @@ def check_api_expiry_alerts() -> tuple[list[dict], list[dict]]:
 def get_background_task_manager() -> dict:
     return {"tasks": {}, "lock": threading.Lock()}
 
+
+# ---------------------------------------------------------
+# [동시성] 에이전트 동시 실행 상한 · 작업 TTL 정리
+# ---------------------------------------------------------
+AGENT_MAX_CONCURRENCY = max(1, int(os.environ.get("AGENT_MAX_CONCURRENCY", "6") or 6))
+AGENT_MAX_LIVE_TASKS = max(4, int(os.environ.get("AGENT_MAX_LIVE_TASKS", "64") or 64))
+_TASK_DONE_TTL_SEC = 6 * 3600          # 세션이 사라져 수거되지 않은 완료 작업 보관 한도
+_TASK_RUNNING_HARD_TTL_SEC = 2 * 3600  # 스레드가 죽었는데 running으로 남은 작업 정리 기준
+
+
+@st.cache_resource
+def _agent_concurrency_gate() -> threading.BoundedSemaphore:
+    return threading.BoundedSemaphore(AGENT_MAX_CONCURRENCY)
+
+
+def _sweep_stale_tasks_locked(mgr: dict, now: float | None = None) -> int:
+    """mgr["lock"]을 잡은 상태에서 호출: 오래된 완료 작업·죽은 스레드 작업을 제거해 메모리 누수를 막습니다."""
+    now = time.time() if now is None else now
+    removed = 0
+    for k, t in list(mgr["tasks"].items()):
+        age = now - float(t.get("started_at", now) or now)
+        th = t.get("thread")
+        dead = th is not None and not th.is_alive()
+        if (t.get("status") == "done" and age > _TASK_DONE_TTL_SEC) or (
+            t.get("status") == "running" and (dead or age > _TASK_RUNNING_HARD_TTL_SEC)
+        ):
+            mgr["tasks"].pop(k, None)
+            removed += 1
+    return removed
+
+
+# ---------------------------------------------------------
+# [보안] 관리자 PIN 해시(scrypt) · 무차별 대입 차단 · 렌더링 HTML 새니타이저
+# ---------------------------------------------------------
+_MANAGER_PIN_MIN_LEN = 8
+_AUTH_WINDOW_SEC = 15 * 60
+_AUTH_MAX_FAILS_PER_CLIENT = 5
+_AUTH_MAX_FAILS_GLOBAL = 30
+_WS_MAX_NEW_CODES_PER_CLIENT = 15
+
+
+@st.cache_resource
+def _auth_throttle_state() -> dict:
+    return {"lock": threading.Lock(), "events": {}}
+
+
+def _client_fingerprint() -> str:
+    """프록시가 넘겨준 클라이언트 IP(X-Forwarded-For)가 있으면 그것, 없으면 브라우저 세션 ID 기준."""
+    ip = ""
+    try:
+        hdrs = getattr(getattr(st, "context", None), "headers", None) or {}
+        ip = str(hdrs.get("X-Forwarded-For") or hdrs.get("x-forwarded-for") or "").split(",")[0].strip()
+    except Exception:
+        ip = ""
+    if ip:
+        return "ip:" + ip
+    sid = st.session_state.get("_client_sid")
+    if not sid:
+        sid = secrets.token_hex(8)
+        st.session_state["_client_sid"] = sid
+    return "sid:" + sid
+
+
+def _throttle_count(bucket: str, key: str, now: float | None = None) -> int:
+    now = time.time() if now is None else now
+    stt = _auth_throttle_state()
+    with stt["lock"]:
+        dq = stt["events"].setdefault((bucket, key), [])
+        dq[:] = [t for t in dq if now - t < _AUTH_WINDOW_SEC]
+        return len(dq)
+
+
+def _throttle_hit(bucket: str, key: str, now: float | None = None) -> None:
+    now = time.time() if now is None else now
+    stt = _auth_throttle_state()
+    with stt["lock"]:
+        stt["events"].setdefault((bucket, key), []).append(now)
+        if len(stt["events"]) > 20_000:   # 메모리 상한
+            for k in list(stt["events"].keys())[:5_000]:
+                stt["events"].pop(k, None)
+
+
+def _manager_auth_locked() -> bool:
+    cid = _client_fingerprint()
+    return (_throttle_count("pin_fail", cid) >= _AUTH_MAX_FAILS_PER_CLIENT
+            or _throttle_count("pin_fail", "*") >= _AUTH_MAX_FAILS_GLOBAL)
+
+
+def _record_manager_auth_failure() -> None:
+    _throttle_hit("pin_fail", _client_fingerprint())
+    _throttle_hit("pin_fail", "*")
+
+
+_SAFE_HTML_TAGS = {
+    "div", "span", "strong", "b", "i", "em", "u", "br", "p", "ul", "ol", "li", "table", "thead", "tbody",
+    "tr", "th", "td", "a", "code", "pre", "sup", "sub", "small", "details", "summary", "hr", "h1", "h2",
+    "h3", "h4", "h5", "h6", "blockquote", "mark", "del", "s", "caption", "colgroup", "col",
+}
+_SAFE_HTML_ATTRS = {"class", "href", "target", "rel", "title", "id", "colspan", "rowspan", "align", "style"}
+_HTML_TAG_RE = re.compile(r"<(/?)([A-Za-z][A-Za-z0-9-]*)((?:[^<>\"']|\"[^\"]*\"|'[^']*')*)(/?)>")
+_HTML_ATTR_RE = re.compile(r"([A-Za-z_:][-A-Za-z0-9_:.]*)\s*(?:=\s*(\"[^\"]*\"|'[^']*'|[^\s\"'>]+))?")
+_DANGEROUS_BLOCK_RE = re.compile(r"<(script|style|iframe|object|embed|svg|math|template|noscript|xmp|textarea|title)\b.*?(?:</\1\s*>|$)", re.I | re.S)
+_UNSAFE_URL_RE = re.compile(r"^\s*(?:javascript|vbscript|data|file):", re.I)
+_UNSAFE_STYLE_RE = re.compile(r"expression\s*\(|url\s*\(|@import|behavior\s*:|javascript:", re.I)
+
+
+def _sanitize_render_html(text: str) -> str:
+    """
+    LLM 답변·사용자 메시지에 섞여 들어온 HTML을 허용 목록 기준으로 정화합니다 (저장형 XSS 차단).
+    - 허용 태그 외 태그는 '&lt;'로 무력화, on* 이벤트 속성·javascript:/data: URL·위험 CSS 제거
+    - 앱이 직접 만드는 <div class=...>, <strong>, <a href="https://..."> 등은 그대로 유지
+    """
+    if not text or "<" not in text:
+        return text or ""
+    t = _DANGEROUS_BLOCK_RE.sub(lambda m: html.escape(m.group(0)), text)
+    t = t.replace("<!--", "&lt;!--")
+
+    def _fix_tag(m: re.Match) -> str:
+        closing, name, attrs, selfclose = m.group(1), m.group(2).lower(), m.group(3) or "", m.group(4)
+        if name not in _SAFE_HTML_TAGS:
+            return html.escape(m.group(0))
+        if closing:
+            return f"</{name}>"
+        kept = []
+        for am in _HTML_ATTR_RE.finditer(attrs):
+            an = am.group(1).lower()
+            av = am.group(2) or '""'
+            if an not in _SAFE_HTML_ATTRS:
+                continue
+            raw_v = av[1:-1] if av[:1] in ("'", '"') else av
+            raw_v = html.unescape(raw_v)
+            if an == "href" and (_UNSAFE_URL_RE.search(raw_v) or not re.match(r"^(?:https?://|#|/)", raw_v.strip())):
+                continue
+            if an == "style" and _UNSAFE_STYLE_RE.search(raw_v):
+                continue
+            kept.append(f'{an}="{html.escape(raw_v, quote=True)}"')
+        if name == "a":
+            kept = [k for k in kept if not k.startswith("rel=")] + ['rel="noopener noreferrer"']
+        attr_s = (" " + " ".join(kept)) if kept else ""
+        return f"<{name}{attr_s}{' /' if selfclose else ''}>"
+
+    return _HTML_TAG_RE.sub(_fix_tag, t)
+
+
+def _escape_user_text(text: str) -> str:
+    """사용자 입력은 HTML이 필요 없으므로 '<'만 무력화합니다 (마크다운 서식은 유지)."""
+    return (text or "").replace("<", "&lt;")
+
 def _log_custom_tokens(model_id: str, in_tok: int, out_tok: int, count_call: bool = True, room_key: str = "") -> None:
     if hasattr(agent, "_record_token_usage"):
         try:
@@ -1326,7 +1476,8 @@ def get_default_workspace_data() -> dict:
         "chat_rooms": {r_id: [] for r_id in ROOM_IDS},
         "room_titles": default_titles,
         "room_files": {r_id: {"name": None, "text": "", "items": []} for r_id in ROOM_IDS},
-        "room_diff_banners": {r_id: "" for r_id in ROOM_IDS}
+        "room_diff_banners": {r_id: "" for r_id in ROOM_IDS},
+        "room_epochs": {r_id: 0 for r_id in ROOM_IDS},
     }
 
 def load_workspace_from_disk(workspace_id: str) -> dict:
@@ -1336,7 +1487,7 @@ def load_workspace_from_disk(workspace_id: str) -> dict:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             default_data = get_default_workspace_data()
-            for key in ["chat_rooms", "room_titles", "room_files", "room_diff_banners"]:
+            for key in ["chat_rooms", "room_titles", "room_files", "room_diff_banners", "room_epochs"]:
                 if key not in data:
                     data[key] = default_data[key]
                 else:
@@ -1350,13 +1501,82 @@ def load_workspace_from_disk(workspace_id: str) -> dict:
             pass
     return get_default_workspace_data()
 
+# ---------------------------------------------------------
+# [무손실 대화방 병합] 메시지 ID 합집합 + 대화방 세대(epoch)
+#  종전 규칙("메시지가 더 많은 쪽이 이긴다")의 결함:
+#   ① 두 탭에서 같은 수의 메시지를 각각 추가하면 한쪽이 유실
+#   ② 탭 A에서 '방 비우기' 후 탭 B(메모리에 옛 대화 보유)가 저장하면 지운 대화가 부활
+#   ③ 방을 비운 뒤 끝난 백그라운드 답변이 빈 방에 다시 기록
+#  새 규칙: 각 메시지에 고유 ID(mid)를 붙여 디스크∪메모리 합집합으로 병합하고,
+#           방 비우기는 세대 번호(epoch)를 올려 더 낮은 세대의 메모리·작업 결과를 버립니다.
+# ---------------------------------------------------------
+def _new_mid() -> str:
+    return uuid.uuid4().hex[:16]
+
+
+def _new_msg(role: str, content: str) -> dict:
+    return {"role": role, "content": content, "mid": _new_mid()}
+
+
+def _ensure_mids(msgs: list) -> list:
+    """mid가 없는 구버전 메시지에는 (위치, 역할, 내용) 기반 결정적 ID를 부여 → 모든 세션이 같은 ID를 계산."""
+    for idx, m in enumerate(msgs):
+        if isinstance(m, dict) and not m.get("mid"):
+            raw = f"{idx}\x00{m.get('role', '')}\x00{m.get('content', '')}"
+            m["mid"] = "L" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:15]
+    return msgs
+
+
+def _merge_room_messages(dsk_msgs: list, mem_msgs: list, dsk_epoch: int, mem_epoch: int) -> tuple[list, int]:
+    """(병합 결과, 결과 세대) — 세대가 다르면 높은 세대 쪽을 그대로, 같으면 디스크 순서 + 메모리 신규 메시지."""
+    dsk = _ensure_mids([m for m in (dsk_msgs or []) if isinstance(m, dict)])
+    mem = _ensure_mids([m for m in (mem_msgs or []) if isinstance(m, dict)])
+    if dsk_epoch > mem_epoch:
+        return list(dsk), dsk_epoch
+    if mem_epoch > dsk_epoch:
+        return list(mem), mem_epoch
+    seen = {m["mid"] for m in dsk}
+    return list(dsk) + [m for m in mem if m["mid"] not in seen], dsk_epoch
+
+
+def _merge_done_task_locked(msgs: list, t_info: dict | None, room_epoch: int, force_room: bool) -> bool:
+    """완료된 백그라운드 작업의 질문·답변을 (같은 세대일 때만) 중복 없이 합칩니다. 변경 여부 반환."""
+    if not t_info or t_info.get("status") != "done" or force_room:
+        return False
+    if int(t_info.get("room_epoch", room_epoch)) != room_epoch:
+        return False                       # 방을 비운 뒤 끝난 옛 작업 → 버림
+    changed = False
+    ans = t_info.get("response", "")
+    q_msg = t_info.get("question_msg", "")
+    if q_msg and not any(m.get("role") == "user" and m.get("content") == q_msg for m in msgs[-3:]):
+        msgs.append(_new_msg("user", q_msg))
+        changed = True
+    if ans and not any(m.get("role") == "assistant" and m.get("content") == ans for m in msgs[-3:]):
+        msgs.append(_new_msg("assistant", ans))
+        changed = True
+    return changed
+
+
+def _atomic_write_workspace(path: str, data: dict) -> None:
+    tmp_path = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex[:8]}"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, path)
+
+
+def _session_room_epochs() -> dict:
+    eps = st.session_state.get("room_epochs")
+    if not isinstance(eps, dict):
+        eps = {r_id: 0 for r_id in ROOM_IDS}
+        st.session_state.room_epochs = eps
+    return eps
+
+
 def save_workspace_to_disk(workspace_id: str, force_overwrite_room: str = ""):
     """
     [멀티룸 무손실 병합 저장]
-    대화방 1~10번을 수시로 이동하며 동시 검색할 때, 특정 방(예: 대화방 1)에서 저장을 호출하더라도
-    그사이 백그라운드 스레드가 디스크(`ws_xxxx.json`)에 먼저 기록해 둔 다른 방(예: 대화방 2~10)의 완료 답변이
-    구버전 메모리(`st.session_state.chat_rooms`)에 의해 덮어써져 증발하지 않도록
-    락(lock) 내부에서 디스크 데이터와 메모리 데이터를 방별로 비교·병합(Merge)하여 저장합니다.
+    디스크 저장본과 세션 메모리를 메시지 ID 합집합으로 병합합니다(락 내부).
+    force_overwrite_room(방 비우기)은 그 방의 세대를 올려 다른 탭·옛 작업 결과가 되살아나지 않게 합니다.
     """
     if not workspace_id:
         return
@@ -1365,55 +1585,42 @@ def save_workspace_to_disk(workspace_id: str, force_overwrite_room: str = ""):
     try:
         with mgr["lock"]:
             disk_data = load_workspace_from_disk(workspace_id)
+            dsk_eps = disk_data.setdefault("room_epochs", {r_id: 0 for r_id in ROOM_IDS})
+            mem_eps = _session_room_epochs()
             merged_rooms = {}
             for r_id in ROOM_IDS:
+                de, me = int(dsk_eps.get(r_id, 0) or 0), int(mem_eps.get(r_id, 0) or 0)
                 mem_msgs = list(st.session_state.chat_rooms.get(r_id, []))
-                dsk_msgs = list(disk_data["chat_rooms"].get(r_id, []))
-
                 if r_id == force_overwrite_room:
-                    merged_rooms[r_id] = mem_msgs
-                elif len(dsk_msgs) > len(mem_msgs):
-                    merged_rooms[r_id] = dsk_msgs
-                    st.session_state.chat_rooms[r_id] = list(dsk_msgs)
-                elif len(mem_msgs) == len(dsk_msgs) and dsk_msgs and mem_msgs:
-                    if dsk_msgs[-1].get("role") == "assistant" and mem_msgs[-1].get("role") != "assistant":
-                        merged_rooms[r_id] = dsk_msgs
-                        st.session_state.chat_rooms[r_id] = list(dsk_msgs)
-                    else:
-                        merged_rooms[r_id] = mem_msgs
+                    me = max(de, me) + 1
+                    merged, ep = _ensure_mids(mem_msgs), me
                 else:
-                    merged_rooms[r_id] = mem_msgs
-
-                # 완료("done") 상태인 백그라운드 태스크가 남아 있으면 누락 없이 병합
+                    merged, ep = _merge_room_messages(disk_data["chat_rooms"].get(r_id, []), mem_msgs, de, me)
                 t_key = f"{workspace_id}::{r_id}"
-                t_info = mgr["tasks"].get(t_key)
-                if t_info and t_info.get("status") == "done" and r_id != force_overwrite_room:
-                    ans = t_info.get("response", "")
-                    q_msg = t_info.get("question_msg", "")
-                    if q_msg and not merged_rooms[r_id]:
-                        merged_rooms[r_id].append({"role": "user", "content": q_msg})
-                    if ans and (not merged_rooms[r_id] or merged_rooms[r_id][-1].get("role") != "assistant" or merged_rooms[r_id][-1].get("content") != ans):
-                        merged_rooms[r_id].append({"role": "assistant", "content": ans})
-                    st.session_state.chat_rooms[r_id] = list(merged_rooms[r_id])
+                if _merge_done_task_locked(merged, mgr["tasks"].get(t_key), ep, r_id == force_overwrite_room):
+                    pass
+                merged_rooms[r_id] = merged
+                mem_eps[r_id] = ep
+                dsk_eps[r_id] = ep
+                st.session_state.chat_rooms[r_id] = list(merged)
 
             data = {
                 "chat_rooms": merged_rooms,
                 "room_titles": st.session_state.room_titles,
                 "room_files": st.session_state.room_files,
-                "room_diff_banners": st.session_state.get("room_diff_banners", {r_id: "" for r_id in ROOM_IDS})
+                "room_diff_banners": st.session_state.get("room_diff_banners", {r_id: "" for r_id in ROOM_IDS}),
+                "room_epochs": dsk_eps,
             }
-            tmp_path = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            os.replace(tmp_path, path)
+            _atomic_write_workspace(path, data)
     except Exception as e:
         print(f"⚠️ 자동 저장 오류: {e}")
+        st.session_state["_workspace_save_error"] = str(e)
 
 def sync_all_rooms_state(workspace_id: str) -> bool:
     """
     [1~10번 대화방 전수 무손실 동기화 엔진]
-    매 렌더링 시점 및 폴링 시점마다 1~10번 모든 방의 (1) 디스크 저장본, (2) 백그라운드 완료 태스크, (3) 세션 메모리를
-    하나로 동기화하여, 사용자가 검색 도중 어느 방으로 어떻게 이동하든 질문과 답변이 100% 보존되도록 보장합니다.
+    매 렌더링·폴링 시점마다 (1) 디스크 저장본, (2) 백그라운드 완료 작업, (3) 세션 메모리를
+    메시지 ID 합집합 + 세대 규칙으로 동기화합니다. 변경이 있을 때만 디스크에 씁니다.
     """
     if not workspace_id:
         return False
@@ -1424,59 +1631,46 @@ def sync_all_rooms_state(workspace_id: str) -> bool:
             disk_data = load_workspace_from_disk(workspace_id)
             if "chat_rooms" not in st.session_state:
                 st.session_state.chat_rooms = disk_data["chat_rooms"]
+                st.session_state.room_epochs = dict(disk_data.get("room_epochs") or {r_id: 0 for r_id in ROOM_IDS})
             if "room_titles" not in st.session_state:
                 st.session_state.room_titles = disk_data["room_titles"]
             if "room_files" not in st.session_state:
                 st.session_state.room_files = disk_data["room_files"]
             if "room_diff_banners" not in st.session_state:
                 st.session_state.room_diff_banners = disk_data.get("room_diff_banners", {r_id: "" for r_id in ROOM_IDS})
+            dsk_eps = disk_data.setdefault("room_epochs", {r_id: 0 for r_id in ROOM_IDS})
+            mem_eps = _session_room_epochs()
 
             disk_changed = False
             for r_id in ROOM_IDS:
                 st.session_state.room_files[r_id] = _normalize_room_file_entry(st.session_state.room_files.get(r_id, {}))
                 mem_msgs = list(st.session_state.chat_rooms.get(r_id, []))
                 dsk_msgs = list(disk_data["chat_rooms"].get(r_id, []))
-
-                if len(dsk_msgs) > len(mem_msgs):
-                    mem_msgs = list(dsk_msgs)
-                    st.session_state.chat_rooms[r_id] = mem_msgs
-                    any_updated = True
-                elif len(mem_msgs) > len(dsk_msgs):
-                    dsk_msgs = list(mem_msgs)
-                    disk_data["chat_rooms"][r_id] = dsk_msgs
-                    disk_changed = True
-                elif mem_msgs and dsk_msgs and mem_msgs[-1] != dsk_msgs[-1]:
-                    if dsk_msgs[-1].get("role") == "assistant" and mem_msgs[-1].get("role") != "assistant":
-                        mem_msgs = list(dsk_msgs)
-                        st.session_state.chat_rooms[r_id] = mem_msgs
-                        any_updated = True
+                de, me = int(dsk_eps.get(r_id, 0) or 0), int(mem_eps.get(r_id, 0) or 0)
+                merged, ep = _merge_room_messages(dsk_msgs, mem_msgs, de, me)
 
                 t_key = f"{workspace_id}::{r_id}"
                 t_info = mgr["tasks"].get(t_key)
                 if t_info and t_info.get("status") == "done":
-                    ans = t_info.get("response", "")
-                    q_msg = t_info.get("question_msg", "")
-                    if q_msg and not mem_msgs:
-                        mem_msgs.append({"role": "user", "content": q_msg})
-                    if ans and (not mem_msgs or mem_msgs[-1].get("role") != "assistant" or mem_msgs[-1].get("content") != ans):
-                        mem_msgs.append({"role": "assistant", "content": ans})
-                        any_updated = True
-                    st.session_state.chat_rooms[r_id] = list(mem_msgs)
-                    if disk_data["chat_rooms"].get(r_id) != mem_msgs:
-                        disk_data["chat_rooms"][r_id] = list(mem_msgs)
-                        disk_changed = True
+                    _merge_done_task_locked(merged, t_info, ep, False)
                     del mgr["tasks"][t_key]
                     any_updated = True
+
+                if [m.get("mid") for m in merged] != [m.get("mid") for m in mem_msgs] or me != ep:
+                    any_updated = True
+                if [m.get("mid") for m in merged] != [m.get("mid") for m in dsk_msgs] or de != ep:
+                    disk_changed = True
+                st.session_state.chat_rooms[r_id] = list(merged)
+                disk_data["chat_rooms"][r_id] = list(merged)
+                mem_eps[r_id] = ep
+                dsk_eps[r_id] = ep
 
             if disk_changed:
                 disk_data["room_titles"] = st.session_state.room_titles
                 disk_data["room_files"] = st.session_state.room_files
                 disk_data["room_diff_banners"] = st.session_state.get("room_diff_banners", {r_id: "" for r_id in ROOM_IDS})
-                path = get_storage_path(workspace_id)
-                tmp_path = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
-                with open(tmp_path, "w", encoding="utf-8") as f:
-                    json.dump(disk_data, f, ensure_ascii=False, indent=2)
-                os.replace(tmp_path, path)
+                disk_data["room_epochs"] = dsk_eps
+                _atomic_write_workspace(get_storage_path(workspace_id), disk_data)
     except Exception as e:
         print(f"⚠️ 멀티룸 상태 동기화 오류: {e}")
     return any_updated
@@ -1490,6 +1684,12 @@ def delete_workspace_from_disk(workspace_id: str):
             os.remove(path)
         except Exception as e:
             print(f"⚠️ 파일 삭제 오류: {e}")
+
+try:
+    _RUN_AGENT_ACCEPTS_STATUS_CB = "status_callback" in inspect.signature(run_agent).parameters
+except (TypeError, ValueError):
+    _RUN_AGENT_ACCEPTS_STATUS_CB = False
+
 
 def _background_agent_worker(
     ws_id: str,
@@ -1505,45 +1705,38 @@ def _background_agent_worker(
     def _on_live_step(msg: str):
         task_info["live_step"] = msg
 
+    gate = _agent_concurrency_gate()
     try:
+        # 동시 실행 상한: 대기 중임을 화면에 표시하고 슬롯이 날 때까지 기다립니다 (LLM·CPU 과부하 방지)
+        if not gate.acquire(blocking=False):
+            task_info["live_step"] = f"⏳ 다른 요청 처리 중 — 대기열에서 순서를 기다리는 중 (동시 처리 한도 {AGENT_MAX_CONCURRENCY}건)"
+            gate.acquire()
         try:
-            response_text = run_agent(
-                user_input=full_input,
-                raw_query=raw_query,
-                has_file=has_file,
-                room_key=room_key,
-                status_callback=_on_live_step
-            )
-        except TypeError:
-            response_text = run_agent(
-                user_input=full_input,
-                raw_query=raw_query,
-                has_file=has_file,
-                room_key=room_key
-            )
+            kwargs = dict(user_input=full_input, raw_query=raw_query, has_file=has_file, room_key=room_key)
+            # 종전: run_agent 내부 어디서든 TypeError가 나면 '구버전 시그니처'로 오인해 에이전트 전체를 재실행(LLM 비용 2배)
+            if _RUN_AGENT_ACCEPTS_STATUS_CB:
+                kwargs["status_callback"] = _on_live_step
+            response_text = run_agent(**kwargs)
+        finally:
+            gate.release()
     except Exception as e:
-        response_text = f"❌ 에이전트 실행 중 오류가 발생했습니다: {e}"
+        response_text = f"❌ 에이전트 실행 중 오류가 발생했습니다: {law_api.safe_error(e)}"   # 오류 문자열 속 API 키 마스킹
 
     try:
         mgr = get_background_task_manager()
         with mgr["lock"]:
             disk_data = load_workspace_from_disk(ws_id)
-            room_msgs = list(disk_data["chat_rooms"].get(room_id, []))
-            q_msg = task_info.get("question_msg", "")
-            if q_msg and (not room_msgs or room_msgs[-1].get("role") != "user"):
-                if not any(m.get("role") == "user" and m.get("content") == q_msg for m in room_msgs[-2:]):
-                    room_msgs.append({"role": "user", "content": q_msg})
-            if not room_msgs or room_msgs[-1].get("role") != "assistant" or room_msgs[-1].get("content") != response_text:
-                room_msgs.append({"role": "assistant", "content": response_text})
-                disk_data["chat_rooms"][room_id] = room_msgs
-                path = get_storage_path(ws_id)
-                tmp_path = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
-                with open(tmp_path, "w", encoding="utf-8") as f:
-                    json.dump(disk_data, f, ensure_ascii=False, indent=2)
-                os.replace(tmp_path, path)
+            disk_epoch = int((disk_data.get("room_epochs") or {}).get(room_id, 0) or 0)
+            if disk_epoch == int(task_info.get("room_epoch", disk_epoch)):
+                # 같은 세대일 때만 기록 (작업 중 '방 비우기'가 있었다면 옛 답변을 빈 방에 쓰지 않음)
+                room_msgs = _ensure_mids(list(disk_data["chat_rooms"].get(room_id, [])))
+                if _merge_done_task_locked(room_msgs, {**task_info, "status": "done", "response": response_text}, disk_epoch, False):
+                    disk_data["chat_rooms"][room_id] = room_msgs
+                    _atomic_write_workspace(get_storage_path(ws_id), disk_data)
             # 락(lock) 내부에서 response와 status="done"을 원자적(Atomic)으로 설정
             task_info["response"] = response_text
             task_info["status"] = "done"
+            task_info["finished_at"] = time.time()
     except Exception as e:
         print(f"⚠️ 백그라운드 디스크 저장 오류: {e}")
         task_info["response"] = response_text
@@ -2367,7 +2560,7 @@ def _trigger_agent_task(
         )
         display_prompt = f"↪️ **[{t_no}번째 답변 대상]** {display_prompt}"
 
-    current_messages.append({"role": "user", "content": display_prompt})
+    current_messages.append(_new_msg("user", display_prompt))
 
     _invisible_date_prefix = getattr(agent, "build_hidden_date_law_directive", lambda q="": "")(effective_prompt)
     if has_attached_file and not force_flash:
@@ -2399,8 +2592,24 @@ def _trigger_agent_task(
         "question_msg": display_prompt,
         "is_pro": is_pro_request,
         "live_step": "",
-        "started_at": time.time()
+        "started_at": time.time(),
+        "room_epoch": int(_session_room_epochs().get(selected_room, 0) or 0),
     }
+    task_key = f"{effective_ws_id}::{selected_room}"
+    with task_mgr["lock"]:
+        _sweep_stale_tasks_locked(task_mgr)
+        prev_task = task_mgr["tasks"].get(task_key)
+        live_running = sum(1 for t in task_mgr["tasks"].values() if t.get("status") == "running")
+        if prev_task and prev_task.get("status") == "running":
+            # 같은 방 중복 제출(더블 클릭·탭 2개) 차단 — 종전에는 확인과 등록이 분리돼 스레드가 2개 생성됨
+            current_messages.pop()
+            st.warning("이 대화방에서 이미 답변을 생성 중입니다. 완료된 뒤 다시 질문해 주세요.")
+            return
+        if live_running >= AGENT_MAX_LIVE_TASKS:
+            current_messages.pop()
+            st.warning("현재 처리 중인 요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.")
+            return
+        task_mgr["tasks"][task_key] = new_task_info   # 확인과 등록을 같은 락 구간에서 원자적으로 수행
     worker_thread = threading.Thread(
         target=_background_agent_worker,
         args=(
@@ -2415,8 +2624,6 @@ def _trigger_agent_task(
         daemon=True
     )
     new_task_info["thread"] = worker_thread
-    with task_mgr["lock"]:
-        task_mgr["tasks"][f"{effective_ws_id}::{selected_room}"] = new_task_info
     save_workspace_to_disk(effective_ws_id)
     worker_thread.start()
     st.rerun()
@@ -2502,7 +2709,35 @@ def _render_official_reason_viewer_body(
 #    + [사이트 명 또는 단체 명 / 불러오는 API정보 명 / API코드 / 🟢🟡🔴 동그라미 불 / 사이트 링크] 통합 뷰어
 # ---------------------------------------------------------
 def _hash_manager_secret(val: str) -> str:
+    """[레거시] 무염 SHA-256 — 기존 디스크 저장값 검증·업그레이드 전용. 새 해시는 _hash_manager_pin_v2."""
     return hashlib.sha256(val.strip().encode("utf-8")).hexdigest()
+
+
+def _hash_manager_pin_v2(pin: str) -> str:
+    salt = secrets.token_bytes(16)
+    dk = hashlib.scrypt(pin.strip().encode("utf-8"), salt=salt, n=2**14, r=8, p=1, dklen=32)
+    return f"scrypt$16384$8$1${salt.hex()}${dk.hex()}"
+
+
+def _verify_manager_pin(candidate: str, cfg: dict) -> bool:
+    """Secrets 평문 PIN·scrypt 해시·레거시 SHA-256 해시 모두 상수시간 비교로 검증합니다."""
+    cand = (candidate or "").strip()
+    if not cand:
+        return False
+    plain = str(cfg.get("_pin_plain") or "")
+    if plain:
+        return hmac.compare_digest(cand.encode("utf-8"), plain.strip().encode("utf-8"))
+    stored = str(cfg.get("pin_hash") or "")
+    if stored.startswith("scrypt$"):
+        try:
+            _, n, r, p_, salt_hex, dk_hex = stored.split("$")
+            dk = hashlib.scrypt(cand.encode("utf-8"), salt=bytes.fromhex(salt_hex), n=int(n), r=int(r), p=int(p_), dklen=len(dk_hex) // 2)
+            return hmac.compare_digest(dk.hex(), dk_hex)
+        except Exception:
+            return False
+    if stored:
+        return hmac.compare_digest(_hash_manager_secret(cand), stored)
+    return False
 
 def _mask_google_email(email_str: str) -> str:
     email_str = (email_str or "").strip()
@@ -2565,7 +2800,8 @@ def _load_manager_google_config() -> dict:
         cfg["email"] = env_email
         cfg["source"] = "secrets"
     if env_pin:
-        cfg["pin_hash"] = _hash_manager_secret(env_pin)
+        cfg["pin_hash"] = "secrets"          # 존재 표시만 (검증은 _pin_plain 상수시간 비교)
+        cfg["_pin_plain"] = env_pin
         cfg["source"] = "secrets"
 
     return cfg
@@ -2573,7 +2809,7 @@ def _load_manager_google_config() -> dict:
 def _save_manager_google_config(email_str: str, pin_plain: str) -> None:
     payload = {
         "email": email_str.strip().lower(),
-        "pin_hash": _hash_manager_secret(pin_plain),
+        "pin_hash": _hash_manager_pin_v2(pin_plain),
         "updated_at": datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")
     }
     _atomic_write_json_dict(MANAGER_AUTH_FILE, payload)
@@ -2594,13 +2830,15 @@ def _get_streamlit_logged_google_email() -> str:
         pass
     return ""
 
-def _check_three_tier_manager_pass(registered_email: str, registered_pin_hash: str) -> tuple[bool, str, str]:
+def _check_three_tier_manager_pass(registered_email: str, registered_pin_hash: str, mgr_cfg: dict | None = None) -> tuple[bool, str, str]:
     """
     [3단 자동 패스 검증기]
     - 1단 (Google 계정 자동 교차검증): Streamlit/OAuth에 로그인된 구글 이메일이 `MANAGER_GOOGLE_EMAIL`과 일치하면 즉시 통과
-    - 2단 (내 작업공간 암호 자동 교차검증): 좌측 사이드바 `내 작업공간 코드`에 입력한 암호가 `MANAGER_SECURITY_PIN`(또는 이메일+PIN 조합)과 일치하면 즉시 통과
-    - 3단 (PIN 단독 인증 세션): 모달에서 `MANAGER_SECURITY_PIN` 1개만 입력해 통과한 경우 세션 유지
+    - 2단 (내 작업공간 암호 자동 교차검증): 사이드바 `내 작업공간 코드`가 관리자 PIN(또는 이메일:PIN)과 일치하면 통과
+      · 코드별 검증 결과를 세션에 캐시(scrypt 재계산 방지) · 클라이언트별 서로 다른 코드 시도 수 제한(무차별 대입 차단)
+    - 3단 (PIN 단독 인증 세션): 모달에서 PIN을 입력해 통과한 경우 세션 유지
     """
+    cfg = mgr_cfg if mgr_cfg is not None else {"pin_hash": registered_pin_hash}
     oauth_google_email = _get_streamlit_logged_google_email()
     session_authed_email = str(st.session_state.get("manager_google_authed_email", "")).strip().lower()
     active_ws_code = str(st.session_state.get("active_workspace_id", "")).strip()
@@ -2610,17 +2848,24 @@ def _check_three_tier_manager_pass(registered_email: str, registered_pin_hash: s
         st.session_state.manager_google_authed_email = registered_email
         return True, "1단 자동패스 (Google 계정 이메일 자동 교차검증 완료)", oauth_google_email
 
-    # 2순위: 좌측 사이드바 '내 작업공간 코드'와 MANAGER_SECURITY_PIN 교차검증
-    if active_ws_code and registered_pin_hash and not st.session_state.get("manager_manual_locked", False):
-        ws_hash = _hash_manager_secret(active_ws_code)
-        combo_ok = False
-        if hmac.compare_digest(ws_hash, registered_pin_hash):
-            combo_ok = True
-        elif registered_email and ":" in active_ws_code:
-            em_part, pin_part = active_ws_code.split(":", 1)
-            if em_part.strip().lower() == registered_email and hmac.compare_digest(_hash_manager_secret(pin_part), registered_pin_hash):
-                combo_ok = True
-        if combo_ok:
+    # 2순위: 좌측 사이드바 '내 작업공간 코드'와 관리자 PIN 교차검증 (코드당 1회만 검증·시도 수 제한)
+    if (active_ws_code and registered_pin_hash and len(active_ws_code) >= 4
+            and not st.session_state.get("manager_manual_locked", False) and not _manager_auth_locked()):
+        code_digest = hashlib.sha256(active_ws_code.encode("utf-8")).hexdigest()
+        checked = st.session_state.setdefault("_mgr_ws_checked", {})
+        if code_digest not in checked:
+            cid = _client_fingerprint()
+            if _throttle_count("ws_probe", cid) >= _AUTH_MAX_FAILS_PER_CLIENT * 2:
+                checked[code_digest] = False
+            else:
+                ok = _verify_manager_pin(active_ws_code, cfg)
+                if not ok and registered_email and ":" in active_ws_code:
+                    em_part, pin_part = active_ws_code.split(":", 1)
+                    ok = em_part.strip().lower() == registered_email and _verify_manager_pin(pin_part, cfg)
+                if not ok:
+                    _throttle_hit("ws_probe", cid)
+                checked[code_digest] = ok
+        if checked.get(code_digest):
             st.session_state.manager_google_authed_email = registered_email or "manager@verified"
             return True, "2단 자동패스 (좌측 '내 작업공간 코드' 보안키 교차검증 완료)", oauth_google_email
 
@@ -2636,57 +2881,54 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
     registered_pin_hash = mgr_cfg.get("pin_hash", "").strip()
 
     # 최초 미등록 상태 (Secrets에도 없고 디스크에도 없을 때)
+    # [보안] 종전에는 '처음 접속한 아무나' 관리자로 등록되어 모든 API 키를 열람·교체할 수 있었습니다.
+    #        이제는 서버 운영자만 아는 MANAGER_BOOTSTRAP_TOKEN(Secrets)을 입력해야 최초 등록이 가능합니다.
     if not registered_email and not registered_pin_hash:
-        oauth_em = _get_streamlit_logged_google_email()
-        st.warning("🔒 **[보안 설정 필요] 관리자(Manager) Google 계정과 보안 PIN을 최초 1회 등록해 주세요.**")
+        bootstrap_token = _get_first_env_or_secret(["MANAGER_BOOTSTRAP_TOKEN"])
+        st.warning("🔒 **[보안 설정 필요] 관리자(Manager) 계정이 아직 등록되지 않았습니다.**")
         st.caption(
-            "Streamlit Cloud의 Secrets에 `MANAGER_GOOGLE_EMAIL`과 `MANAGER_SECURITY_PIN`을 넣어두시거나, "
-            "아래에서 최초 1회 등록하시면 **3단 자동 패스(① 구글ID 자동대조 → ② 작업공간 암호 연동 → ③ PIN 단독 해제)**가 즉시 작동합니다."
+            "Streamlit Cloud의 Secrets에 `MANAGER_GOOGLE_EMAIL`과 `MANAGER_SECURITY_PIN`(8자 이상)을 넣어 주세요. "
+            "화면에서 최초 등록하려면 Secrets에 `MANAGER_BOOTSTRAP_TOKEN`을 먼저 설정해야 합니다."
         )
-        with st.form("mgr_initial_register_form", clear_on_submit=False):
+        if not bootstrap_token:
+            return
+        oauth_em = _get_streamlit_logged_google_email()
+        with st.form("mgr_initial_register_form", clear_on_submit=True):
             st.markdown("##### 🛡️ 관리자(Manager) Google 계정 및 보안 PIN 최초 등록")
+            reg_token = st.text_input("서버 부트스트랩 토큰 (MANAGER_BOOTSTRAP_TOKEN)", type="password")
             reg_email = st.text_input(
                 "관리자 Google 이메일 주소 (MANAGER_GOOGLE_EMAIL)",
                 value=oauth_em if oauth_em else "",
                 placeholder="예: myaccount@gmail.com"
             )
-            reg_pin1 = st.text_input(
-                "관리자 전용 보안 PIN 설정 (MANAGER_SECURITY_PIN, 4자리 이상)",
-                type="password",
-                placeholder="본인만 아는 보안 PIN 입력 (좌측 작업공간 암호와 동일하게 설정하시면 자동 연동됩니다)"
-            )
-            reg_pin2 = st.text_input(
-                "관리자 전용 보안 PIN 확인",
-                type="password",
-                placeholder="보안 PIN 다시 입력"
-            )
-            submitted_reg = st.form_submit_button(
-                "✅ 관리자 등록 및 3단 자동 패스 활성화",
-                type="primary",
-                width="stretch"
-            )
+            reg_pin1 = st.text_input(f"관리자 전용 보안 PIN 설정 ({_MANAGER_PIN_MIN_LEN}자 이상)", type="password")
+            reg_pin2 = st.text_input("관리자 전용 보안 PIN 확인", type="password")
+            submitted_reg = st.form_submit_button("✅ 관리자 등록", type="primary", width="stretch")
             if submitted_reg:
                 clean_reg_em = (reg_email or "").strip().lower()
                 p1 = (reg_pin1 or "").strip()
                 p2 = (reg_pin2 or "").strip()
-                if not clean_reg_em or "@" not in clean_reg_em:
+                if _manager_auth_locked():
+                    st.error("🚫 인증 실패가 너무 많아 잠시 잠겼습니다. 15분 후 다시 시도해 주세요.")
+                elif not hmac.compare_digest((reg_token or "").strip().encode("utf-8"), bootstrap_token.encode("utf-8")):
+                    _record_manager_auth_failure()
+                    st.error("🚫 부트스트랩 토큰이 일치하지 않습니다.")
+                elif not clean_reg_em or "@" not in clean_reg_em:
                     st.error("유효한 Google 이메일 주소(예: example@gmail.com)를 입력해 주세요.")
-                elif len(p1) < 4:
-                    st.error("보안 PIN은 최소 4자리 이상 입력해 주세요.")
+                elif len(p1) < _MANAGER_PIN_MIN_LEN:
+                    st.error(f"보안 PIN은 최소 {_MANAGER_PIN_MIN_LEN}자 이상 입력해 주세요.")
                 elif p1 != p2:
                     st.error("입력하신 두 보안 PIN이 일치하지 않습니다.")
                 else:
                     _save_manager_google_config(clean_reg_em, p1)
                     st.session_state.manager_google_authed_email = clean_reg_em
                     st.session_state.manager_manual_locked = False
-                    registered_email = clean_reg_em
-                    registered_pin_hash = _hash_manager_secret(p1)
                     st.success(f"✅ 관리자({clean_reg_em}) 등록 및 인증이 완료되었습니다!")
-        if not str(st.session_state.get("manager_google_authed_email", "")).strip():
-            return
+                    st.rerun()
+        return
 
     is_manager_verified, pass_stage_label, oauth_google_email = _check_three_tier_manager_pass(
-        registered_email, registered_pin_hash
+        registered_email, registered_pin_hash, mgr_cfg
     )
 
     if not is_manager_verified:
@@ -2724,12 +2966,16 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
 
             if submitted_pin:
                 cand_pin_plain = (input_g_pin or "").strip()
-                cand_pin_hash = _hash_manager_secret(cand_pin_plain)
                 if not registered_pin_hash:
                     st.error("🚫 관리자 보안 PIN(MANAGER_SECURITY_PIN)이 설정되어 있지 않습니다. Secrets에 MANAGER_SECURITY_PIN을 추가해 주세요.")
-                elif not cand_pin_plain or not hmac.compare_digest(cand_pin_hash, registered_pin_hash):
+                elif _manager_auth_locked():
+                    st.error("🚫 인증 실패가 너무 많아 잠시 잠겼습니다. 15분 후 다시 시도해 주세요.")
+                elif not _verify_manager_pin(cand_pin_plain, mgr_cfg):
+                    _record_manager_auth_failure()
                     st.error("🚫 보안 PIN이 일치하지 않습니다.")
                 else:
+                    if mgr_cfg.get("source") == "disk" and not str(mgr_cfg.get("pin_hash", "")).startswith("scrypt$"):
+                        _save_manager_google_config(registered_email, cand_pin_plain)   # 레거시 SHA-256 → scrypt 자동 업그레이드
                     st.session_state.manager_google_authed_email = registered_email or "manager@verified"
                     st.session_state.manager_manual_locked = False
                     st.rerun()
@@ -2944,12 +3190,12 @@ def _render_api_key_manager_body(expiry_all_status: list[dict], law_prom_map: di
     with st.expander("⚙️ 관리자(Manager) Google 계정 또는 보안 PIN 변경"):
         with st.form("mgr_change_cred_form", clear_on_submit=False):
             new_mgr_em = st.text_input("변경할 관리자 Google 이메일", value=registered_email)
-            new_mgr_pw = st.text_input("새 관리자 보안 PIN (4자리 이상)", type="password")
+            new_mgr_pw = st.text_input(f"새 관리자 보안 PIN ({_MANAGER_PIN_MIN_LEN}자 이상)", type="password")
             if st.form_submit_button("🔄 관리자 보안 정보 업데이트"):
                 if "@" not in (new_mgr_em or "").strip():
                     st.error("유효한 Google 이메일을 입력해 주세요.")
-                elif len((new_mgr_pw or "").strip()) < 4:
-                    st.error("새 보안 PIN을 4자리 이상 입력해 주세요.")
+                elif len((new_mgr_pw or "").strip()) < _MANAGER_PIN_MIN_LEN:
+                    st.error(f"새 보안 PIN을 {_MANAGER_PIN_MIN_LEN}자 이상 입력해 주세요.")
                 else:
                     _save_manager_google_config(new_mgr_em.strip().lower(), new_mgr_pw.strip())
                     st.session_state.manager_google_authed_email = new_mgr_em.strip().lower()
@@ -3090,9 +3336,19 @@ with st.sidebar:
                 else st.session_state.anon_workspace_id
             )
 
+            if workspace_input.strip() and st.session_state.get("loaded_workspace_id") != effective_ws_id:
+                # 작업공간 코드 = 데이터 열쇠 → 클라이언트별 '서로 다른 코드' 전환 횟수를 제한해 대입 공격 차단
+                _cid = _client_fingerprint()
+                if _throttle_count("ws_switch", _cid) >= _WS_MAX_NEW_CODES_PER_CLIENT:
+                    st.error("작업공간 코드 변경이 너무 잦습니다. 15분 후 다시 시도해 주세요.")
+                    st.stop()
+                _throttle_hit("ws_switch", _cid)
+                if len(workspace_input.strip()) < 8:
+                    st.warning("⚠️ 8자 미만의 작업공간 코드는 다른 사람이 같은 코드를 입력하면 대화 내용이 공유될 수 있습니다. 더 긴 코드를 권장합니다.")
             if st.session_state.get("loaded_workspace_id") != effective_ws_id:
                 ws_data = load_workspace_from_disk(effective_ws_id)
                 st.session_state.chat_rooms = ws_data["chat_rooms"]
+                st.session_state.room_epochs = dict(ws_data.get("room_epochs") or {r_id: 0 for r_id in ROOM_IDS})
                 st.session_state.room_titles = ws_data["room_titles"]
                 st.session_state.room_files = ws_data["room_files"]
                 st.session_state.room_diff_banners = ws_data.get("room_diff_banners", {r_id: "" for r_id in ROOM_IDS})
@@ -3416,7 +3672,7 @@ if current_room_rev_alerts:
 
 if saved_diff_md:
     with st.expander("📊 [신·구법 비교] 조문명 / 구법내용 / 개정법내용 / 개정효과 (클릭하여 열기·닫기)", expanded=is_diff_open):
-        st.markdown(f"<div class='law-diff-banner-box'>\n\n{_format_markdown_for_screen(saved_diff_md)}\n\n</div>", unsafe_allow_html=True)
+        st.markdown(_sanitize_render_html(f"<div class='law-diff-banner-box'>\n\n{_format_markdown_for_screen(saved_diff_md)}\n\n</div>"), unsafe_allow_html=True)
         b_col1, b_col2 = st.columns([1, 5])
         with b_col1:
             if st.button("🔄 비교표 다시 생성", key=f"regen_diff_{selected_room}"):
@@ -3518,12 +3774,14 @@ with st.container(key=f"room_main_view_{effective_ws_id}_{selected_room}"):
         )
         with st.chat_message(message["role"]):
             display_content = message["content"]
+            if message["role"] != "assistant":
+                display_content = _escape_user_text(display_content)
             if message["role"] == "assistant" and hasattr(agent, "_inject_direct_law_links"):
                 try:
                     display_content = agent._inject_direct_law_links(display_content)
                 except Exception:
                     pass
-            display_content = _format_markdown_for_screen(display_content)
+            display_content = _sanitize_render_html(_format_markdown_for_screen(display_content))
             st.markdown(display_content, unsafe_allow_html=True)
 
             if message["role"] == "assistant":

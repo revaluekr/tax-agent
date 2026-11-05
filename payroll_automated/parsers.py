@@ -1273,6 +1273,7 @@ def parse_client_payroll_excel(
             student_loan_repayment=raw_rec.get("학자금상환액", 0),
             effective_table=effective_table,
             is_ceo=is_ceo_position(raw_rec.get("직급", "")),
+            year_month=meta.get("year_month") or None,
         )
 
         emp_entry: Dict[str, Any] = {
@@ -2347,6 +2348,7 @@ def apply_insurance_notices_to_employees(
     employees: List[Dict[str, Any]],
     notice_results: List[Dict[str, Any]],
     effective_table: str = "2026.03",
+    year_month: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
     logs: List[str] = []
     by_name: Dict[str, Dict[str, Any]] = {
@@ -2429,6 +2431,7 @@ def apply_insurance_notices_to_employees(
                 effective_table=effective_table,
                 is_ceo=ceo_flag,
                 income_tax_reduction_pct=float(emp.get("소득세감면율", 0) or 0),
+                year_month=year_month,
             )
             emp["기본급"] = solved["base_pay"]
 
@@ -2451,6 +2454,7 @@ def apply_insurance_notices_to_employees(
             effective_table=effective_table,
             is_ceo=ceo_flag,
             income_tax_reduction_pct=float(emp.get("소득세감면율", 0) or 0),
+            year_month=year_month,
         )
         emp.update(recalc)
         if emp.get("_nhis_absent"):
@@ -2964,6 +2968,7 @@ def parse_kakao_text_instructions(
                     children_8_20=children,
                     effective_table=effective_table,
                     income_tax_reduction_pct=float(base_e.get("소득세감면율", 0) or 0),
+                    year_month=default_year_month or None,
                 )
                 row_calc = calculate_employee_payroll_row(
                     base_pay=solved["base_pay"],
@@ -2972,6 +2977,7 @@ def parse_kakao_text_instructions(
                     children_8_20=children,
                     effective_table=effective_table,
                     income_tax_reduction_pct=float(base_e.get("소득세감면율", 0) or 0),
+                    year_month=default_year_month or None,
                 )
                 in_mode = "세후역산"
                 target_net = amount
@@ -2984,6 +2990,7 @@ def parse_kakao_text_instructions(
                     children_8_20=children,
                     effective_table=effective_table,
                     income_tax_reduction_pct=float(base_e.get("소득세감면율", 0) or 0),
+                    year_month=default_year_month or None,
                 )
                 in_mode = "세전"
                 target_net = 0
@@ -3392,6 +3399,7 @@ def parse_image_with_gemini_vision(
                             "건강보험료정산": 0, "장기요양보험료정산": 0, "국민연금정산": 0,
                         }
 
+                    _vis_ym = str(data.get("year_month") or default_year_month or "").strip() or None
                     if is_net_flag and net_t > 0:
                         solved = solve_gross_from_net_employee(
                             target_net_pay=net_t,
@@ -3401,6 +3409,7 @@ def parse_image_with_gemini_vision(
                             notice_insurance=notice_ov,
                             effective_table=effective_table,
                             is_ceo=ceo_flag,
+                            year_month=_vis_ym,
                         )
                         base_v = solved["base_pay"]
                         in_mode = "세후역산"
@@ -3424,6 +3433,7 @@ def parse_image_with_gemini_vision(
                         notice_insurance=notice_ov,
                         effective_table=effective_table,
                         is_ceo=ceo_flag,
+                        year_month=_vis_ym,
                     )
                     emp_list.append({
                         "사업장": default_workplace,

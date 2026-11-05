@@ -276,8 +276,19 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
                 )
                 if str(getattr(u, "name", "")).lower().endswith(".paybak"):
                     try:
-                        from payroll_automated.backup import decrypt_paybak_to_client_db, client_db_to_wht_markdown_by_year
-                        db_bak = decrypt_paybak_to_client_db(u.getvalue())
+                        from payroll_automated.backup import (
+                            BackupPasswordError,
+                            decrypt_paybak_to_client_db,
+                            client_db_to_wht_markdown_by_year,
+                        )
+                        cand_pw = str(
+                            st.session_state.get("pay_bk_pw_load")
+                            or st.session_state.get("pay_bk_pw_save")
+                            or st.session_state.get("ec_bk_pw_in")
+                            or st.session_state.get("ec_bk_pw1")
+                            or ""
+                        )
+                        db_bak = decrypt_paybak_to_client_db(u.getvalue(), password=cand_pw)
                         c_info_bak = db_bak.get("corp_info", {})
                         c_nm = str(c_info_bak.get("corp_name") or "").strip()
                         wp_from_bak = str(c_info_bak.get("workplace_label") or c_nm or "본점").strip()
@@ -295,8 +306,9 @@ def _page_upload(extract_file_fn, log_tokens_fn, room_key):
                                     "wp": clean_wp,
                                 }
                             continue
-                    except Exception:
-                        pass
+                    except Exception as e_bak:
+                        st.error(f"'{u.name}' 백업 복호화 실패: {e_bak} (사이드바 '작업 백업'의 비밀번호 입력란에 암호를 먼저 입력해 주세요)")
+                        continue
                 text = _read_upload_text(u, extract_file_fn, room_key)
                 auto_wp = _sanitize_workplace_label(getattr(P, "infer_workplace_name", lambda nm, tx="": "")(u.name, text), _default_workplace_label(s))
                 s["files"][u.name] = {

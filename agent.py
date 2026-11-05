@@ -2,6 +2,7 @@ import os
 import re
 import ast
 import gzip
+import zlib
 import math
 import time
 import contextvars
@@ -786,6 +787,9 @@ def register_prewarmed_law_ids(law_prom_map: dict) -> None:
                 "enf_date": str(info.get("enf_date") or ""),
             })
 
+_HTTP_FETCH_MAX_BYTES = 64 * 1024 * 1024   # 법제처 최대 법령 XML(수 MB)의 10배 이상 여유
+
+
 def _http_get_bytes_fast(url: str, timeout: int = 15) -> bytes:
     """
     [속도 개선 ③] Gzip 압축 수신(Accept-Encoding: gzip) 및 Keep-Alive 헤더를 적용해
@@ -799,12 +803,22 @@ def _http_get_bytes_fast(url: str, timeout: int = 15) -> bytes:
             "Connection": "keep-alive",
         },
     )
+    max_bytes = _HTTP_FETCH_MAX_BYTES
     with urllib.request.urlopen(req, timeout=timeout) as resp:
-        raw_bytes = resp.read()
+        raw_bytes = resp.read(max_bytes + 1)
+        if len(raw_bytes) > max_bytes:
+            raise ValueError(f"응답이 너무 큽니다(>{max_bytes // (1024 * 1024)}MB).")
         enc = (resp.info().get("Content-Encoding") or "").lower()
         if "gzip" in enc or raw_bytes[:2] == b"\x1f\x8b":
             try:
-                return gzip.decompress(raw_bytes)
+                # 압축 해제도 상한 적용 (gzip 폭탄 방어)
+                d = zlib.decompressobj(16 + zlib.MAX_WBITS)
+                out = d.decompress(raw_bytes, max_bytes)
+                if d.unconsumed_tail:
+                    raise ValueError("압축 해제 결과가 너무 큽니다.")
+                return out + d.flush()
+            except ValueError:
+                raise
             except Exception:
                 return raw_bytes
         return raw_bytes
@@ -948,6 +962,28 @@ def reset_room_usage(room_key: str) -> None:
 def get_monthly_usage(room_key: str = "") -> dict:
     return get_room_usage(room_key)
 
+_USAGE_ANON_TTL_SEC = 3 * 86400
+_USAGE_MAX_ROOMS = 5000
+
+
+def _prune_usage_rooms_locked(rooms: dict) -> None:
+    """
+    [메모리·디스크 누수 차단] 브라우저마다 새로 생기는 익명 작업공간 방 기록이 사용량 파일에 무한히 쌓여
+    LLM 호출마다 파일 전체를 읽고 쓰는 비용이 계속 커지던 문제를 막습니다.
+    - 익명(__anon_session__) 방: 마지막 기록 후 3일 경과 시 삭제
+    - 전체 방 수 상한(5,000): 초과 시 오래된 익명 방 → 오래된 일반 방 순으로 정리
+    """
+    now = time.time()
+    for k in [k for k, v in rooms.items()
+              if "__anon_session__" in str(k) and now - float((v or {}).get("updated_ts", 0) or 0) > _USAGE_ANON_TTL_SEC
+              and float((v or {}).get("updated_ts", 0) or 0) > 0]:
+        rooms.pop(k, None)
+    if len(rooms) > _USAGE_MAX_ROOMS:
+        order = sorted(rooms.items(), key=lambda kv: ("__anon_session__" not in str(kv[0]), float((kv[1] or {}).get("updated_ts", 0) or 0)))
+        for k, _ in order[: len(rooms) - _USAGE_MAX_ROOMS]:
+            rooms.pop(k, None)
+
+
 def _record_token_usage(model_id: str, in_tokens: int, out_tokens: int, count_call: bool = True, room_key: str = "") -> None:
     if in_tokens <= 0 and out_tokens <= 0:
         return
@@ -974,7 +1010,9 @@ def _record_token_usage(model_id: str, in_tokens: int, out_tokens: int, count_ca
                 stats["flash_calls"] = int(stats.get("flash_calls", 0)) + 1
         stats["limit_krw"] = ROOM_LIMIT_KRW
         stats["updated_at"] = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%m/%d %H:%M:%S")
+        stats["updated_ts"] = time.time()
         rooms[r_key] = stats
+        _prune_usage_rooms_locked(rooms)
         _save_all_usage_store(store)
 
 def _extract_and_log_response_usage(
@@ -1200,6 +1238,14 @@ _PROMULGATION_TRAIL_RE = re.compile(
 )
 _RESOLVE_LAW_CACHE: dict[str, str | None] = {}
 _RESOLVE_LAW_LOCK = threading.RLock()
+_RESOLVE_LAW_CACHE_MAX = 4096   # LLM이 만든 임의 문자열이 키가 되므로 상한 없으면 장기 실행 시 메모리 누수
+
+
+def _bound_resolve_cache() -> None:
+    if len(_RESOLVE_LAW_CACHE) > _RESOLVE_LAW_CACHE_MAX:
+        with _RESOLVE_LAW_LOCK:
+            for k in list(_RESOLVE_LAW_CACHE.keys())[: len(_RESOLVE_LAW_CACHE) // 2]:
+                _RESOLVE_LAW_CACHE.pop(k, None)
 _ARTICLE_REFS_LINE_CACHE: dict[tuple[str, int], list[tuple]] = {}
 
 def _known_law_titles(trace: dict = None) -> list[str]:
@@ -1211,6 +1257,7 @@ def _known_law_titles(trace: dict = None) -> list[str]:
     return sorted(set(_BASE_KNOWN_LAW_TITLES) | extra, key=len, reverse=True)
 
 def _resolve_law_name(prefix: str, titles: list[str] | tuple[str, ...]):
+    _bound_resolve_cache()
     p_str = (prefix or "").strip()
     if not p_str:
         return None
@@ -3403,6 +3450,151 @@ def _validate_safe_math_ast(expr: str) -> None:
             if isinstance(node.left, (ast.List, ast.Tuple)) or isinstance(node.right, (ast.List, ast.Tuple)):
                 raise ValueError("리스트/튜플 곱셈은 허용되지 않습니다.")
 
+# ──────────────────────────────────────────────────────────────────
+# [보안] eval() 제거: 크기 한도를 실행 중에 강제하는 AST 직접 해석기
+#   정적 검사(_validate_safe_math_ast)는 지수 '상수'만 볼 수 있어 (((9**999)**999)**50)처럼
+#   상수 지수 중첩으로 결과 크기가 10^(수억) 자리로 폭발하는 것을 막지 못했습니다(실측: 프로세스 무한 정지).
+#   해석기는 모든 연산 '전에' 결과 크기를 예측해 상한을 넘으면 즉시 거부합니다.
+# ──────────────────────────────────────────────────────────────────
+_CALC_MAX_INT_BITS = 256          # 2^256 ≈ 1.2×10^77 — 세무 계산 결과로 충분히 넓고, 연산 비용은 무시 가능
+_CALC_MAX_SEQ_LEN = 200
+_CALC_MAX_STEPS = 5_000
+_CALC_FUNCS = {"abs": abs, "round": round, "min": min, "max": max, "sum": sum, "pow": pow, "int": int, "float": float}
+_CALC_MATH = {name: getattr(math, name) for name in _ALLOWED_MATH_ATTRS}
+
+
+class _CalcLimitError(ValueError):
+    pass
+
+
+def _calc_check_num(v):
+    if isinstance(v, bool):
+        return int(v)
+    if isinstance(v, int):
+        if v.bit_length() > _CALC_MAX_INT_BITS:
+            raise _CalcLimitError("계산 결과가 허용 범위(약 10^77)를 넘습니다.")
+        return v
+    if isinstance(v, float):
+        if not math.isfinite(v):
+            raise _CalcLimitError("계산 결과가 무한대 또는 NaN입니다.")
+        return v
+    if isinstance(v, (list, tuple)):
+        if len(v) > _CALC_MAX_SEQ_LEN:
+            raise _CalcLimitError("목록이 너무 깁니다.")
+        return v
+    raise _CalcLimitError(f"허용되지 않는 값 형식입니다: {type(v).__name__}")
+
+
+def _calc_pow(a, b):
+    if isinstance(a, (list, tuple)) or isinstance(b, (list, tuple)):
+        raise _CalcLimitError("목록에는 거듭제곱을 쓸 수 없습니다.")
+    if isinstance(a, int) and isinstance(b, int) and b > 0:
+        # 결과 비트 수 ≈ b × bit_length(a) — 계산 전에 차단
+        if a not in (0, 1, -1) and b * max(1, abs(a).bit_length() - 1) > _CALC_MAX_INT_BITS:
+            raise _CalcLimitError("거듭제곱 결과가 너무 큽니다.")
+    elif abs(b) > 1000:
+        raise _CalcLimitError("거듭제곱 지수가 너무 큽니다(최대 1000).")
+    return pow(a, b)
+
+
+def _calc_binop(op, a, b):
+    if isinstance(op, ast.Add):
+        return a + b
+    if isinstance(op, ast.Sub):
+        return a - b
+    if isinstance(op, ast.Mult):
+        if isinstance(a, (list, tuple)) or isinstance(b, (list, tuple)):
+            raise _CalcLimitError("리스트/튜플 곱셈은 허용되지 않습니다.")
+        if isinstance(a, int) and isinstance(b, int) and a.bit_length() + b.bit_length() > _CALC_MAX_INT_BITS + 1:
+            raise _CalcLimitError("곱셈 결과가 너무 큽니다.")
+        return a * b
+    if isinstance(op, ast.Div):
+        return a / b
+    if isinstance(op, ast.FloorDiv):
+        return a // b
+    if isinstance(op, ast.Mod):
+        return a % b
+    if isinstance(op, ast.Pow):
+        return _calc_pow(a, b)
+    raise _CalcLimitError(f"허용되지 않는 연산자입니다: {type(op).__name__}")
+
+
+_CMP_OPS = {
+    ast.Eq: lambda x, y: x == y, ast.NotEq: lambda x, y: x != y, ast.Lt: lambda x, y: x < y,
+    ast.LtE: lambda x, y: x <= y, ast.Gt: lambda x, y: x > y, ast.GtE: lambda x, y: x >= y,
+}
+
+
+def _safe_eval_math(expr: str):
+    """화이트리스트 검증(_validate_safe_math_ast) 통과 후, 모든 중간값의 크기를 검사하며 AST를 직접 해석합니다."""
+    tree = ast.parse(expr, mode="eval")
+    steps = [0]
+
+    def ev(node):
+        steps[0] += 1
+        if steps[0] > _CALC_MAX_STEPS:
+            raise _CalcLimitError("수식이 너무 복잡합니다.")
+        if isinstance(node, ast.Expression):
+            return ev(node.body)
+        if isinstance(node, ast.Constant):
+            return _calc_check_num(node.value)
+        if isinstance(node, (ast.List, ast.Tuple)):
+            return _calc_check_num([ev(e) for e in node.elts])
+        if isinstance(node, ast.UnaryOp):
+            v = ev(node.operand)
+            if isinstance(node.op, ast.USub):
+                return _calc_check_num(-v)
+            if isinstance(node.op, ast.UAdd):
+                return _calc_check_num(+v)
+            if isinstance(node.op, ast.Not):
+                return not v
+            raise _CalcLimitError("허용되지 않는 단항 연산입니다.")
+        if isinstance(node, ast.BinOp):
+            return _calc_check_num(_calc_binop(node.op, ev(node.left), ev(node.right)))
+        if isinstance(node, ast.BoolOp):
+            vals = [ev(v) for v in node.values]
+            return all(vals) if isinstance(node.op, ast.And) else any(vals)
+        if isinstance(node, ast.Compare):
+            left = ev(node.left)
+            for op, comp in zip(node.ops, node.comparators):
+                right = ev(comp)
+                if not _CMP_OPS[type(op)](left, right):
+                    return False
+                left = right
+            return True
+        if isinstance(node, ast.IfExp):
+            return ev(node.body) if ev(node.test) else ev(node.orelse)
+        if isinstance(node, ast.Name):
+            if node.id == "math":
+                raise _CalcLimitError("math 모듈 자체는 값으로 쓸 수 없습니다.")
+            raise _CalcLimitError(f"허용되지 않는 식별자입니다: {node.id}")
+        if isinstance(node, ast.Attribute):
+            if isinstance(node.value, ast.Name) and node.value.id == "math" and node.attr in ("pi", "e"):
+                return getattr(math, node.attr)
+            raise _CalcLimitError("허용되지 않는 속성 접근입니다.")
+        if isinstance(node, ast.Call):
+            if node.keywords:
+                raise _CalcLimitError("키워드 인자는 허용되지 않습니다.")
+            args = [ev(a) for a in node.args]
+            if isinstance(node.func, ast.Name) and node.func.id in _CALC_FUNCS:
+                fname, fn = node.func.id, _CALC_FUNCS[node.func.id]
+            elif (isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name)
+                  and node.func.value.id == "math" and node.func.attr in _CALC_MATH and node.func.attr not in ("pi", "e")):
+                fname, fn = "math." + node.func.attr, _CALC_MATH[node.func.attr]
+            else:
+                raise _CalcLimitError("허용되지 않는 함수 호출입니다.")
+            if fname in ("pow", "math.pow") and len(args) >= 2:
+                if len(args) > 2:
+                    raise _CalcLimitError("pow의 세 번째 인자는 허용되지 않습니다.")
+                return _calc_check_num(_calc_pow(args[0], args[1]) if fname == "pow" else math.pow(args[0], args[1]))
+            if fname in ("int", "float") and args and not isinstance(args[0], (int, float)):
+                raise _CalcLimitError("int/float에는 숫자만 넣을 수 있습니다.")
+            return _calc_check_num(fn(*args))
+        raise _CalcLimitError(f"허용되지 않는 수식 구문입니다: {type(node).__name__}")
+
+    return ev(tree)
+
+
 def run_tax_calculator_for_gemini(formula_expression: str, description: str = "") -> str:
     """
     파이썬 사칙연산 수식(formula_expression)을 입력받아 단 1원의 오차 없이 정밀 계산합니다.
@@ -3415,14 +3607,12 @@ def run_tax_calculator_for_gemini(formula_expression: str, description: str = ""
     print(f"\n[시스템] 🧮 파이썬 정밀 세액 계산기 가동: [{desc_str}] 수식: {expr_str}")
     if not expr_str:
         return "❌ 수식 계산 오류 (): 빈 수식입니다 -> 숫자에 쉼표 없이 올바른 파이썬 사칙연산 수식으로 다시 호출하세요."
-    allowed_names = {
-        "abs": abs, "round": round, "min": min, "max": max, "sum": sum, "pow": pow,
-        "int": int, "float": float, "math": math
-    }
+    if len(expr_str) > 2000:   # 쉼표 정규화(정규식) 이전에 원문 길이 차단 — 거대 입력으로 인한 정규식 CPU 소모 방지
+        return "❌ 수식 계산 오류: 수식이 너무 깁니다(2000자 제한) -> 수식을 나누어 다시 호출하세요."
     try:
         clean_expr = _strip_thousands_commas_safely(formula_expression)
         _validate_safe_math_ast(clean_expr)
-        result = eval(clean_expr, {"__builtins__": {}}, allowed_names)
+        result = _safe_eval_math(clean_expr)
         if isinstance(result, (int, float)):
             return _record(
                 "detail",
@@ -4344,3 +4534,29 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False, room
             _LIVE_STATUS_CB.reset(cb_token)
         if rk_token is not None:
             _ACTIVE_ROOM_KEY.reset(rk_token)
+
+
+# ---------------------------------------------------------
+# [보안] LLM 도구 함수(*_for_gemini) 출력의 API 키 마스킹
+#  도구 결과는 LLM 입력·대화 기록·화면으로 그대로 흘러가므로, 외부 API 오류 문자열에 섞인 키를 반드시 가립니다.
+#  functools.wraps로 이름·문서·시그니처(__wrapped__)를 보존하므로 Gemini 함수 선언 자동 생성과 호환됩니다.
+# ---------------------------------------------------------
+def _redact_tool_output(fn):
+    import functools
+
+    @functools.wraps(fn)
+    def _wrapped(*args, **kwargs):
+        try:
+            res = fn(*args, **kwargs)
+        except Exception as e:
+            return f"❌ 도구 실행 오류: {law_api.safe_error(e)}"
+        return law_api.redact_secrets(res) if isinstance(res, str) else res
+    _wrapped.__redacting__ = True
+    return _wrapped
+
+
+for _tool_name, _tool_fn in list(globals().items()):
+    if _tool_name.endswith("_for_gemini") and callable(_tool_fn) and getattr(_tool_fn, "__module__", "") == __name__ \
+            and not getattr(_tool_fn, "__redacting__", False):
+        globals()[_tool_name] = _redact_tool_output(_tool_fn)
+del _tool_name, _tool_fn

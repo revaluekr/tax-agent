@@ -44,7 +44,9 @@ from .backup import (
     build_employment_credit_bridge_payload,
     build_year_month_coverage_notice,
     create_empty_client_db,
+    BackupPasswordError,
     decrypt_paybak_to_client_db,
+    decrypt_paybak_with_info,
     encrypt_client_db_to_paybak,
     get_previous_month_data,
     resolve_workplace_label,
@@ -689,6 +691,7 @@ def _on_sidebar_pay_date_change() -> None:
 
 def _recalculate_all_employee_rows(pstate: Dict[str, Any]) -> None:
     eff_tbl = pstate.get("effective_table", "2026.03")
+    ym_cur = pstate.get("year_month") or None
     pct = int(pstate.get("withholding_rate_pct", 100))
     wp_lbl = _current_workplace_label(pstate)
     new_list: List[Dict[str, Any]] = []
@@ -727,6 +730,7 @@ def _recalculate_all_employee_rows(pstate: Dict[str, Any]) -> None:
                 effective_table=eff_tbl,
                 is_ceo=ceo_flag,
                 income_tax_reduction_pct=float(emp.get("소득세감면율", 0) or 0),
+                year_month=ym_cur,
             )
             emp["기본급"] = solved["base_pay"]
 
@@ -750,6 +754,7 @@ def _recalculate_all_employee_rows(pstate: Dict[str, Any]) -> None:
             effective_table=eff_tbl,
             is_ceo=ceo_flag,
             income_tax_reduction_pct=float(emp.get("소득세감면율", 0) or 0),
+            year_month=ym_cur,
         )
         emp.update(calc)
         if emp.get("주민등록번호") or emp.get("_raw_rrn"):
@@ -1186,6 +1191,7 @@ def _build_emp_review_report(pstate: Dict[str, Any]) -> Dict[str, Any]:
             year=yr_i,
             is_ceo=is_ceo_position(e.get("직급", "")),
             ei_stability_rate=tier_rate,
+            year_month=str(ym or ""),
         )
         for k in own:
             own[k] += int(r_own.get(k, 0) or 0)
@@ -1660,7 +1666,7 @@ def render_payroll_automated_sidebar() -> None:
                 "백업 비밀번호",
                 type="password",
                 key="pay_bk_pw_save",
-                help="비밀번호를 입력해 백업 파일(.paybak)을 암호화합니다. (미입력 시 기본 보안키 적용)",
+                help="6자 이상 비밀번호로 백업 파일(.paybak)을 암호화합니다. (서버 보안키가 설정된 경우에만 미입력 허용)",
             )
             if st.button("백업 파일 만들기", width="stretch", key="btn_pay_make_bak"):
                 pstate["client_db"] = upsert_monthly_data_into_db(
@@ -1674,10 +1680,15 @@ def render_payroll_automated_sidebar() -> None:
                     workplace_mode=pstate.get("workplace_mode", "본점"),
                     workplace_custom=pstate.get("workplace_custom", ""),
                 )
-                bak_bytes = encrypt_client_db_to_paybak(pstate["client_db"], password=bk_pw)
-                c_nm = _sanitize_file_token(pstate.get("corp_name") or "거래처", "거래처")
-                wp_tag = _sanitize_file_token(_current_workplace_label(pstate) or "본점", "본점")
-                st.session_state["pay_bak_ready"] = (bak_bytes, f"{c_nm}_{wp_tag}_인건비누적DB.paybak")
+                try:
+                    bak_bytes = encrypt_client_db_to_paybak(pstate["client_db"], password=bk_pw)
+                except BackupPasswordError as e_pw:
+                    st.error(str(e_pw))
+                    bak_bytes = None
+                if bak_bytes:
+                    c_nm = _sanitize_file_token(pstate.get("corp_name") or "거래처", "거래처")
+                    wp_tag = _sanitize_file_token(_current_workplace_label(pstate) or "본점", "본점")
+                    st.session_state["pay_bak_ready"] = (bak_bytes, f"{c_nm}_{wp_tag}_인건비누적DB.paybak")
             ready_bak = st.session_state.get("pay_bak_ready")
             if ready_bak:
                 st.download_button(
@@ -1695,7 +1706,9 @@ def render_payroll_automated_sidebar() -> None:
             in_pw = st.text_input("백업 비밀번호", type="password", key="pay_bk_pw_load")
             if up_bak is not None and st.button("파일 열기", width="stretch", key="btn_pay_load_bak"):
                 try:
-                    loaded_db = decrypt_paybak_to_client_db(up_bak.getvalue(), password=in_pw)
+                    loaded_db, bak_info = decrypt_paybak_with_info(up_bak.getvalue(), password=in_pw)
+                    if bak_info.get("weak"):
+                        st.warning("이 백업은 구버전 공개 기본키(또는 평문)로 저장되어 누구나 열 수 있습니다. 6자 이상 비밀번호로 다시 백업해 주세요.")
                     pstate["client_db"] = loaded_db
                     c_info = loaded_db.get("corp_info", {})
                     if c_info.get("corp_name"):
@@ -1930,7 +1943,10 @@ def _process_uploaded_files_and_text(
 
         elif lower_nm.endswith(".paybak"):
             try:
-                loaded_db = decrypt_paybak_to_client_db(fbytes)
+                _cand_pw = str(st.session_state.get("pay_bk_pw_load") or st.session_state.get("pay_bk_pw_save") or "")
+                loaded_db, bak_info = decrypt_paybak_with_info(fbytes, password=_cand_pw)
+                if bak_info.get("weak"):
+                    pstate["chat_logs"].append(f"[보안 안내] '{fname}'은 구버전 공개 기본키로 저장된 백업입니다. 비밀번호를 걸어 다시 백업하세요.")
                 pstate["client_db"] = loaded_db
                 c_info = loaded_db.get("corp_info", {})
                 if c_info.get("corp_name"):
@@ -1957,6 +1973,7 @@ def _process_uploaded_files_and_text(
             pstate["employees"],
             notice_list,
             effective_table=eff_tbl,
+            year_month=pstate.get("year_month") or None,
         )
         pstate["employees"] = updated_emps
         pstate["notice_logs"].extend(n_logs)
@@ -2755,6 +2772,7 @@ def render_payroll_automated_main(gemini_api_key: Optional[str] = None) -> None:
                     dependents=1,
                     children_8_20=0,
                     effective_table=pstate.get("effective_table", "2026.03"),
+                    year_month=pstate.get("year_month") or None,
                 )
                 pstate["employees"].append({
                     "사업장": _current_workplace_label(pstate),

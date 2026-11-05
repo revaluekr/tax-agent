@@ -411,13 +411,15 @@ class TestComprehensiveTaxAgentSuite(unittest.TestCase):
         today_kst = cal_ui.get_kst_today()
         self.assertIsInstance(today_kst, dt.date)
         sch = cal_ui._default_schedules_for_month(today_kst.year, today_kst.month, today_kst)
-        self.assertGreaterEqual(len(sch), 4)
+        # 반환값은 {일자: [일정...]} — 종전 테스트는 '일자 수'(최대 3)를 일정 수로 오인해 항상 실패했음
+        self.assertGreaterEqual(sum(len(v) for v in sch.values()), 4)
 
         with open(os.path.join(CODE_ROOT, "calendar_scheduler", "ui.py"), "r", encoding="utf-8") as f:
             cal_src = f.read()
         self.assertIn("function escHtml(v)", cal_src)
         self.assertIn("escHtml(item.title)", cal_src)
-        self.assertIn("escHtml(item.preview)", cal_src)
+        # preview는 aiTxt(= item.ai_result || item.preview)를 거쳐 escHtml(aiTxt)로 출력됨 — 원문 문자열 grep은 오탐
+        self.assertIn("escHtml(aiTxt)", cal_src)
 
     # ──────────────────────────────────────────────────────────────────────────
     # v3 신규 기능 및 감사 포인트 검증 (test_17 ~ test_22)

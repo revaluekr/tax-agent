@@ -98,6 +98,61 @@ _FAST_INS_INT_PARAMS = {
     for yr, cfg in INSURANCE_RATES_BY_YEAR.items()
 }
 
+# 국민연금 기준소득월액 상·하한은 "연도"가 아니라 매년 7월 ~ 이듬해 6월 단위로 고시됩니다
+# (국민연금법 시행령 제5조, 보건복지부 고시). (적용 시작 귀속연월, 하한액, 상한액)
+NPS_BASE_LIMIT_PERIODS: tuple[tuple[str, int, int], ...] = (
+    ("2022-07", 350_000, 5_530_000),
+    ("2023-07", 370_000, 5_900_000),
+    ("2024-07", 390_000, 6_170_000),
+    ("2025-07", 400_000, 6_370_000),
+)
+# 마지막 고시 구간 다음 7월부터는 새 고시값을 이 표에 추가해야 합니다.
+# 추가 전에는 직전 고시값이 그대로 쓰이며, nps_base_limits()의 verified=False로 표시됩니다.
+_NPS_LIMIT_STARTS = tuple(p[0] for p in NPS_BASE_LIMIT_PERIODS)
+
+_YM_RE = re.compile(r"^\s*(\d{4})\D*(\d{1,2})")
+
+
+def normalize_year_month(year_month: Any, default: str = "2026-01") -> str:
+    """'2026-3', '2026.03', '202603', '2026년 3월' 등을 'YYYY-MM'으로 정규화합니다 (해석 불가 시 default)."""
+    s = str(year_month or "").strip()
+    m = _YM_RE.match(s)
+    if not m and re.fullmatch(r"\d{6}", s):
+        m = re.match(r"(\d{4})(\d{2})", s)
+    if m:
+        yy, mm = int(m.group(1)), int(m.group(2))
+        if 1900 <= yy <= 2999 and 1 <= mm <= 12:
+            return f"{yy:04d}-{mm:02d}"
+    return default
+
+
+def nps_base_limits(year_month: Any) -> tuple[int, int, bool]:
+    """
+    귀속연월의 국민연금 기준소득월액 (하한, 상한, 고시값_확인여부)를 반환합니다.
+    - 7월~이듬해 6월 단위 고시 구간을 그대로 따릅니다.
+    - 표의 마지막 구간보다 1년 이상 뒤면 verified=False (직전 고시값 임시 적용).
+    """
+    ym = normalize_year_month(year_month)
+    idx = bisect.bisect_right(_NPS_LIMIT_STARTS, ym) - 1
+    if idx < 0:
+        start, lo, hi = NPS_BASE_LIMIT_PERIODS[0]
+        return lo, hi, False
+    start, lo, hi = NPS_BASE_LIMIT_PERIODS[idx]
+    s_y, s_m = int(start[:4]), int(start[5:7])
+    nxt = f"{s_y + 1:04d}-{s_m:02d}"
+    verified = ym < nxt or idx < len(NPS_BASE_LIMIT_PERIODS) - 1
+    return lo, hi, verified
+
+
+def _ins_int_params(year: int, year_month: Any = None) -> tuple[int, ...]:
+    """정수 연산용 보험 파라미터. year_month가 있으면 국민연금 상·하한을 고시 구간 기준으로 덮어씁니다."""
+    params = _FAST_INS_INT_PARAMS.get(year) or _FAST_INS_INT_PARAMS[2026]
+    if year_month is None or str(year_month).strip() == "":
+        return params
+    lo, hi, _ = nps_base_limits(year_month)
+    return (lo, hi) + tuple(params[2:])
+
+
 # 최저임금 기준 (시간급 / 209시간 월 환산액)
 MINIMUM_WAGE_BY_YEAR = {
     2024: {"hourly": 9_860, "monthly_209": 2_060_740},
@@ -223,6 +278,72 @@ def is_ceo_position(pos_text: Any) -> bool:
     return s in ("대표", "대표이사", "대표자", "공동대표", "각자대표", "법인대표")
 
 
+@lru_cache(maxsize=512)
+def _period_params(ym: str) -> tuple[int, ...]:
+    """정규화된 'YYYY-MM' → (보험 정수 파라미터 9개 + 연도). 귀속연월별로 1회만 계산합니다."""
+    yr = int(ym[:4])
+    return _ins_int_params(yr, ym) + (yr,)
+
+
+def _ins_rate_components(
+    base: int,
+    params: tuple[int, ...],
+    is_ceo: bool = False,
+    nps_exempt: bool = False,
+    nhis_exempt: bool = False,
+    ei_exempt: bool = False,
+) -> tuple[int, int, int, int]:
+    """요율 기반 (국민연금, 건강보험, 장기요양, 고용보험) 정수 커널 — 모든 경로가 이 함수 하나만 사용합니다."""
+    if base <= 0:
+        return 0, 0, 0, 0
+    nps_min, nps_max, nps_num, nhis_min, nhis_max, nhis_num, ltc_num, ltc_den, ei_num = params[:9]
+    if nps_exempt:
+        nps = 0
+    else:
+        nps_base = max(nps_min, min(nps_max, (base // 1000) * 1000))
+        nps = ((nps_base * nps_num // 10000) // 10) * 10
+    if nhis_exempt:
+        nhis = ltc = 0
+    else:
+        nhis_base = max(nhis_min, min(nhis_max, base))
+        nhis = ((nhis_base * nhis_num // 100000) // 10) * 10
+        ltc = ((nhis * ltc_num // ltc_den) // 10) * 10
+    ei = 0 if (ei_exempt or is_ceo) else ((base * ei_num // 1000) // 10) * 10
+    return nps, nhis, ltc, ei
+
+
+def _notice_tuple(notice_insurance: dict[str, Any] | None) -> tuple[int, int, int, int] | None:
+    if not notice_insurance:
+        return None
+    return (
+        max(0, _safe_int(notice_insurance.get("국민연금"), 0)),
+        max(0, _safe_int(notice_insurance.get("건강보험"), 0)),
+        max(0, _safe_int(notice_insurance.get("장기요양보험료"), 0)),
+        max(0, _safe_int(notice_insurance.get("고용보험"), 0)),
+    )
+
+
+def _overlay_notice(
+    rate: tuple[int, int, int, int],
+    notice: tuple[int, int, int, int] | None,
+    params: tuple[int, ...],
+) -> tuple[int, int, int, int]:
+    """고지 금액(0 초과 항목) 우선 + 건강보험만 고지 시 장기요양은 고지 건보료 기준 산출."""
+    if notice is None:
+        return rate
+    f_nps, f_nhis, f_ltc, f_ei = notice
+    nps = f_nps if f_nps > 0 else rate[0]
+    nhis = f_nhis if f_nhis > 0 else rate[1]
+    if f_ltc > 0:
+        ltc = f_ltc
+    elif f_nhis > 0:
+        ltc = ((f_nhis * params[6] // params[7]) // 10) * 10
+    else:
+        ltc = rate[2]
+    ei = f_ei if f_ei > 0 else rate[3]
+    return nps, nhis, ltc, ei
+
+
 def calc_4ins_by_rate(
     taxable_pay: int | float,
     year: int = 2026,
@@ -230,45 +351,61 @@ def calc_4ins_by_rate(
     nps_exempt: bool = False,
     nhis_exempt: bool = False,
     ei_exempt: bool = False,
+    year_month: str | None = None,
 ) -> dict[str, int]:
     """
     과세급여(보수월액)를 기준으로 4대보험 근로자 부담분(10원 미만 절사)을 산출합니다.
-    - 2026년 기준: 국민연금 4.75%, 건강보험 3.595%, 장기요양보험 건보료 × (0.9448 / 7.19), 고용보험 0.9%
+    - 2026년 기준: 국민연금 4.75%, 건강보험 3.595%, 장기요양보험료 건보료 × (0.9448 / 7.19), 고용보험 0.9%
     - 대표이사(is_ceo=True)는 고용보험 대상에서 자동 제외됩니다.
+    - year_month('YYYY-MM')를 주면 국민연금 상·하한을 7월~이듬해 6월 고시 구간 기준으로 적용합니다.
+      (생략 시 종전과 같이 해당 연도 1~6월 구간 값을 사용)
     """
     base = max(0, _safe_int(taxable_pay, 0))
     if base <= 0:
         return {"국민연금": 0, "건강보험": 0, "장기요양보험료": 0, "고용보험": 0}
 
     yr_key = _safe_int(year, 2026)
-    params = _FAST_INS_INT_PARAMS.get(yr_key) or _FAST_INS_INT_PARAMS[2026]
-    nps_min, nps_max, nps_num, nhis_min, nhis_max, nhis_num, ltc_num, ltc_den, ei_num = params
-
-    if nps_exempt:
-        nps = 0
+    if year_month:
+        ym = normalize_year_month(year_month, f"{yr_key:04d}-01")
+        params = _period_params(ym)
     else:
-        nps_base = max(nps_min, min(nps_max, (base // 1000) * 1000))
-        nps = ((nps_base * nps_num // 10000) // 10) * 10
-
-    if nhis_exempt:
-        nhis = 0
-        ltc = 0
-    else:
-        nhis_base = max(nhis_min, min(nhis_max, base))
-        nhis = ((nhis_base * nhis_num // 100000) // 10) * 10
-        ltc = ((nhis * ltc_num // ltc_den) // 10) * 10
-
-    if ei_exempt or is_ceo:
-        ei = 0
-    else:
-        ei = ((base * ei_num // 1000) // 10) * 10
-
+        params = _ins_int_params(yr_key) + (yr_key,)
+    nps, nhis, ltc, ei = _ins_rate_components(base, params, is_ceo, nps_exempt, nhis_exempt, ei_exempt)
     return {
         "국민연금": nps,
         "건강보험": nhis,
         "장기요양보험료": ltc,
         "고용보험": ei,
     }
+
+
+def resolve_employee_insurance(
+    taxable_pay: int,
+    year_month: str,
+    is_ceo: bool = False,
+    notice_insurance: dict[str, Any] | None = None,
+) -> dict[str, int]:
+    """
+    [단일 진실 공급원] 근로자 4대보험 공제액 결정 규칙 — 정산(세전->세후)과 역산(세후->세전)이 동일 커널을 공유합니다.
+    1순위: 고지/수기 금액(0원 초과 항목만, 원단위 보존) / 2순위: 요율 산출(10원 미만 절사)
+    건강보험만 고지되고 장기요양보험료가 비어 있으면 '고지된 건강보험료' 기준으로 장기요양보험료를 산출합니다.
+    """
+    params = _period_params(normalize_year_month(year_month))
+    rate = _ins_rate_components(max(0, _safe_int(taxable_pay, 0)), params, is_ceo)
+    nps, nhis, ltc, ei = _overlay_notice(rate, _notice_tuple(notice_insurance), params)
+    return {"국민연금": nps, "건강보험": nhis, "장기요양보험료": ltc, "고용보험": ei}
+
+
+def _insurance_settlement_total(notice_insurance: dict[str, Any] | None) -> int:
+    """고지서 정산분·학자금 상환액 합계 (음수 환급 허용, 원단위 보존)."""
+    if not notice_insurance:
+        return 0
+    return (
+        _safe_int(notice_insurance.get("건강보험료정산", 0), 0)
+        + _safe_int(notice_insurance.get("장기요양보험료정산", 0), 0)
+        + _safe_int(notice_insurance.get("국민연금정산", 0), 0)
+        + _safe_int(notice_insurance.get("학자금상환액", 0), 0)
+    )
 
 
 def calc_4ins_employer_share(
@@ -279,13 +416,15 @@ def calc_4ins_employer_share(
     emp_count: int = 10,
     is_priority_support_corp: bool = False,
     ei_stability_rate: Decimal | float | str | None = None,
+    year_month: str | None = None,
 ) -> dict[str, int]:
     """
     사업주(회사) 부담 4대보험료 추정 (당월 검토보고용, 산재보험 제외).
+    - year_month를 주면 국민연금 상·하한을 해당 고시 구간 기준으로 적용합니다.
     """
     rates = INSURANCE_RATES_BY_YEAR.get(_safe_int(year, 2026), INSURANCE_RATES_BY_YEAR[2026])
     base = max(0, _safe_int(taxable_pay, 0))
-    w = worker_ins or (calc_4ins_by_rate(base, year=year, is_ceo=is_ceo) if base > 0 else {})
+    w = worker_ins or (calc_4ins_by_rate(base, year=year, is_ceo=is_ceo, year_month=year_month) if base > 0 else {})
     nps_own = _safe_int(w.get("국민연금", 0), 0)
     nhis_own = _safe_int(w.get("건강보험", 0), 0)
     ltc_own = _safe_int(w.get("장기요양보험료", 0), 0)
@@ -486,11 +625,122 @@ def calc_freelancer_33_tax(gross_amount: int | float, rate_pct: float = 3.0) -> 
     }
 
 
-def gross_up_freelancer_net_to_gross(target_net: int | float, rate_pct: float = 3.0) -> dict[str, int]:
+# ──────────────────────────────────────────────────────────────────
+# 세후 -> 세전 역산 공통 엔진: 단조 공제함수의 최소 고정점(Least Fixed Point)
+# ──────────────────────────────────────────────────────────────────
+# [수학적 근거]
+#   실수령액 N(g) = g - D(g),  D(g) = 4대보험 + 원천세 + 정산액 (정수, g에 대해 단조 비감소 계단함수 — 부양가족 1~11명).
+#   ※ 부양가족 12명 이상은 별표2 외삽식 자체가 비단조라 아래 _ascending_exact_scan 경로를 사용합니다.
+#   (1) N(g+1) - N(g) = 1 - (D(g+1) - D(g)) ≤ 1  → N은 1원씩만 오르고, 계단 경계에서만 떨어집니다.
+#       따라서 N은 정수값을 '건너뛰지' 않으며, N(0) 이상인 모든 목표값 T에 대해 N(g) = T인 g가 반드시 존재합니다.
+#       (데드존에서도 '정확히 T원'을 만드는 세전 금액은 항상 존재 → 오차 0원 보장)
+#   (2) N(g) = T  ⇔  g = T + D(g) = f(g).  f는 단조 비감소이므로 g₀ = 0에서 시작한 반복 g_{k+1} = f(g_k)는
+#       단조 증가하며 모든 고정점 g* 이하에 머뭅니다(귀납: g_k ≤ g* ⇒ f(g_k) ≤ f(g*) = g*).
+#       정수 단조 증가 수열이 위로 유계이므로 유한 단계에 정지하고, 정지점은 '최소' 고정점 = 최소 세전 금액입니다.
+#   (3) 반복은 이진탐색과 달리 비단조 술어를 쓰지 않으므로 진동(Oscillation)이 원천적으로 불가능합니다.
+#       한계 공제율 r < 1이면 오차가 r^k로 줄어 통상 10~40회에 수렴합니다.
+# 라운드 금액 선호: 최소해 g*에서 round_window원 이내에 실수령액이 정확히 같은 '더 둥근' 금액이 있으면 그것을 고릅니다
+#   (종전 정책 유지. round_window=0이면 엄격한 최소 세전 금액).
+
+ROUND_PREFERENCE_WINDOW_KRW = 100
+_MAX_FIXED_POINT_ITERS = 100_000
+_MONOTONE_TABLE_MAX_DEPENDENTS = 11      # 별표2 표 본문(1~11명)은 소득에 대해 단조 → 고정점 경로 증명 적용
+_NONMONOTONE_SCAN_CAP_KRW = 50_000_000  # 11명 초과 외삽 구간 탐색 거리 상한
+_NONMONOTONE_SCAN_MAX_STEPS = 200_000    # 평가 횟수 상한 (건너뛰기 덕분에 실측 수십~수백 회)
+_OVERSHOOT_LOOKAHEAD_KRW = 5_000
+
+
+class GrossUpConvergenceError(RuntimeError):
+    """공제함수가 단조가 아니거나(입력 테이블 이상) 유효 공제율이 100% 이상이라 고정점이 없을 때."""
+
+
+def _pick_rounder(target: int, g: int, deduction, round_window: int) -> int:
+    """g(실수령액 정확 일치 최소해)에서 round_window원 이내에 실수령액이 같은 더 둥근 금액이 있으면 그 금액."""
+    if round_window <= 0:
+        return g
+    hi = g + round_window
+    for div in (1_000_000, 100_000, 10_000, 1_000, 100, 10):
+        c = -(-g // div) * div
+        while c <= hi:
+            if c - deduction(c) == target:
+                return c
+            c += div
+    return g
+
+
+def _ascending_exact_scan(
+    target: int,
+    deduction,
+    lower_bound: int,
+    round_window: int,
+    non_tax: int = 0,
+) -> int:
     """
-    사업소득자(프리랜서) 세후 실지급액 -> 세전 지급총액 정밀 역산기.
-    - rate_pct >= 90.91%(유효세율 >= 100%)와 같은 비정상 극한 입력에서도 오버플로우나 탐색 구간 이탈 없이
-      이진탐색 + 구간 스캔으로 100% 안전하게 수렴합니다.
+    공제함수가 단조가 아닐 때(부양가족 11명 초과 법정 외삽식)의 안전 경로 — '증명된 건너뛰기' 상향 탐색.
+    [근거] 원천세 W는 과세급여 1,000만원 미만에서 1,000원 구간마다 일정하고(구간 경계에서만 감소 가능),
+           1,000만원 이상에서는 외삽식이 단조입니다. 보험료 I는 항상 단조입니다.
+           → 한 구간 안에서는 D = I + W가 단조이므로 N(g+j) ≤ N(g) + j.  N(g) < T이면 g + (T - N(g)) 전까지는
+             정확해가 있을 수 없어 그만큼(또는 다음 구간 시작점까지) 안전하게 건너뜁니다.
+    [하한] lower_bound(보험료만의 최소 고정점) 미만에서는 N(g) ≤ g - I(g) < T 이므로 해가 없습니다.
+    따라서 처음 만나는 'N(g) == T'가 전역 최소해입니다.  정확해 없이 N이 목표를 넘어서면(구간 경계 하락 때문에)
+    _OVERSHOOT_LOOKAHEAD_KRW 동안 1원 단위로 정확해를 더 찾고, 없으면 '실수령액 ≥ 목표'인 최소 금액을 반환합니다.
+    """
+    def _next_boundary(g: int) -> int:
+        taxable = g - non_tax
+        if taxable < 0:
+            return non_tax                       # 과세급여 0 구간 끝
+        if taxable < 10_000_000:
+            return non_tax + (taxable // 1000 + 1) * 1000
+        return g + 10**12                        # 1,000만원 이상: 단조 구간 (경계 없음)
+
+    g = max(0, lower_bound)
+    first_ge = None
+    overshoot_until = None
+    for _ in range(_NONMONOTONE_SCAN_MAX_STEPS):
+        if g > lower_bound + _NONMONOTONE_SCAN_CAP_KRW:
+            break
+        n = g - deduction(g)
+        if n == target:
+            return _pick_rounder(target, g, deduction, round_window)
+        if n < target:
+            if overshoot_until is not None and g > overshoot_until:
+                break
+            g = min(g + (target - n), _next_boundary(g))
+        else:
+            if first_ge is None:
+                first_ge, overshoot_until = g, g + _OVERSHOOT_LOOKAHEAD_KRW
+            elif g > overshoot_until:
+                break
+            g += 1
+    if first_ge is not None:
+        return first_ge
+    raise GrossUpConvergenceError("비단조 구간 탐색이 상한에 도달했습니다.")
+
+
+def _least_fixed_point_gross(target: int, deduction, round_window: int) -> int:
+    g = 0
+    for _ in range(_MAX_FIXED_POINT_ITERS):
+        nxt = target + deduction(g)
+        if nxt < 0:
+            nxt = 0
+        if nxt == g:
+            break
+        if nxt < g:
+            raise GrossUpConvergenceError(f"공제함수 비단조 감지: f({g})={nxt} < {g}")
+        g = nxt
+    else:
+        raise GrossUpConvergenceError("고정점 반복이 상한에 도달했습니다 (유효 공제율 100% 이상 의심).")
+    return _pick_rounder(target, g, deduction, round_window)
+
+
+def gross_up_freelancer_net_to_gross(
+    target_net: int | float,
+    rate_pct: float = 3.0,
+    round_window: int = ROUND_PREFERENCE_WINDOW_KRW,
+) -> dict[str, int]:
+    """
+    사업소득자(프리랜서) 세후 실지급액 -> 세전 지급총액 정밀 역산기 (최소 고정점 엔진, 오차 0원).
+    - 유효세율(소득세+지방세) 100% 이상인 비정상 입력은 역산이 불가능하므로 실지급액을 지급총액으로 간주해 계산합니다.
     """
     net = max(0, _safe_int(target_net, 0))
     clean_rate = _safe_float(rate_pct, 3.0)
@@ -498,40 +748,29 @@ def gross_up_freelancer_net_to_gross(target_net: int | float, rate_pct: float = 
         clean_rate = 3.0
     if net <= 0:
         return calc_freelancer_33_tax(0, clean_rate)
-
-    raw_eff = (clean_rate * 1.1) / 100.0
-    if raw_eff >= 0.999:
-        # 유효 원천징수세율이 100% 이상인 극한 엣지 케이스 방어
+    if (clean_rate * 1.1) / 100.0 >= 0.999:
         return calc_freelancer_33_tax(net, clean_rate)
 
-    approx = int(round(net / max(0.001, 1.0 - raw_eff)))
-    lo = net
-    hi = max(approx + 500, int(approx * 1.05) + 500)
-    while lo < hi:
-        mid = (lo + hi) // 2
-        if calc_freelancer_33_tax(mid, clean_rate)["차인지급액"] < net:
-            lo = mid + 1
-        else:
-            hi = mid
+    r = _to_decimal(clean_rate) / Decimal(100)
+    cache: dict[int, int] = {}
 
-    best_gross = lo
-    best_key: tuple[int, int, int] = (10**15, 0, 10**15)
-    for cand in range(max(net, lo - 300), lo + 301):
-        res = calc_freelancer_33_tax(cand, clean_rate)
-        diff = abs(res["차인지급액"] - net)
-        if diff > best_key[0]:
-            continue
-        r_score, _ = _roundness_score(cand)
-        cand_key = (diff, -r_score, cand)
-        if cand_key < best_key:
-            best_key = cand_key
-            best_gross = cand
-    return calc_freelancer_33_tax(best_gross, clean_rate)
+    def _ded(g: int) -> int:
+        hit = cache.get(g)
+        if hit is None:
+            inc = floor_10won(Decimal(g) * r)
+            hit = inc + ((inc // 10) // 10) * 10
+            cache[g] = hit
+        return hit
+
+    best = _least_fixed_point_gross(net, _ded, max(0, int(round_window or 0)))
+    return calc_freelancer_33_tax(best, clean_rate)
 
 
-# ══════════════════════════════════════════════════════════════════
-# 4. 4대보험 근로자 세후(실수령액) -> 세전(기본급) 데드존 방어 역산기
-# ══════════════════════════════════════════════════════════════════
+def _withholding_bucket_key(taxable: int) -> int:
+    """간이세액표는 1,000만원 미만에서 1,000원 단위 구간 → 같은 구간은 세액이 같으므로 캐시 키로 사용."""
+    return taxable // 1000 if taxable < 10_000_000 else 10_000_000 + taxable
+
+
 def gross_up_employee_net_to_gross(
     target_net_pay: int | float,
     non_taxable_pay: int | float = 200_000,
@@ -543,247 +782,93 @@ def gross_up_employee_net_to_gross(
     fixed_ins: dict[str, int] | None = None,
     is_ceo: bool = False,
     income_tax_reduction_pct: float = 0,
+    round_window: int = ROUND_PREFERENCE_WINDOW_KRW,
+    tax_year_month: str | None = None,
 ) -> dict[str, int]:
     """
-    [데드존(Dead Zone) & 계단 경계 100% 수렴 역산 알고리즘]
-    1) 근로소득 간이세액표의 과세급여 구간 경계(예: 300만원, 584만원, 990만원, 1,000만원 등)에서는
-       세전 급여가 1원 증가할 때 원천세가 최대 26,280원 계단식으로 점프하여 실수령액이 오히려 감소하는
-       비단조(Non-monotonic) 데드존이 발생합니다.
-    2) 또한 국민연금 기준소득월액도 1,000원 단위로 절사되므로 매 1,000원 경계마다 40~50원의 계단 점프가 발생합니다.
-    3) 본 역산기는 (a) 이진탐색 수렴점 주변 구간 분할 탐색, (b) 공제액 불변 구간(da == db)에서의 O(1) 대수적 해(`target_net + da`) 직격 산출,
-       (c) 인접 하위 간이세액표 경계(최대 3개 구간) 및 국민연금 천원 경계에 대한 역기울기(Secant) 투사를 결합하여,
-       데드존 진동 없이 납세자·사업주에게 가장 유리한 최소 세전 급여(동일 오차 시 라운드 금액 우선, 그다음 최소 세전 급여)로 100% 수렴합니다.
+    [데드존(Dead Zone) 100% 수렴 역산기 — 최소 고정점 엔진]
+    간이세액표 계단 경계(세전 1원 증가에 원천세 최대 수만 원 점프)와 국민연금 1,000원 절사 경계 때문에
+    실수령액 N(g)는 비단조입니다. 본 엔진은 이진탐색·구간 휴리스틱 없이 g = T + D(g)의 최소 고정점을 구해
+    (a) 실수령액 오차 0원, (b) 그 조건을 만족하는 최소 세전 급여(라운드 선호 창 제외)를 수학적으로 보장합니다.
+    공제액 D(g)는 세전->세후 정산(calculate_employee_payroll_row)과 동일한 커널로 계산하므로 왕복 결과가 항상 일치합니다.
     """
     target_net = max(0, _safe_int(target_net_pay, 0))
     non_tax = max(0, _safe_int(non_taxable_pay, 0))
     other_tax = max(0, _safe_int(other_taxable_allowances, 0))
-    yr = int(str(year_month or "2026")[:4]) if str(year_month or "2026")[:4].isdigit() else 2026
+    ym = normalize_year_month(year_month, "2026-10")
+    tax_ym = normalize_year_month(tax_year_month, ym) if tax_year_month else ym
+    params = _period_params(ym)
+    notice = _notice_tuple(fixed_ins) if isinstance(fixed_ins, dict) and fixed_ins else None
+    adj = _insurance_settlement_total(fixed_ins) if notice is not None else 0
 
-    if target_net <= non_tax:
-        return {
-            "기본급": 0,
-            "비과세합계": target_net,
-            "지급액계": target_net,
-            "국민연금": 0,
-            "건강보험": 0,
-            "장기요양보험료": 0,
-            "고용보험": 0,
-            "소득세": 0,
-            "지방소득세": 0,
-            "공제액계": 0,
-            "차인지급액": target_net,
-        }
+    wt_cache: dict[int, tuple[int, int]] = {}
 
-    params = _FAST_INS_INT_PARAMS.get(yr) or _FAST_INS_INT_PARAMS[2026]
-    nps_min, nps_max, nps_num, nhis_min, nhis_max, nhis_num, ltc_num, ltc_den, ei_num = params
+    def _wt(taxable: int) -> tuple[int, int]:
+        key = _withholding_bucket_key(taxable)
+        hit = wt_cache.get(key)
+        if hit is None:
+            wt = calc_withholding_tax(
+                taxable,
+                dependents=dependents,
+                children_8_to_20=children_8_to_20,
+                rate_pct=tax_rate_pct,
+                year_month=tax_ym,
+                reduction_pct=income_tax_reduction_pct,
+            )
+            hit = (wt["소득세"], wt["지방소득세"])
+            wt_cache[key] = hit
+        return hit
 
-    f_nps = f_nhis = f_ltc = f_ei = 0
-    adj = 0
-    has_fixed = bool(fixed_ins and isinstance(fixed_ins, dict))
-    if has_fixed:
-        f_nps = max(0, _safe_int(fixed_ins.get("국민연금"), 0))
-        f_nhis = max(0, _safe_int(fixed_ins.get("건강보험"), 0))
-        f_ltc = max(0, _safe_int(fixed_ins.get("장기요양보험료"), 0))
-        f_ei = max(0, _safe_int(fixed_ins.get("고용보험"), 0))
-        adj = (
-            _safe_int(fixed_ins.get("건강보험료정산", 0))
-            + _safe_int(fixed_ins.get("장기요양보험료정산", 0))
-            + _safe_int(fixed_ins.get("국민연금정산", 0))
-            + _safe_int(fixed_ins.get("학자금상환액", 0))
-        )
-
-    dep_clean = max(1, _safe_int(dependents, 1))
-    child_ded = calc_child_tax_deduction(children_8_to_20, year_month=year_month)
-    pct = _safe_int(tax_rate_pct, 100)
-    if pct not in (80, 100, 120):
-        pct = 100
-    red = max(0.0, min(100.0, _safe_float(income_tax_reduction_pct, 0.0)))
-    red_dec = (Decimal(100) - Decimal(str(red))) if red > 0 else Decimal(100)
+    def _components(g: int) -> tuple[int, int, int, int, int, int]:
+        taxable = max(0, g - non_tax)
+        nps, nhis, ltc, ei = _overlay_notice(_ins_rate_components(taxable, params, is_ceo), notice, params)
+        inc, loc = _wt(taxable)
+        return nps, nhis, ltc, ei, inc, loc
 
     ded_cache: dict[int, int] = {}
-    wt_cache: dict[int, int] = {}
 
-    def _get_wt_tot(taxable: int) -> int:
-        if taxable < 1_060_000:
-            return 0
-        k_key = taxable // 1000 if taxable < 10_000_000 else taxable
-        hit = wt_cache.get(k_key)
-        if hit is not None:
-            return hit
-        if taxable < 10_000_000:
-            base_tax = _lookup_earned_base_tax_10k_cached(k_key, True, dep_clean)
-        else:
-            base_tax = _lookup_earned_base_tax_10k_cached(taxable, False, dep_clean)
-        tax_100 = max(0, base_tax - child_ded)
-        if pct != 100:
-            inc = (((tax_100 * pct) // 100) // 10) * 10
-        else:
-            inc = (tax_100 // 10) * 10
-        if red > 0:
-            inc = floor_10won((Decimal(inc) * red_dec) / Decimal(100))
-        if inc < 1000:
-            wt_cache[k_key] = 0
-            return 0
-        loc = ((inc // 10) // 10) * 10
-        tot = inc + loc
-        wt_cache[k_key] = tot
-        return tot
+    def _ded(g: int) -> int:
+        hit = ded_cache.get(g)
+        if hit is None:
+            hit = sum(_components(g)) + adj
+            ded_cache[g] = hit
+        return hit
 
-    def _eval_ded(total_gross: int) -> int:
-        cached = ded_cache.get(total_gross)
-        if cached is not None:
-            return cached
-        taxable = total_gross - non_tax
-        if taxable <= 0:
-            nps = f_nps if has_fixed and f_nps > 0 else 0
-            nhis = f_nhis if has_fixed and f_nhis > 0 else 0
-            ltc = f_ltc if has_fixed and f_ltc > 0 else 0
-            ei = f_ei if has_fixed and f_ei > 0 else 0
-            tot_ded = nps + nhis + ltc + ei + adj
-            ded_cache[total_gross] = tot_ded
-            return tot_ded
+    def _ded_ins_only(g: int) -> int:
+        # 원천세(≥0)를 뺀 단조 하한 공제함수 → 이 함수의 최소 고정점 미만에서는 실수령액이 목표에 도달 불가
+        taxable = max(0, g - non_tax)
+        return sum(_overlay_notice(_ins_rate_components(taxable, params, is_ceo), notice, params)) + adj
 
-        if has_fixed and f_nps > 0:
-            nps = f_nps
-        else:
-            nps_b = max(nps_min, min(nps_max, (taxable // 1000) * 1000))
-            nps = ((nps_b * nps_num // 10000) // 10) * 10
+    def _ded_nocache(g: int) -> int:
+        return sum(_components(g)) + adj
 
-        if has_fixed and f_nhis > 0:
-            nhis = f_nhis
-            ltc = f_ltc if f_ltc > 0 else (((nhis * ltc_num // ltc_den) // 10) * 10)
-        else:
-            nhis_b = max(nhis_min, min(nhis_max, taxable))
-            nhis = ((nhis_b * nhis_num // 100000) // 10) * 10
-            ltc = f_ltc if (has_fixed and f_ltc > 0) else (((nhis * ltc_num // ltc_den) // 10) * 10)
+    win = max(0, int(round_window or 0))
+    dep_clean = max(1, _safe_int(dependents, 1))
+    if target_net <= 0:
+        best = 0
+    elif dep_clean <= _MONOTONE_TABLE_MAX_DEPENDENTS:
+        try:
+            best = _least_fixed_point_gross(target_net, _ded, win)
+        except GrossUpConvergenceError:
+            best = _ascending_exact_scan(target_net, _ded_nocache, _least_fixed_point_gross(target_net, _ded_ins_only, 0), win, non_tax)
+    else:
+        best = _ascending_exact_scan(target_net, _ded_nocache, _least_fixed_point_gross(target_net, _ded_ins_only, 0), win, non_tax)
 
-        if has_fixed and f_ei > 0:
-            ei = f_ei
-        elif is_ceo:
-            ei = 0
-        else:
-            ei = ((taxable * ei_num // 1000) // 10) * 10
-
-        tot_ded = nps + nhis + ltc + ei + _get_wt_tot(taxable) + adj
-        ded_cache[total_gross] = tot_ded
-        return tot_ded
-
-    def _build_pack(total_gross: int) -> dict[str, int]:
-        taxable = max(0, total_gross - non_tax)
-        rate_ins = calc_4ins_by_rate(taxable, year=yr, is_ceo=is_ceo)
-        if has_fixed:
-            nps = f_nps if f_nps > 0 else rate_ins["국민연금"]
-            nhis = f_nhis if f_nhis > 0 else rate_ins["건강보험"]
-            ltc = f_ltc if f_ltc > 0 else rate_ins["장기요양보험료"]
-            ei = f_ei if f_ei > 0 else rate_ins["고용보험"]
-        else:
-            nps = rate_ins["국민연금"]
-            nhis = rate_ins["건강보험"]
-            ltc = rate_ins["장기요양보험료"]
-            ei = rate_ins["고용보험"]
-        wt = calc_withholding_tax(
-            taxable,
-            dependents=dependents,
-            children_8_to_20=children_8_to_20,
-            rate_pct=tax_rate_pct,
-            year_month=year_month,
-            reduction_pct=income_tax_reduction_pct,
-        )
-        inc_tax = wt["소득세"]
-        loc_tax = wt["지방소득세"]
-        tot_ded = nps + nhis + ltc + ei + inc_tax + loc_tax + adj
-        net_val = total_gross - tot_ded
-        return {
-            "기본급": max(0, total_gross - non_tax - other_tax),
-            "비과세합계": non_tax,
-            "지급액계": total_gross,
-            "국민연금": nps,
-            "건강보험": nhis,
-            "장기요양보험료": ltc,
-            "고용보험": ei,
-            "소득세": inc_tax,
-            "지방소득세": loc_tax,
-            "공제액계": tot_ded,
-            "차인지급액": net_val,
-        }
-
-    lo = target_net
-    hi = int(target_net * 1.85) + 500_000
-    while lo < hi:
-        mid = (lo + hi) // 2
-        if (mid - _eval_ded(mid)) < target_net:
-            lo = mid + 1
-        else:
-            hi = mid
-
-    best_cand = lo
-    best_key: tuple[int, int, int] = (10**12, 0, 10**12)  # (diff, -r_score, total_gross)
-
-    def _check_cand(c: int) -> None:
-        nonlocal best_cand, best_key
-        if c < target_net:
-            return
-        d_val = _eval_ded(c)
-        diff = abs((c - d_val) - target_net)
-        if diff > best_key[0]:
-            return
-        r_score, _ = _roundness_score(c)
-        cand_key = (diff, -r_score, c)
-        if cand_key < best_key:
-            best_key = cand_key
-            best_cand = c
-
-    def _probe_interval(start_g: int, end_g: int) -> None:
-        if start_g > end_g:
-            return
-        seg_stack: list[tuple[int, int]] = [(start_g, end_g)]
-        while seg_stack:
-            a, b = seg_stack.pop()
-            da = _eval_ded(a)
-            db = _eval_ded(b)
-            if da == db:
-                ideal_c = target_net + da
-                if a <= ideal_c <= b:
-                    _check_cand(ideal_c)
-                else:
-                    _check_cand(a)
-                    _check_cand(b)
-                continue
-            if b - a <= 1:
-                _check_cand(a)
-                _check_cand(b)
-                continue
-            m = (a + b) // 2
-            seg_stack.append((m + 1, b))
-            seg_stack.append((a, m))
-
-    # 1) 이진탐색 수렴점 lo 주변 기본 탐색
-    _probe_interval(max(target_net, lo - 400), lo + 400)
-
-    # 2) 데드존(간이세액표 구간 경계 점프) 역추적:
-    #    이진탐색이 상위 세율 구간(b_gross 이상)에 안착했더라도, 직전 구간 상단(b_gross - 1)의 실수령액이
-    #    target_net 이상이라면 하위 세율 구간 내에 더 적은 세전 급여로 동일한 실수령액을 달성하는 해가 존재함!
-    taxable_lo = max(0, lo - non_tax)
-    b_idx = bisect.bisect_right(_BRACKET_STARTS_KRW, taxable_lo)
-    for idx in range(max(0, b_idx - 3), min(len(_BRACKET_STARTS_KRW), b_idx + 1)):
-        b_gross = _BRACKET_STARTS_KRW[idx] + non_tax
-        if target_net <= b_gross <= lo + 1000:
-            _check_cand(b_gross - 1)
-            _check_cand(b_gross)
-            net_pre = (b_gross - 1) - _eval_ded(b_gross - 1)
-            if net_pre >= target_net:
-                gap = net_pre - target_net
-                est_low = (b_gross - 1) - int(gap / 0.91)
-                win_lo = max(target_net, min(b_gross - 1 - gap, est_low - 120))
-                win_hi = min(b_gross - 1, max(b_gross - 1 - gap, est_low + 120))
-                _probe_interval(win_lo, win_hi)
-
-    # 3) 국민연금 1,000원 보수월액 절사 경계(nps_boundary - 1) 추가 점검
-    nps_boundary = ((max(0, best_cand - non_tax) // 1000) * 1000) + non_tax
-    if target_net <= nps_boundary <= best_cand:
-        _check_cand(nps_boundary - 1)
-
-    return _build_pack(best_cand)
+    nps, nhis, ltc, ei, inc_tax, loc_tax = _components(best)
+    tot_ded = nps + nhis + ltc + ei + inc_tax + loc_tax + adj
+    return {
+        "기본급": max(0, best - non_tax - other_tax),
+        "비과세합계": min(non_tax, best),
+        "지급액계": best,
+        "국민연금": nps,
+        "건강보험": nhis,
+        "장기요양보험료": ltc,
+        "고용보험": ei,
+        "소득세": inc_tax,
+        "지방소득세": loc_tax,
+        "공제액계": tot_ded,
+        "차인지급액": best - tot_ded,
+    }
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -802,6 +887,16 @@ RATES_2026 = {
 }
 
 
+def _tax_table_year_month(effective_table: str) -> str:
+    """간이세액표 버전 → 자녀세액공제 금액 판정용 귀속연월."""
+    return "2026-03" if str(effective_table).startswith("2026") else "2024-03"
+
+
+def _default_ins_year_month(effective_table: str) -> str:
+    """귀속연월이 주어지지 않았을 때의 보험 산출 기준월 (종전 정산 로직과 동일: 2026표→2026년, 구표→2025년 요율)."""
+    return "2026-03" if str(effective_table).startswith("2026") else "2025-03"
+
+
 def lookup_monthly_withholding_tax(
     taxable_monthly_krw: int | float,
     dependents: int = 1,
@@ -810,7 +905,7 @@ def lookup_monthly_withholding_tax(
     effective_table: str = "2026.03",
     income_tax_reduction_pct: float = 0,
 ) -> dict[str, int]:
-    ym = "2026-03" if str(effective_table).startswith("2026") else "2024-03"
+    ym = _tax_table_year_month(effective_table)
     res = calc_withholding_tax(
         taxable_monthly_krw=taxable_monthly_krw,
         dependents=dependents,
@@ -854,9 +949,11 @@ def calculate_employee_payroll_row(
     effective_table: str = "2026.03",
     is_ceo: bool = False,
     income_tax_reduction_pct: float = 0,
+    year_month: str | None = None,
 ) -> dict[str, Any]:
     """
     단일 근로자 급여대장 행 전체 계산:
+    - year_month('YYYY-MM'): 4대보험 요율·국민연금 상하한 적용 기준월 (생략 시 간이세액표 버전으로 추정)
     - 지급액계 = 기본급 + 상여 + 식대 + 자가운전 + 약정연장 + 약정휴일 + 연장 + 휴일 + 미사용연차 + 결근공제(음수 가능) + 조정금액
     - 비과세 = min(식대, 200,000) + min(자가운전, 200,000)
     - 과세급여 = max(0, 지급액계 - 비과세)
@@ -900,23 +997,16 @@ def calculate_employee_payroll_row(
     )
     taxable_pay = max(0, gross_total - non_taxable)
 
-    yr = 2026 if str(effective_table).startswith("2026") else 2025
-    rate_ins = calc_4ins_by_rate(taxable_pay, year=yr, is_ceo=is_ceo)
+    ins_ym = normalize_year_month(year_month, _default_ins_year_month(effective_table)) if year_month else _default_ins_year_month(effective_table)
+    ins = resolve_employee_insurance(taxable_pay, ins_ym, is_ceo=is_ceo, notice_insurance=notice_insurance or None)
+    nps, nhis, ltc, ei = ins["국민연금"], ins["건강보험"], ins["장기요양보험료"], ins["고용보험"]
     if notice_insurance:
         # 고지서 및 수기 입력 금액은 원단위 그대로 보존 (절사하지 않음)
-        nps = _safe_int(notice_insurance.get("국민연금")) if _safe_int(notice_insurance.get("국민연금"), 0) > 0 else rate_ins["국민연금"]
-        nhis = _safe_int(notice_insurance.get("건강보험")) if _safe_int(notice_insurance.get("건강보험"), 0) > 0 else rate_ins["건강보험"]
-        ltc = _safe_int(notice_insurance.get("장기요양보험료")) if _safe_int(notice_insurance.get("장기요양보험료"), 0) > 0 else rate_ins["장기요양보험료"]
-        ei = _safe_int(notice_insurance.get("고용보험")) if _safe_int(notice_insurance.get("고용보험"), 0) > 0 else rate_ins["고용보험"]
         nhis_settle = _safe_int(notice_insurance.get("건강보험료정산", 0), 0)
         ltc_settle = _safe_int(notice_insurance.get("장기요양보험료정산", 0), 0)
         nps_settle = _safe_int(notice_insurance.get("국민연금정산", 0), 0)
         ins_mode = "고지(1순위)"
     else:
-        nps = rate_ins["국민연금"]
-        nhis = rate_ins["건강보험"]
-        ltc = rate_ins["장기요양보험료"]
-        ei = rate_ins["고용보험"]
         nhis_settle = 0
         ltc_settle = 0
         nps_settle = 0
@@ -1013,21 +1103,26 @@ def solve_gross_from_net_employee(
     effective_table: str = "2026.03",
     is_ceo: bool = False,
     income_tax_reduction_pct: float = 0,
+    year_month: str | None = None,
 ) -> dict[str, int]:
-    ym = "2026-03" if str(effective_table).startswith("2026") else "2024-03"
+    """calculate_employee_payroll_row의 정확한 역함수 (같은 인자로 정산하면 차인지급액이 목표와 1원도 다르지 않음)."""
+    ins_ym = normalize_year_month(year_month, _default_ins_year_month(effective_table)) if year_month else _default_ins_year_month(effective_table)
     fixed = dict(notice_insurance) if notice_insurance else None
-    if fixed is not None and student_loan_repayment:
-        fixed["학자금상환액"] = int(student_loan_repayment)
+    if student_loan_repayment:
+        # 학자금 상환액은 고지 여부와 무관하게 공제되므로 역산에도 항상 반영 (종전: 고지내역이 없으면 누락되던 버그)
+        fixed = fixed if fixed is not None else {}
+        fixed["학자금상환액"] = int(_safe_int(student_loan_repayment, 0))
     res = gross_up_employee_net_to_gross(
         target_net_pay=target_net_pay,
         non_taxable_pay=non_taxable_pay,
         dependents=dependents,
         children_8_to_20=children_8_20,
         tax_rate_pct=withholding_rate_pct,
-        year_month=ym,
+        year_month=ins_ym,
         fixed_ins=fixed,
         is_ceo=is_ceo,
         income_tax_reduction_pct=income_tax_reduction_pct,
+        tax_year_month=_tax_table_year_month(effective_table),
     )
     return {
         "base_pay": res["기본급"],

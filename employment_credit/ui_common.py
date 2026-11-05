@@ -17,6 +17,8 @@ import copy
 import hashlib
 import math
 import pickle
+import uuid
+import threading
 import time
 import urllib.request
 import streamlit as st
@@ -86,6 +88,31 @@ _PERSIST_KEYS = (
 # 0. 작업공간별 상태 보관 (메모리 + 디스크 `.workspace_storage` 자동 동기화)
 # ══════════════════════════════════════════════════════════════════
 _RRN_FULL_RE = re.compile(r"(?<!\d)(\d{6})\s*-\s*([1-8])\d{6}(?!\d)")
+# 하이픈 없는 13자리·하이픈 있는 형식 모두: 앞 6자리가 유효한 YYMMDD이고 7번째가 성별코드(1~8)일 때만 (법인번호 등 오탐 최소화)
+_RRN_ANY_RE = re.compile(r"(?<!\d)(\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01]))\s*-?\s*([1-8])\d{6}(?!\d)")
+
+
+def _mask_rrn_text(text: str) -> str:
+    """주민등록번호 뒷 6자리를 가립니다 (앞 7자리 = 생년월일 + 성별코드는 공제 계산에 필요하므로 유지)."""
+    if not text or not any(ch.isdigit() for ch in text):
+        return text
+    return _RRN_ANY_RE.sub(r"\1-\2******", text)
+
+
+def _scrub_rrn_deep(obj):
+    """
+    [개인정보] 디스크 저장 직전 전체 상태를 재귀 순회하며 모든 문자열의 주민번호 뒷자리를 가립니다.
+    종전에는 업로드 원문(files)의 '하이픈 있는' 형식만 가려, 하이픈 없는 13자리와 people·ext의 주민번호 원문이 디스크에 남았습니다.
+    """
+    if isinstance(obj, str):
+        return _mask_rrn_text(obj)
+    if isinstance(obj, dict):
+        return {k: _scrub_rrn_deep(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_scrub_rrn_deep(v) for v in obj]
+    if isinstance(obj, tuple):
+        return tuple(_scrub_rrn_deep(v) for v in obj)
+    return obj
 
 
 _ANON_WS_PREFIX = "__anon_session__:"      # app.py의 익명(코드 미입력) 작업공간 ID 접두어와 동일
@@ -154,7 +181,27 @@ def _flush_ec_save(force: bool = False) -> None:
     _write_ec_to_disk()
 
 
+_EC_WRITE_LOCKS: dict = {}
+_EC_WRITE_LOCKS_GUARD = threading.Lock()
+
+
+def _ec_path_lock(path: str) -> threading.Lock:
+    with _EC_WRITE_LOCKS_GUARD:
+        lk = _EC_WRITE_LOCKS.get(path)
+        if lk is None:
+            lk = threading.Lock()
+            _EC_WRITE_LOCKS[path] = lk
+        return lk
+
+
 def _write_ec_to_disk(s: dict | None = None) -> None:
+    """
+    작업 상태를 디스크에 원자적으로 저장합니다.
+    - [동시성] Streamlit은 여러 브라우저 세션을 한 프로세스의 여러 스레드로 돌립니다. 종전 임시 파일명은 PID만 써서
+      스레드끼리 같은 임시 파일을 덮어쓰고 os.replace가 FileNotFoundError로 실패했는데(실측 400회 중 194회),
+      예외를 삼켜 저장 실패를 알 수 없었습니다 → 경로별 락 + 스레드·난수 포함 임시 파일명 + 실패 표시.
+    - [개인정보] 저장 직전 전체 상태에서 주민번호 뒷자리를 재귀적으로 가립니다.
+    """
     try:
         ws_id = st.session_state.get("loaded_workspace_id") or "default_ec"
         if s is None:
@@ -165,27 +212,34 @@ def _write_ec_to_disk(s: dict | None = None) -> None:
         if ws_id == "default_ec":
             return          # 작업공간 없이 쓰는 경우 다른 사용자와 같은 파일을 공유하게 되므로 디스크에 저장하지 않음
         os.makedirs(STORAGE_DIR, exist_ok=True)
-        payload = {k: s.get(k) for k in _PERSIST_KEYS if k in s}
-        # 주민등록번호 뒷자리는 저장하지 않음 (계산에는 앞 7자리만 필요)
-        if isinstance(payload.get("files"), dict):
-            payload["files"] = {
-                n: {**f, "text": _RRN_FULL_RE.sub(r"\1-\2******", str(f.get("text") or ""))}
-                if isinstance(f, dict) else f
-                for n, f in payload["files"].items()
-            }
+        payload = _scrub_rrn_deep({k: s.get(k) for k in _PERSIST_KEYS if k in s})
         text = json.dumps(payload, ensure_ascii=False, default=str)
         digest = hashlib.md5(text.encode("utf-8")).hexdigest()
         saved = st.session_state.setdefault(_SAVED_HASH_KEY, {})
         path = _ec_disk_path(ws_id)
         if saved.get(ws_id) == digest and os.path.exists(path):
             return                                   # 바뀐 내용이 없으면 쓰지 않음
-        tmp_path = f"{path}.tmp.{os.getpid()}"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            f.write(text)
-        os.replace(tmp_path, path)
+        with _ec_path_lock(path):
+            tmp_path = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex[:8]}"
+            try:
+                with open(tmp_path, "w", encoding="utf-8") as f:
+                    f.write(text)
+                os.replace(tmp_path, path)
+            finally:
+                if os.path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except OSError:
+                        pass
         saved[ws_id] = digest
-    except Exception:
-        pass
+        st.session_state.pop("_ec_save_error", None)
+    except Exception as e:
+        # 종전: 조용히 무시 → 이제 화면에서 확인할 수 있도록 기록
+        print(f"⚠️ 통합고용세액공제 작업 저장 실패: {e}")
+        try:
+            st.session_state["_ec_save_error"] = str(e)
+        except Exception:
+            pass
 
 
 def _default_state_dict() -> dict:
@@ -994,6 +1048,51 @@ _CACHED_PDF_FONT_PAIR: tuple[str, str] | None = None
 _FONT_DOWNLOAD_ATTEMPTED: bool = False
 
 
+_FONT_DOWNLOAD_LOCK = threading.Lock()
+_FONT_MAX_BYTES = 20 * 1024 * 1024
+
+
+def _is_valid_ttf(path: str) -> bool:
+    """TrueType/OpenType 시그니처와 최소 크기 확인 (중간에 끊긴 다운로드 파일 배제)."""
+    try:
+        if not os.path.exists(path) or os.path.getsize(path) < 50_000:
+            return False
+        with open(path, "rb") as fh:
+            head = fh.read(4)
+        return head in (b"\x00\x01\x00\x00", b"OTTO", b"true", b"ttcf")
+    except OSError:
+        return False
+
+
+def _download_font_atomic(url: str, dest: str, timeout: float = 8.0) -> bool:
+    """
+    글꼴을 임시 파일로 받아 검증 후 원자적으로 교체합니다.
+    종전: 1.5초 제한으로 최종 경로에 직접 기록 → 중간에 끊기면 깨진 TTF가 영구히 남아 이후 모든 PDF 한글이 깨졌습니다.
+    """
+    if _is_valid_ttf(dest):
+        return True
+    tmp = f"{dest}.part.{os.getpid()}.{threading.get_ident()}"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            data = resp.read(_FONT_MAX_BYTES + 1)
+        if len(data) > _FONT_MAX_BYTES:
+            return False
+        with open(tmp, "wb") as fh:
+            fh.write(data)
+        if not _is_valid_ttf(tmp):
+            return False
+        os.replace(tmp, dest)
+        return True
+    except Exception:
+        return False
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
 def _ensure_korean_pdf_font() -> tuple[str, str]:
     """
     ReportLab PDF 한글 폰트 등록 및 폰트 패밀리(<b> 태그 매핑) 보장:
@@ -1025,31 +1124,23 @@ def _ensure_korean_pdf_font() -> tuple[str, str]:
 
     chosen_reg, chosen_bold = None, None
     for rp, bp in candidate_pairs:
-        if os.path.exists(rp):
+        if _is_valid_ttf(rp):
             chosen_reg = rp
-            chosen_bold = bp if os.path.exists(bp) else rp
+            chosen_bold = bp if _is_valid_ttf(bp) else rp
             break
 
-    if chosen_reg is None and not _FONT_DOWNLOAD_ATTEMPTED:
-        _FONT_DOWNLOAD_ATTEMPTED = True
-        try:
-            with urllib.request.urlopen(
-                "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Regular.ttf",
-                timeout=1.5,
-            ) as _resp:
-                with open(reg_path, "wb") as _out_f:
-                    _out_f.write(_resp.read())
-            with urllib.request.urlopen(
-                "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Bold.ttf",
-                timeout=3,
-            ) as _resp:
-                with open(bold_path, "wb") as _out_f:
-                    _out_f.write(_resp.read())
-            if os.path.exists(reg_path):
+    if chosen_reg is None:
+        with _FONT_DOWNLOAD_LOCK:
+            if not _FONT_DOWNLOAD_ATTEMPTED:
+                _FONT_DOWNLOAD_ATTEMPTED = True
+                ok_reg = _download_font_atomic(
+                    "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Regular.ttf", reg_path)
+                if ok_reg:
+                    _download_font_atomic(
+                        "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Bold.ttf", bold_path)
+            if _is_valid_ttf(reg_path):
                 chosen_reg = reg_path
-                chosen_bold = bold_path if os.path.exists(bold_path) else reg_path
-        except Exception:
-            pass
+                chosen_bold = bold_path if _is_valid_ttf(bold_path) else reg_path
 
     if chosen_reg and os.path.exists(chosen_reg):
         try:

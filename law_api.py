@@ -34,6 +34,113 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# ---------------------------------------------------------
+# [보안] API 키 마스킹 — 외부 API 오류 메시지(requests 예외 등)에는 serviceKey·crtfc_key·OC가 든 전체 URL이 포함됩니다.
+#  종전에는 이 문자열이 그대로 도구 결과 → LLM 입력 → 대화 기록 파일 → 화면으로 흘러 API 키가 노출되었습니다.
+#  모든 공개 조회 함수의 반환값과 로그를 이 함수로 정화합니다.
+# ---------------------------------------------------------
+_SECRET_PARAM_RE = re.compile(
+    r"(?i)(?:(?<=[?&])|\b(?=servicekey|crtfc_key|authkey|auth_key|apikey|api_key|certkey|cert_key|access_token))"
+    r"(servicekey|crtfc_key|oc|key|authkey|auth_key|apikey|api_key|certkey|cert_key|token|access_token)"
+    r"(=|%3d|\\?\":\s*\\?\"|\s*:\s*['\"])([^&\s'\"<>\\]{4,})"
+)
+SECRET_KEY_NAMES = (
+    "LAW_OPEN_API_KEY", "LAW_API_OC", "OC", "LAW_OC", "LAW_API_KEY", "MOLEG_OC", "DRF_OC",
+    "BOK_API_KEY", "ECOS_API_KEY", "DART_API_KEY", "OPENDART_API_KEY", "NTS_API_KEY", "DATA_GO_KR_API_KEY",
+    "PUBLIC_DATA_API_KEY", "MOLIT_API_KEY", "VWORLD_API_KEY", "BIZINFO_API_KEY", "CUSTOMS_API_KEY",
+    "UNIPASS_API_KEY", "COMWEL_API_KEY", "NPS_API_KEY", "GEMINI_API_KEY", "GEMINI_PAID_KEY", "GOOGLE_API_KEY",
+)
+_SECRET_VALUES_CACHE: dict = {"at": 0.0, "vals": ()}
+
+
+def _known_secret_values() -> tuple:
+    """현재 설정된 키 값들(원문·URL 인코딩)을 30초 캐시로 수집합니다. 8자 미만 값은 오탐 방지를 위해 제외."""
+    import time as _t
+    now = _t.time()
+    if now - _SECRET_VALUES_CACHE["at"] < 30.0:
+        return _SECRET_VALUES_CACHE["vals"]
+    vals = set()
+    try:
+        rt = _read_runtime_keys_cached()
+    except Exception:
+        rt = {}
+    for k in SECRET_KEY_NAMES:
+        for v in (rt.get(k), os.environ.get(k)):
+            v = str(v or "").strip().strip('"').strip("'")
+            if len(v) >= 8:
+                vals.add(v)
+                vals.add(urllib.parse.quote(v, safe=""))
+                vals.add(urllib.parse.quote_plus(v))
+    try:
+        import streamlit as _st
+        for k in SECRET_KEY_NAMES:
+            try:
+                v = str(_st.secrets.get(k, "") or "").strip()
+            except Exception:
+                v = ""
+            if len(v) >= 8:
+                vals.add(v)
+                vals.add(urllib.parse.quote(v, safe=""))
+    except Exception:
+        pass
+    ordered = tuple(sorted(vals, key=len, reverse=True))
+    _SECRET_VALUES_CACHE.update(at=now, vals=ordered)
+    return ordered
+
+
+def redact_secrets(text):
+    """문자열 안의 API 키(알려진 값 + 키 이름이 붙은 쿼리 파라미터)를 '***'로 가립니다. 비문자열은 그대로 반환."""
+    if not isinstance(text, str) or not text:
+        return text
+    out = text
+    for v in _known_secret_values():
+        if v in out:
+            out = out.replace(v, "***")
+    return _SECRET_PARAM_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}***", out)
+
+
+def safe_error(e: BaseException) -> str:
+    """예외를 사용자·LLM에게 보여 줄 문자열로 변환 (키 마스킹 + 길이 제한)."""
+    return redact_secrets(f"{type(e).__name__}: {e}")[:500]
+
+
+def _redacting(fn):
+    """공개 조회 함수 래퍼: 반환 문자열·예외 메시지의 키를 가립니다. 시그니처·문서는 functools.wraps로 보존."""
+    import functools
+
+    @functools.wraps(fn)
+    def _wrapped(*args, **kwargs):
+        try:
+            res = fn(*args, **kwargs)
+        except Exception as e:
+            msg = redact_secrets(str(e))
+            if msg != str(e) and _is_simple_exc(e):
+                raise type(e)(msg) from None
+            raise
+        if isinstance(res, str):
+            return redact_secrets(res)
+        if isinstance(res, list):
+            return [redact_secrets(x) if isinstance(x, str) else x for x in res]
+        return res
+    _wrapped.__redacting__ = True
+    return _wrapped
+
+
+def _is_simple_exc(e: BaseException) -> bool:
+    try:
+        type(e)("x")
+        return True
+    except Exception:
+        return False
+
+
+_builtin_print = print
+
+
+def print(*args, **kwargs):  # noqa: A001 — 모듈 내부 로그도 키 마스킹
+    _builtin_print(*[redact_secrets(a) if isinstance(a, str) else a for a in args], **kwargs)
+
+
 RUNTIME_API_KEYS_FILE = os.path.join(".workspace_storage", "runtime_api_keys.json")
 
 _RT_KEYS_CACHE: dict = {"mtime": None, "data": {}}
@@ -501,7 +608,7 @@ def get_law_content(doc_id: str, target: str = "law", query_filter: str = "") ->
         try:
             return _get_statute_articles(doc_id, query_filter)
         except Exception as e:
-            return f"❌ 법령 조문 조회 중 오류 발생: {e}"
+            return f"❌ 법령 조문 조회 중 오류 발생: {safe_error(e)}"
 
     url = "http://www.law.go.kr/DRF/lawService.do"
     api_target = "ttSpecialDecc" if target == "decc" else target
@@ -641,7 +748,7 @@ def get_law_content(doc_id: str, target: str = "law", query_filter: str = "") ->
         return all_text[:10000]
 
     except Exception as e:
-        return f"❌ 원문 상세 조회 중 오류 발생: {e}"
+        return f"❌ 원문 상세 조회 중 오류 발생: {safe_error(e)}"
 
 
 # ---------------------------------------------------------
@@ -683,7 +790,7 @@ def get_bok_exchange_rate(start_date: str, end_date: str, currency: str = "USD")
             lines.append(f"- {r.get('TIME')}: {r.get('DATA_VALUE')} 원")
         return "\n".join(lines)
     except Exception as e:
-        return f"❌ 환율 조회 오류: {e}"
+        return f"❌ 환율 조회 오류: {safe_error(e)}"
 
 
 def get_bok_base_rate(start_date: str, end_date: str) -> str:
@@ -714,7 +821,7 @@ def get_bok_base_rate(start_date: str, end_date: str) -> str:
             lines.append(f"- {r.get('TIME')}: 연 {r.get('DATA_VALUE')}%")
         return "\n".join(lines)
     except Exception as e:
-        return f"❌ 기준금리 조회 오류: {e}"
+        return f"❌ 기준금리 조회 오류: {safe_error(e)}"
 
 
 # ---------------------------------------------------------
@@ -723,27 +830,46 @@ def get_bok_base_rate(start_date: str, end_date: str) -> str:
 _INDUSTRY_DF_CACHE = None
 _INDUSTRY_LOCK = threading.Lock()
 
-def search_industry_code(keyword: str) -> str:
+def _load_industry_df():
+    """업종코드 표를 1회만 읽고 검색용 열(_search_blob)을 적재 시점에 만들어 둡니다 (조회 중 공유 DataFrame 변경 금지)."""
     global _INDUSTRY_DF_CACHE
-    try:
-        with _INDUSTRY_LOCK:
-            if _INDUSTRY_DF_CACHE is None:
-                if os.path.exists("industry_codes.xlsx"):
-                    _INDUSTRY_DF_CACHE = pd.read_excel("industry_codes.xlsx", dtype=str).fillna("")
-                elif os.path.exists("industry_codes.csv"):
-                    for enc in ["utf-8-sig", "cp949", "euc-kr", "utf-8"]:
-                        try:
-                            _INDUSTRY_DF_CACHE = pd.read_csv("industry_codes.csv", encoding=enc, dtype=str).fillna("")
-                            break
-                        except Exception:
-                            continue
-                else:
-                    return "⚠️ 프로젝트 폴더에 'industry_codes.xlsx' 파일이 없습니다. 임의로 6자리 코드를 생성하지 마세요."
+    with _INDUSTRY_LOCK:
+        if _INDUSTRY_DF_CACHE is not None:
+            return _INDUSTRY_DF_CACHE
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        cands = [os.path.join(base_dir, "industry_codes.xlsx"), "industry_codes.xlsx",
+                 os.path.join(base_dir, "industry_codes.csv"), "industry_codes.csv"]
+        df = None
+        for path in cands:
+            if not os.path.exists(path):
+                continue
+            if path.endswith(".xlsx"):
+                df = pd.read_excel(path, dtype=str).fillna("")
+            else:
+                for enc in ["utf-8-sig", "cp949", "euc-kr", "utf-8"]:
+                    try:
+                        df = pd.read_csv(path, encoding=enc, dtype=str).fillna("")
+                        break
+                    except Exception:
+                        continue
+            if df is not None:
+                break
+        if df is None:
+            return None
+        df = df.copy()
+        df["_search_blob"] = df.apply(lambda r: " ".join(str(v) for v in r.values if str(v).strip()), axis=1)
+        _INDUSTRY_DF_CACHE = df
+        return df
 
-        df = _INDUSTRY_DF_CACHE
-        with _INDUSTRY_LOCK:
-            if "_search_blob" not in df.columns:
-                df["_search_blob"] = df.apply(lambda r: " ".join(str(v) for v in r.values if str(v).strip()), axis=1)
+
+def search_industry_code(keyword: str) -> str:
+    try:
+        df = _load_industry_df()
+        if df is None:
+            return "⚠️ 프로젝트 폴더에 'industry_codes.xlsx' 파일이 없습니다. 임의로 6자리 코드를 생성하지 마세요."
+        keyword = str(keyword or "")
+        if not keyword.strip():
+            return "업종코드 검색어가 비어 있습니다. 업종명(예: 소프트웨어, 음식점)을 입력하세요."
         kw = keyword.strip()
         mask = df["_search_blob"].str.contains(re.escape(kw), case=False, na=False)
         matched = df[mask]
@@ -757,7 +883,7 @@ def search_industry_code(keyword: str) -> str:
             lines.append(f"- {row_str}")
         return "\n".join(lines)
     except Exception as e:
-        return f"❌ 업종코드 파일 검색 오류: {e}"
+        return f"❌ 업종코드 파일 검색 오류: {safe_error(e)}"
 
 
 # ---------------------------------------------------------
@@ -765,6 +891,7 @@ def search_industry_code(keyword: str) -> str:
 # ---------------------------------------------------------
 _DART_CORP_CACHE = None
 _DART_LOCK = threading.Lock()
+_DART_FAIL_UNTIL = [0.0]
 
 def _load_dart_corp_codes() -> list[dict]:
     global _DART_CORP_CACHE
@@ -778,16 +905,32 @@ def _load_dart_corp_codes() -> list[dict]:
 
         cache_file = ".workspace_storage/dart_corp_codes.xml"
         os.makedirs(".workspace_storage", exist_ok=True)
+        import time as _t
+        if _t.time() < _DART_FAIL_UNTIL[0]:
+            return []                                   # 직전 실패 후 10분간 재다운로드 폭주 방지
 
         try:
-            if not os.path.exists(cache_file):
-                url = f"https://opendart.fss.or.kr/api/corpCode.xml?crtfc_key={dart_key}"
-                resp = _http_get(url, timeout=25)
-                with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
-                    xml_name = z.namelist()[0]
-                    xml_bytes = z.read(xml_name)
-                    with open(cache_file, "wb") as f:
+            stale = (not os.path.exists(cache_file)) or (_t.time() - os.path.getmtime(cache_file) > 7 * 86400)
+            if stale:
+                url = "https://opendart.fss.or.kr/api/corpCode.xml"
+                resp = _http_get(url, params={"crtfc_key": dart_key}, timeout=25)
+                content = resp.content or b""
+                if resp.status_code != 200 or not content.startswith(b"PK"):
+                    # 키 오류 시 DART는 ZIP 대신 XML 오류 본문을 줍니다 → 캐시 파일을 만들지 않음
+                    if not os.path.exists(cache_file):
+                        _DART_FAIL_UNTIL[0] = _t.time() + 600
+                        print(f"⚠️ DART 고유번호 파일 수신 실패 (HTTP {resp.status_code}): {content[:200]!r}")
+                        return []
+                else:
+                    with zipfile.ZipFile(io.BytesIO(content)) as z:
+                        xml_name = z.namelist()[0]
+                        if z.getinfo(xml_name).file_size > 200 * 1024 * 1024:
+                            raise ValueError("DART 고유번호 파일이 비정상적으로 큽니다.")
+                        xml_bytes = z.read(xml_name)
+                    tmp_file = f"{cache_file}.tmp.{os.getpid()}.{threading.get_ident()}"
+                    with open(tmp_file, "wb") as f:
                         f.write(xml_bytes)
+                    os.replace(tmp_file, cache_file)    # 원자적 교체: 중간에 끊겨도 깨진 캐시가 남지 않음
 
             tree = ET.parse(cache_file)
             root = tree.getroot()
@@ -807,7 +950,13 @@ def _load_dart_corp_codes() -> list[dict]:
             _DART_CORP_CACHE = corp_list
             return _DART_CORP_CACHE
         except Exception as e:
-            print(f"⚠️ DART 고유번호 마스터 로드 오류: {e}")
+            _DART_FAIL_UNTIL[0] = __import__("time").time() + 600
+            try:
+                if os.path.exists(cache_file) and os.path.getsize(cache_file) < 1024:
+                    os.remove(cache_file)          # 깨진(비정상적으로 작은) 캐시는 지워 다음 시도에 재수신
+            except OSError:
+                pass
+            print(f"⚠️ DART 고유번호 마스터 로드 오류: {safe_error(e)}")
             return []
 
 
@@ -1024,7 +1173,7 @@ def get_nts_biz_status(biz_numbers_text: str) -> str:
 
         return "\n\n".join(lines)
     except Exception as e:
-        return f"❌ 국세청 사업자 상태조회 중 오류 발생: {e}"
+        return f"❌ 국세청 사업자 상태조회 중 오류 발생: {safe_error(e)}"
 
 
 def verify_nts_biz_info(b_no: str, start_dt: str, p_nm: str, b_nm: str = "") -> str:
@@ -1083,7 +1232,7 @@ def verify_nts_biz_info(b_no: str, start_dt: str, p_nm: str, b_nm: str = "") -> 
             f"- 현재 납세자상태: {status_info.get('b_stt', '-')} | 과세유형: {status_info.get('tax_type', '-')}"
         )
     except Exception as e:
-        return f"❌ 국세청 사업자 진위확인 중 오류 발생: {e}"
+        return f"❌ 국세청 사업자 진위확인 중 오류 발생: {safe_error(e)}"
 
 
 # ---------------------------------------------------------
@@ -1220,7 +1369,7 @@ def get_molit_real_estate_trade(property_type: str, region: str, deal_ymd: str, 
         return header + "\n" + "\n".join(parsed_rows[:25])
 
     except Exception as e:
-        return f"❌ 국토교통부 실거래가 조회 중 오류 발생: {e}"
+        return f"❌ 국토교통부 실거래가 조회 중 오류 발생: {safe_error(e)}"
 
 
 # ---------------------------------------------------------
@@ -1317,7 +1466,7 @@ def get_molit_real_estate_rent(property_type: str, region: str, deal_ymd: str, f
         header = f"🏠 [국토교통부 {type_label} 실거래가 조회 결과 | 지역:{region}({lawd_cd}) | 연월:{ymd} | 검색:{kw or '전체'} (총 {len(parsed_rows)}건 중 최근 25건)]"
         return header + "\n" + "\n".join(parsed_rows[:25])
     except Exception as e:
-        return f"❌ 국토교통부 전월세 실거래가 조회 중 오류 발생: {e}"
+        return f"❌ 국토교통부 전월세 실거래가 조회 중 오류 발생: {safe_error(e)}"
 
 
 # ---------------------------------------------------------
@@ -2459,4 +2608,15 @@ def get_bizinfo_support_projects(
             )
         return "\n".join(out)[:14000]
     except Exception as e:
-        return f"❌ 기업마당 지원사업 API 조회 오류: {e}"
+        return f"❌ 기업마당 지원사업 API 조회 오류: {safe_error(e)}"
+
+
+# ---------------------------------------------------------
+# 공개 조회 함수 전체에 키 마스킹 래퍼 적용 (반환 문자열·예외 메시지)
+# ---------------------------------------------------------
+_PUBLIC_REDACT_PREFIXES = ("get_", "search_", "verify_")
+for _name, _obj in list(globals().items()):
+    if (_name.startswith(_PUBLIC_REDACT_PREFIXES) and callable(_obj) and getattr(_obj, "__module__", "") == __name__
+            and not getattr(_obj, "__redacting__", False) and _name not in ("get_kst_today_info",)):
+        globals()[_name] = _redacting(_obj)
+del _name, _obj
