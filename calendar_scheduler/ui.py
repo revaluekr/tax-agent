@@ -2825,4 +2825,577 @@ def render_floating_kakao_todo_overlay() -> None:
 
                 #tds-kakao-square-bubble {{
                     background: #FFFFFF;
-                    border: 2px solid #3182F
+                    border: 2px solid #3182F6;
+                    border-radius: 6px;
+                    box-shadow: 0 18px 38px -10px rgba(25, 31, 40, 0.18);
+                    animation: squareBubblePop 0.28s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+                    margin-bottom: 14px;
+                    width: 350px;
+                    max-width: 90vw;
+                    padding: 16px;
+                    position: relative;
+                }}
+                #tds-kakao-square-bubble.hidden {{
+                    display: none !important;
+                }}
+                .tds-sb-top {{
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    gap: 8px;
+                    margin-bottom: 6px;
+                }}
+                .tds-sb-badge {{
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 4px;
+                    padding: 2px 8px;
+                    border-radius: 4px;
+                    font-size: 0.68rem;
+                    font-weight: 800;
+                    background: #E8F3FF;
+                    color: #3182F6;
+                }}
+                .tds-sb-dismiss {{
+                    background: transparent;
+                    border: none;
+                    color: #8B95A1;
+                    font-size: 0.75rem;
+                    font-weight: 700;
+                    cursor: pointer;
+                    padding: 0 4px;
+                }}
+                .tds-sb-dismiss:hover {{
+                    color: #191F28;
+                }}
+                .tds-sb-msg {{
+                    font-size: 0.86rem;
+                    font-weight: 800;
+                    color: #191F28;
+                    line-height: 1.38;
+                    margin: 0;
+                }}
+                .tds-sb-foot {{
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    margin-top: 12px;
+                    padding-top: 10px;
+                    border-top: 1px solid #F2F4F6;
+                }}
+                .tds-sb-time {{
+                    font-size: 0.70rem;
+                    color: #8B95A1;
+                    font-weight: 600;
+                }}
+                .tds-sb-btns {{
+                    display: flex;
+                    align-items: center;
+                    gap: 6px;
+                }}
+                .tds-sb-btn-next {{
+                    padding: 4px 10px;
+                    border-radius: 4px;
+                    background: #F2F4F6;
+                    border: none;
+                    color: #4E5968;
+                    font-size: 0.72rem;
+                    font-weight: 700;
+                    cursor: pointer;
+                }}
+                .tds-sb-btn-next:hover {{
+                    background: #E5E8EB;
+                }}
+                .tds-sb-btn-open {{
+                    padding: 4px 12px;
+                    border-radius: 4px;
+                    background: #3182F6;
+                    border: none;
+                    color: #FFFFFF;
+                    font-size: 0.72rem;
+                    font-weight: 800;
+                    cursor: pointer;
+                }}
+                .tds-sb-btn-open:hover {{
+                    background: #1B64DA;
+                }}
+                .tds-sb-tail {{
+                    width: 14px;
+                    height: 14px;
+                    background: #FFFFFF;
+                    border-right: 2px solid #3182F6;
+                    border-bottom: 2px solid #3182F6;
+                    transform: rotate(45deg);
+                    position: absolute;
+                    bottom: -8px;
+                    right: 28px;
+                }}
+
+                #tds-kakao-home-fab {{
+                    animation: tossPulseRing 2.2s infinite;
+                    position: relative;
+                    width: 66px;
+                    height: 66px;
+                    border-radius: 22px;
+                    background: #3898FF;
+                    border: none;
+                    color: #FFFFFF;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    cursor: grab;
+                    transition: transform 0.2s ease, background 0.2s ease;
+                    touch-action: none;
+                }}
+                #tds-kakao-home-fab:hover {{
+                    background: #2584F4;
+                    transform: scale(1.05);
+                }}
+                #tds-kakao-home-fab.dragging {{
+                    cursor: grabbing !important;
+                    transform: scale(1.08) !important;
+                    transition: none !important;
+                }}
+                .cute-face-svg {{
+                    animation: cuteWinkBounce 2.8s ease-in-out infinite;
+                    pointer-events: none;
+                }}
+                #tds-kakao-fab-badge {{
+                    position: absolute;
+                    top: -6px;
+                    right: -6px;
+                    min-width: 24px;
+                    height: 24px;
+                    padding: 0 6px;
+                    border-radius: 999px;
+                    background: #F04452;
+                    border: 2px solid #FFFFFF;
+                    color: #FFFFFF;
+                    font-size: 0.74rem;
+                    font-weight: 800;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    box-shadow: 0 2px 6px rgba(240, 68, 82, 0.4);
+                    z-index: 10;
+                    pointer-events: none;
+                }}
+            `;
+
+            const isFreshEntry = !parentDoc.getElementById("tds-kakao-floating-root");
+            let rootEl = parentDoc.getElementById("tds-kakao-floating-root");
+            if (!rootEl) {{
+                rootEl = parentDoc.createElement("div");
+                rootEl.id = "tds-kakao-floating-root";
+                parentDoc.body.appendChild(rootEl);
+            }}
+
+            const FAB_ICON_CLOSED_SVG = `
+                <svg class="cute-face-svg" width="46" height="46" viewBox="0 0 32 32" fill="none">
+                    <circle cx="16" cy="16" r="12.5" stroke="#FFFFFF" stroke-width="2.9" stroke-linecap="round" stroke-linejoin="round" />
+                    <line x1="11.8" y1="13.2" x2="11.8" y2="18.5" stroke="#FFFFFF" stroke-width="3.0" stroke-linecap="round" />
+                    <line x1="20.2" y1="13.2" x2="20.2" y2="18.5" stroke="#FFFFFF" stroke-width="3.0" stroke-linecap="round" />
+                </svg>
+            `;
+            const FAB_ICON_OPEN_SVG = `
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" style="pointer-events:none;">
+                    <path d="M6 9L12 15L18 9" stroke="#FFFFFF" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+            `;
+            const HEADER_CHAR_SVG = `
+                <svg width="22" height="22" viewBox="0 0 28 28" fill="none">
+                    <circle cx="14" cy="14" r="9.5" stroke="#FFFFFF" stroke-width="2.3"/>
+                    <line x1="10.8" y1="12.2" x2="10.8" y2="15.4" stroke="#FFFFFF" stroke-width="2.3" stroke-linecap="round"/>
+                    <line x1="17.2" y1="12.2" x2="17.2" y2="15.4" stroke="#FFFFFF" stroke-width="2.3" stroke-linecap="round"/>
+                </svg>
+            `;
+
+            if (!parentWin._tdsKakaoState) {{
+                parentWin._tdsKakaoState = {{
+                    open: INIT_OPEN,
+                    filter: "ALL",
+                    bubbleIdx: 0,
+                    bubbleDismissed: false,
+                    todos: TODOS_DATA,
+                    customPos: null,
+                    serverKstIso: SERVER_KST_ISO
+                }};
+            }} else {{
+                parentWin._tdsKakaoState.todos = TODOS_DATA;
+                parentWin._tdsKakaoState.serverKstIso = SERVER_KST_ISO;
+                if (INIT_OPEN !== parentWin._tdsKakaoState._lastServerOpen) {{
+                    parentWin._tdsKakaoState.open = INIT_OPEN;
+                    parentWin._tdsKakaoState._lastServerOpen = INIT_OPEN;
+                }}
+                if (isFreshEntry) {{
+                    parentWin._tdsKakaoState.customPos = null;
+                }}
+            }}
+
+            function applyFloatingPosition() {{
+                const stObj = parentWin._tdsKakaoState;
+                if (stObj && stObj.customPos) {{
+                    rootEl.style.left = stObj.customPos.left + "px";
+                    rootEl.style.top = stObj.customPos.top + "px";
+                    rootEl.style.right = "auto";
+                    rootEl.style.bottom = "auto";
+                }} else {{
+                    rootEl.style.left = "auto";
+                    rootEl.style.top = "auto";
+                    rootEl.style.right = "20px";
+                    rootEl.style.bottom = "60px";
+                }}
+            }}
+
+            parentWin._tdsActiveCalFrame = frameEl;
+            if (!parentWin._tdsCalCleanupTimer) {{
+                parentWin._tdsCalCleanupTimer = parentWin.setInterval(function() {{
+                    const activeFr = parentWin._tdsActiveCalFrame;
+                    if (!activeFr || !parentDoc.body.contains(activeFr)) {{
+                        const r = parentDoc.getElementById("tds-kakao-floating-root");
+                        if (r) r.remove();
+                        if (parentWin._tdsKakaoState) {{
+                            parentWin._tdsKakaoState.customPos = null;
+                            parentWin._tdsKakaoState.open = false;
+                        }}
+                        parentWin.clearInterval(parentWin._tdsCalCleanupTimer);
+                        parentWin._tdsCalCleanupTimer = null;
+                        return;
+                    }}
+                    bindDockMultiToggleAndKeys();
+                    try {{
+                        const kstNow = new Date(new Date().toLocaleString("en-US", {{ timeZone: "Asia/Seoul" }}));
+                        const y = kstNow.getFullYear();
+                        const m = String(kstNow.getMonth() + 1).padStart(2, "0");
+                        const d = String(kstNow.getDate()).padStart(2, "0");
+                        const curIso = `${{y}}-${{m}}-${{d}}`;
+                        if (parentWin._tdsKakaoState && parentWin._tdsKakaoState.serverKstIso && curIso !== parentWin._tdsKakaoState.serverKstIso) {{
+                            parentWin._tdsKakaoState.serverKstIso = curIso;
+                            const todayBtn = Array.from(parentDoc.querySelectorAll('section[data-testid="stSidebar"] button'))
+                                .find(b => (b.textContent || "").indexOf("오늘 날짜로 즉시 이동") >= 0);
+                            if (todayBtn) todayBtn.click();
+                        }}
+                    }} catch (err) {{}}
+                }}, 400);
+            }}
+
+            function escHtml(v) {{
+                return String(v == null ? "" : v)
+                    .replace(/&/g, "&amp;")
+                    .replace(/</g, "&lt;")
+                    .replace(/>/g, "&gt;")
+                    .replace(/"/g, "&quot;")
+                    .replace(/'/g, "&#39;");
+            }}
+
+            function getStatusCode(item) {{
+                if (item.status_code) return item.status_code;
+                const s = String(item.status || "");
+                if (s.indexOf("작업중") >= 0) return "WORKING";
+                if (s.indexOf("승인요청") >= 0) return "READY";
+                return "APPROVED";
+            }}
+
+            function copyTextSafe(text) {{
+                try {{
+                    const ta = parentDoc.createElement("textarea");
+                    ta.value = text;
+                    ta.style.position = "fixed";
+                    ta.style.opacity = "0";
+                    parentDoc.body.appendChild(ta);
+                    ta.select();
+                    parentDoc.execCommand("copy");
+                    parentDoc.body.removeChild(ta);
+                }} catch (e) {{}}
+            }}
+
+            function triggerSidebarMode(targetMode) {{
+                const btns = Array.from(parentDoc.querySelectorAll('section[data-testid="stSidebar"] button'));
+                let keyword = "달력";
+                if (targetMode === "AGENT") keyword = "자율 에이전트AI";
+                else if (targetMode === "PAYROLL_BIZ" || targetMode === "PAYROLL_EMP") keyword = "인건비 자동화";
+                const found = btns.find(b => (b.textContent || "").indexOf(keyword) >= 0);
+                if (found) found.click();
+            }}
+
+            function bindFabDrag(fabBtn) {{
+                if (!fabBtn) return;
+                let isPointerDown = false;
+                let hasDragged = false;
+                let startX = 0;
+                let startY = 0;
+                let origLeft = 0;
+                let origTop = 0;
+                const DRAG_THRESHOLD = 5;
+
+                fabBtn.addEventListener("mousedown", function(e) {{
+                    if (e.button !== 0) return;
+                    isPointerDown = true;
+                    hasDragged = false;
+                    startX = e.clientX;
+                    startY = e.clientY;
+                    const rect = rootEl.getBoundingClientRect();
+                    origLeft = rect.left;
+                    origTop = rect.top;
+                    e.preventDefault();
+                }});
+
+                if (parentWin._tdsFabMouseMoveHandler) {{
+                    parentWin.removeEventListener("mousemove", parentWin._tdsFabMouseMoveHandler);
+                }}
+                if (parentWin._tdsFabMouseUpHandler) {{
+                    parentWin.removeEventListener("mouseup", parentWin._tdsFabMouseUpHandler);
+                }}
+
+                parentWin._tdsFabMouseMoveHandler = function(e) {{
+                    if (!isPointerDown) return;
+                    const dx = e.clientX - startX;
+                    const dy = e.clientY - startY;
+                    if (!hasDragged && Math.hypot(dx, dy) > DRAG_THRESHOLD) {{
+                        hasDragged = true;
+                        fabBtn.classList.add("dragging");
+                    }}
+                    if (hasDragged) {{
+                        const rootRect = rootEl.getBoundingClientRect();
+                        const maxLeft = parentWin.innerWidth - rootRect.width - 10;
+                        const maxTop = parentWin.innerHeight - rootRect.height - 10;
+                        const nextLeft = Math.max(10, Math.min(maxLeft, origLeft + dx));
+                        const nextTop = Math.max(10, Math.min(maxTop, origTop + dy));
+                        rootEl.style.left = nextLeft + "px";
+                        rootEl.style.top = nextTop + "px";
+                        rootEl.style.right = "auto";
+                        rootEl.style.bottom = "auto";
+                        parentWin._tdsKakaoState.customPos = {{ left: nextLeft, top: nextTop }};
+                    }}
+                }};
+
+                parentWin._tdsFabMouseUpHandler = function(e) {{
+                    if (!isPointerDown) return;
+                    isPointerDown = false;
+                    fabBtn.classList.remove("dragging");
+                    if (!hasDragged) {{
+                        parentWin._tdsKakaoState.open = !parentWin._tdsKakaoState.open;
+                        renderOverlay();
+                    }}
+                    hasDragged = false;
+                }};
+
+                parentWin.addEventListener("mousemove", parentWin._tdsFabMouseMoveHandler);
+                parentWin.addEventListener("mouseup", parentWin._tdsFabMouseUpHandler);
+            }}
+
+            function renderOverlay() {{
+                const stObj = parentWin._tdsKakaoState;
+                const allTodos = stObj.todos || [];
+                const workingList = allTodos.filter(t => getStatusCode(t) === "WORKING");
+                const readyList = allTodos.filter(t => getStatusCode(t) === "READY");
+                const approvedList = allTodos.filter(t => getStatusCode(t) === "APPROVED");
+                const totalAttention = readyList.length + workingList.length;
+
+                const filtered = allTodos.filter(t => {{
+                    if (stObj.filter === "ALL") return true;
+                    return getStatusCode(t) === stObj.filter;
+                }});
+
+                const cardsHtml = filtered.length === 0
+                    ? `<div style="padding:40px;text-align:center;color:#8B95A1;font-weight:700;">해당 상태의 카톡 자동화 내역이 없어요.</div>`
+                    : filtered.map(item => {{
+                        const sCode = getStatusCode(item);
+                        let stBadgeHtml = "";
+                        let actBtnsHtml = "";
+                        if (sCode === "WORKING") {{
+                            stBadgeHtml = `<span class="tds-kp-st-badge working">● 백그라운드 작업중</span>`;
+                            actBtnsHtml = `<button class="tds-kp-btn-finish" data-act="finish" data-id="${{escHtml(item.id)}}">작업 즉시 완료시키기 (시연)</button>`;
+                        }} else if (sCode === "READY") {{
+                            stBadgeHtml = `<span class="tds-kp-st-badge ready">● 작업 완료, 승인요청중</span>`;
+                            actBtnsHtml = `
+                                <button class="tds-kp-btn-jump" data-act="jump" data-id="${{escHtml(item.id)}}">뒤쪽 작업화면에 띄우기</button>
+                                <button class="tds-kp-btn-approve" data-act="approve" data-id="${{escHtml(item.id)}}">${{escHtml(item.action_label || "승인 및 카톡 발송")}}</button>
+                            `;
+                        }} else {{
+                            stBadgeHtml = `<span class="tds-kp-st-badge approved">✓ 사용자 승인완료</span>`;
+                            actBtnsHtml = `<span class="tds-kp-done-txt">승인 완료됨</span>`;
+                        }}
+
+                        const origTxt = item.kakao_original || `[카톡 수신] ${{item.title}}`;
+                        const aiTxt = item.ai_result || item.preview || "";
+
+                        return `
+                            <div class="tds-kp-card">
+                                <div class="tds-kp-card-top">
+                                    <div class="tds-kp-card-badges">
+                                        ${{stBadgeHtml}}
+                                        <span class="tds-kp-cat-pill">${{escHtml(item.category || "카톡 자동화")}}</span>
+                                        <span class="tds-kp-time">${{escHtml(item.time_ago || "")}}</span>
+                                    </div>
+                                    <span class="tds-kp-company">${{escHtml(item.client || "")}}</span>
+                                </div>
+                                <div class="tds-kp-card-title">${{escHtml(item.title)}}</div>
+                                <div class="tds-kp-kakao-orig">${{escHtml(origTxt)}}</div>
+                                <div class="tds-kp-ai-res">${{escHtml(aiTxt)}}</div>
+                                <div class="tds-kp-actions">${{actBtnsHtml}}</div>
+                            </div>
+                        `;
+                    }}).join("");
+
+                let showBubble = (readyList.length > 0 && !stObj.open && !stObj.bubbleDismissed);
+                if (stObj.bubbleIdx >= readyList.length) stObj.bubbleIdx = 0;
+                const bItem = readyList[stObj.bubbleIdx] || {{}};
+                const bCat = bItem.category ? `${{bItem.category}} (${{stObj.bubbleIdx + 1}}/${{readyList.length}})` : "카톡 백그라운드 알림";
+                const bMsg = bItem.bubble_msg || `${{CURRENT_USER}}님, (주)모 회사에 보낼 세법 검토 카톡이 완성되었습니다`;
+                const bTime = `${{bItem.time_ago || "방금 전"}} · 드래그하여 이동 · 클릭 시 열림`;
+
+                rootEl.innerHTML = `
+                    <div id="tds-kakao-backdrop" class="${{stObj.open ? 'open' : ''}}"></div>
+                    <div id="tds-kakao-todo-panel" class="${{stObj.open ? 'open' : ''}}">
+                        <div class="tds-kp-header">
+                            <div class="tds-kp-hdr-l">
+                                <div class="tds-kp-char-circle">${{HEADER_CHAR_SVG}}</div>
+                                <div>
+                                    <div class="tds-kp-title-row">
+                                        <span class="tds-kp-title">${{escHtml(CURRENT_USER)}}님의 카톡 백그라운드 To-Do</span>
+                                        <span class="tds-kp-pill-60">60% 오버레이</span>
+                                    </div>
+                                    <div class="tds-kp-sub">뒤쪽 작업 공간을 유지한 채 진행상황을 확인하고 승인합니다</div>
+                                </div>
+                            </div>
+                            <div class="tds-kp-hdr-r">
+                                <button class="tds-kp-approve-all-btn" id="tds-kp-approve-all">승인요청 건 모두 승인하기</button>
+                                <button class="tds-kp-close-btn" id="tds-kp-close" title="닫기">✕</button>
+                            </div>
+                        </div>
+
+                        <div class="tds-kp-tabs-bar">
+                            <div class="tds-kp-tabs-l">
+                                <button class="tds-kp-tab all ${{stObj.filter === 'ALL' ? 'active-ring' : ''}}" data-filter="ALL">전체 ${{allTodos.length}}</button>
+                                <button class="tds-kp-tab working ${{stObj.filter === 'WORKING' ? 'active-ring' : ''}}" data-filter="WORKING">백그라운드 작업중 ${{workingList.length}}</button>
+                                <button class="tds-kp-tab ready ${{stObj.filter === 'READY' ? 'active-ring' : ''}}" data-filter="READY">작업 완료, 승인요청중 ${{readyList.length}}</button>
+                                <button class="tds-kp-tab approved ${{stObj.filter === 'APPROVED' ? 'active-ring' : ''}}" data-filter="APPROVED">사용자 승인완료 ${{approvedList.length}}</button>
+                            </div>
+                            <div class="tds-kp-silent-info">통상적 인사 자동 닫기(1소거): <b>${{SILENT_CNT}}건</b></div>
+                        </div>
+
+                        <div class="tds-kp-body">${{cardsHtml}}</div>
+
+                        <div class="tds-kp-footer">
+                            <span>💡 승인완료 버튼을 누르면 달력에 완료 기록이 자동으로 추가돼요</span>
+                            <button class="tds-kp-min-btn" id="tds-kp-minimize">홈버튼으로 접기 ↘</button>
+                        </div>
+                    </div>
+
+                    <div id="tds-kakao-square-bubble" class="${{showBubble ? '' : 'hidden'}}">
+                        <div class="tds-sb-top">
+                            <span class="tds-sb-badge">${{escHtml(bCat)}}</span>
+                            <button class="tds-sb-dismiss" id="tds-sb-dismiss" title="말풍선 닫기">✕</button>
+                        </div>
+                        <p class="tds-sb-msg">${{escHtml(bMsg)}}</p>
+                        <div class="tds-sb-foot">
+                            <span class="tds-sb-time">${{escHtml(bTime)}}</span>
+                            <div class="tds-sb-btns">
+                                <button class="tds-sb-btn-next" id="tds-sb-next">다음 ▸</button>
+                                <button class="tds-sb-btn-open" id="tds-sb-open">체크리스트 열기</button>
+                            </div>
+                        </div>
+                        <div class="tds-sb-tail"></div>
+                    </div>
+
+                    <button id="tds-kakao-home-fab" aria-label="홈버튼 열기 (드래그하여 위치 이동 가능)" title="좌클릭 드래그: 위치 이동 / 클릭: To-Do 열기">
+                        ${{totalAttention > 0 ? `<span id="tds-kakao-fab-badge">${{totalAttention}}</span>` : ''}}
+                        ${{stObj.open ? FAB_ICON_OPEN_SVG : FAB_ICON_CLOSED_SVG}}
+                    </button>
+                `;
+
+                applyFloatingPosition();
+
+                const fabBtn = parentDoc.getElementById("tds-kakao-home-fab");
+                const closeBtn = parentDoc.getElementById("tds-kp-close");
+                const minBtn = parentDoc.getElementById("tds-kp-minimize");
+                const backdropEl = parentDoc.getElementById("tds-kakao-backdrop");
+                const approveAllBtn = parentDoc.getElementById("tds-kp-approve-all");
+                const sbDismiss = parentDoc.getElementById("tds-sb-dismiss");
+                const sbNext = parentDoc.getElementById("tds-sb-next");
+                const sbOpen = parentDoc.getElementById("tds-sb-open");
+
+                bindFabDrag(fabBtn);
+
+                if (closeBtn) closeBtn.onclick = function() {{ stObj.open = false; renderOverlay(); }};
+                if (minBtn) minBtn.onclick = function() {{ stObj.open = false; renderOverlay(); }};
+                if (backdropEl) backdropEl.onclick = function() {{ stObj.open = false; renderOverlay(); }};
+
+                if (sbDismiss) {{
+                    sbDismiss.onclick = function(e) {{
+                        e.stopPropagation();
+                        stObj.bubbleDismissed = true;
+                        renderOverlay();
+                    }};
+                }}
+                if (sbNext) {{
+                    sbNext.onclick = function(e) {{
+                        e.stopPropagation();
+                        stObj.bubbleIdx = stObj.bubbleIdx + 1;
+                        renderOverlay();
+                    }};
+                }}
+                if (sbOpen) {{
+                    sbOpen.onclick = function(e) {{
+                        e.stopPropagation();
+                        stObj.open = true;
+                        renderOverlay();
+                    }};
+                }}
+
+                if (approveAllBtn) {{
+                    approveAllBtn.onclick = function() {{
+                        allTodos.forEach(t => {{
+                            if (getStatusCode(t) === "READY") {{
+                                t.status_code = "APPROVED";
+                                t.status = "사용자 승인완료";
+                                t.time_ago = "방금 일괄승인";
+                                t.checked = true;
+                            }}
+                        }});
+                        renderOverlay();
+                    }};
+                }}
+
+                rootEl.querySelectorAll(".tds-kp-tab").forEach(btn => {{
+                    btn.onclick = function() {{
+                        stObj.filter = this.getAttribute("data-filter") || "ALL";
+                        renderOverlay();
+                    }};
+                }});
+
+                rootEl.querySelectorAll("button[data-act]").forEach(btn => {{
+                    btn.onclick = function() {{
+                        const act = this.getAttribute("data-act");
+                        const tid = this.getAttribute("data-id");
+                        const target = allTodos.find(x => x.id === tid);
+                        if (!target) return;
+                        if (act === "finish") {{
+                            target.status_code = "READY";
+                            target.status = "작업 완료, 승인요청중";
+                            target.time_ago = "방금 완료됨";
+                            target.ai_result = "✅ 지정 폴더 저장 및 에이전트AI 급여명세서 화면(임직원 8명) 자동 입력이 완료되었습니다!";
+                            renderOverlay();
+                        }} else if (act === "approve") {{
+                            copyTextSafe(target.ai_result || target.preview || "");
+                            target.status_code = "APPROVED";
+                            target.status = "사용자 승인완료";
+                            target.time_ago = "방금 승인됨";
+                            target.checked = true;
+                            renderOverlay();
+                        }} else if (act === "jump") {{
+                            stObj.open = false;
+                            renderOverlay();
+                            triggerSidebarMode(target.target_mode || "CALENDAR");
+                        }}
+                    }};
+                }});
+            }}
+
+            renderOverlay();
+        }})();
+        </script>
+        """,
+        height=0,
+    )
