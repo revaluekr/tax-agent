@@ -11,6 +11,7 @@ import html as _html_lib
 import json
 import re
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any, Dict, List
 from zoneinfo import ZoneInfo
 
@@ -22,7 +23,7 @@ import ui_theme as _ui_theme
 _WEEKDAYS_SHORT = ("월", "화", "수", "목", "금", "토", "일")
 _WEEKDAYS_FULL = ("월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일")
 _SUN_FIRST_HEADERS = ("일", "월", "화", "수", "목", "금", "토")
-_STATE_SCHEMA_VERSION = "v22_clean_empty_kakao_todos_production_ready"
+_STATE_SCHEMA_VERSION = "v23_persistent_store_0000_purge_and_180d_prompt"
 
 
 def _html(s: str) -> str:
@@ -1727,6 +1728,358 @@ div[data-testid="stDialog"] [class*="st-key-dlg_btn_delete_"] div.stButton > but
 """
 
 
+def _get_user_schedule_store_path() -> Path:
+    """
+    코드를 새로 덮어쓰거나 앱을 재시작해도 사용자의 달력 스케줄과 To-Do 리스트가
+    절대 날아가지 않도록 ui.py 외부의 독립 JSON 저장소 경로를 반환합니다.
+    """
+    candidates = [
+        Path(__file__).resolve().parent.parent / "data" / "user_calendar_store.json",
+        Path.home() / ".tax_ai_agent" / "user_calendar_store.json",
+    ]
+    for p in candidates:
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            return p
+        except Exception:
+            continue
+    return Path("/tmp/user_calendar_store.json")
+
+
+def _is_repeating_schedule(ev: Dict[str, Any]) -> bool:
+    """반복적인 스케줄('매일 반복', '매주 반복', '매월 반복', '매년 반복')인지 판별합니다."""
+    rep = str(ev.get("repeat", "반복 안함")).strip()
+    return rep not in ("", "반복 안함", "없음", "NONE")
+
+
+def _is_statutory_tax_schedule(ev: Dict[str, Any]) -> bool:
+    """코드에서 매월 자동 배치하는 기본 법정 세무기한 일정인지 판별합니다."""
+    ev_id = str(ev.get("id", ""))
+    ev_type = str(ev.get("type", "")).upper()
+    return (ev_id.startswith("sch_") and not ev.get("_user_modified")) or (
+        ev_type == "TAX" and ev_id.startswith("sch_") and not ev.get("_user_modified")
+    )
+
+
+def _load_raw_store_from_disk() -> Dict[str, Any]:
+    """외부 JSON 파일에서 사용자 일정 저장소 데이터를 읽어옵니다."""
+    store_path = _get_user_schedule_store_path()
+    if not store_path.exists():
+        return {"last_kst_today_iso": "", "user_events_by_ym": {}, "deleted_tax_ids": []}
+    try:
+        raw = json.loads(store_path.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            return {
+                "last_kst_today_iso": str(raw.get("last_kst_today_iso", "")),
+                "user_events_by_ym": dict(raw.get("user_events_by_ym", {})),
+                "deleted_tax_ids": list(raw.get("deleted_tax_ids", [])),
+            }
+    except Exception:
+        pass
+    return {"last_kst_today_iso": "", "user_events_by_ym": {}, "deleted_tax_ids": []}
+
+
+def _save_user_schedules_to_disk(cstate: Dict[str, Any]) -> None:
+    """
+    현재 세션의 schedules_by_ym 중 사용자가 작성·수정한 모든 스케줄과 To-Do 항목을
+    외부 JSON 파일(user_calendar_store.json)에 즉시 영구 저장합니다.
+    """
+    store_path = _get_user_schedule_store_path()
+    schedules_by_ym = cstate.get("schedules_by_ym", {})
+    user_events_by_ym: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
+
+    # 기존 디스크에 저장되어 있던 다른 연·월 데이터도 보존
+    existing_disk = _load_raw_store_from_disk().get("user_events_by_ym", {})
+    for k_ym, v_days in existing_disk.items():
+        if k_ym not in schedules_by_ym and isinstance(v_days, dict):
+            user_events_by_ym[k_ym] = v_days
+
+    for ym_key, day_map in schedules_by_ym.items():
+        if not isinstance(day_map, dict):
+            continue
+        ym_saved: Dict[str, List[Dict[str, Any]]] = {}
+        for d_key, ev_list in day_map.items():
+            u_list = [
+                ev for ev in (ev_list or [])
+                if not _is_statutory_tax_schedule(ev)
+            ]
+            if u_list:
+                ym_saved[str(int(d_key))] = u_list
+        user_events_by_ym[str(ym_key)] = ym_saved
+
+    payload = {
+        "last_kst_today_iso": str(cstate.get("_last_kst_today_iso", get_kst_today().isoformat())),
+        "user_events_by_ym": user_events_by_ym,
+        "deleted_tax_ids": list(cstate.get("deleted_tax_ids", [])),
+        "updated_at": datetime.now(ZoneInfo("Asia/Seoul")).isoformat(),
+    }
+    try:
+        store_path.parent.mkdir(parents=True, exist_ok=True)
+        store_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _build_merged_month_schedules(
+    year: int,
+    month: int,
+    today_d: date,
+    user_events_by_ym: Dict[str, Any],
+    deleted_tax_ids: List[str],
+) -> Dict[int, List[Dict[str, Any]]]:
+    """
+    1~12월 기본 법정 세무기한 위에 외부 파일에 보관된 사용자 스케줄/To-Do를 병합합니다.
+    """
+    ym_key = f"{year:04d}-{month:02d}"
+    base = _default_schedules_for_month(year, month, today_d)
+    del_set = set(str(x) for x in (deleted_tax_ids or []))
+
+    merged: Dict[int, List[Dict[str, Any]]] = {}
+    for d_int, ev_list in base.items():
+        kept = [e for e in ev_list if str(e.get("id")) not in del_set]
+        if kept:
+            merged[int(d_int)] = kept
+
+    saved_ym = user_events_by_ym.get(ym_key, {})
+    if isinstance(saved_ym, dict):
+        for d_str, u_evs in saved_ym.items():
+            try:
+                d_num = int(d_str)
+            except Exception:
+                continue
+            bucket = merged.setdefault(d_num, [])
+            existing_ids = {str(x.get("id")) for x in bucket}
+            for u_ev in (u_evs or []):
+                uid = str(u_ev.get("id", ""))
+                if uid in existing_ids:
+                    bucket[:] = [u_ev if str(x.get("id")) == uid else x for x in bucket]
+                else:
+                    bucket.append(u_ev)
+                    existing_ids.add(uid)
+    return merged
+
+
+def _run_daily_0000_maintenance(cstate: Dict[str, Any], today_d: date) -> bool:
+    """
+    매일 00:00시 기준 자동 정리 로직:
+    1) 완료한 To-Do 항목(done=True): 완료한 날의 다음날 00:00시가 되면 자동으로 영구 삭제합니다.
+       (단, 반복 설정된 스케줄은 삭제 대상에서 제외)
+    2) 미완료 To-Do 항목(done=False): 삭제하지 않고 오늘 날짜의 To-Do 리스트로 안전하게 이월합니다.
+    """
+    changed = False
+    schedules_by_ym = cstate.get("schedules_by_ym", {})
+    today_ym_key = f"{today_d.year:04d}-{today_d.month:02d}"
+    if today_ym_key not in schedules_by_ym:
+        disk_data = _load_raw_store_from_disk()
+        schedules_by_ym[today_ym_key] = _build_merged_month_schedules(
+            today_d.year,
+            today_d.month,
+            today_d,
+            disk_data.get("user_events_by_ym", {}),
+            disk_data.get("deleted_tax_ids", []),
+        )
+    today_bucket = schedules_by_ym.setdefault(today_ym_key, {}).setdefault(today_d.day, [])
+    today_existing_ids = {str(x.get("id")) for x in today_bucket}
+
+    for ym_key, day_map in list(schedules_by_ym.items()):
+        if not isinstance(day_map, dict):
+            continue
+        try:
+            y_str, m_str = str(ym_key).split("-", 1)
+            y_int, m_int = int(y_str), int(m_str)
+        except Exception:
+            continue
+
+        for d_key in sorted(list(day_map.keys()), key=lambda x: int(x)):
+            d_int = int(d_key)
+            try:
+                slot_date = date(y_int, m_int, d_int)
+            except Exception:
+                continue
+
+            if slot_date >= today_d:
+                continue
+
+            ev_list = day_map.get(d_key, [])
+            kept_list: List[Dict[str, Any]] = []
+            for ev_item in ev_list:
+                if _is_statutory_tax_schedule(ev_item):
+                    kept_list.append(ev_item)
+                    continue
+
+                is_rep = _is_repeating_schedule(ev_item)
+                is_done = bool(ev_item.get("done", False))
+
+                if is_done:
+                    # 1. 완료한 To-Do 항목: 다음날 00:00시에 자동 삭제 (반복 스케줄은 유지)
+                    if is_rep:
+                        kept_list.append(ev_item)
+                    else:
+                        comp_ymd = ev_item.get("completed_on_ymd")
+                        comp_date = slot_date
+                        if isinstance(comp_ymd, (list, tuple)) and len(comp_ymd) == 3:
+                            try:
+                                comp_date = date(int(comp_ymd[0]), int(comp_ymd[1]), int(comp_ymd[2]))
+                            except Exception:
+                                comp_date = slot_date
+                        if comp_date < today_d:
+                            changed = True
+                            continue
+                        else:
+                            kept_list.append(ev_item)
+                else:
+                    # 미완료 항목 중 달력 전용 과거 스케줄(show_on_cal=True)은 해당 날짜 달력에도 남겨서 180일 관리가 되도록 하고,
+                    # 오늘자 To-Do 리스트로도 미완료 이월이 되도록 처리
+                    ev_item.setdefault("origin_year", y_int)
+                    ev_item.setdefault("origin_month", m_int)
+                    ev_item.setdefault("origin_day", d_int)
+                    if ev_item.get("show_on_cal"):
+                        kept_list.append(ev_item)
+                    else:
+                        if str(ev_item.get("id")) not in today_existing_ids:
+                            today_bucket.append(ev_item)
+                            today_existing_ids.add(str(ev_item.get("id")))
+                        changed = True
+
+            day_map[d_key] = kept_list
+
+    if changed:
+        _save_user_schedules_to_disk(cstate)
+    return changed
+
+
+def _find_expired_180d_schedules(cstate: Dict[str, Any], today_d: date) -> List[Dict[str, Any]]:
+    """
+    2. 메인 달력에 적어둔 지난 스케줄 중 180일이 경과한 항목을 탐색합니다.
+    - 법정 세무기한 및 반복적인 스케줄('매일 반복', '매주 반복', '매월 반복', '매년 반복')은 삭제 대상에서 무조건 제외합니다.
+    """
+    expired: List[Dict[str, Any]] = []
+    schedules_by_ym = cstate.get("schedules_by_ym", {})
+    seen_ids: set[str] = set()
+
+    for ym_key, day_map in sorted(schedules_by_ym.items()):
+        if not isinstance(day_map, dict):
+            continue
+        try:
+            y_str, m_str = str(ym_key).split("-", 1)
+            y_int, m_int = int(y_str), int(m_str)
+        except Exception:
+            continue
+
+        for d_key, ev_list in sorted(day_map.items(), key=lambda item: int(item[0])):
+            d_int = int(d_key)
+            try:
+                ev_date = date(y_int, m_int, d_int)
+            except Exception:
+                continue
+
+            days_elapsed = (today_d - ev_date).days
+            if days_elapsed < 180:
+                continue
+
+            for ev in (ev_list or []):
+                ev_id = str(ev.get("id", ""))
+                if not ev_id or ev_id in seen_ids:
+                    continue
+                if _is_statutory_tax_schedule(ev) or str(ev.get("type", "")).upper() == "TAX":
+                    continue
+                # 반복적인 스케줄은 삭제 대상에서 제외!
+                if _is_repeating_schedule(ev):
+                    continue
+                seen_ids.add(ev_id)
+                expired.append({
+                    "ym_key": str(ym_key),
+                    "year": y_int,
+                    "month": m_int,
+                    "day": d_int,
+                    "date_str": f"{y_int}.{m_int:02d}.{d_int:02d}",
+                    "days_elapsed": days_elapsed,
+                    "ev": ev,
+                })
+    return expired
+
+
+def _delete_specific_schedule_by_id(cstate: Dict[str, Any], ev_id: str) -> None:
+    """특정 스케줄 ID를 모든 연·월 버킷에서 삭제하고 디스크에 즉시 반영합니다."""
+    if str(ev_id).startswith("sch_"):
+        del_list = cstate.setdefault("deleted_tax_ids", [])
+        if str(ev_id) not in del_list:
+            del_list.append(str(ev_id))
+    for ym_k, d_map in list(cstate.get("schedules_by_ym", {}).items()):
+        if isinstance(d_map, dict):
+            for dk in list(d_map.keys()):
+                d_map[dk] = [x for x in d_map.get(dk, []) if str(x.get("id")) != str(ev_id)]
+    _save_user_schedules_to_disk(cstate)
+
+
+@st.dialog("🗓️ 180일 경과 지난 스케줄 삭제 확인", width="large")
+def _open_expired_180d_cleanup_dialog() -> None:
+    """
+    메인 달력에 적어둔 지난 스케줄(반복 스케줄 제외)이 180일이 지났을 때
+    사용자에게 삭제 여부를 묻고 직접 선택·삭제하도록 유도하는 확인 모달입니다.
+    """
+    cstate = _init_calendar_state()
+    today_d = get_kst_today()
+    expired_list = _find_expired_180d_schedules(cstate, today_d)
+
+    st.markdown("<div id='tds-dlg-iceblue-anchor' style='display:none;'></div>", unsafe_allow_html=True)
+    st.markdown(
+        _html(f"""
+        <div style="background:#FFFFFF;border:1.5px solid #90C2FF;border-radius:16px;padding:16px 20px;margin-bottom:14px;">
+            <div style="font-size:1.05rem;font-weight:800;color:#191F28;margin-bottom:6px;">
+                등록한 지 180일이 지난 스케줄이 <span style="color:#3182F6;">{len(expired_list)}건</span> 있습니다. 삭제할까요?
+            </div>
+            <div style="font-size:0.80rem;font-weight:600;color:#4E5968;line-height:1.5;">
+                • <b>반복적인 스케줄(매일·매주·매월·매년 반복)</b>과 법정 세무기한은 삭제 대상에서 <b>자동 제외</b>되었습니다.<br>
+                • 아래 목록에서 정리할 지난 스케줄을 확인하신 뒤 직접 삭제 버튼을 눌러주세요.
+            </div>
+        </div>
+        """),
+        unsafe_allow_html=True,
+    )
+
+    if not expired_list:
+        st.info("현재 180일이 경과한 삭제 대상 스케줄이 없습니다.")
+        if st.button("닫기", width="stretch", key="btn_180d_close_empty"):
+            cstate["dismissed_180d_prompt"] = True
+            st.rerun()
+        return
+
+    selected_del_ids: List[str] = []
+    for idx, item in enumerate(expired_list):
+        ev = item["ev"]
+        ev_id = str(ev.get("id", f"exp_{idx}"))
+        title_str = str(ev.get("title", "지난 일정"))
+        client_str = str(ev.get("client", ""))
+        date_str = item["date_str"]
+        days_old = item["days_elapsed"]
+
+        c_chk, c_one_del = st.columns([4.6, 1.1], gap="small")
+        with c_chk:
+            lbl = f"[{date_str} · {days_old}일 경과] {title_str}" + (f" ({client_str})" if client_str and client_str != "내 스케줄" else "")
+            if st.checkbox(lbl, value=True, key=f"chk_180d_del_{ev_id}"):
+                selected_del_ids.append(ev_id)
+        with c_one_del:
+            if st.button("직접 삭제", key=f"btn_180d_one_{ev_id}", width="stretch"):
+                _delete_specific_schedule_by_id(cstate, ev_id)
+                st.toast(f"'{title_str}' 지난 스케줄을 삭제했습니다.", icon="🗑️")
+                st.rerun()
+
+    st.divider()
+    b_later, b_del_sel = st.columns([1.2, 1.8], gap="small")
+    with b_later:
+        if st.button("나중에 정리하기 (유지)", width="stretch", key="btn_180d_keep_later"):
+            cstate["dismissed_180d_prompt"] = True
+            st.rerun()
+    with b_del_sel:
+        if st.button(f"선택한 {len(selected_del_ids)}건 지금 삭제하기", width="stretch", key="btn_180d_confirm_del"):
+            for did in selected_del_ids:
+                _delete_specific_schedule_by_id(cstate, did)
+            cstate["dismissed_180d_prompt"] = True
+            st.toast(f"180일이 지난 스케줄 {len(selected_del_ids)}건을 삭제했습니다.", icon="✅")
+            st.rerun()
+
+
 def _init_calendar_state() -> Dict[str, Any]:
     """
     달력 및 Today To Do 세션 상태를 초기화합니다.
@@ -1739,16 +2092,37 @@ def _init_calendar_state() -> Dict[str, Any]:
         "cal_scheduler_state" not in st.session_state
         or st.session_state["cal_scheduler_state"].get("_schema_v") != _STATE_SCHEMA_VERSION
     ):
+        disk_store = _load_raw_store_from_disk()
+        user_evs_by_ym = disk_store.get("user_events_by_ym", {})
+        del_tax_ids = disk_store.get("deleted_tax_ids", [])
+
         ym_key = f"{today_d.year:04d}-{today_d.month:02d}"
+        schedules_by_ym: Dict[str, Dict[int, List[Dict[str, Any]]]] = {
+            ym_key: _build_merged_month_schedules(
+                today_d.year, today_d.month, today_d, user_evs_by_ym, del_tax_ids
+            )
+        }
+        # 디스크에 저장된 다른 모든 연·월 사용자 스케줄도 함께 복원하여 180일 경과 체크 및 월 이동 시 유지
+        for saved_ym_k in user_evs_by_ym.keys():
+            if saved_ym_k not in schedules_by_ym:
+                try:
+                    sy, sm = str(saved_ym_k).split("-", 1)
+                    schedules_by_ym[saved_ym_k] = _build_merged_month_schedules(
+                        int(sy), int(sm), today_d, user_evs_by_ym, del_tax_ids
+                    )
+                except Exception:
+                    pass
+
         st.session_state["cal_scheduler_state"] = {
             "_schema_v": _STATE_SCHEMA_VERSION,
-            "_last_kst_today_iso": today_iso,
+            "_last_kst_today_iso": disk_store.get("last_kst_today_iso") or today_iso,
             "year": today_d.year,
             "month": today_d.month,
             "selected_day": today_d.day,
-            "schedules_by_ym": {
-                ym_key: _default_schedules_for_month(today_d.year, today_d.month, today_d),
-            },
+            "schedules_by_ym": schedules_by_ym,
+            "deleted_tax_ids": del_tax_ids,
+            "dismissed_180d_prompt": False,
+            "open_180d_modal_manual": False,
             "kakao_todos": _default_kakao_todos(today_d),
             "silent_read_count": 0,
             "panel_open": False,
@@ -1770,7 +2144,14 @@ def _init_calendar_state() -> Dict[str, Any]:
             "_sync_sb_from_cstate": False,
             "active_detail_ev_id": None,
         }
+        _run_daily_0000_maintenance(st.session_state["cal_scheduler_state"], today_d)
+        st.session_state["cal_scheduler_state"]["_last_kst_today_iso"] = today_iso
+        _save_user_schedules_to_disk(st.session_state["cal_scheduler_state"])
+
     cstate = st.session_state["cal_scheduler_state"]
+    cstate.setdefault("deleted_tax_ids", [])
+    cstate.setdefault("dismissed_180d_prompt", False)
+    cstate.setdefault("open_180d_modal_manual", False)
     cstate.setdefault("silent_read_count", 0)
     cstate.setdefault("urgent_first", False)
     cstate.setdefault("hide_completed", False)
@@ -1792,44 +2173,26 @@ def _init_calendar_state() -> Dict[str, Any]:
         and str(t.get("client", "")) != "Today To Do"
     ]
 
+    # 다음날 00:00시 자정 경과 시: 완료한 To-Do 자동 삭제 & 미완료 To-Do 오늘로 이월 후 디스크 저장
     if cstate.get("_last_kst_today_iso") != today_iso:
-        # 자정 경과(다음날 전환) 시: 이전 날짜의 체크 완료된(done=True) 할 일은 자동 소거하고,
-        # 못 끝낸 미완료(done=False) 개인 할 일은 오늘 날짜의 To-Do 리스트로 자동 이월합니다.
-        cur_ym_key = f"{today_d.year:04d}-{today_d.month:02d}"
-        cur_m_sched = cstate.get("schedules_by_ym", {}).get(cur_ym_key, {})
-        if cur_m_sched:
-            today_bucket = cur_m_sched.setdefault(today_d.day, [])
-            existing_ids = {str(x.get("id")) for x in today_bucket}
-            for past_d in sorted([d for d in list(cur_m_sched.keys()) if int(d) < today_d.day]):
-                past_list = cur_m_sched.get(past_d, [])
-                kept_for_past = []
-                for ev_item in past_list:
-                    is_tax_item = str(ev_item.get("type", "")).upper() == "TAX" or ev_item.get("category") == "세무기한"
-                    if is_tax_item:
-                        kept_for_past.append(ev_item)
-                    elif ev_item.get("done"):
-                        # 완료된 개인 할 일은 다음날 자동 소거
-                        continue
-                    else:
-                        # 미완료 개인 할 일은 원래 날짜 정보를 보존한 채 오늘로 이월
-                        ev_item.setdefault("origin_year", today_d.year)
-                        ev_item.setdefault("origin_month", today_d.month)
-                        ev_item.setdefault("origin_day", int(past_d))
-                        if str(ev_item.get("id")) not in existing_ids:
-                            today_bucket.append(ev_item)
-                            existing_ids.add(str(ev_item.get("id")))
-                cur_m_sched[past_d] = kept_for_past
-
+        _run_daily_0000_maintenance(cstate, today_d)
         cstate["_last_kst_today_iso"] = today_iso
         cstate["year"] = today_d.year
         cstate["month"] = today_d.month
         cstate["selected_day"] = today_d.day
+        cstate["dismissed_180d_prompt"] = False
         cstate["_sync_sb_from_cstate"] = True
+        _save_user_schedules_to_disk(cstate)
 
     ym_key = f"{int(cstate['year']):04d}-{int(cstate['month']):02d}"
     if ym_key not in cstate["schedules_by_ym"]:
-        cstate["schedules_by_ym"][ym_key] = _default_schedules_for_month(
-            int(cstate["year"]), int(cstate["month"]), today_d
+        disk_store = _load_raw_store_from_disk()
+        cstate["schedules_by_ym"][ym_key] = _build_merged_month_schedules(
+            int(cstate["year"]),
+            int(cstate["month"]),
+            today_d,
+            disk_store.get("user_events_by_ym", {}),
+            cstate.get("deleted_tax_ids", []),
         )
     return cstate
 
@@ -1939,6 +2302,7 @@ def _commit_dock_schedule_on_enter() -> None:
         "desc": clean_txt,
     }
     month_schedules.setdefault(sel_day, []).append(new_ev)
+    _save_user_schedules_to_disk(cstate)
 
     st.session_state[inp_key] = ""
     st.session_state[time_key] = ""
@@ -2291,7 +2655,7 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
     with f_del:
         if not is_new:
             if st.button("삭제", width="stretch", key=f"dlg_btn_delete_{ev_id}"):
-                month_schedules[day_num] = [x for x in day_evs if str(x.get("id")) != str(ev_id)]
+                _delete_specific_schedule_by_id(cstate, str(ev_id))
                 st.session_state.pop(subs_state_key, None)
                 cstate["active_detail_ev_id"] = None
                 cstate["pending_detail_draft"] = None
@@ -2336,6 +2700,7 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
                 "done": is_done_final,
                 "completed_on_ymd": [year, month, new_d_int] if is_done_final else None,
                 "has_detail": True,
+                "_user_modified": True,
             })
             if is_new or "origin_day" not in target_ev:
                 target_ev["origin_year"] = year
@@ -2350,6 +2715,7 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
                 month_schedules[day_num] = [x for x in day_evs if str(x.get("id")) != str(ev_id)]
                 month_schedules.setdefault(new_d_int, []).append(target_ev)
 
+            _save_user_schedules_to_disk(cstate)
             st.session_state.pop(subs_state_key, None)
             cstate["selected_day"] = new_d_int
             cstate["active_detail_ev_id"] = None
@@ -2464,7 +2830,10 @@ def render_calendar_main() -> None:
         ym_key, _default_schedules_for_month(year, month, today_d)
     )
 
-    # 1) 하단 독 [상세] 버튼 클릭 또는 2) 달력 날짜 네모칸 더블클릭 시 상세일정 설정 모달 즉시 오픈
+    # 180일 경과 지난 스케줄(반복 스케줄 제외) 존재 여부 확인
+    expired_180d_items = _find_expired_180d_schedules(cstate, today_d)
+
+    # 1) 하단 독 [상세] 버튼 클릭 / 2) 달력 날짜 더블클릭 / 3) 180일 경과 스케줄 삭제 확인 창 자동 활성화
     dbl_day = cstate.pop("open_detail_for_day", None)
     if cstate.pop("open_detail_from_dock", False):
         new_dtl_id = f"dtl_{int(datetime.now().timestamp() * 1000)}"
@@ -2472,6 +2841,17 @@ def render_calendar_main() -> None:
     elif dbl_day is not None:
         new_dbl_id = f"dbl_{int(datetime.now().timestamp() * 1000)}"
         _open_schedule_detail_dialog(year, month, int(dbl_day), new_dbl_id)
+    elif cstate.pop("open_180d_modal_manual", False) or (expired_180d_items and not cstate.get("dismissed_180d_prompt", False)):
+        _open_expired_180d_cleanup_dialog()
+
+    if expired_180d_items and cstate.get("dismissed_180d_prompt", False):
+        b_info, b_act = st.columns([4.2, 1.2], gap="small")
+        with b_info:
+            st.warning(f"🗓️ 등록한 지 **180일이 지난 스케줄이 {len(expired_180d_items)}건** 있습니다. (반복 스케줄 제외) 직접 확인 후 삭제하시겠어요?")
+        with b_act:
+            if st.button("지난 스케줄 삭제 창 열기", width="stretch", key="btn_reopen_180d_modal"):
+                cstate["open_180d_modal_manual"] = True
+                st.rerun()
 
     # [5]-1 좌측 상단 3대 현황 카드용 실시간 집계 (일정 / AI작업중 / 작업완료, 승인요청)
     total_month_ev_cnt = sum(len(evs) for evs in month_schedules.values())
@@ -2835,6 +3215,8 @@ def render_calendar_main() -> None:
                                     ev["done"] = not is_done
                                     ev["completed_on_ymd"] = [year, month, selected_day] if ev["done"] else None
                                     ev["type"] = "DONE" if ev["done"] else ("TAX" if ev.get("category") == "세무기한" else "MY")
+                                    ev["_user_modified"] = True
+                                    _save_user_schedules_to_disk(cstate)
                                     st.rerun()
                             with h_body:
                                 if st.button(
@@ -2853,10 +3235,7 @@ def render_calendar_main() -> None:
                                     key=f"btn_todo_del_{ev_id_str}_{idx_e}",
                                     width="stretch",
                                 ):
-                                    for dk in list(month_schedules.keys()):
-                                        month_schedules[dk] = [
-                                            x for x in month_schedules.get(dk, []) if str(x.get("id")) != ev_id_str
-                                        ]
+                                    _delete_specific_schedule_by_id(cstate, ev_id_str)
                                     st.rerun()
 
             # ══════ 하단 고정 영역: 2단 레이아웃 (1단: 할 일 입력 전체폭 / 2단 좌측: 시간 → [알림] → [달력] → [상세] 기존 크기 유지) ══════
