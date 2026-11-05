@@ -23,7 +23,7 @@ import ui_theme as _ui_theme
 _WEEKDAYS_SHORT = ("월", "화", "수", "목", "금", "토", "일")
 _WEEKDAYS_FULL = ("월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일")
 _SUN_FIRST_HEADERS = ("일", "월", "화", "수", "목", "금", "토")
-_STATE_SCHEMA_VERSION = "v23_persistent_store_0000_purge_and_180d_prompt"
+_STATE_SCHEMA_VERSION = "v25_full_persistence_cal_todo_and_kakao_ai_todo"
 
 
 def _html(s: str) -> str:
@@ -368,10 +368,14 @@ def push_kakao_background_todo(
         "action_label": action_label,
         "checked": norm_code == "APPROVED",
     }
+    today_iso = get_kst_today().isoformat()
+    new_item["created_date_iso"] = today_iso
+    new_item["approved_date_iso"] = today_iso if norm_code == "APPROVED" else None
     cstate.setdefault("kakao_todos", []).insert(0, new_item)
     if norm_code == "READY":
         cstate["bubble_visible"] = True
         cstate["bubble_idx"] = 0
+    _save_user_schedules_to_disk(cstate)
     return new_item
 
 
@@ -449,12 +453,58 @@ def _is_alarm_due(ev: Dict[str, Any], is_today_selected: bool = True) -> bool:
     return now_hm >= t_norm
 
 
+def _restore_store_from_browser_backup_json(raw_json_str: str, cstate: Dict[str, Any]) -> bool:
+    """브라우저 localStorage에 백업된 (1)달력 스케줄, (2)To-Do 체크리스트, (3)AI 백그라운드 To-Do JSON을 서버 및 디스크에 복원합니다."""
+    try:
+        parsed = json.loads(raw_json_str)
+        if not isinstance(parsed, dict):
+            return False
+        u_by_ym = parsed.get("user_events_by_ym")
+        del_ids = parsed.get("deleted_tax_ids", [])
+        k_todos = parsed.get("kakao_todos")
+        s_cnt = parsed.get("silent_read_count")
+        today_d = get_kst_today()
+        restored_any = False
+        if isinstance(u_by_ym, dict) and u_by_ym:
+            cstate["deleted_tax_ids"] = list(del_ids)
+            for ym_k, d_map in u_by_ym.items():
+                try:
+                    sy, sm = str(ym_k).split("-", 1)
+                    cstate["schedules_by_ym"][str(ym_k)] = _build_merged_month_schedules(
+                        int(sy), int(sm), today_d, u_by_ym, cstate["deleted_tax_ids"]
+                    )
+                    restored_any = True
+                except Exception:
+                    continue
+        if isinstance(k_todos, list) and k_todos and not cstate.get("kakao_todos"):
+            cstate["kakao_todos"] = list(k_todos)
+            restored_any = True
+        if s_cnt is not None and not cstate.get("silent_read_count"):
+            cstate["silent_read_count"] = int(s_cnt)
+        if restored_any:
+            _run_daily_0000_maintenance(cstate, today_d)
+            _save_user_schedules_to_disk(cstate)
+        return restored_any
+    except Exception:
+        return False
+
+
 def _parse_dock_raw_payload(raw_val: str) -> tuple[str, bool | None, bool | None, str | None, str]:
     """
     JS에서 전달한 인코딩 문자열을 파싱하여
     (순수 제목, 알림 토글 여부, 달력 토글 여부, 시간/부가 문자열, 액션 모드['ENTER' | 'DETAIL' | 'MONTH_PREV' | 'MONTH_NEXT' | 'DBLCLICK_DAY' | 'NONE'])를 반환합니다.
     """
     s = str(raw_val or "").strip()
+
+    m_ls_restore = re.search(r"__LS_RESTORE_JSON_(.+)__$", s, re.S)
+    if m_ls_restore:
+        clean_title = s[: m_ls_restore.start()].strip()
+        return clean_title, None, None, m_ls_restore.group(1), "LS_RESTORE"
+
+    m_ksync = re.search(r"__KAKAO_SYNC_JSON_(.+)__$", s, re.S)
+    if m_ksync:
+        clean_title = s[: m_ksync.start()].strip()
+        return clean_title, None, None, m_ksync.group(1), "KAKAO_SYNC"
 
     m_mshift = re.search(r"__MONTH_SHIFT_(PREV|NEXT)__$", s)
     if m_mshift:
@@ -617,6 +667,7 @@ def _trigger_kakao_simulator(sim_no: int, cstate: Dict[str, Any]) -> str:
             "action_label": "자동 종결됨",
             "checked": True,
         })
+        _save_user_schedules_to_disk(cstate)
         return "🔕 '(주)우진상사: 네 확인했습니다' → 답변 없이 백그라운드에서 숫자 1만 지우고 닫았어요!"
 
     if sim_no == 2:
@@ -649,6 +700,7 @@ def _trigger_kakao_simulator(sim_no: int, cstate: Dict[str, Any]) -> str:
         cstate["bubble_visible"] = True
         cstate["bubble_idx"] = 0
         cstate["panel_open"] = False
+        _save_user_schedules_to_disk(cstate)
         return "📄 우측 하단 네모 말풍선에 (주)갑 서류 준비 완료 알림이 떴어요!"
 
     if sim_no == 3:
@@ -683,6 +735,7 @@ def _trigger_kakao_simulator(sim_no: int, cstate: Dict[str, Any]) -> str:
         cstate["bubble_visible"] = True
         cstate["bubble_idx"] = 0
         cstate["panel_open"] = False
+        _save_user_schedules_to_disk(cstate)
         return "⚖️ 우측 하단 네모 말풍선에 (주)모 세법 검토 완료 알림이 떴어요!"
 
     if sim_no == 4:
@@ -716,6 +769,7 @@ def _trigger_kakao_simulator(sim_no: int, cstate: Dict[str, Any]) -> str:
         cstate["bubble_visible"] = True
         cstate["bubble_idx"] = 0
         cstate["panel_open"] = False
+        _save_user_schedules_to_disk(cstate)
         return "💼 카톡 인건비(강민호 250만 원)가 [인건비 자동화 > 사업소득] 화면에 자동 입력되었어요!"
 
     if sim_no == 5:
@@ -752,6 +806,7 @@ def _trigger_kakao_simulator(sim_no: int, cstate: Dict[str, Any]) -> str:
         cstate["bubble_visible"] = True
         cstate["bubble_idx"] = 0
         cstate["panel_open"] = False
+        _save_user_schedules_to_disk(cstate)
         return "📊 급여대장 파일이 폴더에 저장되고 [인건비 자동화 > 급여명세서] 화면에 자동 입력되었어요!"
 
     return "처리가 완료되었습니다."
@@ -1728,22 +1783,30 @@ div[data-testid="stDialog"] [class*="st-key-dlg_btn_delete_"] div.stButton > but
 """
 
 
-def _get_user_schedule_store_path() -> Path:
+def _get_user_schedule_store_paths() -> List[Path]:
     """
-    코드를 새로 덮어쓰거나 앱을 재시작해도 사용자의 달력 스케줄과 To-Do 리스트가
-    절대 날아가지 않도록 ui.py 외부의 독립 JSON 저장소 경로를 반환합니다.
+    프로젝트 폴더 전체를 통째로 덮어쓰거나 삭제 후 재설치해도 데이터가 살아남도록
+    1) OS 사용자 홈 디렉터리(~/.tax_ai_agent/user_calendar_store.json — 프로젝트 폴더 외부)
+    2) 프로젝트 내부 data 폴더(data/user_calendar_store.json)
+    두 곳에 동시에 이중 저장하고 읽어오는 경로 리스트를 반환합니다.
     """
     candidates = [
-        Path(__file__).resolve().parent.parent / "data" / "user_calendar_store.json",
         Path.home() / ".tax_ai_agent" / "user_calendar_store.json",
+        Path(__file__).resolve().parent.parent / "data" / "user_calendar_store.json",
+        Path("/tmp/user_calendar_store.json"),
     ]
+    valid_paths: List[Path] = []
     for p in candidates:
         try:
             p.parent.mkdir(parents=True, exist_ok=True)
-            return p
+            valid_paths.append(p)
         except Exception:
             continue
-    return Path("/tmp/user_calendar_store.json")
+    return valid_paths or [Path("/tmp/user_calendar_store.json")]
+
+
+def _get_user_schedule_store_path() -> Path:
+    return _get_user_schedule_store_paths()[0]
 
 
 def _is_repeating_schedule(ev: Dict[str, Any]) -> bool:
@@ -1762,21 +1825,41 @@ def _is_statutory_tax_schedule(ev: Dict[str, Any]) -> bool:
 
 
 def _load_raw_store_from_disk() -> Dict[str, Any]:
-    """외부 JSON 파일에서 사용자 일정 저장소 데이터를 읽어옵니다."""
-    store_path = _get_user_schedule_store_path()
-    if not store_path.exists():
-        return {"last_kst_today_iso": "", "user_events_by_ym": {}, "deleted_tax_ids": []}
-    try:
-        raw = json.loads(store_path.read_text(encoding="utf-8"))
-        if isinstance(raw, dict):
-            return {
-                "last_kst_today_iso": str(raw.get("last_kst_today_iso", "")),
-                "user_events_by_ym": dict(raw.get("user_events_by_ym", {})),
-                "deleted_tax_ids": list(raw.get("deleted_tax_ids", [])),
-            }
-    except Exception:
-        pass
-    return {"last_kst_today_iso": "", "user_events_by_ym": {}, "deleted_tax_ids": []}
+    """
+    홈 디렉터리 및 프로젝트 data 폴더의 JSON 저장소 중 가장 최신 데이터를 읽어옵니다.
+    1) 달력 스케줄 (user_events_by_ym)
+    2) 우측 To-Do 체크리스트 (user_events_by_ym)
+    3) AI 백그라운드 To-Do 체크리스트 (kakao_todos & silent_read_count)
+    세 가지 모두를 영구 보존합니다.
+    """
+    best_data: Dict[str, Any] | None = None
+    best_ts = ""
+    for sp in _get_user_schedule_store_paths():
+        if not sp.exists():
+            continue
+        try:
+            raw = json.loads(sp.read_text(encoding="utf-8"))
+            if isinstance(raw, dict) and (raw.get("user_events_by_ym") is not None or raw.get("kakao_todos") is not None):
+                cur_ts = str(raw.get("updated_at", ""))
+                if best_data is None or cur_ts >= best_ts:
+                    best_ts = cur_ts
+                    best_data = {
+                        "last_kst_today_iso": str(raw.get("last_kst_today_iso", "")),
+                        "user_events_by_ym": dict(raw.get("user_events_by_ym", {})),
+                        "deleted_tax_ids": list(raw.get("deleted_tax_ids", [])),
+                        "kakao_todos": list(raw.get("kakao_todos", [])),
+                        "silent_read_count": int(raw.get("silent_read_count", 0)),
+                        "updated_at": cur_ts,
+                    }
+        except Exception:
+            continue
+    return best_data or {
+        "last_kst_today_iso": "",
+        "user_events_by_ym": {},
+        "deleted_tax_ids": [],
+        "kakao_todos": [],
+        "silent_read_count": 0,
+    }
 
 
 def _save_user_schedules_to_disk(cstate: Dict[str, Any]) -> None:
@@ -1811,13 +1894,17 @@ def _save_user_schedules_to_disk(cstate: Dict[str, Any]) -> None:
         "last_kst_today_iso": str(cstate.get("_last_kst_today_iso", get_kst_today().isoformat())),
         "user_events_by_ym": user_events_by_ym,
         "deleted_tax_ids": list(cstate.get("deleted_tax_ids", [])),
+        "kakao_todos": list(cstate.get("kakao_todos", [])),
+        "silent_read_count": int(cstate.get("silent_read_count", 0)),
         "updated_at": datetime.now(ZoneInfo("Asia/Seoul")).isoformat(),
     }
-    try:
-        store_path.parent.mkdir(parents=True, exist_ok=True)
-        store_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:
-        pass
+    serialized = json.dumps(payload, ensure_ascii=False, indent=2)
+    for sp in _get_user_schedule_store_paths():
+        try:
+            sp.parent.mkdir(parents=True, exist_ok=True)
+            sp.write_text(serialized, encoding="utf-8")
+        except Exception:
+            continue
 
 
 def _build_merged_month_schedules(
@@ -1942,6 +2029,28 @@ def _run_daily_0000_maintenance(cstate: Dict[str, Any], today_d: date) -> bool:
                         changed = True
 
             day_map[d_key] = kept_list
+
+    # 3) AI 백그라운드 To-Do(kakao_todos) 00:00시 정리 규칙:
+    # - AI작업중(WORKING) 및 승인요청(READY) 상태는 어떠한 경우에도 삭제하지 않고 영구 유지!
+    # - 사용자가 승인 완료(APPROVED)한 항목만 완료일 다음날 00:00시에 자동 정리합니다.
+    today_iso_str = today_d.isoformat()
+    raw_ktodos = list(cstate.get("kakao_todos", []))
+    kept_ktodos: List[Dict[str, Any]] = []
+    for kt in raw_ktodos:
+        st_code = str(kt.get("status_code", "")).upper()
+        st_txt = str(kt.get("status", ""))
+        is_approved = (st_code == "APPROVED" or "승인완료" in st_txt)
+        if not is_approved:
+            kept_ktodos.append(kt)
+        else:
+            app_iso = str(kt.get("approved_date_iso") or kt.get("created_date_iso") or "").strip()
+            if app_iso and app_iso < today_iso_str:
+                changed = True
+                continue
+            kept_ktodos.append(kt)
+    if len(kept_ktodos) != len(raw_ktodos):
+        cstate["kakao_todos"] = kept_ktodos
+        changed = True
 
     if changed:
         _save_user_schedules_to_disk(cstate)
@@ -2123,10 +2232,13 @@ def _init_calendar_state() -> Dict[str, Any]:
             "deleted_tax_ids": del_tax_ids,
             "dismissed_180d_prompt": False,
             "open_180d_modal_manual": False,
-            "kakao_todos": _default_kakao_todos(today_d),
-            "silent_read_count": 0,
+            "kakao_todos": list(disk_store.get("kakao_todos") or _default_kakao_todos(today_d)),
+            "silent_read_count": int(disk_store.get("silent_read_count", 0)),
             "panel_open": False,
-            "bubble_visible": False,
+            "bubble_visible": any(
+                str(x.get("status_code", "")).upper() == "READY" or "승인요청" in str(x.get("status", ""))
+                for x in (disk_store.get("kakao_todos") or [])
+            ),
             "bubble_idx": 0,
             "todo_filter": "전체",
             "show_add_modal": False,
@@ -2218,6 +2330,24 @@ def _commit_dock_schedule_on_enter() -> None:
     if action_mode == "NONE":
         if clean_txt != raw_val:
             st.session_state[inp_key] = clean_txt
+        return
+
+    if action_mode == "LS_RESTORE":
+        st.session_state[inp_key] = clean_txt
+        if js_extra:
+            _restore_store_from_browser_backup_json(js_extra, cstate)
+        return
+
+    if action_mode == "KAKAO_SYNC":
+        st.session_state[inp_key] = clean_txt
+        if js_extra:
+            try:
+                synced_list = json.loads(js_extra)
+                if isinstance(synced_list, list):
+                    cstate["kakao_todos"] = synced_list
+                    _save_user_schedules_to_disk(cstate)
+            except Exception:
+                pass
         return
 
     if action_mode == "MONTH_PREV":
@@ -3308,6 +3438,14 @@ def render_floating_kakao_todo_overlay() -> None:
         user_nm = "범준"
 
     todos_json = json.dumps(todos, ensure_ascii=False)
+    disk_snapshot = _load_raw_store_from_disk()
+    has_server_user_evs = bool(
+        any(bool(v) for v in (disk_snapshot.get("user_events_by_ym") or {}).values())
+        or bool(disk_snapshot.get("deleted_tax_ids"))
+        or bool(disk_snapshot.get("kakao_todos"))
+    )
+    server_store_json = json.dumps(disk_snapshot, ensure_ascii=False)
+    has_server_evs_js = "true" if has_server_user_evs else "false"
     init_open_js = "true" if panel_open_init else "false"
     user_nm_json = json.dumps(user_nm, ensure_ascii=False)
     kst_iso_json = json.dumps(kst_today_iso, ensure_ascii=False)
@@ -3327,6 +3465,9 @@ def render_floating_kakao_todo_overlay() -> None:
             const SILENT_CNT = {silent_cnt};
             const SERVER_KST_ISO = {kst_iso_json};
             const DOCK_CTX_KEY = {dock_ctx_json};
+            const SERVER_STORE_SNAPSHOT = {server_store_json};
+            const HAS_SERVER_USER_EVS = {has_server_evs_js};
+            const LS_BACKUP_KEY = "tds_user_calendar_store_backup_v1";
 
             if (parentWin._tdsCalCleanupTimer) {{
                 parentWin.clearInterval(parentWin._tdsCalCleanupTimer);
@@ -3351,6 +3492,8 @@ def render_floating_kakao_todo_overlay() -> None:
 
             function stripDockTokenSuffix(val) {{
                 return String(val || "")
+                    .replace(/__KAKAO_SYNC_JSON_[\s\S]*__$/, "")
+                    .replace(/__LS_RESTORE_JSON_[\s\S]*__$/, "")
                     .replace(/__MONTH_SHIFT_(?:PREV|NEXT)__$/, "")
                     .replace(/__CAL_DBLCLICK_DAY_\\d+__$/, "")
                     .replace(/__ENTER_COMMIT_TGL_A[01]_C[01](?:_T[0-9:]*)?__$/, "")
@@ -5362,6 +5505,15 @@ def render_floating_kakao_todo_overlay() -> None:
                     }};
                 }}
 
+                function persistKakaoTodosFromJs() {{
+                    try {{
+                        const snap = Object.assign({{}}, SERVER_STORE_SNAPSHOT || {{}});
+                        snap.kakao_todos = stObj.todos || [];
+                        parentWin.localStorage.setItem(LS_BACKUP_KEY, JSON.stringify(snap));
+                        sendCustomTokenViaChatInp(`__KAKAO_SYNC_JSON_${{JSON.stringify(stObj.todos || [])}}__`);
+                    }} catch (e) {{}}
+                }}
+
                 if (approveAllBtn) {{
                     approveAllBtn.onclick = function() {{
                         allTodos.forEach(t => {{
@@ -5369,9 +5521,11 @@ def render_floating_kakao_todo_overlay() -> None:
                                 t.status_code = "APPROVED";
                                 t.status = "사용자 승인완료";
                                 t.time_ago = "방금 일괄승인";
+                                t.approved_date_iso = SERVER_KST_ISO;
                                 t.checked = true;
                             }}
                         }});
+                        persistKakaoTodosFromJs();
                         renderOverlay();
                     }};
                 }}
@@ -5425,13 +5579,16 @@ def render_floating_kakao_todo_overlay() -> None:
                             target.ai_result = "✅ 지정 폴더 저장 및 에이전트AI 급여명세서 화면(임직원 8명) 자동 입력이 완료되었습니다!";
                             stObj.bubbleDismissed = false;
                             stObj.bubbleIdx = 0;
+                            persistKakaoTodosFromJs();
                             renderOverlay();
                         }} else if (act === "approve") {{
                             copyTextSafe(target.ai_result || target.preview || "");
                             target.status_code = "APPROVED";
                             target.status = "사용자 승인완료";
                             target.time_ago = "방금 승인됨";
+                            target.approved_date_iso = SERVER_KST_ISO;
                             target.checked = true;
+                            persistKakaoTodosFromJs();
                             renderOverlay();
                         }} else if (act === "jump") {{
                             stObj.open = false;
@@ -5463,6 +5620,7 @@ def render_floating_kakao_todo_overlay() -> None:
                             }}
                             if (editWrap) editWrap.classList.remove("open");
                             delete stObj.editingMap[tid];
+                            persistKakaoTodosFromJs();
                         }} else if (act === "toggle_doc") {{
                             const docBox = parentDoc.getElementById(`tds-kp-doc-prev-${{tid}}`);
                             if (docBox) {{
@@ -5475,6 +5633,28 @@ def render_floating_kakao_todo_overlay() -> None:
                     }};
                 }});
             }}
+
+            // 3중 백업: 서버에 사용자 일정이 있으면 브라우저 localStorage에 실시간 미러링 백업하고,
+            // 만약 전체 프로젝트 재배포/클라우드 리부팅 등으로 서버 디스크가 초기화된 경우 localStorage에서 즉시 자동 복원!
+            try {{
+                if (HAS_SERVER_USER_EVS) {{
+                    parentWin.localStorage.setItem(LS_BACKUP_KEY, JSON.stringify(SERVER_STORE_SNAPSHOT));
+                }} else if (!parentWin._tdsTriedLsRestoreThisSession) {{
+                    const rawLs = parentWin.localStorage.getItem(LS_BACKUP_KEY);
+                    if (rawLs) {{
+                        const parsedLs = JSON.parse(rawLs);
+                        const uMap = (parsedLs && parsedLs.user_events_by_ym) || {{}};
+                        const kList = (parsedLs && parsedLs.kakao_todos) || [];
+                        const hasSaved = Object.keys(uMap).some(k => Object.keys(uMap[k] || {{}}).length > 0) || kList.length > 0;
+                        if (hasSaved) {{
+                            parentWin._tdsTriedLsRestoreThisSession = true;
+                            setTimeout(function() {{
+                                sendCustomTokenViaChatInp(`__LS_RESTORE_JSON_${{rawLs}}__`);
+                            }}, 180);
+                        }}
+                    }}
+                }}
+            }} catch (lsErr) {{}}
 
             renderOverlay();
         }})();
