@@ -1565,7 +1565,13 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
             key=f"dlg_rep_{ev_id}",
         )
 
-     _, r1_sub1, r1_sub2, r1_sub3 = st.columns([0.75, 1.35, 1.35, 1.1], gap="small")
+    _, r1_sub1, r1_sub2, r1_sub3 = st.columns([0.75, 1.35, 1.35, 1.1], gap="small")
+    with r1_sub1:
+        in_alarm = st.checkbox(
+            "🔔 정각 홈버튼 & 종 알림",
+            value=bool(target_ev.get("alarm", False)),
+            key=f"dlg_alarm_{ev_id}",
+        )
     with r1_sub1:
         in_alarm = st.checkbox(
             "🔔 정각 홈버튼 & 종 알림",
