@@ -22,7 +22,7 @@ import ui_theme as _ui_theme
 _WEEKDAYS_SHORT = ("월", "화", "수", "목", "금", "토", "일")
 _WEEKDAYS_FULL = ("월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일")
 _SUN_FIRST_HEADERS = ("일", "월", "화", "수", "목", "금", "토")
-_STATE_SCHEMA_VERSION = "v13_option_a_iceblue_modal_and_monthly_tax_cal"
+_STATE_SCHEMA_VERSION = "v14_kakao_accordion_and_ux_enhancements"
 
 
 def _html(s: str) -> str:
@@ -3519,7 +3519,7 @@ def render_floating_kakao_todo_overlay() -> None:
             setTimeout(bindDockMultiToggleAndKeys, 120);
             setTimeout(bindDockMultiToggleAndKeys, 350);
 
-            // ══════ 카톡 백그라운드 To-Do 블랙(딥 차콜) 컨셉 스타일 + 기존 파란 홈버튼(#3898FF) 고정 ══════
+            // ══════ 카톡 백그라운드 To-Do 블랙(딥 차콜) 컨셉 + 아코디언 확장 애니메이션 + 홈버튼 캐릭터 통일 ══════
             let styleEl = parentDoc.getElementById("tds-kakao-floating-style");
             if (!styleEl) {{
                 styleEl = parentDoc.createElement("style");
@@ -3582,9 +3582,9 @@ def render_floating_kakao_todo_overlay() -> None:
                     right: 20px;
                     bottom: 136px;
                     width: min(60vw, 920px);
-                    height: min(66vh, 660px);
-                    min-width: 360px;
-                    min-height: 450px;
+                    height: min(68vh, 680px);
+                    min-width: 380px;
+                    min-height: 460px;
                     background: #121417;
                     border: 1px solid #2A313C;
                     border-radius: 26px;
@@ -3619,18 +3619,21 @@ def render_floating_kakao_todo_overlay() -> None:
                     align-items: center;
                     gap: 14px;
                 }}
+                /* 요청사항 4: 홈버튼과 100% 동일한 #3898FF 파란 스쿼클 캐릭터 아이콘 + 크기 확대(48x48) */
                 .tds-kp-char-circle {{
-                    width: 42px;
-                    height: 42px;
-                    border-radius: 50%;
-                    background: #1E242C;
-                    border: 1.5px solid #323B48;
+                    width: 48px;
+                    height: 48px;
+                    min-width: 48px;
+                    min-height: 48px;
+                    border-radius: 16px;
+                    background: #3898FF;
+                    border: none;
                     color: #FFFFFF;
                     display: flex;
                     align-items: center;
                     justify-content: center;
                     flex-shrink: 0;
-                    box-shadow: inset 0 1px 2px rgba(255, 255, 255, 0.06);
+                    box-shadow: 0 6px 16px rgba(56, 152, 255, 0.38), inset 0 1px 1px rgba(255, 255, 255, 0.28);
                 }}
                 .tds-kp-title-row {{
                     display: flex;
@@ -3638,9 +3641,10 @@ def render_floating_kakao_todo_overlay() -> None:
                     gap: 8px;
                 }}
                 .tds-kp-title {{
-                    font-size: 1.10rem;
+                    font-size: 1.15rem;
                     font-weight: 800;
                     color: #FFFFFF;
+                    letter-spacing: -0.02em;
                 }}
                 .tds-kp-pill-60 {{
                     font-size: 0.70rem;
@@ -3653,7 +3657,7 @@ def render_floating_kakao_todo_overlay() -> None:
                     font-variant-numeric: tabular-nums;
                 }}
                 .tds-kp-sub {{
-                    font-size: 0.76rem;
+                    font-size: 0.75rem;
                     color: #8B95A1;
                     font-weight: 600;
                     margin-top: 3px;
@@ -3666,17 +3670,17 @@ def render_floating_kakao_todo_overlay() -> None:
                 .tds-kp-approve-all-btn {{
                     padding: 9px 16px;
                     border-radius: 10px;
-                    background: #1D4ED8;
+                    background: #3182F6;
                     color: #FFFFFF;
-                    border: 1px solid #2563EB;
+                    border: 1px solid #3B82F6;
                     font-size: 0.78rem;
                     font-weight: 800;
                     cursor: pointer;
-                    transition: background 0.15s ease;
-                    box-shadow: 0 4px 12px rgba(29, 78, 216, 0.35);
+                    transition: background 0.15s ease, transform 0.12s ease;
+                    box-shadow: 0 4px 12px rgba(49, 130, 246, 0.35);
                 }}
                 .tds-kp-approve-all-btn:hover {{
-                    background: #1E40AF;
+                    background: #1B64DA;
                 }}
                 .tds-kp-close-btn {{
                     width: 36px;
@@ -3700,7 +3704,7 @@ def render_floating_kakao_todo_overlay() -> None:
                 .tds-kp-tabs-bar {{
                     background: #121417;
                     border-bottom: 1px solid #232A34;
-                    padding: 12px 24px;
+                    padding: 11px 24px;
                     display: flex;
                     flex-wrap: wrap;
                     align-items: center;
@@ -3717,7 +3721,7 @@ def render_floating_kakao_todo_overlay() -> None:
                 .tds-kp-tab {{
                     padding: 6px 14px;
                     border-radius: 999px;
-                    font-size: 0.77rem;
+                    font-size: 0.76rem;
                     font-weight: 800;
                     cursor: pointer;
                     transition: all 0.15s ease;
@@ -3748,7 +3752,7 @@ def render_floating_kakao_todo_overlay() -> None:
                     outline-offset: 1px;
                 }}
                 .tds-kp-silent-info {{
-                    font-size: 0.74rem;
+                    font-size: 0.73rem;
                     color: #8B95A1;
                     font-weight: 700;
                     font-variant-numeric: tabular-nums;
@@ -3757,49 +3761,67 @@ def render_floating_kakao_todo_overlay() -> None:
                     color: #60A5FA;
                 }}
 
+                /* 리스트 본체 */
                 .tds-kp-body {{
                     flex: 1;
                     overflow-y: auto;
-                    padding: 20px 24px;
+                    padding: 16px 24px;
                     background: #121417;
                     display: flex;
                     flex-direction: column;
-                    gap: 14px;
+                    gap: 10px;
                 }}
+
+                /* 요청사항 2 & 3: 최초 화면은 1줄 요약(상태 · 제목 · 우측 끝 승인 버튼), 더블클릭 시 아래로 확장 */
                 .tds-kp-card {{
                     background: #1A1F26;
-                    border-radius: 18px;
+                    border-radius: 16px;
                     border: 1px solid #2A313C;
-                    padding: 18px 20px;
-                    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
-                    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+                    padding: 12px 16px;
+                    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+                    transition: border-color 0.22s ease, box-shadow 0.22s ease, background 0.22s ease, padding 0.22s ease;
                 }}
                 .tds-kp-card:hover {{
                     border-color: #3B82F6;
-                    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.42);
+                    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.38);
                 }}
-                .tds-kp-card-top {{
+                .tds-kp-card.expanded {{
+                    background: #1D232C;
+                    border: 1.5px solid #3182F6;
+                    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.50), 0 0 0 1px rgba(49, 130, 246, 0.25);
+                    padding: 14px 18px 18px 18px;
+                }}
+
+                /* 최초 화면 1줄 요약 행: [상태] + [제목] + [우측 끝 승인 버튼] */
+                .tds-kp-summary-row {{
                     display: flex;
-                    flex-wrap: wrap;
                     align-items: center;
                     justify-content: space-between;
-                    gap: 8px;
-                    margin-bottom: 10px;
+                    gap: 12px;
+                    min-height: 36px;
+                    cursor: pointer;
+                    user-select: none;
                 }}
-                .tds-kp-card-badges {{
+                .tds-kp-sum-left {{
                     display: flex;
                     align-items: center;
-                    gap: 8px;
-                    flex-wrap: wrap;
+                    gap: 12px;
+                    min-width: 0;
+                    flex: 1;
                 }}
+
+                /* 상태 배지 + 제안 A(AI작업중 단계 숫자 2/3 및 미니 진행바) */
                 .tds-kp-st-badge {{
                     display: inline-flex;
                     align-items: center;
                     gap: 6px;
-                    padding: 4px 11px;
+                    padding: 5px 11px;
                     border-radius: 999px;
                     font-size: 0.73rem;
                     font-weight: 800;
+                    white-space: nowrap;
+                    flex-shrink: 0;
+                    font-variant-numeric: tabular-nums;
                 }}
                 .tds-kp-st-badge.working {{
                     background: #2E2111;
@@ -3816,8 +3838,148 @@ def render_floating_kakao_todo_overlay() -> None:
                     color: #34D399;
                     border: 1px solid #164438;
                 }}
+                .tds-kp-mini-prog {{
+                    width: 28px;
+                    height: 5px;
+                    border-radius: 999px;
+                    background: rgba(245, 158, 11, 0.22);
+                    overflow: hidden;
+                    display: inline-block;
+                    vertical-align: middle;
+                }}
+                .tds-kp-mini-prog-fill {{
+                    height: 100%;
+                    background: #F59E0B;
+                    border-radius: 999px;
+                    display: block;
+                }}
+
+                /* 제목 + 더블클릭 힌트 아이콘 */
+                .tds-kp-sum-title-wrap {{
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                    min-width: 0;
+                    flex: 1;
+                }}
+                .tds-kp-sum-title {{
+                    font-size: 0.92rem;
+                    font-weight: 800;
+                    color: #FFFFFF;
+                    white-space: nowrap;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                    line-height: 1.35;
+                }}
+                .tds-kp-dbl-chevron {{
+                    font-size: 0.72rem;
+                    font-weight: 700;
+                    color: #6B7684;
+                    background: #14181F;
+                    border: 1px solid #262E3B;
+                    padding: 2px 8px;
+                    border-radius: 999px;
+                    white-space: nowrap;
+                    flex-shrink: 0;
+                    transition: all 0.22s ease;
+                }}
+                .tds-kp-card:hover .tds-kp-dbl-chevron {{
+                    color: #93C5FD;
+                    border-color: #2563EB;
+                }}
+                .tds-kp-card.expanded .tds-kp-dbl-chevron {{
+                    background: #17253B;
+                    color: #60A5FA;
+                    border-color: #2563EB;
+                }}
+
+                /* 제안 D: 우측 끝 [승인] 버튼 상태별 시각적 차등 */
+                .tds-kp-sum-right {{
+                    display: flex;
+                    align-items: center;
+                    gap: 6px;
+                    flex-shrink: 0;
+                }}
+                .tds-kp-row-approve-btn {{
+                    min-width: 72px;
+                    height: 34px;
+                    padding: 0 14px;
+                    border-radius: 9px;
+                    font-size: 0.78rem;
+                    font-weight: 800;
+                    cursor: pointer;
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    gap: 4px;
+                    transition: all 0.15s ease;
+                    font-variant-numeric: tabular-nums;
+                }}
+                .tds-kp-row-approve-btn.ready {{
+                    background: #3182F6;
+                    color: #FFFFFF;
+                    border: 1px solid #3B82F6;
+                    box-shadow: 0 3px 10px rgba(49, 130, 246, 0.32);
+                }}
+                .tds-kp-row-approve-btn.ready:hover {{
+                    background: #1B64DA;
+                    transform: translateY(-1px);
+                }}
+                .tds-kp-row-approve-btn.working {{
+                    background: #261D11;
+                    color: #FBBF24;
+                    border: 1px solid #573B16;
+                }}
+                .tds-kp-row-approve-btn.working:hover {{
+                    background: #362815;
+                }}
+                .tds-kp-row-approve-btn.approved {{
+                    background: #122620;
+                    color: #34D399;
+                    border: 1px solid #1C4236;
+                    cursor: default;
+                }}
+
+                /* 요청사항 3: 더블클릭 시 아래방향으로 부드럽게 커지는 확장 애니메이션 영역 */
+                .tds-kp-expand-drawer {{
+                    max-height: 0;
+                    opacity: 0;
+                    overflow: hidden;
+                    transform: translateY(-6px);
+                    transition:
+                        max-height 0.42s cubic-bezier(0.22, 1, 0.36, 1),
+                        opacity 0.28s ease,
+                        transform 0.32s cubic-bezier(0.22, 1, 0.36, 1),
+                        margin-top 0.28s ease,
+                        padding-top 0.28s ease;
+                    margin-top: 0;
+                    padding-top: 0;
+                    border-top: 0px solid transparent;
+                }}
+                .tds-kp-card.expanded .tds-kp-expand-drawer {{
+                    max-height: 760px;
+                    opacity: 1;
+                    transform: translateY(0);
+                    margin-top: 12px;
+                    padding-top: 14px;
+                    border-top: 1px solid #2A3342;
+                }}
+
+                .tds-kp-exp-meta {{
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    gap: 8px;
+                    margin-bottom: 10px;
+                }}
+                .tds-kp-exp-meta-l {{
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                    flex-wrap: wrap;
+                }}
                 .tds-kp-cat-pill {{
-                    font-size: 0.73rem;
+                    font-size: 0.72rem;
                     font-weight: 700;
                     color: #D1D5DB;
                     background: #252C37;
@@ -3826,23 +3988,17 @@ def render_floating_kakao_todo_overlay() -> None:
                     border-radius: 999px;
                 }}
                 .tds-kp-time {{
-                    font-size: 0.74rem;
+                    font-size: 0.73rem;
                     color: #8B95A1;
                     font-weight: 600;
                     font-variant-numeric: tabular-nums;
                 }}
                 .tds-kp-company {{
-                    font-size: 0.82rem;
+                    font-size: 0.80rem;
                     font-weight: 800;
                     color: #60A5FA;
                 }}
-                .tds-kp-card-title {{
-                    font-size: 0.96rem;
-                    font-weight: 800;
-                    color: #FFFFFF;
-                    margin-bottom: 10px;
-                    line-height: 1.4;
-                }}
+
                 .tds-kp-kakao-orig {{
                     font-size: 0.78rem;
                     color: #CBD5E1;
@@ -3891,15 +4047,126 @@ def render_floating_kakao_todo_overlay() -> None:
                     border-radius: 12px;
                     white-space: pre-line;
                     line-height: 1.55;
-                    margin-bottom: 12px;
+                    margin-bottom: 10px;
                     font-weight: 600;
                     font-variant-numeric: tabular-nums;
                 }}
+
+                /* 제안 C: 답장 문구 인라인 직접 수정 텍스트영역 */
+                .tds-kp-edit-wrap {{
+                    margin-bottom: 10px;
+                    display: none;
+                }}
+                .tds-kp-edit-wrap.open {{
+                    display: block;
+                }}
+                .tds-kp-edit-textarea {{
+                    width: 100%;
+                    min-height: 88px;
+                    box-sizing: border-box;
+                    background: #0F1724;
+                    color: #F8FAFC;
+                    border: 1.5px solid #3B82F6;
+                    border-radius: 12px;
+                    padding: 10px 12px;
+                    font-family: inherit;
+                    font-size: 0.80rem;
+                    font-weight: 600;
+                    line-height: 1.5;
+                    resize: vertical;
+                    outline: none;
+                }}
+                .tds-kp-edit-foot {{
+                    display: flex;
+                    justify-content: flex-end;
+                    gap: 6px;
+                    margin-top: 6px;
+                }}
+                .tds-kp-edit-save-btn {{
+                    padding: 5px 12px;
+                    border-radius: 8px;
+                    background: #3182F6;
+                    color: #FFFFFF;
+                    border: none;
+                    font-size: 0.73rem;
+                    font-weight: 800;
+                    cursor: pointer;
+                }}
+                .tds-kp-edit-cancel-btn {{
+                    padding: 5px 10px;
+                    border-radius: 8px;
+                    background: #252C37;
+                    color: #CBD5E1;
+                    border: 1px solid #374151;
+                    font-size: 0.73rem;
+                    font-weight: 700;
+                    cursor: pointer;
+                }}
+
+                /* 제안 B: 첨부 서류 미리보기 칩 및 인라인 서류 검증 프리뷰 */
+                .tds-kp-attach-bar {{
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    gap: 8px;
+                    flex-wrap: wrap;
+                    margin-bottom: 12px;
+                }}
+                .tds-kp-attach-chip {{
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 6px;
+                    padding: 6px 12px;
+                    border-radius: 10px;
+                    background: #172334;
+                    border: 1px solid #264063;
+                    color: #93C5FD;
+                    font-size: 0.75rem;
+                    font-weight: 700;
+                    cursor: pointer;
+                    transition: all 0.15s ease;
+                }}
+                .tds-kp-attach-chip:hover {{
+                    background: #1E314A;
+                    border-color: #3B82F6;
+                    color: #FFFFFF;
+                }}
+                .tds-kp-doc-preview {{
+                    display: none;
+                    background: #11161D;
+                    border: 1px dashed #334155;
+                    border-radius: 10px;
+                    padding: 10px 14px;
+                    margin-bottom: 12px;
+                    font-size: 0.75rem;
+                    color: #94A3B8;
+                    line-height: 1.5;
+                }}
+                .tds-kp-doc-preview.open {{
+                    display: block;
+                }}
+
                 .tds-kp-actions {{
                     display: flex;
                     align-items: center;
                     justify-content: flex-end;
                     gap: 8px;
+                    flex-wrap: wrap;
+                }}
+                .tds-kp-btn-edit {{
+                    padding: 8px 13px;
+                    border-radius: 10px;
+                    background: #1E2631;
+                    color: #93C5FD;
+                    border: 1px solid #2E3C4E;
+                    font-size: 0.75rem;
+                    font-weight: 700;
+                    cursor: pointer;
+                    transition: all 0.15s ease;
+                }}
+                .tds-kp-btn-edit:hover {{
+                    background: #273242;
+                    color: #FFFFFF;
                 }}
                 .tds-kp-btn-jump {{
                     padding: 8px 14px;
@@ -3919,16 +4186,16 @@ def render_floating_kakao_todo_overlay() -> None:
                 .tds-kp-btn-approve {{
                     padding: 8px 16px;
                     border-radius: 10px;
-                    background: #1D4ED8;
+                    background: #3182F6;
                     color: #FFFFFF;
-                    border: 1px solid #2563EB;
+                    border: 1px solid #3B82F6;
                     font-size: 0.78rem;
                     font-weight: 800;
                     cursor: pointer;
                     transition: background 0.15s ease;
                 }}
                 .tds-kp-btn-approve:hover {{
-                    background: #1E40AF;
+                    background: #1B64DA;
                 }}
                 .tds-kp-btn-finish {{
                     padding: 8px 16px;
@@ -4160,12 +4427,12 @@ def render_floating_kakao_todo_overlay() -> None:
                     <path d="M6 9L12 15L18 9" stroke="#FFFFFF" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" />
                 </svg>
             `;
+            // 요청사항 4: 백그라운드 To-Do 상단 아이콘을 홈버튼과 동일한 디자인(원형 + 세로 눈 2개)으로 통일 및 확대
             const HEADER_CHAR_SVG = `
-                <svg width="24" height="24" viewBox="0 0 28 28" fill="none">
-                    <circle cx="14" cy="14" r="9.5" stroke="#FFFFFF" stroke-width="2.2"/>
-                    <path d="M10 12.2C10.5 11.4 11.5 11.4 12 12.2" stroke="#FFFFFF" stroke-width="2.0" stroke-linecap="round"/>
-                    <path d="M16 12.2C16.5 11.4 17.5 11.4 18 12.2" stroke="#FFFFFF" stroke-width="2.0" stroke-linecap="round"/>
-                    <path d="M10.5 16.2C11.8 17.8 16.2 17.8 17.5 16.2" stroke="#FFFFFF" stroke-width="2.0" stroke-linecap="round"/>
+                <svg class="cute-face-svg" width="34" height="34" viewBox="0 0 32 32" fill="none">
+                    <circle cx="16" cy="16" r="12.5" stroke="#FFFFFF" stroke-width="2.9" stroke-linecap="round" stroke-linejoin="round" />
+                    <line x1="11.8" y1="13.2" x2="11.8" y2="18.5" stroke="#FFFFFF" stroke-width="3.0" stroke-linecap="round" />
+                    <line x1="20.2" y1="13.2" x2="20.2" y2="18.5" stroke="#FFFFFF" stroke-width="3.0" stroke-linecap="round" />
                 </svg>
             `;
 
@@ -4177,11 +4444,17 @@ def render_floating_kakao_todo_overlay() -> None:
                     bubbleDismissed: false,
                     todos: TODOS_DATA,
                     customPos: null,
-                    serverKstIso: SERVER_KST_ISO
+                    serverKstIso: SERVER_KST_ISO,
+                    expandedMap: {{}},
+                    editingMap: {{}},
+                    docPreviewMap: {{}}
                 }};
             }} else {{
                 const prevLen = (parentWin._tdsKakaoState.todos || []).length;
                 parentWin._tdsKakaoState.todos = TODOS_DATA;
+                if (!parentWin._tdsKakaoState.expandedMap) parentWin._tdsKakaoState.expandedMap = {{}};
+                if (!parentWin._tdsKakaoState.editingMap) parentWin._tdsKakaoState.editingMap = {{}};
+                if (!parentWin._tdsKakaoState.docPreviewMap) parentWin._tdsKakaoState.docPreviewMap = {{}};
                 if (TODOS_DATA.length > prevLen) {{
                     parentWin._tdsKakaoState.bubbleDismissed = false;
                     parentWin._tdsKakaoState.bubbleIdx = 0;
@@ -4357,6 +4630,23 @@ def render_floating_kakao_todo_overlay() -> None:
                 parentWin.addEventListener("mouseup", parentWin._tdsFabMouseUpHandler);
             }}
 
+            function toggleCardExpandWithAnimation(cardEl, itemId) {{
+                if (!cardEl || !itemId) return;
+                const stObj = parentWin._tdsKakaoState;
+                const isNowExp = !cardEl.classList.contains("expanded");
+                if (isNowExp) {{
+                    cardEl.classList.add("expanded");
+                    stObj.expandedMap[itemId] = true;
+                }} else {{
+                    cardEl.classList.remove("expanded");
+                    delete stObj.expandedMap[itemId];
+                }}
+                const chev = cardEl.querySelector(".tds-kp-dbl-chevron");
+                if (chev) {{
+                    chev.textContent = isNowExp ? "접기 ▴" : "더블클릭 상세 ▾";
+                }}
+            }}
+
             function renderOverlay() {{
                 const stObj = parentWin._tdsKakaoState;
                 const allTodos = (stObj.todos || []).filter(t => String(t.id || "").indexOf("todo_alarm_") !== 0 && t.client !== "Today To Do");
@@ -4374,50 +4664,109 @@ def render_floating_kakao_todo_overlay() -> None:
                     ? `<div style="padding:44px;text-align:center;color:#8B95A1;font-weight:700;">해당 상태의 카톡 자동화 내역이 없어요.</div>`
                     : filtered.map(item => {{
                         const sCode = getStatusCode(item);
+                        const steps = Array.isArray(item.workflow_steps) ? item.workflow_steps : [];
+                        const doneStepCnt = steps.filter(s => !!s.done).length;
+                        const totalStepCnt = Math.max(1, steps.length);
+                        const stepPct = Math.round((doneStepCnt / totalStepCnt) * 100);
+                        const isExpanded = !!stObj.expandedMap[item.id];
+                        const isEditing = !!stObj.editingMap[item.id];
+                        const isDocOpen = !!stObj.docPreviewMap[item.id];
+
                         let stBadgeHtml = "";
-                        let actBtnsHtml = "";
+                        let rightSummaryBtnHtml = "";
+                        let expActBtnsHtml = "";
+
                         if (sCode === "WORKING") {{
-                            stBadgeHtml = `<span class="tds-kp-st-badge working">● 백그라운드 작업중</span>`;
-                            actBtnsHtml = `<button class="tds-kp-btn-finish" data-act="finish" data-id="${{escHtml(item.id)}}">작업 즉시 완료시키기 (시연)</button>`;
+                            // 제안 A: AI작업중 상태에 진행 단계 숫자(2/3) 및 미니 진행바 표시
+                            stBadgeHtml = `
+                                <span class="tds-kp-st-badge working">
+                                    <span>● AI작업중 (${{doneStepCnt}}/${{totalStepCnt}})</span>
+                                    <span class="tds-kp-mini-prog"><span class="tds-kp-mini-prog-fill" style="width:${{stepPct}}%"></span></span>
+                                </span>
+                            `;
+                            // 제안 D: 우측 끝 버튼 상태별 시각적 차등
+                            rightSummaryBtnHtml = `<button class="tds-kp-row-approve-btn working" data-act="finish" data-id="${{escHtml(item.id)}}" title="클릭 시 시연용 작업 완료 전환">작업중...</button>`;
+                            expActBtnsHtml = `<button class="tds-kp-btn-finish" data-act="finish" data-id="${{escHtml(item.id)}}">작업 즉시 완료시키기 (시연)</button>`;
                         }} else if (sCode === "READY") {{
-                            stBadgeHtml = `<span class="tds-kp-st-badge ready">● 작업 완료, 승인요청중</span>`;
-                            actBtnsHtml = `
+                            stBadgeHtml = `<span class="tds-kp-st-badge ready">● 승인요청</span>`;
+                            rightSummaryBtnHtml = `<button class="tds-kp-row-approve-btn ready" data-act="approve" data-id="${{escHtml(item.id)}}">승인</button>`;
+                            expActBtnsHtml = `
+                                <button class="tds-kp-btn-edit" data-act="toggle_edit" data-id="${{escHtml(item.id)}}">✏️ 답장 문구 직접 수정</button>
                                 <button class="tds-kp-btn-jump" data-act="jump" data-id="${{escHtml(item.id)}}">뒤쪽 작업화면에 띄우기</button>
                                 <button class="tds-kp-btn-approve" data-act="approve" data-id="${{escHtml(item.id)}}">${{escHtml(item.action_label || "카톡 답장 복사 & 승인완료")}}</button>
                             `;
                         }} else {{
-                            stBadgeHtml = `<span class="tds-kp-st-badge approved"><span style="color:#34D399;">✓</span> 사용자 승인완료</span>`;
-                            actBtnsHtml = `<span class="tds-kp-done-txt">승인 완료됨</span>`;
+                            stBadgeHtml = `<span class="tds-kp-st-badge approved">✓ 승인완료</span>`;
+                            rightSummaryBtnHtml = `<button class="tds-kp-row-approve-btn approved" disabled>승인됨 ✓</button>`;
+                            expActBtnsHtml = `<span class="tds-kp-done-txt">✓ 사용자 승인 및 처리가 완료된 항목입니다</span>`;
                         }}
 
                         const origTxt = item.kakao_original || `[카톡 수신] ${{item.title}}`;
                         const aiTxt = item.ai_result || item.preview || "";
-                        const steps = Array.isArray(item.workflow_steps) ? item.workflow_steps : [];
+                        const attachName = item.attachment || `${{item.client || "거래처"}}_검토자료.pdf`;
                         const stepsHtml = steps.length > 0
                             ? `<div class="tds-kp-steps-box">` + steps.map(st => {{
                                 const isDone = !!st.done;
                                 return `<div class="tds-kp-step-item ${{isDone ? '' : 'pending'}}">
-                                    <span class="${{isDone ? 'tds-kp-step-icon-done' : 'tds-kp-step-icon-wait'}}">${{isDone ? '✓' : '●'}}</span>
+                                    <span class="${{isDone ? 'tds-kp-step-icon-done' : 'tds-kp-step-icon-wait'}}">${{isDone ? '✓' : '⏳'}}</span>
                                     <span>${{escHtml(st.step || "")}}</span>
                                 </div>`;
                             }}).join("") + `</div>`
                             : "";
 
                         return `
-                            <div class="tds-kp-card">
-                                <div class="tds-kp-card-top">
-                                    <div class="tds-kp-card-badges">
+                            <div class="tds-kp-card ${{isExpanded ? 'expanded' : ''}}" data-card-id="${{escHtml(item.id)}}">
+                                <!-- 요청사항 2: 최초 화면엔 [상태], [제목], 우측 끝 [승인] 버튼만 노출 -->
+                                <div class="tds-kp-summary-row" data-summary-id="${{escHtml(item.id)}}" title="더블클릭하면 AI 체크리스트와 카톡 답장 상세가 아래로 펼쳐집니다">
+                                    <div class="tds-kp-sum-left">
                                         ${{stBadgeHtml}}
-                                        <span class="tds-kp-cat-pill">${{escHtml(item.category || "카톡 자동화")}}</span>
-                                        <span class="tds-kp-time">${{escHtml(item.time_ago || "")}}</span>
+                                        <div class="tds-kp-sum-title-wrap">
+                                            <span class="tds-kp-sum-title">${{escHtml(item.title)}}</span>
+                                            <span class="tds-kp-dbl-chevron">${{isExpanded ? '접기 ▴' : '더블클릭 상세 ▾'}}</span>
+                                        </div>
                                     </div>
-                                    <span class="tds-kp-company">${{escHtml(item.client || "")}}</span>
+                                    <div class="tds-kp-sum-right">
+                                        ${{rightSummaryBtnHtml}}
+                                    </div>
                                 </div>
-                                <div class="tds-kp-card-title">${{escHtml(item.title)}}</div>
-                                <div class="tds-kp-kakao-orig">${{escHtml(origTxt)}}</div>
-                                ${{stepsHtml}}
-                                <div class="tds-kp-ai-res">${{escHtml(aiTxt)}}</div>
-                                <div class="tds-kp-actions">${{actBtnsHtml}}</div>
+
+                                <!-- 요청사항 3 + 제안 B/C: 더블클릭 시 아래방향으로 부드럽게 커지는 상세 영역 -->
+                                <div class="tds-kp-expand-drawer">
+                                    <div class="tds-kp-exp-meta">
+                                        <div class="tds-kp-exp-meta-l">
+                                            <span class="tds-kp-cat-pill">${{escHtml(item.category || "카톡 자동화")}}</span>
+                                            <span class="tds-kp-time">${{escHtml(item.time_ago || "")}}</span>
+                                        </div>
+                                        <span class="tds-kp-company">${{escHtml(item.client || "")}}</span>
+                                    </div>
+                                    <div class="tds-kp-kakao-orig">${{escHtml(origTxt)}}</div>
+                                    ${{stepsHtml}}
+                                    <div class="tds-kp-ai-res" id="tds-kp-res-box-${{escHtml(item.id)}}">${{escHtml(aiTxt)}}</div>
+
+                                    <!-- 제안 C: 답장 문구 인라인 직접 수정 영역 -->
+                                    <div class="tds-kp-edit-wrap ${{isEditing ? 'open' : ''}}" id="tds-kp-edit-wrap-${{escHtml(item.id)}}">
+                                        <textarea class="tds-kp-edit-textarea" id="tds-kp-edit-ta-${{escHtml(item.id)}}">${{escHtml(aiTxt)}}</textarea>
+                                        <div class="tds-kp-edit-foot">
+                                            <button class="tds-kp-edit-cancel-btn" data-act="cancel_edit" data-id="${{escHtml(item.id)}}">취소</button>
+                                            <button class="tds-kp-edit-save-btn" data-act="save_edit" data-id="${{escHtml(item.id)}}">문구 적용하기</button>
+                                        </div>
+                                    </div>
+
+                                    <!-- 제안 B: 첨부 서류 미리보기 칩 -->
+                                    <div class="tds-kp-attach-bar">
+                                        <button class="tds-kp-attach-chip" data-act="toggle_doc" data-id="${{escHtml(item.id)}}">
+                                            📄 ${{escHtml(attachName)}} 미리보기 ${{isDocOpen ? '▴' : '▾'}}
+                                        </button>
+                                    </div>
+                                    <div class="tds-kp-doc-preview ${{isDocOpen ? 'open' : ''}}" id="tds-kp-doc-prev-${{escHtml(item.id)}}">
+                                        <div style="color:#60A5FA;font-weight:800;margin-bottom:4px;">🛡️ AI 생성·발급 서류 무결성 검증 요약</div>
+                                        <div>• 파일명: <b style="color:#E2E8F0;">${{escHtml(attachName)}}</b></div>
+                                        <div>• 대상 거래처: <b style="color:#E2E8F0;">${{escHtml(item.client || "지정 거래처")}}</b> (사업자등록번호 및 귀속연월 대조 일치 완료)</div>
+                                        <div>• 상태: 카톡 답장 복사 및 승인 시 해당 서류 폴더 경로가 클립보드에 함께 준비됩니다.</div>
+                                    </div>
+
+                                    <div class="tds-kp-actions">${{expActBtnsHtml}}</div>
+                                </div>
                             </div>
                         `;
                     }}).join("");
@@ -4437,10 +4786,11 @@ def render_floating_kakao_todo_overlay() -> None:
                                 <div class="tds-kp-char-circle">${{HEADER_CHAR_SVG}}</div>
                                 <div>
                                     <div class="tds-kp-title-row">
-                                        <span class="tds-kp-title">${{escHtml(CURRENT_USER)}}님의 카톡 백그라운드 To-Do</span>
+                                        <!-- 요청사항 1: "범준님의" 삭제 -->
+                                        <span class="tds-kp-title">카톡 백그라운드 To-Do</span>
                                         <span class="tds-kp-pill-60">AI 카톡 자동화</span>
                                     </div>
-                                    <div class="tds-kp-sub">뒤쪽 작업 공간을 유지한 채 AI 카톡 작업 진행상황을 확인하고 승인합니다</div>
+                                    <div class="tds-kp-sub">항목을 더블클릭하면 AI 체크리스트와 예상 카톡 답장이 아래로 펼쳐집니다</div>
                                 </div>
                             </div>
                             <div class="tds-kp-hdr-r">
@@ -4452,9 +4802,9 @@ def render_floating_kakao_todo_overlay() -> None:
                         <div class="tds-kp-tabs-bar">
                             <div class="tds-kp-tabs-l">
                                 <button class="tds-kp-tab all ${{stObj.filter === 'ALL' ? 'active-ring' : ''}}" data-filter="ALL">전체 ${{allTodos.length}}</button>
-                                <button class="tds-kp-tab working ${{stObj.filter === 'WORKING' ? 'active-ring' : ''}}" data-filter="WORKING">백그라운드 작업중 ${{workingList.length}}</button>
-                                <button class="tds-kp-tab ready ${{stObj.filter === 'READY' ? 'active-ring' : ''}}" data-filter="READY">작업 완료, 승인요청중 ${{readyList.length}}</button>
-                                <button class="tds-kp-tab approved ${{stObj.filter === 'APPROVED' ? 'active-ring' : ''}}" data-filter="APPROVED">사용자 승인완료 ${{approvedList.length}}</button>
+                                <button class="tds-kp-tab working ${{stObj.filter === 'WORKING' ? 'active-ring' : ''}}" data-filter="WORKING">AI작업중 ${{workingList.length}}</button>
+                                <button class="tds-kp-tab ready ${{stObj.filter === 'READY' ? 'active-ring' : ''}}" data-filter="READY">승인요청 ${{readyList.length}}</button>
+                                <button class="tds-kp-tab approved ${{stObj.filter === 'APPROVED' ? 'active-ring' : ''}}" data-filter="APPROVED">승인완료 ${{approvedList.length}}</button>
                             </div>
                             <div class="tds-kp-silent-info">통상적 인사 자동 닫기(1소거): <b>${{SILENT_CNT}}건</b></div>
                         </div>
@@ -4462,7 +4812,7 @@ def render_floating_kakao_todo_overlay() -> None:
                         <div class="tds-kp-body">${{cardsHtml}}</div>
 
                         <div class="tds-kp-footer">
-                            <span>💡 카톡 자료와 메시지가 모두 준비되면 홈버튼 말풍선으로 알려드립니다</span>
+                            <span>💡 제목 줄을 더블클릭하면 AI 작업단계와 예상 카톡 답장을 상세 확인·수정할 수 있습니다</span>
                             <button class="tds-kp-min-btn" id="tds-kp-minimize">홈버튼으로 접기 ↘</button>
                         </div>
                     </div>
@@ -4572,12 +4922,41 @@ def render_floating_kakao_todo_overlay() -> None:
                     }};
                 }});
 
+                // 요청사항 3: 제목이 있는 요약 줄(.tds-kp-summary-row) 더블클릭(또는 빠른 2회 클릭) 시 아래 방향으로 부드러운 확장 애니메이션
+                rootEl.querySelectorAll(".tds-kp-summary-row").forEach(sumRow => {{
+                    const itemId = sumRow.getAttribute("data-summary-id");
+                    const cardEl = sumRow.closest(".tds-kp-card");
+
+                    sumRow.ondblclick = function(e) {{
+                        if (e.target && e.target.closest && e.target.closest("button")) return;
+                        e.preventDefault();
+                        e.stopPropagation();
+                        stObj._lastSumClick = {{ id: null, ts: 0 }};
+                        toggleCardExpandWithAnimation(cardEl, itemId);
+                    }};
+
+                    sumRow.onclick = function(e) {{
+                        if (e.target && e.target.closest && e.target.closest("button")) return;
+                        const nowMs = Date.now();
+                        const prev = stObj._lastSumClick || {{ id: null, ts: 0 }};
+                        stObj._lastSumClick = {{ id: itemId, ts: nowMs }};
+                        if (prev.id === itemId && (nowMs - prev.ts) < 420) {{
+                            stObj._lastSumClick = {{ id: null, ts: 0 }};
+                            e.preventDefault();
+                            e.stopPropagation();
+                            toggleCardExpandWithAnimation(cardEl, itemId);
+                        }}
+                    }};
+                }});
+
                 rootEl.querySelectorAll("button[data-act]").forEach(btn => {{
-                    btn.onclick = function() {{
+                    btn.onclick = function(e) {{
+                        e.stopPropagation();
                         const act = this.getAttribute("data-act");
                         const tid = this.getAttribute("data-id");
                         const target = allTodos.find(x => x.id === tid);
                         if (!target) return;
+
                         if (act === "finish") {{
                             target.status_code = "READY";
                             target.status = "작업 완료, 승인요청중";
@@ -4600,6 +4979,40 @@ def render_floating_kakao_todo_overlay() -> None:
                             stObj.open = false;
                             renderOverlay();
                             triggerSidebarMode(target.target_mode || "CALENDAR");
+                        }} else if (act === "toggle_edit") {{
+                            const editWrap = parentDoc.getElementById(`tds-kp-edit-wrap-${{tid}}`);
+                            if (editWrap) {{
+                                const nowOpen = !editWrap.classList.contains("open");
+                                editWrap.classList.toggle("open", nowOpen);
+                                stObj.editingMap[tid] = nowOpen;
+                                if (nowOpen) {{
+                                    const ta = parentDoc.getElementById(`tds-kp-edit-ta-${{tid}}`);
+                                    if (ta) ta.focus();
+                                }}
+                            }}
+                        }} else if (act === "cancel_edit") {{
+                            const editWrap = parentDoc.getElementById(`tds-kp-edit-wrap-${{tid}}`);
+                            if (editWrap) editWrap.classList.remove("open");
+                            delete stObj.editingMap[tid];
+                        }} else if (act === "save_edit") {{
+                            const ta = parentDoc.getElementById(`tds-kp-edit-ta-${{tid}}`);
+                            const resBox = parentDoc.getElementById(`tds-kp-res-box-${{tid}}`);
+                            const editWrap = parentDoc.getElementById(`tds-kp-edit-wrap-${{tid}}`);
+                            if (ta) {{
+                                target.ai_result = ta.value;
+                                target.preview = ta.value;
+                                if (resBox) resBox.textContent = ta.value;
+                            }}
+                            if (editWrap) editWrap.classList.remove("open");
+                            delete stObj.editingMap[tid];
+                        }} else if (act === "toggle_doc") {{
+                            const docBox = parentDoc.getElementById(`tds-kp-doc-prev-${{tid}}`);
+                            if (docBox) {{
+                                const nowOpen = !docBox.classList.contains("open");
+                                docBox.classList.toggle("open", nowOpen);
+                                stObj.docPreviewMap[tid] = nowOpen;
+                                this.innerHTML = `📄 ${{escHtml(target.attachment || "검토자료.pdf")}} 미리보기 ${{nowOpen ? '▴' : '▾'}}`;
+                            }}
                         }}
                     }};
                 }});
