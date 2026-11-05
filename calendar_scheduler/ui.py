@@ -22,7 +22,7 @@ import ui_theme as _ui_theme
 _WEEKDAYS_SHORT = ("월", "화", "수", "목", "금", "토", "일")
 _WEEKDAYS_FULL = ("월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일")
 _SUN_FIRST_HEADERS = ("일", "월", "화", "수", "목", "금", "토")
-_STATE_SCHEMA_VERSION = "v17_silver_iceblue_cell_borders"
+_STATE_SCHEMA_VERSION = "v18_two_row_dock_and_home_fab_above_manage_app"
 
 
 def _html(s: str) -> str:
@@ -1558,14 +1558,17 @@ div[data-testid="InputInstructions"],
     margin: 0 !important;
 }
 
-/* ══════ 우측 최하단 한 줄 일체형 대화입력 독(Dock) 바 (평상시 Flat / 클릭 시 Sunken 입체) ══════ */
+/* ══════ 우측 최하단 2단 일체형 대화입력 독(Dock) 바 (1단: 할 일 입력칸 전체폭 / 2단 좌측: 시간·알림·달력·상세) ══════ */
 [data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-todo_bottom_dock_a {
     background: #FFFFFF !important;
     border: 2px solid #3182F6 !important;
     border-radius: 22px !important;
-    padding: 10px 12px !important;
+    padding: 12px 14px !important;
     box-shadow: 0 6px 18px rgba(49, 130, 246, 0.10) !important;
     margin-top: 10px !important;
+}
+[data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-todo_bottom_dock_a [data-testid="stVerticalBlock"] {
+    gap: 8px !important;
 }
 
 /* 좌측 할 일 대화입력칸 */
@@ -2859,21 +2862,23 @@ def render_calendar_main() -> None:
                                     ]
                                     st.rerun()
 
-            # ══════ 하단 고정 영역: 5개 컬럼 고정 (할 일 → 시간 → [알림]/[달력] 클릭 후 바로 Enter 치면 즉시 등록!) ══════
+            # ══════ 하단 고정 영역: 2단 레이아웃 (1단: 할 일 입력 전체폭 / 2단 좌측: 시간 → [알림] → [달력] → [상세] 기존 크기 유지) ══════
             with st.container(key="todo_bottom_dock_a"):
-                d_c1, d_c2, d_c3, d_c4, d_c5 = st.columns([2.20, 0.92, 0.78, 0.78, 0.78], gap="small")
                 inp_key = f"dock_chat_inp_{year}_{month}_{selected_day}"
                 time_key = f"dock_time_inp_{year}_{month}_{selected_day}"
 
-                with d_c1:
-                    with st.container(key=f"dock_chat_wrap_{year}_{month}_{selected_day}"):
-                        st.text_input(
-                            "할 일 입력",
-                            placeholder="",
-                            label_visibility="collapsed",
-                            key=inp_key,
-                            on_change=_commit_dock_schedule_on_enter,
-                        )
+                # 1단(윗줄): 할 일 글 적는 칸 가로 전체폭 확장
+                with st.container(key=f"dock_chat_wrap_{year}_{month}_{selected_day}"):
+                    st.text_input(
+                        "할 일 입력",
+                        placeholder="",
+                        label_visibility="collapsed",
+                        key=inp_key,
+                        on_change=_commit_dock_schedule_on_enter,
+                    )
+
+                # 2단(아랫줄): 왼쪽부터 [시간] · [알림] · [달력] · [상세]를 기존 컴팩트한 크기 그대로 나란히 배치 (우측은 여백 유지)
+                d_c2, d_c3, d_c4, d_c5, _d_spacer = st.columns([0.96, 0.76, 0.76, 0.76, 2.22], gap="small")
                 with d_c2:
                     with st.container(key=f"dock_time_wrap_{year}_{month}_{selected_day}"):
                         st.text_input(
@@ -3555,8 +3560,8 @@ def render_floating_kakao_todo_overlay() -> None:
 
                 #tds-kakao-floating-root {{
                     position: fixed;
-                    right: 20px;
-                    bottom: 60px;
+                    right: 18px;
+                    bottom: 52px;
                     z-index: 999990;
                     font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
                     letter-spacing: -0.02em;
@@ -4485,8 +4490,8 @@ def render_floating_kakao_todo_overlay() -> None:
                 }} else {{
                     rootEl.style.left = "auto";
                     rootEl.style.top = "auto";
-                    rootEl.style.right = "20px";
-                    rootEl.style.bottom = "60px";
+                    rootEl.style.right = "18px";
+                    rootEl.style.bottom = "52px";
                 }}
             }}
 
