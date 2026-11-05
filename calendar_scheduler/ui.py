@@ -22,7 +22,7 @@ import ui_theme as _ui_theme
 _WEEKDAYS_SHORT = ("월", "화", "수", "목", "금", "토", "일")
 _WEEKDAYS_FULL = ("월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일")
 _SUN_FIRST_HEADERS = ("일", "월", "화", "수", "목", "금", "토")
-_STATE_SCHEMA_VERSION = "v18_two_row_dock_and_home_fab_above_manage_app"
+_STATE_SCHEMA_VERSION = "v20_home_fab_genie_motion_and_oneclick_blue_dtl_circle"
 
 
 def _html(s: str) -> str:
@@ -1484,6 +1484,27 @@ div[data-testid="InputInstructions"],
     color: #F04452;
     flex-shrink: 0;
 }
+.tds-done-status-pill {
+    font-size: 0.68rem;
+    font-weight: 800;
+    padding: 2px 9px;
+    border-radius: 999px;
+    border: none;
+    background: #E5F9F0;
+    color: #00A660;
+    flex-shrink: 0;
+}
+.tds-rollover-pill {
+    font-size: 0.68rem;
+    font-weight: 800;
+    padding: 2px 9px;
+    border-radius: 999px;
+    border: none;
+    background: #FFF3E0;
+    color: #D97706;
+    flex-shrink: 0;
+    font-variant-numeric: tabular-nums;
+}
 
 /* 우측 끝 종 아이콘(빛/배경 없이 종만 반짝임) + 시간 */
 .tds-todo-card-right {
@@ -1878,6 +1899,33 @@ def _init_calendar_state() -> Dict[str, Any]:
     ]
 
     if cstate.get("_last_kst_today_iso") != today_iso:
+        # 자정 경과(다음날 전환) 시: 이전 날짜의 체크 완료된(done=True) 할 일은 자동 소거하고,
+        # 못 끝낸 미완료(done=False) 개인 할 일은 오늘 날짜의 To-Do 리스트로 자동 이월합니다.
+        cur_ym_key = f"{today_d.year:04d}-{today_d.month:02d}"
+        cur_m_sched = cstate.get("schedules_by_ym", {}).get(cur_ym_key, {})
+        if cur_m_sched:
+            today_bucket = cur_m_sched.setdefault(today_d.day, [])
+            existing_ids = {str(x.get("id")) for x in today_bucket}
+            for past_d in sorted([d for d in list(cur_m_sched.keys()) if int(d) < today_d.day]):
+                past_list = cur_m_sched.get(past_d, [])
+                kept_for_past = []
+                for ev_item in past_list:
+                    is_tax_item = str(ev_item.get("type", "")).upper() == "TAX" or ev_item.get("category") == "세무기한"
+                    if is_tax_item:
+                        kept_for_past.append(ev_item)
+                    elif ev_item.get("done"):
+                        # 완료된 개인 할 일은 다음날 자동 소거
+                        continue
+                    else:
+                        # 미완료 개인 할 일은 원래 날짜 정보를 보존한 채 오늘로 이월
+                        ev_item.setdefault("origin_year", today_d.year)
+                        ev_item.setdefault("origin_month", today_d.month)
+                        ev_item.setdefault("origin_day", int(past_d))
+                        if str(ev_item.get("id")) not in existing_ids:
+                            today_bucket.append(ev_item)
+                            existing_ids.add(str(ev_item.get("id")))
+                cur_m_sched[past_d] = kept_for_past
+
         cstate["_last_kst_today_iso"] = today_iso
         cstate["year"] = today_d.year
         cstate["month"] = today_d.month
@@ -1973,7 +2021,11 @@ def _commit_dock_schedule_on_enter() -> None:
         "id": new_ev_id,
         "type": "MY",
         "time": norm_t,
-        "base_date_iso": today_d.isoformat(),
+        "base_date_iso": date(year, month, sel_day).isoformat(),
+        "origin_year": year,
+        "origin_month": month,
+        "origin_day": sel_day,
+        "completed_on_ymd": None,
         "title": clean_txt,
         "client": "내 스케줄",
         "category": "내 스케줄",
@@ -2372,6 +2424,7 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
             all_subs_done = bool(updated_subs) and all(s.get("done") for s in updated_subs)
             is_done_final = True if (new_type == "DONE" or all_subs_done) else bool(target_ev.get("done", False))
 
+            new_d_int = int(in_day)
             target_ev.update({
                 "title": final_title,
                 "type": "DONE" if is_done_final else new_type,
@@ -2387,10 +2440,14 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
                 "desc": in_desc.strip(),
                 "attachment": in_attach.strip(),
                 "done": is_done_final,
+                "completed_on_ymd": [year, month, new_d_int] if is_done_final else None,
                 "has_detail": True,
             })
+            if is_new or "origin_day" not in target_ev:
+                target_ev["origin_year"] = year
+                target_ev["origin_month"] = month
+                target_ev["origin_day"] = new_d_int
 
-            new_d_int = int(in_day)
             if is_new:
                 month_schedules.setdefault(new_d_int, []).append(target_ev)
                 st.session_state[inp_key] = ""
@@ -2697,7 +2754,49 @@ def render_calendar_main() -> None:
 
         sel_date_obj = date(year, month, min(selected_day, calendar.monthrange(year, month)[1]))
         is_sel_today = (sel_date_obj == today_d)
-        raw_day_evs = month_schedules.get(selected_day, [])
+
+        # 선택된 날짜(예: 11월 6일)를 볼 때:
+        # 1) 이전 날짜(예: 11월 5일)의 할 일 중 체크 완료한 항목(done=True)은 다음날 자동으로 사라지고,
+        # 2) 못 끝낸 미완료 개인 할 일(done=False, 세무기한 제외)은 사라지지 않고 다음날 To-Do 리스트 상단에 이월 유지됩니다.
+        combined_day_evs: List[Dict[str, Any]] = []
+        seen_ev_ids: set[str] = set()
+        sel_ymd_tuple = (year, month, selected_day)
+
+        for prev_d in sorted([int(k) for k in month_schedules.keys() if int(k) < selected_day]):
+            for ev_cand in month_schedules.get(prev_d, []):
+                is_tax_ev = str(ev_cand.get("type", "")).upper() == "TAX" or ev_cand.get("category") == "세무기한"
+                if is_tax_ev:
+                    continue
+                ev_cand.setdefault("origin_year", year)
+                ev_cand.setdefault("origin_month", month)
+                ev_cand.setdefault("origin_day", prev_d)
+                if not ev_cand.get("done"):
+                    cid = str(ev_cand.get("id", ""))
+                    if cid not in seen_ev_ids:
+                        combined_day_evs.append(ev_cand)
+                        seen_ev_ids.add(cid)
+                else:
+                    comp_ymd = ev_cand.get("completed_on_ymd")
+                    if isinstance(comp_ymd, (list, tuple)) and len(comp_ymd) == 3 and tuple(comp_ymd) == sel_ymd_tuple:
+                        cid = str(ev_cand.get("id", ""))
+                        if cid not in seen_ev_ids:
+                            combined_day_evs.append(ev_cand)
+                            seen_ev_ids.add(cid)
+
+        for ev_cur in month_schedules.get(selected_day, []):
+            ev_cur.setdefault("origin_year", year)
+            ev_cur.setdefault("origin_month", month)
+            ev_cur.setdefault("origin_day", selected_day)
+            if ev_cur.get("done"):
+                comp_ymd = ev_cur.get("completed_on_ymd")
+                if isinstance(comp_ymd, (list, tuple)) and len(comp_ymd) == 3 and tuple(comp_ymd) < sel_ymd_tuple:
+                    continue
+            cid = str(ev_cur.get("id", ""))
+            if cid not in seen_ev_ids:
+                combined_day_evs.append(ev_cur)
+                seen_ev_ids.add(cid)
+
+        raw_day_evs = combined_day_evs
         sorted_day_evs = _sort_day_events(raw_day_evs, urgent_first=bool(cstate.get("urgent_first", False)))
 
         total_ev_cnt = len(sorted_day_evs)
@@ -2791,6 +2890,16 @@ def render_calendar_main() -> None:
 
                         urg_badge_html = "<span class='tds-urgent-pill'>중요</span>" if ev.get("urgent") else ""
 
+                        orig_m = int(ev.get("origin_month", month))
+                        orig_d = int(ev.get("origin_day", selected_day))
+                        is_rollover = (orig_m != month or orig_d != selected_day)
+
+                        status_tag_html = ""
+                        if is_done:
+                            status_tag_html = "<span class='tds-done-status-pill'>완료됨</span>"
+                        elif is_rollover:
+                            status_tag_html = f"<span class='tds-rollover-pill'>{orig_m}/{orig_d} 미완료 이월</span>"
+
                         has_dtl = bool(ev.get("has_detail") or subs)
                         dtl_circle_html = "<span class='tds-blue-circle-dtl'>상세</span>" if has_dtl else ""
 
@@ -2819,6 +2928,7 @@ def render_calendar_main() -> None:
                                     {chk_box_html}
                                     <div class="tds-todo-title-wrap">
                                         <span class="tds-todo-title-txt {'done' if is_done else ''}">{ev_title_esc}</span>
+                                        {status_tag_html}
                                         {dtl_circle_html}
                                         {sub_badge_html}
                                         {urg_badge_html}
@@ -2842,6 +2952,7 @@ def render_calendar_main() -> None:
                                     width="stretch",
                                 ):
                                     ev["done"] = not is_done
+                                    ev["completed_on_ymd"] = [year, month, selected_day] if ev["done"] else None
                                     ev["type"] = "DONE" if ev["done"] else ("TAX" if ev.get("category") == "세무기한" else "MY")
                                     st.rerun()
                             with h_body:
@@ -2850,16 +2961,21 @@ def render_calendar_main() -> None:
                                     key=f"btn_todo_dtl_{ev_id_str}_{idx_e}",
                                     width="stretch",
                                 ):
-                                    _open_schedule_detail_dialog(year, month, selected_day, ev_id_str)
+                                    owner_day = next(
+                                        (int(dk) for dk, dlist in month_schedules.items() if any(str(x.get("id")) == ev_id_str for x in dlist)),
+                                        selected_day,
+                                    )
+                                    _open_schedule_detail_dialog(year, month, owner_day, ev_id_str)
                             with h_del:
                                 if st.button(
                                     "삭제",
                                     key=f"btn_todo_del_{ev_id_str}_{idx_e}",
                                     width="stretch",
                                 ):
-                                    month_schedules[selected_day] = [
-                                        x for x in raw_day_evs if str(x.get("id")) != ev_id_str
-                                    ]
+                                    for dk in list(month_schedules.keys()):
+                                        month_schedules[dk] = [
+                                            x for x in month_schedules.get(dk, []) if str(x.get("id")) != ev_id_str
+                                        ]
                                     st.rerun()
 
             # ══════ 하단 고정 영역: 2단 레이아웃 (1단: 할 일 입력 전체폭 / 2단 좌측: 시간 → [알림] → [달력] → [상세] 기존 크기 유지) ══════
@@ -3396,8 +3512,7 @@ def render_floating_kakao_todo_overlay() -> None:
                     ev.stopPropagation();
                     ev.stopImmediatePropagation();
                     if (parentWin._tdsKakaoState) {{
-                        parentWin._tdsKakaoState.open = true;
-                        renderOverlay();
+                        setPanelOpenAnimated(true);
                     }}
                     return;
                 }}
@@ -3587,33 +3702,44 @@ def render_floating_kakao_todo_overlay() -> None:
                     pointer-events: auto;
                 }}
 
-                /* 60% 확장 카톡 백그라운드 To-Do 패널: 블랙(딥 차콜 #121417) 컨셉 */
+                /* 60% 확장 카톡 백그라운드 To-Do 패널: 홈버튼 중심에서 빠르게 퍼지듯 나타났다가 감싸듯 홈버튼으로 사라지는 애니메이션 */
                 #tds-kakao-todo-panel {{
                     position: fixed;
                     right: 20px;
-                    bottom: 136px;
+                    bottom: 128px;
                     width: min(60vw, 920px);
                     height: min(68vh, 680px);
                     min-width: 380px;
                     min-height: 460px;
                     background: #121417;
                     border: 1px solid #2A313C;
-                    border-radius: 26px;
+                    border-radius: 64px;
                     box-shadow: 0 28px 68px -12px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.06);
-                    transform-origin: bottom right;
-                    transform: scale(0.06);
+                    transform-origin: calc(100% - 31px) calc(100% + 43px);
+                    transform: translate3d(8px, 16px, 0) scale(0.02, 0.02);
                     opacity: 0;
                     pointer-events: none;
-                    transition: transform 0.36s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.24s ease;
+                    /* 사라질 때: 홈버튼 쪽으로 빠르게 감싸듯 수렴하며 빨려 들어가는 모션 */
+                    transition:
+                        transform 0.22s cubic-bezier(0.55, 0.05, 0.67, 0.19),
+                        opacity 0.18s ease-in,
+                        border-radius 0.20s ease-in;
+                    will-change: transform, opacity, border-radius;
                     z-index: 999995;
                     display: flex;
                     flex-direction: column;
                     overflow: hidden;
                 }}
                 #tds-kakao-todo-panel.open {{
-                    transform: scale(1);
+                    transform: translate3d(0, 0, 0) scale(1, 1);
+                    border-radius: 26px;
                     opacity: 1;
                     pointer-events: auto;
+                    /* 나타날 때: 홈버튼 중심에서 바깥으로 빠르게 퍼지듯 펼쳐지는 모션 */
+                    transition:
+                        transform 0.27s cubic-bezier(0.16, 1, 0.3, 1),
+                        opacity 0.16s ease-out,
+                        border-radius 0.22s ease-out;
                 }}
 
                 .tds-kp-header {{
@@ -3882,26 +4008,36 @@ def render_floating_kakao_todo_overlay() -> None:
                     text-overflow: ellipsis;
                     line-height: 1.35;
                 }}
-                .tds-kp-dbl-chevron {{
-                    font-size: 0.72rem;
-                    font-weight: 700;
-                    color: #6B7684;
-                    background: #14181F;
-                    border: 1px solid #262E3B;
-                    padding: 2px 8px;
-                    border-radius: 999px;
-                    white-space: nowrap;
+                /* 요청사항 2: '더블클릭 상세' 대신 파란색 동그라미 '상세' 버튼 (1회 클릭 시 아래로 확장) */
+                .tds-kp-blue-dtl-circle {{
+                    width: 32px;
+                    height: 32px;
+                    min-width: 32px;
+                    min-height: 32px;
+                    border-radius: 50%;
+                    background: #3182F6;
+                    border: 1.5px solid #60A5FA;
+                    color: #FFFFFF;
+                    font-size: 0.68rem;
+                    font-weight: 800;
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
                     flex-shrink: 0;
-                    transition: all 0.22s ease;
+                    cursor: pointer;
+                    padding: 0;
+                    box-shadow: 0 3px 10px rgba(49, 130, 246, 0.38);
+                    transition: transform 0.16s ease, background 0.16s ease, box-shadow 0.16s ease;
                 }}
-                .tds-kp-card:hover .tds-kp-dbl-chevron {{
-                    color: #93C5FD;
-                    border-color: #2563EB;
+                .tds-kp-blue-dtl-circle:hover {{
+                    background: #1B64DA;
+                    transform: scale(1.08);
+                    box-shadow: 0 4px 14px rgba(49, 130, 246, 0.55);
                 }}
-                .tds-kp-card.expanded .tds-kp-dbl-chevron {{
-                    background: #17253B;
-                    color: #60A5FA;
-                    border-color: #2563EB;
+                .tds-kp-card.expanded .tds-kp-blue-dtl-circle {{
+                    background: #1D4ED8;
+                    border-color: #93C5FD;
+                    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.30);
                 }}
 
                 /* 제안 D: 우측 끝 [승인] 버튼 상태별 시각적 차등 */
@@ -4631,14 +4767,71 @@ def render_floating_kakao_todo_overlay() -> None:
                     isPointerDown = false;
                     fabBtn.classList.remove("dragging");
                     if (!hasDragged) {{
-                        parentWin._tdsKakaoState.open = !parentWin._tdsKakaoState.open;
-                        renderOverlay();
+                        setPanelOpenAnimated(!parentWin._tdsKakaoState.open);
                     }}
                     hasDragged = false;
                 }};
 
                 parentWin.addEventListener("mousemove", parentWin._tdsFabMouseMoveHandler);
                 parentWin.addEventListener("mouseup", parentWin._tdsFabMouseUpHandler);
+            }}
+
+            function updatePanelTransformOriginToFab() {{
+                const panelEl = parentDoc.getElementById("tds-kakao-todo-panel");
+                const fabEl = parentDoc.getElementById("tds-kakao-home-fab");
+                if (!panelEl || !fabEl) return;
+                const pRect = panelEl.getBoundingClientRect();
+                const fRect = fabEl.getBoundingClientRect();
+                if (pRect.width > 10 && fRect.width > 10) {{
+                    // 홈버튼 정중앙 좌표를 기준으로 퍼지듯 나타나고 감싸듯 빨려 들어가도록 기준점 동기화
+                    const fabCenterX = fRect.left + fRect.width / 2;
+                    const fabCenterY = fRect.top + fRect.height / 2;
+                    const originX = (panelEl.offsetWidth || 820) - 31;
+                    const originY = (panelEl.offsetHeight || 620) + 43;
+                    panelEl.style.transformOrigin = `${{originX}}px ${{originY}}px`;
+                }}
+            }}
+
+            function setPanelOpenAnimated(nextOpen) {{
+                const stObj = parentWin._tdsKakaoState;
+                if (!stObj) return;
+                stObj.open = !!nextOpen;
+
+                const panelEl = parentDoc.getElementById("tds-kakao-todo-panel");
+                const backdropEl = parentDoc.getElementById("tds-kakao-backdrop");
+                const sbBubble = parentDoc.getElementById("tds-kakao-square-bubble");
+                const fabBtn = parentDoc.getElementById("tds-kakao-home-fab");
+
+                if (!panelEl || !backdropEl) {{
+                    renderOverlay();
+                    return;
+                }}
+
+                updatePanelTransformOriginToFab();
+
+                // DOM을 파괴하지 않고 클래스를 직접 토글하여 홈버튼 기준 퍼짐/감싸기 CSS 트랜지션이 100% 작동하도록 처리
+                if (stObj.open) {{
+                    panelEl.classList.add("open");
+                    backdropEl.classList.add("open");
+                    if (sbBubble) sbBubble.classList.add("hidden");
+                }} else {{
+                    panelEl.classList.remove("open");
+                    backdropEl.classList.remove("open");
+                    const allTodos = (stObj.todos || []).filter(t => String(t.id || "").indexOf("todo_alarm_") !== 0 && t.client !== "Today To Do");
+                    const readyCnt = allTodos.filter(t => getStatusCode(t) === "READY").length;
+                    if (sbBubble && readyCnt > 0 && !stObj.bubbleDismissed) {{
+                        sbBubble.classList.remove("hidden");
+                    }}
+                }}
+
+                if (fabBtn) {{
+                    const allTodos = (stObj.todos || []).filter(t => String(t.id || "").indexOf("todo_alarm_") !== 0 && t.client !== "Today To Do");
+                    const totalAttention = allTodos.filter(t => getStatusCode(t) === "READY" || getStatusCode(t) === "WORKING").length;
+                    fabBtn.innerHTML = `
+                        ${{totalAttention > 0 ? `<span id="tds-kakao-fab-badge">${{totalAttention}}</span>` : ''}}
+                        ${{stObj.open ? FAB_ICON_OPEN_SVG : FAB_ICON_CLOSED_SVG}}
+                    `;
+                }}
             }}
 
             function toggleCardExpandWithAnimation(cardEl, itemId) {{
@@ -4651,10 +4844,6 @@ def render_floating_kakao_todo_overlay() -> None:
                 }} else {{
                     cardEl.classList.remove("expanded");
                     delete stObj.expandedMap[itemId];
-                }}
-                const chev = cardEl.querySelector(".tds-kp-dbl-chevron");
-                if (chev) {{
-                    chev.textContent = isNowExp ? "접기 ▴" : "더블클릭 상세 ▾";
                 }}
             }}
 
@@ -4727,13 +4916,13 @@ def render_floating_kakao_todo_overlay() -> None:
 
                         return `
                             <div class="tds-kp-card ${{isExpanded ? 'expanded' : ''}}" data-card-id="${{escHtml(item.id)}}">
-                                <!-- 요청사항 2: 최초 화면엔 [상태], [제목], 우측 끝 [승인] 버튼만 노출 -->
-                                <div class="tds-kp-summary-row" data-summary-id="${{escHtml(item.id)}}" title="더블클릭하면 AI 체크리스트와 카톡 답장 상세가 아래로 펼쳐집니다">
+                                <!-- 요청사항 2: 최초 화면엔 [상태], [제목] + 파란 동그라미 (상세) 버튼, 우측 끝 [승인] 버튼 노출 -->
+                                <div class="tds-kp-summary-row" data-summary-id="${{escHtml(item.id)}}" title="클릭하면 AI 체크리스트와 카톡 답장 상세가 아래로 펼쳐집니다">
                                     <div class="tds-kp-sum-left">
                                         ${{stBadgeHtml}}
                                         <div class="tds-kp-sum-title-wrap">
                                             <span class="tds-kp-sum-title">${{escHtml(item.title)}}</span>
-                                            <span class="tds-kp-dbl-chevron">${{isExpanded ? '접기 ▴' : '더블클릭 상세 ▾'}}</span>
+                                            <button type="button" class="tds-kp-blue-dtl-circle" data-dtl-toggle="${{escHtml(item.id)}}" title="클릭하여 상세 열기/닫기">상세</button>
                                         </div>
                                     </div>
                                     <div class="tds-kp-sum-right">
@@ -4801,7 +4990,7 @@ def render_floating_kakao_todo_overlay() -> None:
                                         <span class="tds-kp-title">카톡 백그라운드 To-Do</span>
                                         <span class="tds-kp-pill-60">AI 카톡 자동화</span>
                                     </div>
-                                    <div class="tds-kp-sub">항목을 더블클릭하면 AI 체크리스트와 예상 카톡 답장이 아래로 펼쳐집니다</div>
+                                    <div class="tds-kp-sub">파란 동그라미 [상세] 버튼을 한 번 클릭하면 AI 체크리스트와 예상 카톡 답장이 아래로 펼쳐집니다</div>
                                 </div>
                             </div>
                             <div class="tds-kp-hdr-r">
@@ -4823,7 +5012,7 @@ def render_floating_kakao_todo_overlay() -> None:
                         <div class="tds-kp-body">${{cardsHtml}}</div>
 
                         <div class="tds-kp-footer">
-                            <span>💡 제목 줄을 더블클릭하면 AI 작업단계와 예상 카톡 답장을 상세 확인·수정할 수 있습니다</span>
+                            <span>💡 파란 동그라미 [상세] 버튼을 클릭하면 AI 작업단계와 예상 카톡 답장을 상세 확인·수정할 수 있습니다</span>
                             <button class="tds-kp-min-btn" id="tds-kp-minimize">홈버튼으로 접기 ↘</button>
                         </div>
                     </div>
@@ -4851,6 +5040,7 @@ def render_floating_kakao_todo_overlay() -> None:
                 `;
 
                 applyFloatingPosition();
+                updatePanelTransformOriginToFab();
 
                 const fabBtn = parentDoc.getElementById("tds-kakao-home-fab");
                 const closeBtn = parentDoc.getElementById("tds-kp-close");
@@ -4864,18 +5054,17 @@ def render_floating_kakao_todo_overlay() -> None:
 
                 bindFabDrag(fabBtn);
 
-                if (closeBtn) closeBtn.onclick = function() {{ stObj.open = false; renderOverlay(); }};
-                if (minBtn) minBtn.onclick = function() {{ stObj.open = false; renderOverlay(); }};
-                if (backdropEl) backdropEl.onclick = function() {{ stObj.open = false; renderOverlay(); }};
+                if (closeBtn) closeBtn.onclick = function() {{ setPanelOpenAnimated(false); }};
+                if (minBtn) minBtn.onclick = function() {{ setPanelOpenAnimated(false); }};
+                if (backdropEl) backdropEl.onclick = function() {{ setPanelOpenAnimated(false); }};
 
-                // 홈버튼 위 말구름 더블클릭(또는 빠른 2회 클릭) 시 60% 큰 화면으로 즉시 전환
+                // 홈버튼 위 말구름 더블클릭(또는 빠른 2회 클릭) 시 홈버튼에서 퍼지는 애니메이션과 함께 60% 큰 화면으로 전환
                 if (sbBubble) {{
                     sbBubble.ondblclick = function(e) {{
                         if (e.target && e.target.closest && (e.target.closest("#tds-sb-dismiss") || e.target.closest("#tds-sb-next"))) return;
                         e.preventDefault();
                         e.stopPropagation();
-                        stObj.open = true;
-                        renderOverlay();
+                        setPanelOpenAnimated(true);
                     }};
                     sbBubble.onclick = function(e) {{
                         if (e.target && e.target.closest && (e.target.closest("#tds-sb-dismiss") || e.target.closest("#tds-sb-next") || e.target.closest("#tds-sb-open"))) return;
@@ -4884,8 +5073,7 @@ def render_floating_kakao_todo_overlay() -> None:
                         stObj._lastBubbleClickTs = nowMs;
                         if ((nowMs - prevTs) < 450) {{
                             stObj._lastBubbleClickTs = 0;
-                            stObj.open = true;
-                            renderOverlay();
+                            setPanelOpenAnimated(true);
                         }}
                     }};
                 }}
@@ -4907,8 +5095,7 @@ def render_floating_kakao_todo_overlay() -> None:
                 if (sbOpen) {{
                     sbOpen.onclick = function(e) {{
                         e.stopPropagation();
-                        stObj.open = true;
-                        renderOverlay();
+                        setPanelOpenAnimated(true);
                     }};
                 }}
 
@@ -4933,30 +5120,27 @@ def render_floating_kakao_todo_overlay() -> None:
                     }};
                 }});
 
-                // 요청사항 3: 제목이 있는 요약 줄(.tds-kp-summary-row) 더블클릭(또는 빠른 2회 클릭) 시 아래 방향으로 부드러운 확장 애니메이션
+                // 요청사항 2: 파란 동그라미 (상세) 버튼 또는 요약 줄을 1회 클릭하면 즉시 아래 방향으로 부드럽게 확장/축소 애니메이션 작동
+                rootEl.querySelectorAll("button[data-dtl-toggle]").forEach(dtlBtn => {{
+                    dtlBtn.onclick = function(e) {{
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const itemId = this.getAttribute("data-dtl-toggle");
+                        const cardEl = this.closest(".tds-kp-card");
+                        toggleCardExpandWithAnimation(cardEl, itemId);
+                    }};
+                }});
+
                 rootEl.querySelectorAll(".tds-kp-summary-row").forEach(sumRow => {{
                     const itemId = sumRow.getAttribute("data-summary-id");
                     const cardEl = sumRow.closest(".tds-kp-card");
 
-                    sumRow.ondblclick = function(e) {{
-                        if (e.target && e.target.closest && e.target.closest("button")) return;
+                    sumRow.onclick = function(e) {{
+                        // 우측 끝 [승인]/[작업중] 액션 버튼 클릭 시에는 확장 토글 제외
+                        if (e.target && e.target.closest && e.target.closest("button[data-act]")) return;
                         e.preventDefault();
                         e.stopPropagation();
-                        stObj._lastSumClick = {{ id: null, ts: 0 }};
                         toggleCardExpandWithAnimation(cardEl, itemId);
-                    }};
-
-                    sumRow.onclick = function(e) {{
-                        if (e.target && e.target.closest && e.target.closest("button")) return;
-                        const nowMs = Date.now();
-                        const prev = stObj._lastSumClick || {{ id: null, ts: 0 }};
-                        stObj._lastSumClick = {{ id: itemId, ts: nowMs }};
-                        if (prev.id === itemId && (nowMs - prev.ts) < 420) {{
-                            stObj._lastSumClick = {{ id: null, ts: 0 }};
-                            e.preventDefault();
-                            e.stopPropagation();
-                            toggleCardExpandWithAnimation(cardEl, itemId);
-                        }}
                     }};
                 }});
 
