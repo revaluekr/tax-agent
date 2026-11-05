@@ -18,6 +18,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 from pypdf import PdfReader
 from docx import Document
@@ -3281,6 +3282,7 @@ with st.sidebar:
                 st.rerun()
         # 4개 메뉴("달력", "자율 에이전트AI", "통합고용세액공제", "인건비 자동화") 중 어느 메뉴에 있든
         # 클릭 즉시 고양이 이모티콘이 몸을 웅크리고 0.5배 점프 후 제자리 착지하도록 전역 이벤트 바인딩
+        import streamlit.components.v1 as components
         components.html(
             """
             <script>
