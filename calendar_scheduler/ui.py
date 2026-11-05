@@ -1572,12 +1572,6 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
             value=bool(target_ev.get("alarm", False)),
             key=f"dlg_alarm_{ev_id}",
         )
-    with r1_sub1:
-        in_alarm = st.checkbox(
-            "🔔 정각 홈버튼 & 종 알림",
-            value=bool(target_ev.get("alarm", False)),
-            key=f"dlg_alarm_{ev_id}",
-        )
     with r1_sub2:
         in_show_cal = st.checkbox(
             "📅 좌측 메인 달력에 표시",
