@@ -4256,6 +4256,7 @@ def render_floating_kakao_todo_overlay() -> None:
                 }};
             }} else {{
                 const prevTodos = parentWin._tdsKakaoState.todos || [];
+                const prevLen = prevTodos.length;
                 const prevMap = {{}};
                 prevTodos.forEach(item => {{
                     if (item && item.id) prevMap[item.id] = item;
@@ -4305,12 +4306,6 @@ def render_floating_kakao_todo_overlay() -> None:
             parentWin._tdsCalCleanupTimer = parentWin.setInterval(function() {{
                 const activeFr = parentWin._tdsActiveCalFrame;
                 if (!activeFr || !parentDoc.body.contains(activeFr)) {{
-                    const r = parentDoc.getElementById("tds-kakao-floating-root");
-                    if (r) r.remove();
-                    if (parentWin._tdsKakaoState) {{
-                        parentWin._tdsKakaoState.customPos = null;
-                        parentWin._tdsKakaoState.open = false;
-                    }}
                     parentWin.clearInterval(parentWin._tdsCalCleanupTimer);
                     parentWin._tdsCalCleanupTimer = null;
                     return;
@@ -4444,6 +4439,13 @@ def render_floating_kakao_todo_overlay() -> None:
 
                 parentWin.addEventListener("mousemove", parentWin._tdsFabMouseMoveHandler);
                 parentWin.addEventListener("mouseup", parentWin._tdsFabMouseUpHandler);
+
+                fabBtn.onclick = function(e) {{
+                    if (hasDragged) return;
+                    if (e && e.detail === 0) {{
+                        setPanelOpenAnimated(!parentWin._tdsKakaoState.open);
+                    }}
+                }};
             }}
 
             function updatePanelTransformOriginToFab() {{

@@ -3612,6 +3612,11 @@ if st.session_state.app_top_mode == "CREDIT_CALC":
         log_tokens_fn=_log_custom_tokens,
         active_room_key=current_task_key,
     )
+    try:
+        import calendar_scheduler as _cs_overlay
+        _cs_overlay.render_floating_kakao_todo_overlay()
+    except Exception:
+        pass
     st.stop()
 
 if st.session_state.app_top_mode == "PAYROLL_AUTO":
@@ -3625,6 +3630,11 @@ if st.session_state.app_top_mode == "PAYROLL_AUTO":
     import payroll_automated
     gemini_key = _get_first_env_or_secret(["GEMINI_PAID_KEY", "GEMINI_API_KEY"])
     payroll_automated.render_payroll_automated_main(gemini_api_key=gemini_key)
+    try:
+        import calendar_scheduler as _cs_overlay
+        _cs_overlay.render_floating_kakao_todo_overlay()
+    except Exception:
+        pass
     st.stop()
 
 # 상단 미니 상태바

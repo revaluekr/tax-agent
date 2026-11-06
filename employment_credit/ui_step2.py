@@ -596,7 +596,7 @@ def _dlg_add_employee():
     else:
         c_ok, c_cancel = st.columns([1.5, 1.5])
         with c_ok:
-            if st.button("확인", type="primary", width="stretch", disabled=cannot_add, key="btn_dlg_add_emp_ok"):
+            if st.button("확인", type="primary", width="stretch", key="btn_dlg_add_emp_ok"):
                 _commit_new_employee()
         with c_cancel:
             if st.button("취소", width="stretch", key="btn_dlg_add_emp_cancel"):
