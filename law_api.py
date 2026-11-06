@@ -274,6 +274,54 @@ def search_law_data(keyword: str, target: str = "law", search_mode: int = None) 
     return _search_law_data_raw(keyword, target, search_mode, law_key)
 
 
+# ---------------------------------------------------------
+# [신규 내장] 고용노동부 공식 고시 기준 연도별 최저임금 확정 마스터 DB
+# (고시연도 N-1년 8월 vs 귀속연도 N년 1~12월 시차 착오 원천 차단용)
+# ---------------------------------------------------------
+OFFICIAL_MINIMUM_WAGE_DB: dict[int, dict] = {
+    2022: {
+        "hourly": 9160,
+        "monthly_209h": 1914440,
+        "period": "2022.01.01 ~ 2022.12.31",
+        "announced_dt": "2021.08.05",
+        "notice_no": "고용노동부 고시 제2021-68호",
+        "notice_title": "2022년 적용 최저임금 고시",
+    },
+    2023: {
+        "hourly": 9620,
+        "monthly_209h": 2010580,
+        "period": "2023.01.01 ~ 2023.12.31",
+        "announced_dt": "2022.08.05",
+        "notice_no": "고용노동부 고시 제2022-67호",
+        "notice_title": "2023년 적용 최저임금 고시",
+    },
+    2024: {
+        "hourly": 9860,
+        "monthly_209h": 2060740,
+        "period": "2024.01.01 ~ 2024.12.31",
+        "announced_dt": "2023.08.04",
+        "notice_no": "고용노동부 고시 제2023-43호",
+        "notice_title": "2024년 적용 최저임금 고시",
+    },
+    2025: {
+        "hourly": 10030,
+        "monthly_209h": 2096270,
+        "period": "2025.01.01 ~ 2025.12.31",
+        "announced_dt": "2024.08.05",
+        "notice_no": "고용노동부 고시 제2024-44호",
+        "notice_title": "2025년 적용 최저임금 고시",
+    },
+    2026: {
+        "hourly": 10320,
+        "monthly_209h": 2156880,
+        "period": "2026.01.01 ~ 2026.12.31",
+        "announced_dt": "2025.08.05",
+        "notice_no": "고용노동부 고시 제2025-43호",
+        "notice_title": "2026년 적용 최저임금 고시",
+    },
+}
+
+
 def _search_law_data_raw(keyword: str, target: str, search_mode: int = None, law_key: str = "") -> list[dict]:
     oc_key = law_key or _live_law_key()
     url = "http://www.law.go.kr/DRF/lawSearch.do"
@@ -282,11 +330,11 @@ def _search_law_data_raw(keyword: str, target: str, search_mode: int = None, law
         "target": target,
         "type": "XML",
         "query": keyword,
-        "display": 10
+        "display": 15
     }
     if search_mode:
         params["search"] = search_mode
-    if target in ("prec", "ttSpecialDecc", "detc"):
+    if target in ("prec", "ttSpecialDecc", "detc", "admrul", "expc"):
         params["sort"] = "ddes"
 
     try:
@@ -329,7 +377,7 @@ def _search_law_data_raw(keyword: str, target: str, search_mode: int = None, law
 
 
 # ---------------------------------------------------------
-# 1-1. 법령 조문 정밀 추출 도우미
+# 1-1. 법령 조문 및 부칙(시행일·적용례) 정밀 추출 도우미
 # ---------------------------------------------------------
 _CIRCLED_NUM = {chr(0x2460 + i): i + 1 for i in range(20)}
 
@@ -354,7 +402,35 @@ def _to_int(text: str, default: int = 0) -> int:
     d = re.sub(r"\D", "", text or "")
     return int(d) if d else default
 
-def _format_article(art, only_hang=None) -> str:
+def _detect_future_effective_in_addenda_for_article(art_label: str, addenda_blocks: list[str], cur_year: int) -> list[str]:
+    """
+    조문 본문의 <조문시행일자>가 당해연도(예: 2026.01.01)로 찍혀 있더라도,
+    최근 부칙(제1조 시행일, 제2조 일반적 적용례 또는 개별 적용례)에서
+    해당 조문(또는 법 전체)의 시행일·적용시기를 차기 연도(예: 2027년 1월 1일 이후)로 규정하고 있는지 정밀 탐지합니다.
+    """
+    warnings = []
+    next_yr = cur_year + 1
+    art_ns = (art_label or "").replace(" ", "")
+    for blk in (addenda_blocks or [])[:4]:
+        for line in blk.splitlines():
+            l_clean = line.strip()
+            l_ns = l_clean.replace(" ", "")
+            if not l_ns:
+                continue
+            has_future_yr = any(str(y) in l_ns for y in (next_yr, next_yr + 1, next_yr + 2))
+            if not has_future_yr:
+                continue
+            if art_ns and re.search(rf"{re.escape(art_ns)}(?![0-9의])", l_ns) and any(
+                k in l_ns for k in ("시행한다", "적용한다", "적용하며", "개시하는과세연도", "지급하는분", "양도하는분", "취득하는분")
+            ):
+                warnings.append(l_clean[:220])
+            elif re.match(r"^제[12]조\((?:시행일|일반적적용례|적용례)\)", l_ns) and any(
+                k in l_ns for k in (f"{next_yr}년1월1일", f"{next_yr}년", "이후개시하는과세연도")
+            ):
+                warnings.append(l_clean[:220])
+    return list(dict.fromkeys(warnings))
+
+def _format_article(art, only_hang=None, addenda_future_warnings: list[str] = None) -> str:
     """조문단위 XML 하나를 '조문 제목 → 항 → 호 → 목' 순서의 읽기 쉬운 텍스트로 변환합니다."""
     lines = []
     jo_content = (art.findtext("조문내용") or "").strip()
@@ -378,17 +454,28 @@ def _format_article(art, only_hang=None) -> str:
                 lines.append(("  " if el.tag == "호내용" else "    ") + el.text.strip())
 
     text = "\n".join(lines)
+    kst_info = get_kst_today_info()
+    _today_ymd_int = int(kst_info["ymd"])
+    _cur_yr = kst_info["year"]
+
     eff = re.sub(r"\D", "", art.findtext("조문시행일자") or "")
     if len(eff) == 8:
-        _today_ymd_int = int(get_kst_today_info()["ymd"])
         _eff_int = int(eff) if eff.isdigit() else 0
         if _eff_int > _today_ymd_int:
             text += (
                 f"\n[조문시행일자: {eff[:4]}.{eff[4:6]}.{eff[6:]} — "
-                f"🚨 미시행(미래 시행예정) 조문 경고: 오늘({get_kst_today_info()['dot_full']}) 기준 아직 시행일이 도래하지 않았으므로 당해 연도({get_kst_today_info()['year']}년 귀속)에 즉시 적용 금지!]"
+                f"🚨 미시행(미래 시행예정) 조문 경고: 오늘({kst_info['dot_full']}) 기준 아직 시행일이 도래하지 않았으므로 당해 연도({_cur_yr}년 귀속)에 즉시 적용 금지!]"
             )
         else:
             text += f"\n[조문시행일자: {eff[:4]}.{eff[4:6]}.{eff[6:]} — ✅ 현재 시행 중]"
+
+    if addenda_future_warnings:
+        warn_joined = " / ".join(addenda_future_warnings[:3])
+        text = (
+            f"🚨 [부칙 시행일·적용례 경고: 본 조문 관련 최근 개정 부칙에 차기 연도({_cur_yr + 1}년 이후) 시행·적용 규정이 존재합니다! "
+            f"원문: \"{warn_joined}\" → {_cur_yr}년 귀속 사안에는 개정 전 현행 규정을 적용하고, 개정 규정은 부칙상 시행연도({_cur_yr + 1}년 이후)부터 적용됨을 반드시 분리하여 답변할 것!]\n"
+            + text
+        )
     return text
 
 def _fetch_xml_root(url: str, params: dict):
@@ -407,7 +494,7 @@ def _slim_large_addendum_block(full_blk: str, query_filter: str = "") -> str:
     중간에 위치한 핵심 경과조치(예: 제34조 통합고용세액공제에 관한 경과조치)가 잘려 나가는 문제를 방지합니다.
     - 부칙 헤더 + 제1조(시행일) + 제2조(일반적 적용례) + query_filter의 조문번호/키워드 또는 고용세액공제 관련 조문만 정밀 발췌합니다.
     """
-    if not full_blk or len(full_blk) <= 2000:
+    if not full_blk or len(full_blk) <= 2200:
         return full_blk
 
     lines = full_blk.splitlines()
@@ -420,7 +507,7 @@ def _slim_large_addendum_block(full_blk: str, query_filter: str = "") -> str:
 
     qf_nospace = (query_filter or "").replace(" ", "")
     req_arts = [a.replace(" ", "") for a in re.findall(r"제\s*\d+\s*조(?:\s*의\s*\d+)?", query_filter or "")]
-    priority_keywords = ["통합고용", "고용증대", "상시근로자", "경과조치", "적용례"]
+    priority_keywords = ["통합고용", "고용증대", "상시근로자", "경과조치", "적용례", "시행일"]
     for kw in re.split(r"[,\s]+", re.sub(r"부칙|제\s*\d+\s*조(?:\s*의\s*\d+)?", " ", query_filter or "")):
         kw_s = kw.strip()
         if len(kw_s) >= 2 and kw_s not in priority_keywords:
@@ -434,15 +521,18 @@ def _slim_large_addendum_block(full_blk: str, query_filter: str = "") -> str:
         end_pos = art_starts[idx + 1].start() if idx + 1 < len(art_starts) else len(body_text)
         chunk = body_text[m.start():end_pos].strip()
         chunk_ns = chunk.replace(" ", "")
+        first_line_ns = chunk.splitlines()[0].replace(" ", "") if chunk else ""
+        if "다른법령의개정" in first_line_ns or "다른법령의폐지" in first_line_ns:
+            continue
 
-        # 제1조(시행일), 제2조(적용례)는 기본 유지하고, 요청 조문번호나 핵심 키워드가 포함된 부칙 조문을 최우선 보존
-        if jo_num in (1, 2) and len(chunk) <= 800:
-            kept_chunks.append(chunk)
-        elif art_label in req_arts or any(ra in chunk_ns for ra in req_arts):
+        # 제1조(시행일), 제2조(적용례)는 길이(최대 2,000자)와 무관하게 무조건 보존하여 27년 시행 단서 누락 방지
+        if jo_num in (1, 2):
+            kept_chunks.append(chunk[:2000])
+        elif art_label in req_arts or any(re.search(rf"{re.escape(ra)}(?![0-9의])", chunk_ns) for ra in req_arts):
             kept_chunks.append(chunk)
         elif any(pk in chunk_ns for pk in ("통합고용", "고용증대", "제29조의8", "제26조의8")):
             kept_chunks.append(chunk)
-        elif qf_nospace and any(pk in chunk_ns for pk in priority_keywords if pk not in ("경과조치", "적용례")):
+        elif qf_nospace and any(pk in chunk_ns for pk in priority_keywords if pk not in ("경과조치", "적용례", "시행일")):
             kept_chunks.append(chunk)
 
     if not kept_chunks:
@@ -454,7 +544,7 @@ def _extract_addenda_blocks(root, query_filter: str = "", max_recent: int = 8) -
     """
     법제처 법령 XML의 <부칙단위>에서 공포일자·공포번호·부칙내용을 최신순으로 추출합니다.
     - 최신 타법개정(예: 법률 제21467호) 뒤에 있는 본 개정 부칙(예: 법률 제21223호 부칙 제34조)도 누락 없이 포착하며,
-      대용량 부칙은 `_slim_large_addendum_block`으로 핵심 조문을 발췌하여 반환합니다.
+      특정 조문 조회 시에도 가장 최근 공포된 부칙 상위 2개의 제1조(시행일)·제2조(일반적 적용례)를 무조건 함께 포함합니다.
     """
     raw_units = root.findall(".//부칙단위")
     if not raw_units:
@@ -483,15 +573,27 @@ def _extract_addenda_blocks(root, query_filter: str = "", max_recent: int = 8) -
     no_refs = re.findall(r"\b\d{4,6}\b", qf_clean)
 
     matched_blocks = []
+    seen_heads = set()
     for dt_int, anc_no, blk in parsed_units:
         blk_nospace = blk.replace(" ", "")
-        if art_refs and any(a.replace(" ", "") in blk_nospace for a in art_refs):
-            matched_blocks.append(_slim_large_addendum_block(blk, query_filter))
+        head_line = blk.splitlines()[0]
+        is_match = False
+        if art_refs and any(re.search(rf"{re.escape(a.replace(' ', ''))}(?![0-9의])", blk_nospace) for a in art_refs):
+            is_match = True
         elif no_refs and any(n in anc_no or n in blk_nospace for n in no_refs):
-            matched_blocks.append(_slim_large_addendum_block(blk, query_filter))
+            is_match = True
         elif yr_refs and any(str(dt_int).startswith(y) or y in blk_nospace for y in yr_refs):
-            matched_blocks.append(_slim_large_addendum_block(blk, query_filter))
+            is_match = True
         elif qf_clean and not art_refs and qf_clean.replace(" ", "") in blk_nospace:
+            is_match = True
+        if is_match and head_line not in seen_heads:
+            seen_heads.add(head_line)
+            matched_blocks.append(_slim_large_addendum_block(blk, query_filter))
+
+    for dt_int, anc_no, blk in parsed_units[:2]:
+        head_line = blk.splitlines()[0]
+        if head_line not in seen_heads:
+            seen_heads.add(head_line)
             matched_blocks.append(_slim_large_addendum_block(blk, query_filter))
 
     if matched_blocks:
@@ -500,23 +602,27 @@ def _extract_addenda_blocks(root, query_filter: str = "", max_recent: int = 8) -
 
 
 def _get_statute_articles(doc_id: str, query_filter: str = "") -> str:
-    """법령 원문에서 조문 및 개정 부칙(적용례·경과조치)을 정밀 추출합니다."""
+    """법령 원문에서 조문 및 개정 부칙(시행일·적용례·경과조치)을 정밀 추출합니다."""
     law_key = _live_law_key()
     url = "http://www.law.go.kr/DRF/lawService.do"
     wants_addendum = "부칙" in (query_filter or "")
     art_filter = _parse_article_filter(query_filter) if not wants_addendum else _parse_article_filter(re.sub(r"부칙[^,]*", "", query_filter or ""))
     base = {"OC": law_key, "target": "law", "type": "XML"}
 
-    attempts = []
-    # 부칙을 함께 조회해야 할 때는 JO 단일조문 호출(부칙 미포함) 대신 전체 법령 XML 호출을 우선 실행
+    # 단일조문(JO) 호출은 <부칙단위>가 누락되므로 항상 전체 법령 XML(MST/ID) 호출을 우선 실행하여 부칙 시행일을 함께 교차검증
+    attempts = [
+        {**base, "MST": doc_id},
+        {**base, "ID": doc_id},
+    ]
     if art_filter and not wants_addendum:
         jo_code = f"{art_filter[0]:04d}{art_filter[1]:02d}"
         attempts.append({**base, "MST": doc_id, "JO": jo_code})
-    attempts.append({**base, "MST": doc_id})
-    attempts.append({**base, "ID": doc_id})
 
     title = "명칭 미상"
     found_any_law = False
+    kst_info = get_kst_today_info()
+    today_ymd_int = int(kst_info["ymd"])
+    cur_yr = kst_info["year"]
 
     for params in attempts:
         root = _fetch_xml_root(url, params)
@@ -538,26 +644,35 @@ def _get_statute_articles(doc_id: str, query_filter: str = "") -> str:
         prom_no_note = f" | 공포번호: 제{law_prom_no}호" if law_prom_no else ""
         prom_dt_note = f" | 공포일자: {law_prom_dt[:4]}.{law_prom_dt[4:6]}.{law_prom_dt[6:]}" if len(law_prom_dt) == 8 else ""
         eff_note = f" | 시행일자: {law_eff[:4]}.{law_eff[4:6]}.{law_eff[6:]}" if len(law_eff) == 8 else ""
-        header = f"📘 [{title}{prom_no_note}{prom_dt_note}{eff_note}] (일련번호: {doc_id})"
+
+        law_eff_warn = ""
+        if len(law_eff) == 8 and law_eff.isdigit() and int(law_eff) > today_ymd_int:
+            law_eff_warn = (
+                f"\n🚨 [법령 단위 미시행 경고]: 이 법령 버전의 시행일자는 {law_eff[:4]}.{law_eff[4:6]}.{law_eff[6:]}로, "
+                f"오늘({kst_info['dot_full']}) 기준 아직 시행되지 않았습니다! {cur_yr}년 귀속 사안에는 절대 본 개정본을 즉시 적용하지 마세요!"
+            )
+        header = f"📘 [{title}{prom_no_note}{prom_dt_note}{eff_note}] (일련번호: {doc_id}){law_eff_warn}"
 
         # 1) '부칙' 단독 또는 '제29조의8, 부칙' 복합 조회
         if wants_addendum:
             out_sections = []
+            add_blocks = _extract_addenda_blocks(root, query_filter=query_filter, max_recent=6)
             if art_filter and articles:
                 jo, gaji, hang = art_filter
+                art_label = f"제{jo}조" + (f"의{gaji}" if gaji else "")
+                fut_warns = _detect_future_effective_in_addenda_for_article(art_label, add_blocks, cur_yr)
                 matched_arts = [
                     a for a in articles
                     if _to_int(a.findtext("조문번호")) == jo and _to_int(a.findtext("조문가지번호")) == gaji
                 ]
                 if matched_arts:
-                    out_sections.append("\n\n".join(_format_article(a, only_hang=hang) for a in matched_arts))
-            add_blocks = _extract_addenda_blocks(root, query_filter=query_filter, max_recent=6)
+                    out_sections.append("\n\n".join(_format_article(a, only_hang=hang, addenda_future_warnings=fut_warns) for a in matched_arts))
             if add_blocks:
                 out_sections.append("📌 [법령 부칙 (시행일 · 적용례 · 경과조치)]\n\n" + "\n\n".join(add_blocks))
             if out_sections:
                 return (header + "\n\n" + "\n\n".join(out_sections))[:16000]
 
-        # 2) 일반 조문번호 조회 (+ 전체 XML인 경우 해당 조문 관련 최근 부칙 자동 첨부)
+        # 2) 일반 조문번호 조회 (+ 전체 XML인 경우 해당 조문 관련 부칙 및 최신 부칙 제1조·제2조 자동 첨부)
         if art_filter:
             jo, gaji, hang = art_filter
             matched = [
@@ -565,12 +680,12 @@ def _get_statute_articles(doc_id: str, query_filter: str = "") -> str:
                 if _to_int(a.findtext("조문번호")) == jo and _to_int(a.findtext("조문가지번호")) == gaji
             ]
             if matched:
-                body = "\n\n".join(_format_article(a, only_hang=hang) for a in matched)
                 art_label = f"제{jo}조" + (f"의{gaji}" if gaji else "")
-                rel_add = _extract_addenda_blocks(root, query_filter=art_label, max_recent=3)
-                rel_add = [b for b in rel_add if art_label in b.replace(" ", "")]
+                rel_add = _extract_addenda_blocks(root, query_filter=art_label, max_recent=4)
+                fut_warns = _detect_future_effective_in_addenda_for_article(art_label, rel_add, cur_yr)
+                body = "\n\n".join(_format_article(a, only_hang=hang, addenda_future_warnings=fut_warns) for a in matched)
                 if rel_add:
-                    body += "\n\n📌 [관련 최근 개정 부칙(적용례·경과조치) 발췌]\n" + "\n\n".join(rel_add)[:3000]
+                    body += "\n\n📌 [관련 최근 개정 부칙(시행일·적용례·경과조치) 발췌]\n" + "\n\n".join(rel_add)[:3500]
                 return (header + "\n\n" + body)[:16000]
             continue
 
@@ -689,9 +804,14 @@ def get_law_content(doc_id: str, target: str = "law", query_filter: str = "") ->
             rule_name = root.findtext(".//행정규칙명") or ""
             ministry = root.findtext(".//소관부처명") or ""
             issue_date = root.findtext(".//발령일자") or ""
+            issue_no = root.findtext(".//발령번호") or ""
+            eff_date = root.findtext(".//시행일자") or ""
             body_nodes = [elem.text.strip() for elem in root.iter() if elem.text and elem.text.strip()]
             body_text = "\n".join(body_nodes)
-            return f"📋 [행정규칙/훈령/고시] {rule_name} ({ministry}, 발령일: {issue_date})\n\n{body_text[:10000]}"
+            return (
+                f"📋 [행정규칙/훈령/고시] {rule_name} ({ministry} | 발령번호: 제{issue_no}호 | "
+                f"발령일(고시일): {issue_date} | 시행일(적용개시일): {eff_date})\n\n{body_text[:10000]}"
+            )
 
         elif target == "detc":
             case_name = root.findtext(".//사건명") or ""
@@ -2609,6 +2729,61 @@ def get_bizinfo_support_projects(
         return "\n".join(out)[:14000]
     except Exception as e:
         return f"❌ 기업마당 지원사업 API 조회 오류: {safe_error(e)}"
+
+
+
+# ---------------------------------------------------------
+# 12. 고용노동부 최저임금 고시 귀속연도별 확정 데이터 및 실시간 고시 통합 조회
+# ---------------------------------------------------------
+def get_minimum_wage_info(target_year: str = "") -> str:
+    """
+    고용노동부 고시 기준 귀속연도별 최저임금(시간급·일급 8시간·월 환산액 209시간·적용기간·고시일)을 반환합니다.
+    - 고시연도(N-1년 8월)와 귀속연도(N년 1월 1일 ~ 12월 31일)의 시차 착오를 원천 차단합니다.
+    """
+    kst = get_kst_today_info()
+    cur_yr = kst["year"]
+    yr_digits = re.sub(r"\D", "", str(target_year or ""))
+    if len(yr_digits) == 2:
+        req_yr = 2000 + int(yr_digits)
+    elif len(yr_digits) >= 4:
+        req_yr = int(yr_digits[:4])
+    else:
+        req_yr = cur_yr
+
+    lines = [
+        f"📋 [행정규칙/훈령/고시] {req_yr}년 적용 최저임금 고시 (고용노동부 | 요청 귀속연도: {req_yr}년 귀속 · 적용기간: {req_yr}.01.01 ~ {req_yr}.12.31)",
+        f"🚨 [고시연도 vs 귀속연도 시차 주의]: 대한민국 {req_yr}년 귀속 최저임금은 전년도인 {req_yr - 1}년 8월에 고시되어 {req_yr}.01.01.~{req_yr}.12.31.에 적용됩니다. 절대 {req_yr - 1}년 귀속 최저임금 수치를 {req_yr}년 귀속으로 혼동하지 마세요!",
+    ]
+
+    if req_yr in OFFICIAL_MINIMUM_WAGE_DB:
+        d = OFFICIAL_MINIMUM_WAGE_DB[req_yr]
+        prev_d = OFFICIAL_MINIMUM_WAGE_DB.get(req_yr - 1)
+        diff_str = ""
+        if prev_d:
+            diff_won = d["hourly"] - prev_d["hourly"]
+            diff_pct = (diff_won / prev_d["hourly"]) * 100.0
+            diff_str = f" (전년 {req_yr - 1}년 귀속 {prev_d['hourly']:,}원 대비 +{diff_won:,}원, +{diff_pct:.2f}% 인상)"
+        lines.append(
+            f"\n■ [{req_yr}년 귀속 최저임금 확정 수치]\n"
+            f"- 적용기간: {d['period']} ({req_yr}년 귀속)\n"
+            f"- 시간급(시급): {d['hourly']:,}원{diff_str}\n"
+            f"- 일급 (8시간 기준): {d['hourly'] * 8:,}원\n"
+            f"- 월 환산액 (주 40시간 · 유급주휴 포함 월 209시간 기준): {d['monthly_209h']:,}원\n"
+            f"- 근거 고시: {d['notice_title']} ({d['notice_no']}, 고시일: {d['announced_dt']}, 시행일: {req_yr}.01.01.)"
+        )
+
+    lines.append("\n■ [연도별 귀속 최저임금 대조표]")
+    lines.append("| 귀속연도 (적용기간) | 시간급 (시급) | 월 환산액 (209시간) | 일급 (8시간) | 고시일 및 발령번호 | 구분 |")
+    lines.append("| :--- | :---: | :---: | :---: | :--- | :--- |")
+    for yr in sorted(OFFICIAL_MINIMUM_WAGE_DB.keys(), reverse=True):
+        info = OFFICIAL_MINIMUM_WAGE_DB[yr]
+        mark = f"✅ {yr}년 귀속 (질문 대상)" if yr == req_yr else (f"⚠️ {yr}년 귀속 (전년도 — 혼동 금지)" if yr == req_yr - 1 else f"{yr}년 귀속")
+        lines.append(
+            f"| {yr}년 귀속 ({info['period']}) | {info['hourly']:,}원 | {info['monthly_209h']:,}원 | "
+            f"{info['hourly'] * 8:,}원 | {info['announced_dt']} ({info['notice_no']}) | {mark} |"
+        )
+
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------

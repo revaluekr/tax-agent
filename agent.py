@@ -105,9 +105,9 @@ def detect_query_attribution_years(user_query: str = "", full_user_input: str = 
         elif yr_val > cur_yr:
             future_years.add(yr_val)
 
-    # 2) 2자리 연도 감지 (예: '24년, 24년 귀속, 24년도, 24년분, 24년 5월 등 — '20년 근무', '15년 재직', '30년 만기' 등 기간 표현 원천 배제)
+    # 2) 2자리 연도 감지 ('26년 최저임금', '25년 최저임금', '26년 개정', '27년 시행' 포함 + 기간 표현 원천 배제)
     for m2 in re.finditer(
-        rf"(?<![0-9제])(?:'([123]\d)\s*년|([123]\d)\s*(?:년도|년\s*귀속|귀속|년분|기|사업연도|과세기간|년\s*\d{{1,2}}\s*월|년도에|년도의|년분?부터)){_DURATION_SUFFIX}",
+        rf"(?<![0-9제\.])(?:'([123]\d)\s*년|([123]\d)\s*(?:년도|년\s*귀속|귀속|년분|기|사업연도|과세기간|년\s*\d{{1,2}}\s*월|년도에|년도의|년분?부터|년\s*(?:최저|적용|개정|시행|세법|법인|소득|부가|원천|연말|기준))){_DURATION_SUFFIX}",
         q_raw,
     ):
         yr_2d = int(m2.group(1) or m2.group(2))
@@ -146,24 +146,32 @@ def detect_query_attribution_years(user_query: str = "", full_user_input: str = 
     history_past_years = sorted(_hist_4d | _hist_2d)
 
     has_retro_kw = bool(re.search(r"(경정청구|기한후신고|수정신고|구법|종전\s*규정|종전규정|연혁법령|사후관리|추가공제)", q_raw))
+    is_min_wage_query = bool(re.search(r"(최저\s*임금|최저\s*시급|최저\s*월급|209\s*시간)", q_raw))
     sorted_past = sorted(past_years)
     sorted_cur = sorted(cur_years)
     sorted_future = sorted(future_years)
 
     if sorted_past and not sorted_cur and not sorted_future:
         mode = "PAST_ONLY"
+        target_attr_year = sorted_past[-1]
     elif sorted_past and (sorted_cur or sorted_future):
         mode = "MIXED_PAST_AND_CURRENT"
+        target_attr_year = cur_yr
     elif sorted_future and not sorted_past and not sorted_cur:
         mode = "FUTURE_ONLY"
+        target_attr_year = sorted_future[0]
     elif history_past_years and not sorted_cur:
         mode = "MIXED_PAST_AND_CURRENT"
         sorted_past = history_past_years
+        target_attr_year = cur_yr
     else:
         mode = "DEFAULT_CURRENT"
+        target_attr_year = cur_yr
 
     return {
         "mode": mode,
+        "target_attr_year": target_attr_year,
+        "is_min_wage_query": is_min_wage_query,
         "past_years": sorted_past,
         "history_past_years": history_past_years,
         "cur_years": sorted_cur,
@@ -189,8 +197,22 @@ def build_hidden_date_law_directive(user_query: str = "") -> str:
     fut_yrs = info["future_years"]
     now_ymd_dot = get_kst_today_context()["dt"].strftime("%Y.%m.%d")
 
+    target_attr_yr = info.get("target_attr_year", cur_yr)
+    mw_directive = ""
+    if info.get("is_min_wage_query"):
+        mw_db = getattr(law_api, "OFFICIAL_MINIMUM_WAGE_DB", {})
+        mw_cur = mw_db.get(target_attr_yr) or mw_db.get(cur_yr)
+        if mw_cur:
+            mw_directive = (
+                f"• 💰 **[최저임금 고시연도 vs 귀속연도 시차 절대 주의 ({target_attr_yr}년 귀속 확정치)]**: "
+                f"`{target_attr_yr}년 귀속 최저임금`(적용기간 `{mw_cur['period']}`)은 전년도인 `{mw_cur['announced_dt']}`에 고시된 "
+                f"**시간급 {mw_cur['hourly']:,}원 / 월 환산액(209시간) {mw_cur['monthly_209h']:,}원 / 일급(8시간) {mw_cur['hourly']*8:,}원**({mw_cur['notice_title']}, {mw_cur['notice_no']})입니다! "
+                f"절대로 `{target_attr_yr - 1}년 귀속 최저임금`(예: 2025년 귀속 10,030원 / 월 2,096,270원)을 `{target_attr_yr}년 귀속`으로 잘못 답변하지 마세요!\n"
+            )
+
     common_footer = (
-        f"• 📌 **[답변 형식 — '1. 결론' 첫 줄 적용 기준 명시]**: `### 1. 결론` 바로 아래 첫 줄에 반드시 "
+        mw_directive
+        + f"• 📌 **[답변 형식 — '1. 결론' 첫 줄 적용 기준 명시]**: `### 1. 결론` 바로 아래 첫 줄에 반드시 "
         f"**\"적용 기준: ○○○○년 귀속(또는 ○○○○.○○.○○ 거래/폐업) · ○○○○.○○.○○ 시행 법령\"**을 한 줄로 먼저 밝힌 뒤 결론을 작성하세요.\n\n"
     )
 
@@ -431,7 +453,7 @@ def _annotate_law_effective_dates_vs_today(law_text: str) -> str:
         )
     return "\n".join(notes) + "\n\n" + law_text
 
-def _scan_timeline_hallucinations(answer_text: str, user_query: str = "", full_user_input: str = "") -> list[str]:
+def _scan_timeline_hallucinations(answer_text: str, user_query: str = "", full_user_input: str = "", trace: dict = None) -> list[str]:
     """
     [Stage 4 방어벽] 생성된 답변 본문에서
     ① 오늘(2026년)을 2025년(25년)으로 착각하거나 '2026년 1월 1일 시행'을 미시행 유예로 오판한 문장,
@@ -448,7 +470,18 @@ def _scan_timeline_hallucinations(answer_text: str, user_query: str = "", full_u
     prev_2d = str(prev_yr)[2:]
     next_2d = str(next_yr)[2:]
     mode = info["mode"]
+    target_attr_yr = info.get("target_attr_year", cur_yr)
     errors = []
+
+    if info.get("is_min_wage_query") and target_attr_yr == 2026:
+        concl_part = answer_text.split("### 2.")[0] if "### 2." in answer_text else answer_text[:800]
+        has_2026_mw = ("10,320" in concl_part) or ("10320" in concl_part)
+        has_2025_mw = ("10,030" in concl_part) or ("10030" in concl_part) or ("2,096,270" in concl_part)
+        if has_2025_mw and not has_2026_mw:
+            errors.append(
+                "2026년 귀속 최저임금 질의에 대해 2025년 귀속 최저임금(시급 10,030원 / 월 2,096,270원)을 잘못 답변함 "
+                "(2026년 귀속 확정 최저임금은 시급 10,320원 / 월 209시간 2,156,880원임)"
+            )
 
     if mode == "DEFAULT_CURRENT":
         # 1) 현재 연도를 2025년/25년(작년)으로 부르는 명백한 착각 패턴
@@ -496,6 +529,15 @@ def _scan_timeline_hallucinations(answer_text: str, user_query: str = "", full_u
             )
             if has_2027 and has_premature_claim:
                 errors.append(f"아직 시행 전인 {next_yr}년 시행예정 개정 규정을 현재({cur_yr}년)부터 적용받는 것처럼 조기적용 오판함 ('{s_clean[:65]}')")
+
+        if trace and isinstance(trace.get("detail"), list):
+            joined_details = "\n".join(trace["detail"])
+            if "🚨 [부칙 시행일·적용례 경고" in joined_details or "🚨 [법령 단위 미시행 경고" in joined_details:
+                if not re.search(rf"(?:{next_yr}|{next_2d})\s*년[^\n.]*(?:시행|적용)|미시행|시행\s*예정", answer_text):
+                    errors.append(
+                        f"조회된 법령·부칙 원문에 '{next_yr}년 시행예정({cur_yr}년 미적용)' 경고가 존재함에도, "
+                        f"답변에서 {next_yr}년 시행예정 안내를 누락하고 {cur_yr}년 현행 적용처럼 서술함"
+                    )
 
     elif mode == "PAST_ONLY":
         past_yrs = info["past_years"]
@@ -2249,7 +2291,7 @@ def _fetch_full_law_xml_direct(doc_id: str, query_filter: str = "") -> str:
 
     related_addenda_units = []
     other_addenda_units = []
-    for dt_int, anc_dt, no_fmt, dt_fmt, a_body in parsed_data["addenda"]:
+    for idx_a, (dt_int, anc_dt, no_fmt, dt_fmt, a_body) in enumerate(parsed_data["addenda"]):
         non_tabeop_body = _strip_tabeop_articles_from_addendum_body(a_body)
         body_no_own_hdr = re.sub(r"(?m)^\s*제\s*\d+\s*조(?:\s*의\s*\d+)?\s*\([^)]*\)", "", non_tabeop_body)
         body_clean = body_no_own_hdr.replace(" ", "")
@@ -2260,7 +2302,8 @@ def _fetch_full_law_xml_direct(doc_id: str, query_filter: str = "") -> str:
             )
         )
         has_date_ref = bool(anc_dt and anc_dt in matched_art_rev_dates and non_tabeop_body.strip())
-        if has_art_ref or has_date_ref:
+        is_top_recent_addendum = (idx_a < 2 and bool(non_tabeop_body.strip()))
+        if has_art_ref or has_date_ref or is_top_recent_addendum:
             related_addenda_units.append((dt_int, f"부칙 <{no_fmt}{dt_fmt}> [본칙관련]\n{a_body}"))
         else:
             other_addenda_units.append((dt_int, f"부칙 <{no_fmt}{dt_fmt}>\n{a_body}"))
@@ -2855,7 +2898,7 @@ def search_law_for_gemini(keyword: str, target: str = "law") -> str:
             dec_id = item.get('특별행정심판재결례일련번호') or item.get('행정심판재결례일련번호') or item.get('id') or '-'
             summary += f"{i+1}. [조세심판/특별행정심판] 사건명: {item.get('사건명')} | 청구(사건)번호: {case_no} | 의결일자: {item.get('의결일자') or item.get('처분일자')} | ID: {dec_id}\n"
         elif target == "admrul":
-            summary += f"{i+1}. [행정규칙/예규/고시] {item.get('행정규칙명')} | 소관부처: {item.get('소관부처명')} | 발령번호: {item.get('발령번호')} | 발령일: {item.get('발령일자')} | ID: {item.get('행정규칙일련번호')}\n"
+            summary += f"{i+1}. [행정규칙/예규/고시] {item.get('행정규칙명')} | 소관부처: {item.get('소관부처명')} | 발령번호: {item.get('발령번호')} | 발령일(고시일): {item.get('발령일자')} | 시행일(적용개시일): {item.get('시행일자')} | ID: {item.get('행정규칙일련번호')}\n"
         elif target == "expc":
             summary += f"{i+1}. [법령해석례/질의회신] 안건명: {item.get('안건명')} | 안건번호: {item.get('안건번호')} | 회신기관: {item.get('회신기관명')} | ID: {item.get('법령해석례일련번호')}\n"
         elif target == "ordin":
@@ -3622,6 +3665,20 @@ def run_tax_calculator_for_gemini(formula_expression: str, description: str = ""
     except Exception as e:
         return f"❌ 수식 계산 오류 ({formula_expression}): {e} -> 숫자에 쉼표 없이 올바른 파이썬 사칙연산 수식으로 다시 호출하세요."
 
+def search_minimum_wage_for_gemini(target_year: str = "") -> str:
+    """
+    귀속연도별(예: '2026', '2025', '2024') 고용노동부 공식 최저임금(시간급·일급·월환산액 209시간·적용기간·고시일)을 조회합니다.
+    최저임금, 최저시급, 월 최저임금(209시간) 관련 질문 시 반드시 이 도구를 호출하세요.
+    """
+    _emit_live_status(f"💰 1단계: 고용노동부 공식 최저임금 고시 데이터 조회 중 ({target_year or '당해연도'})...")
+    print(f"\n[시스템] 💰 고용노동부 최저임금 고시 조회 가동: 귀속연도='{target_year}'")
+    try:
+        if hasattr(law_api, "get_minimum_wage_info"):
+            return _record("detail", law_api.get_minimum_wage_info(target_year))
+        return "현재 law_api.py에 최저임금 조회 함수가 없습니다."
+    except Exception as e:
+        return f"최저임금 조회 오류: {e}"
+
 # 3. 에이전트 시스템 프롬프트 템플릿 (기존 12대 도구 라우팅 규칙 100% 보존 + 1턴 직행 병렬 조회 + 계산기 쉼표 예방 문구 결합)
 SYSTEM_PROMPT = """당신은 세무·법령·회계·노무 검토 자율 전문 에이전트입니다.
 사용자의 질문 성격에 따라 아래의 **[투트랙(Two-Track) 운영 프로토콜]**을 지능적으로 구분하여 작동하세요.
@@ -4022,6 +4079,9 @@ def _execute_with_key_and_model(
     stage_secs: list[tuple[str, float]] = []
     trace_token = _TOOL_TRACE.set(_new_trace(unleash=unleash))
     try:
+        _q_info_pre = detect_query_attribution_years(raw_query or user_input, full_user_input=user_input)
+        if _q_info_pre.get("is_min_wage_query") and hasattr(law_api, "get_minimum_wage_info"):
+            _record("detail", law_api.get_minimum_wage_info(str(_q_info_pre.get("target_attr_year", 2026))))
         _emit_live_status(f"🔎 1단계: 질의 쟁점 분석 및 법제처·공공기관 DB 탐색 중 ({model_id})...")
         _t_stage = time.time()
         response = chat.send_message(user_input)
@@ -4091,7 +4151,7 @@ def _execute_with_key_and_model(
         print(f"\n[시스템] 🛡️ 사전 3단 크로스체크 정밀 수행 완료 ({len(precheck_text):,}자):\n{precheck_text}")
 
     # [Stage 4 방어벽] 시점 인식 오류(2025년을 현재로 착각하거나 2026.1.1 시행 규정을 미시행 유예로 서술) 자동 스캔 및 강제 재작성
-    timeline_errs = _scan_timeline_hallucinations(stripped_body, raw_query or user_input, full_user_input=user_input)
+    timeline_errs = _scan_timeline_hallucinations(stripped_body, raw_query or user_input, full_user_input=user_input, trace=trace)
     if timeline_errs:
         _kst_fix = get_kst_today_context()
         print(f"[시스템] 🚨 시점/귀속연도 오인식 감지({len(timeline_errs)}건) → 즉시 교정 재작성 강제: {timeline_errs}")
@@ -4445,6 +4505,7 @@ def run_agent(user_input: str, raw_query: str = "", has_file: bool = False, room
             search_law_for_gemini,
             get_law_details_for_gemini,
             search_historical_law_for_gemini,
+            search_minimum_wage_for_gemini,
             search_exchange_rate_for_gemini,
             search_base_rate_for_gemini,
             search_industry_code_for_gemini,
