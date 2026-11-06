@@ -114,8 +114,30 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
     ovr_regular = yrec.get("상시_override") or ""
     is_regular = ovr_regular if ovr_regular in ("O", "X") else auto_regular
 
-    opts = youth_options(emp_type)
-    sug_youth = suggest_youth(person, yrec, year, corp_size, corp_size_by_year=corp_size_by_year)
+    # 기중 단시간(0.5/0.75) ↔ 통상근로(1.0) 전환 사원의 경우 월_override에 1.0이 존재하면
+    # 청년등 옵션 및 자동 제안에서 '취업시 청년'을 선택할 수 있도록 허용합니다.
+    m_ovr = yrec.get("월_override") or {}
+    has_fulltime_override = False
+    for _ov in m_ovr.values():
+        if _ov is not None and str(_ov).strip() not in ("", R.MONTH_AUTO):
+            try:
+                if float(_ov) >= 1.0 - 1e-9:
+                    has_fulltime_override = True
+                    break
+            except (TypeError, ValueError):
+                pass
+    eff_emp_type_for_youth = (
+        R.EMP_REGULAR if (emp_type in (R.EMP_PT_050, R.EMP_PT_075) and has_fulltime_override) else emp_type
+    )
+
+    opts = youth_options(eff_emp_type_for_youth)
+    sug_youth = suggest_youth(
+        person,
+        dict(yrec, 고용유형=eff_emp_type_for_youth),
+        year,
+        corp_size,
+        corp_size_by_year=corp_size_by_year,
+    )
     youth = _pick(yrec, "청년등", sug_youth)
     if youth not in opts:
         youth = sug_youth if sug_youth in opts else R.YOUTH_NONE
@@ -147,7 +169,6 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
     tr_out_map = ctx.get("transfer_out_map") or {}
     tr_date = tr_out_map.get(person_wp) if "→" not in person_wp else tr_out_map.get(wp_primary)
     transferred_out = bool(tr_date) and (hire is None or hire <= tr_date) and (retire is None or retire >= tr_date)
-    m_ovr = yrec.get("월_override") or {}
 
     paid_in_last_m = False
     if last_paid_month < 12 and has_any_pay_data:
@@ -163,7 +184,7 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
     youth_flags_b1: list[bool] = []
     youth_flags_b2: list[bool] = []
     youth_flags_b3: list[bool] = []
-    youth_flags_b2a: list[bool] = []          # 연속공제 판정용 (간주 없음)
+    youth_flags_b2a: list[bool] = []          # 연속공제 판정용
     youth_flags_b3a: list[bool] = []
     no_pay_months: list[int] = []
     hire_month_nopay: list[int] = []
@@ -176,6 +197,8 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
             youth_flags_b1.append(False)
             youth_flags_b2.append(False)
             youth_flags_b3.append(False)
+            youth_flags_b2a.append(False)
+            youth_flags_b3a.append(False)
             continue
 
         ovr_v = m_ovr.get(str(m), m_ovr.get(m, None))
@@ -245,24 +268,32 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
         months.append(val)
 
         if val and val > 0:
+            # 해당 월의 산입 가중치(val)가 1.0인 달에만 청년(15~34세 연령트랙)으로 집계하고,
+            # 단시간(0.5 / 0.75)인 달이나 기간제(계약직)는 청년 연령트랙에서 제외합니다.
+            # (단, 고령자·장애인·경력단절·북한이탈주민은 단시간근로 달에도 청년등으로 정상 집계)
+            is_fulltime_regular_month = (float(val) >= 1.0 - 1e-9) and (emp_type != R.EMP_FIXED)
+
             if youth == R.YOUTH_NONE:
                 yf1 = False
             elif youth == R.YOUTH_YOUNG:
                 birth_ok = parse_date(person.get("생년월일")) is not None and contract_date(person) is not None
-                # 조특령 부칙(2026.2.27.) 제11조 제1항: 2024년 이전 최초 공제 코호트에는 계약일 기준 청년 간주 규정을 적용하지 않음
-                yf1 = is_youth_month(
-                    person, year, m, corp_size,
-                    use_hold=(int(year) >= NEW_YOUTH_DEF_FROM_COHORT),
-                    corp_size_by_year=corp_size_by_year,
+                yf1 = (
+                    is_fulltime_regular_month
+                    and is_youth_month(
+                        person, year, m, corp_size,
+                        use_hold=(int(year) >= NEW_YOUTH_DEF_FROM_COHORT),
+                        corp_size_by_year=corp_size_by_year,
+                    )
                 ) if birth_ok else False
             elif youth == R.YOUTH_NK:
                 yf1 = year >= 2025
             else:
                 yf1 = True
 
-            # 사후관리용 청년 판정 (귀속분별 규칙)
-            #  · 2025년 이후 최초공제분: 새 정의(유예 포함), 간주 없음 → 추가납부·연속공제 모두 당해 판정과 같음
-            #  · 2024년 이전 최초공제분: 추가납부는 최초연도 청년 간주(구 제5항), 연속공제 판정은 종전 정의의 실제 청년 (조특령 부칙(2026.2.27.) 제11조 제1항)
+            # 사후관리(추징) 및 2·3차년도 연속공제용 청년 판정
+            #  · 2025년 이후 최초공제분: 새 정의(유예 포함) 적용, 2024년 이전 입사자는 최초 공제연도 청년 여부 승계
+            #  · 2024년 이전 최초공제분: 기획재정부 유권해석(조세특례제도과-214, 2023.03.06.) 및 구 조특령 제26조의8 제5항에 따라
+            #    추징 판정(claw)과 2·3차년도 연속공제 판정(act) 모두 계속 청년등상시근로자로 유지
             def _cohort_flags(cy: int, was):
                 cy_corp_size = R.normalize_corp_size(
                     corp_size_by_year.get(cy) or corp_size_by_year.get(str(cy)) or corp_size,
@@ -274,18 +305,31 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
                         act_cy = yf1
                     else:
                         birth_ok_cy = parse_date(person.get("생년월일")) is not None and contract_date(person) is not None
-                        yf_cy = is_youth_month(person, year, m, cy_corp_size, corp_size_by_year=corp_size_by_year) if birth_ok_cy else False
+                        yf_cy = (
+                            is_fulltime_regular_month
+                            and is_youth_month(person, year, m, cy_corp_size, corp_size_by_year=corp_size_by_year)
+                        ) if birth_ok_cy else False
                         claw = yf_cy
                         act_cy = yf_cy
-                    if not claw and youth not in (R.YOUTH_SENIOR, R.YOUTH_DISABLED, R.YOUTH_CAREER, R.YOUTH_NK):
+                    if not claw and is_fulltime_regular_month and youth not in (R.YOUTH_SENIOR, R.YOUTH_DISABLED, R.YOUTH_CAREER, R.YOUTH_NK):
                         cdt = contract_date(person)
                         if cdt is not None and cdt.year <= 2024 and parse_date(person.get("생년월일")):
                             w = was if was is not None else was_youth_in_year_by_age(person, cy, cy_corp_size, corp_size_by_year=corp_size_by_year)
                             claw = bool(w)
+                            act_cy = bool(w)
                     return claw, act_cy
-                claw = is_youth_month_for_cohort(person, year, m, cy, cy_corp_size, youth, was, corp_size_by_year=corp_size_by_year)
-                act = youth_flag_old_def(person, year, m, cy_corp_size, youth)
+
+                if not is_fulltime_regular_month and youth not in (R.YOUTH_SENIOR, R.YOUTH_DISABLED, R.YOUTH_CAREER):
+                    return False, False
+                claw = is_youth_month_for_cohort(
+                    person, year, m, cy, cy_corp_size, youth, was, corp_size_by_year=corp_size_by_year
+                )
+                act = youth_flag_old_def(
+                    person, year, m, cy_corp_size, youth,
+                    cohort_year=cy, was_youth_in_cohort=was, corp_size_by_year=corp_size_by_year,
+                )
                 return claw, act
+
             yf2, yf2a = _cohort_flags(year - 1, c1_was_youth)
             yf3, yf3a = _cohort_flags(year - 2, c2_was_youth)
         else:
@@ -349,7 +393,6 @@ def compute_row(person: dict, yrec: dict, year: int, ctx: dict) -> dict:
     A_b3_yth_act = round(float(yth_b3a_frac) / months_in_year, 2)
 
     # 평가연도(year)와 코호트 연도를 함께 보는 방식 선택 규칙 (2026.5.22. 대통령령 제36342호 반영)
-    # # 확인 필요: 최초 공제연도 B방식 신고값과 평가연도 합계 절사값의 비교 — 2027년 국세청 신고 안내 확인
     m_b1 = calc_method_for(int(year), eval_year=int(year))
     m_b2 = calc_method_for(int(year) - 1, eval_year=int(year))
     m_b3 = calc_method_for(int(year) - 2, eval_year=int(year))
@@ -454,7 +497,6 @@ def year_totals(computed_rows: list[dict], months_in_year: int, year: int | None
       * b1(당해 연도 자체): calc_method_for(eval_yr)
       * b2(1차 사후관리): calc_method_for(eval_yr - 1)
       * b3(2차 사후관리): calc_method_for(eval_yr - 2)
-      # 확인 필요: '26.3월 국세청 안내 신뢰보호 원칙 연장 적용 (2026년 이후 평가연도에서 2024년 이하 코호트에 A를 계속 적용)
     """
     n = max(1, min(12, int(months_in_year or 12)))
     act = set(active_months(2025, n))
@@ -537,7 +579,6 @@ def year_totals(computed_rows: list[dict], months_in_year: int, year: int | None
     )
 
     # ── 3) 방식 선택 규칙(calc_method_for)에 따른 기본값 및 비교값 설정 ──
-    # # 확인 필요: 최초 공제연도 B방식 신고값과 평가연도 합계 절사값의 비교 — 2027년 국세청 신고 안내 확인
     m_b1 = calc_method_for(eval_yr, eval_year=eval_yr)
     m_b2 = calc_method_for(eval_yr - 1, eval_year=eval_yr)
     m_b3 = calc_method_for(eval_yr - 2, eval_year=eval_yr)
