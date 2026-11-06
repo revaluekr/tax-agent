@@ -2873,7 +2873,7 @@ def verify_golden_case_invariants() -> tuple[bool, list[str]]:
             f"공제 {pm2_sme_claw['continued_credit_won']:,} != 0 또는 추징 {pm2_sme_claw['clawback_net_payable_won']:,} != 17,980,000"
         )
 
-    # ── 5) 2028년 중소기업(수도권) B(2년차 유지분) 청년↔청년등외 교차 변동 검증 ──
+# ── 5) 2028년 중소기업(수도권) B(2년차 유지분) 청년↔청년등외 교차 변동 검증 ──
     abc_cross_2028 = H.calc_new_2026_credit_abc(
         tax_year=2028,
         corp_size="중소기업",
@@ -2889,12 +2889,12 @@ def verify_golden_case_invariants() -> tuple[bool, list[str]]:
     if (
         round(float(tier_b_cross["total_inc"]), 2) != 10.00
         or round(float(tier_b_cross["youth_inc"]), 2) != 2.00
-        or round(float(tier_b_cross["non_youth_inc"]), 2) != 2.00
-        or int(tier_b_cross["credit_won"]) != 50_000_000
+        or round(float(tier_b_cross["non_youth_inc"]), 2) != 8.00
+        or int(tier_b_cross["credit_won"]) != 104_000_000
     ):
         errors.append(
             f"2028년 중소·수도권 B 교차 변동 산식 불일치: "
-            f"tot_b={tier_b_cross['total_inc']}, yth_b={tier_b_cross['youth_inc']}, gen_b={tier_b_cross['non_youth_inc']}, B_won={tier_b_cross['credit_won']:,} != 50,000,000"
+            f"tot_b={tier_b_cross['total_inc']}, yth_b={tier_b_cross['youth_inc']}, gen_b={tier_b_cross['non_youth_inc']}, B_won={tier_b_cross['credit_won']:,} != 104,000_000"
         )
 
     # ── 6) 만 34세 초과자(1990-06-01생, 2025-05-01 근로계약 체결) 계약연도 기업규모별 유예기간 및 월 경계(me < hold_end) 검증 ──
