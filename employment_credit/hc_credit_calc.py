@@ -238,7 +238,9 @@ def calc_new_2026_credit_abc(
 ) -> dict[str, Any]:
     """
     2026년 이후 신법(조특법 제29조의8 제1항) A·B·C 티어 세액공제 산출.
-    - 적용 방식: `calc_method_for(tax_year)` -> "B" (해당·비교연도 모두 B방식 사원별 절사 후 합계 인원 적용)
+    - 2년차(B)·3년차(C)의 일반 유지 증가인원은 '총 상시근로자 유지 증가인원(tot_b, tot_c)'에서
+      '청년등 유지 증가인원(yth_b, yth_c)'을 차감하여 산출합니다(청년 퇴사 후 일반으로 대체되어 전체 인원이 유지된 경우
+      대체된 인원만큼 2·3년차 일반 단가 정상 적용).
     """
     t = int(tax_year)
     m_abc = calc_method_for(t, eval_year=t)
@@ -317,17 +319,12 @@ def calc_new_2026_credit_abc(
         "credit_won": net_a_won,
     }
 
-    # 확인 필요: 신법(2026년 이후, 조세특례제한법 제29조의8 제1항) B(2년차)·C(3년차) 유지분 공제단가는
-    # 법문상 "내국인의 해당 과세연도의 ... 상시근로자 수가 직전 3개 과세연도의 상시근로자 수보다 증가한 경우 다음 각 호에 따른 금액을 ... 공제한다"로만 규정되어 있어,
-    # 최초 증가연도(T-1·T-2)와 당해 과세연도(T) 사이에 기업규모가 변동된 경우 '해당 과세연도(T) 기업규모' 기준인지 '최초 증가연도(T-1·T-2) 기업규모' 기준인지
-    # 명시적 조문·유권해석이 아직 없으므로 확인 전 기본값으로 당해 과세연도(t)의 기업규모를 적용합니다.
     sz_b = _sz_for(t)
     rates_b = get_unit_rates(sz_b, is_capital, scheme="new_2026", retention_year=2)
     if comp.get("B") is not None and s_t2["has_data"]:
         tot_b = round(max(0.0, min(s_t["reg"], s_t1["reg"]) - s_t2["reg"]), 2)
         yth_b = round(min(tot_b, max(0.0, min(s_t["yth"], s_t1["yth"]) - s_t2["yth"])), 2)
-        raw_gen_b = round(max(0.0, min(s_t["gen"], s_t1["gen"]) - s_t2["gen"]), 2)
-        gen_b = round(min(tot_b, max(0.0, tot_b - yth_b), raw_gen_b), 2)
+        gen_b = round(max(0.0, tot_b - yth_b), 2)
         hurdle_b = calc_minimum_hurdle_deduction_2026(sz_b, tot_b, yth_b, gen_b, retention_year=2)
         if hurdle_b["hurdle_met"]:
             b1_won = int(round(yth_b * rates_b["청년등"] * 10_000))
@@ -357,14 +354,12 @@ def calc_new_2026_credit_abc(
         "credit_won": net_b_won,
     }
 
-    # 확인 필요: 신법 C(3년차) 단가 기준 기업규모 (기본값: 당해 과세연도 t 기업규모 적용)
     sz_c = _sz_for(t)
     rates_c = get_unit_rates(sz_c, is_capital, scheme="new_2026", retention_year=3)
     if comp.get("C") is not None and s_t3["has_data"] and (rates_c["청년등"] > 0 or rates_c["청년등외"] > 0):
         tot_c = round(max(0.0, min(s_t["reg"], s_t1["reg"], s_t2["reg"]) - s_t3["reg"]), 2)
         yth_c = round(min(tot_c, max(0.0, min(s_t["yth"], s_t1["yth"], s_t2["yth"]) - s_t3["yth"])), 2)
-        raw_gen_c = round(max(0.0, min(s_t["gen"], s_t1["gen"], s_t2["gen"]) - s_t3["gen"]), 2)
-        gen_c = round(min(tot_c, max(0.0, tot_c - yth_c), raw_gen_c), 2)
+        gen_c = round(max(0.0, tot_c - yth_c), 2)
         hurdle_c = calc_minimum_hurdle_deduction_2026(sz_c, tot_c, yth_c, gen_c, retention_year=3)
         if hurdle_c["hurdle_met"]:
             c1_won = int(round(yth_c * rates_c["청년등"] * 10_000))
@@ -427,8 +422,9 @@ def calc_legacy_post_management(
 ) -> dict[str, Any]:
     """
     [2023~2025년 귀속 공제분의 1차·2차 사후관리(2·3차년도 연속공제 및 추가납부세액) 정밀 산출]
-    - 상시근로자 수 비교 방식: `calc_method_for(cohort_year)` (2024년 이하 코호트 A방식, 2025년 코호트 B방식)
-      # 확인 필요: '26.3월 국세청 안내 신뢰보호 원칙 연장 적용 (2026년 이후 평가연도에서 2024년 이하 코호트에 A를 계속 적용)
+    - 상시근로자 수 비교 방식: `calc_method_for(cohort_year, eval_year=eval_year)`
+    - Case 3 (전체 상시 유지 · 청년등 감소 시): 세액공제 법령 문언에 따라 최초 사업연도에 공제받은 청년등 증가인원을 포함한
+      전체 증가인원(init_yth_inc + init_gen_inc)에 전액 일반(청년등외) 단가(conv_man)를 적용합니다.
     """
     elapsed = int(eval_year) - int(cohort_year)
     coh_method = calc_method_for(cohort_year, eval_year=eval_year)
@@ -603,9 +599,6 @@ def calc_legacy_post_management(
         else:
             case_code = "Case 2 (전체 감소·그 밖의 경우)"
             case_title = "전체 상시근로자 감소 > 청년등 감소 (연속공제 중단 + 청년감소분·일반감소분 각각 추징)"
-            # 구 조특령 제26조의8 제4항 제1호 가목2)·제2호 가목2) (법 부칙 제34조로 2024·2025년분 적용):
-            #   [청년등 감소 인원(전체 감소 인원 한도) × 청년 단가] + [청년등 외 감소 인원(전체 감소 인원 한도) × 청년외 단가]
-            #   감소 인원에 '최초 증가인원' 한도는 없으며, 총액은 공제받은 세액 한도(아래 claimed_cap / full_man)로만 제한.
             gen_dec = round(max(0.0, (init_reg - init_yth) - (cur_pm_reg - cur_pm_yth)), 2)
             yth_lost = round(min(reg_dec, yth_dec), 2)
             gen_lost = round(min(reg_dec, gen_dec), 2)
@@ -653,7 +646,6 @@ def calc_legacy_post_management(
     else:
         capped_cumulative_claw_won = raw_clawback_won
 
-    # 6-6. 구법 추징 산식 문구가 한도 적용 전 금액을 보여주고 결과는 한도 적용 후 금액인 경우 산식 끝에 명시
     if cap_applied:
         formula_note += f" → 기공제세액({claimed_cap:,}원) 한도 적용"
     if reg_diff >= 0 and yth_diff < 0:
@@ -715,10 +707,6 @@ def calculate_tax_year_package(
 ) -> dict[str, Any]:
     """
     [선택된 귀속사업연도(2024~2028)의 통합고용세액공제 종합 계산 패키지 — A/B 계산방식 일원화(calc_method_for) 완벽 반영]
-    - 당해 연도 1차 공제(구법) 및 신법 A·B·C의 해당·비교연도 인원: `calc_method_for(tax_year)` (2025년 이후 "B")
-    - 상시근로자 현황 표시(직전전·직전·해당) 및 추가공제 요건(해당·직전): `calc_method_for(tax_year)` (2025년 이후 "B")
-    - 구법 코호트의 사후관리·연속공제 비교(최초 공제연도 인원 ↔ 평가연도 인원): `calc_method_for(cohort_year)`로 양쪽 모두 같은 방식 적용
-      # 확인 필요: '26.3월 국세청 안내 신뢰보호 원칙 연장 적용 (2026년 이후 평가연도에서 2024년 이하 코호트에 A를 계속 적용)
     """
     t = int(tax_year)
     cur_method = calc_method_for(t, eval_year=t)
@@ -824,11 +812,6 @@ def calculate_tax_year_package(
         }
 
     def _s_new_cmp(y: int, base_s: dict[str, Any]) -> dict[str, Any]:
-        """
-        당해 연도(t) 1차 공제(구법·신법 A·B·C) 및 상시근로자 현황·추가공제 요건 비교 시:
-        - 계산방식은 `cur_method = calc_method_for(t, eval_year=t)` (2025년 이후 "B")를 일관되게 적용합니다.
-        - 2026년 이후 신법(t >= 2026) 비교 대상 연도(2025 <= y < t)에 nr_ 재산정 인원이 있으면 해당 방식(cur_method)의 nr_ 인원을 적용합니다.
-        """
         yd = summaries.get(int(y)) or summaries.get(str(y)) or {}
         if t >= NEW_TENURE_RULE_FROM and (yd.get("nr_상시_평균") is not None or yd.get(f"nr_{cur_method}_상시_평균") is not None):
             p_nr = _pick_summary_by_method(yd, method=cur_method, block="nr")
@@ -861,7 +844,6 @@ def calculate_tax_year_package(
                 old_rule_youth=p_old["yth"],
                 nr_names=list(yd.get("nr_names") or []),
             )
-        # 구법 1차년도 공제(예: t == 2025일 때 직전 2024년 비교인원) 및 상시근로자 현황 표시: cur_method(B방식) 적용
         p_cmp = _pick_summary_by_method(yd, method=cur_method, block="b1")
         return dict(
             base_s,
@@ -945,16 +927,6 @@ def calculate_tax_year_package(
         return r
 
     def _cohort(cohort: int, elapsed: int) -> tuple[dict, dict, dict]:
-        """
-        구법 코호트(cohort)의 사후관리·연속공제 비교 (2026.5.22. 대통령령 제36342호 반영):
-        - `pm_method = calc_method_for(cohort, eval_year=t)`: 평가연도(t)의 사후관리 인원(b2/b3) 계산방식
-          (t >= 2026이면 합계 후 1회 절사 "A"). 결과 dict의 calc_method·calc_badge도 이 기준으로 표시합니다.
-        - 직전연도(t-1) 1차 사후관리 인원(elapsed == 2일 때의 prev_pm_pick)은 `calc_method_for(cohort, eval_year=t - 1)`로 계산합니다.
-        - `coh_method = calc_method_for(cohort)`: 최초 공제연도 인원(cohort 및 cohort-1, s_init_coh·s_before_coh) 계산방식
-          (최초 공제연도 당시 규칙 → 2025년분은 B, 2024년 이하분은 A). 세법원칙(재계산) 기준에만 쓰이며,
-          기신고 기준은 기신고값을 그대로 사용합니다.
-        # 확인 필요: 최초 공제연도 B방식 신고값과 평가연도 합계 절사값의 비교 — 2027년 국세청 신고 안내 확인
-        """
         coh_method = calc_method_for(cohort)
         pm_method = calc_method_for(cohort, eval_year=t)
         blk_name = "b2" if elapsed == 1 else "b3"
@@ -1066,7 +1038,7 @@ def calculate_tax_year_package(
     pm_y1 = pm_y1_recalc if basis == R.PM_BASIS_RECALC else pm_y1_filed
     pm_y2 = pm_y2_recalc if basis == R.PM_BASIS_RECALC else pm_y2_filed
 
-    # ── 4) 정규직 전환자(~2024년 귀속) 및 육아휴직 복귀자(~2026년 귀속) 추가공제 (cur_method = B방식 인원 비교) ──
+    # ── 4) 정규직 전환자(~2024년 귀속) 및 육아휴직 복귀자(~2026년 귀속) 추가공제 ──
     add_unit_man = R.ADDITIONAL_CREDIT_PER_PERSON.get(cur_corp_size, 0)
     parental_ret_cnt = int(add_in.get("parental_return_count", 0) or 0) if t <= 2026 else 0
     reg_conv_cnt = int(add_in.get("regular_conversion_count", 0) or 0) if t <= 2024 else 0
