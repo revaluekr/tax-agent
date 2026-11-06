@@ -486,8 +486,11 @@ def _push_kakao_biz_income_to_payroll(company: str, name: str, rrn: str, gross_w
         pstate = _get_payroll_state()
         if company and not pstate.get("corp_name"):
             pstate["corp_name"] = company
-        ym_digits = str(pstate.get("year_month", "2026-11")).replace("-", "")
-        pay_dt_digits = str(pstate.get("pay_date", "2026-11-25")).replace("-", "")
+        ym_str = str(pstate.get("year_month", "2026-11"))
+        pay_dt_str = str(pstate.get("pay_date", f"{ym_str}-25"))
+        ym_digits = ym_str.replace("-", "")
+        pay_dt_digits = pay_dt_str.replace("-", "")
+        pstate["sub_mode"] = "FREE"
         new_row = {
             "코드": f"{len(pstate.get('freelancers', [])) + 1:04d}",
             "성명": name,
@@ -495,6 +498,8 @@ def _push_kakao_biz_income_to_payroll(company: str, name: str, rrn: str, gross_w
             "_raw_rrn": rrn,
             "내외국인": "내국인1",
             "소득구분": "940909",
+            "귀속년월": ym_str,
+            "지급년월일": pay_dt_str,
             "귀속연월": ym_digits,
             "지급연월": pay_dt_digits[:6],
             "지급일자": pay_dt_digits,
@@ -518,10 +523,13 @@ def _push_kakao_emp_excel_to_payroll(company: str, employees_sample: List[Dict[s
         pstate = _get_payroll_state()
         if company:
             pstate["corp_name"] = company
+        pstate["sub_mode"] = "EMP"
         for emp_in in reversed(employees_sample):
+            emp_nm = emp_in.get("name", "임직원")
             new_emp = {
                 "사원코드": f"{len(pstate.get('employees', [])) + 1:03d}",
-                "사원명": emp_in.get("name", "임직원"),
+                "성명": emp_nm,
+                "사원명": emp_nm,
                 "부서": emp_in.get("dept", "관리부"),
                 "직급": emp_in.get("title", "사원"),
                 "입사일": emp_in.get("hire_date", "2024-01-01"),
@@ -748,6 +756,7 @@ def _jump_to_target_mode(target_mode: str) -> None:
         try:
             from payroll_automated.ui import _get_payroll_state
             pstate = _get_payroll_state()
+            pstate["sub_mode"] = "FREE" if target_mode == "PAYROLL_BIZ" else "EMP"
             pstate["sub_tab"] = "사업소득" if target_mode == "PAYROLL_BIZ" else "급여명세서"
         except Exception:
             pass
@@ -1839,6 +1848,66 @@ def _build_merged_month_schedules(
                 else:
                     bucket.append(u_ev)
                     existing_ids.add(uid)
+
+    # 반복 일정('매일 반복', '매주 반복', '매월 반복', '매년 반복') 자동 전개
+    max_d_in_month = calendar.monthrange(year, month)[1]
+    seen_rep_sources: Dict[str, Dict[str, Any]] = {}
+    for src_ym, src_days in (user_events_by_ym or {}).items():
+        if not isinstance(src_days, dict):
+            continue
+        try:
+            sy_str, sm_str = str(src_ym).split("-", 1)
+            sy_int, sm_int = int(sy_str), int(sm_str)
+        except Exception:
+            continue
+        for sd_str, s_evs in src_days.items():
+            try:
+                sd_int = int(sd_str)
+            except Exception:
+                continue
+            for s_ev in (s_evs or []):
+                if not _is_repeating_schedule(s_ev):
+                    continue
+                sid = str(s_ev.get("id", ""))
+                if not sid or sid in del_set or sid in seen_rep_sources:
+                    continue
+                s_copy = dict(s_ev)
+                s_copy.setdefault("origin_year", sy_int)
+                s_copy.setdefault("origin_month", sm_int)
+                s_copy.setdefault("origin_day", sd_int)
+                seen_rep_sources[sid] = s_copy
+
+    for sid, rep_ev in seen_rep_sources.items():
+        rep_mode = str(rep_ev.get("repeat", "반복 안함")).strip()
+        oy = int(rep_ev.get("origin_year", year))
+        om = int(rep_ev.get("origin_month", month))
+        od = int(rep_ev.get("origin_day", 1))
+        try:
+            orig_dt = date(oy, om, min(od, calendar.monthrange(oy, om)[1]))
+        except Exception:
+            continue
+        target_days: List[int] = []
+        if rep_mode == "매일 반복":
+            for d_cand in range(1, max_d_in_month + 1):
+                if date(year, month, d_cand) >= orig_dt:
+                    target_days.append(d_cand)
+        elif rep_mode == "매주 반복":
+            for d_cand in range(1, max_d_in_month + 1):
+                cand_dt = date(year, month, d_cand)
+                if cand_dt >= orig_dt and cand_dt.weekday() == orig_dt.weekday():
+                    target_days.append(d_cand)
+        elif rep_mode == "매월 반복":
+            if (year, month) >= (oy, om):
+                target_days.append(min(od, max_d_in_month))
+        elif rep_mode == "매년 반복":
+            if year >= oy and month == om:
+                target_days.append(min(od, max_d_in_month))
+
+        for td in target_days:
+            bucket = merged.setdefault(td, [])
+            if not any(str(x.get("id")) == sid for x in bucket):
+                bucket.append(dict(rep_ev))
+
     return merged
 
 
@@ -2351,17 +2420,18 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
             function applyOptionAIceBlueModal() {
                 const anchor = pDoc.getElementById("tds-dlg-iceblue-anchor") || pDoc.querySelector(".gcal-tds-title-wrap");
                 if (!anchor) return;
-                const dlgRoot = anchor.closest('div[data-testid="stDialog"], div[data-testid="stModal"], div[data-baseweb="modal"]');
+                const dlgRoot = anchor.closest('div[data-testid="stDialog"], div[data-testid="stModal"], div[data-baseweb="modal"], dialog');
+                if (!dlgRoot) return;
                 let cur = anchor.parentElement;
                 let modalCard = null;
-                while (cur && cur !== pDoc.body) {
+                while (cur && cur !== dlgRoot && cur !== pDoc.body) {
                     const r = cur.getBoundingClientRect();
                     if (r.width >= 320 && r.width <= Math.min(920, pWin.innerWidth * 0.90) && r.height >= 260) {
                         modalCard = cur;
                     }
                     cur = cur.parentElement;
                 }
-                if (!modalCard && dlgRoot) {
+                if (!modalCard) {
                     modalCard = dlgRoot.querySelector('div[role="dialog"], [aria-label="dialog"]') || dlgRoot.querySelector('div > div');
                 }
                 if (modalCard) {
@@ -2373,7 +2443,7 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
                     modalCard.style.setProperty("box-shadow", "0 22px 54px rgba(25, 31, 40, 0.18), 0 4px 16px rgba(49, 130, 246, 0.14)", "important");
 
                     let inner = anchor.parentElement;
-                    while (inner && inner !== modalCard) {
+                    while (inner && inner !== modalCard && inner !== dlgRoot) {
                         inner.style.setProperty("background", "transparent", "important");
                         inner.style.setProperty("background-color", "transparent", "important");
                         inner = inner.parentElement;
@@ -2389,12 +2459,6 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
                         anc.style.setProperty("background", "transparent", "important");
                         anc.style.setProperty("background-color", "transparent", "important");
                         anc.style.setProperty("backdrop-filter", "none", "important");
-                        Array.from(anc.children).forEach(ch => {
-                            if (ch !== modalCard && !ch.contains(modalCard)) {
-                                ch.style.setProperty("background", "transparent", "important");
-                                ch.style.setProperty("background-color", "transparent", "important");
-                            }
-                        });
                         if (anc === dlgRoot) break;
                         anc = anc.parentElement;
                     }
@@ -2549,6 +2613,10 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
 
         st.session_state[subs_state_key] = cur_sub_tasks
 
+    att_meta_key = f"dlg_att_meta_{ev_id}"
+    if att_meta_key not in st.session_state:
+        st.session_state[att_meta_key] = list(target_ev.get("attachments_meta", []) or [])
+
     r5_l, r5_r = st.columns([0.72, 3.8], gap="small")
     with r5_l:
         st.markdown("<div class='gcal-tds-row-lbl'>메모</div>", unsafe_allow_html=True)
@@ -2564,10 +2632,68 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
         in_attach = st.text_input(
             "첨부파일명",
             value=str(target_ev.get("attachment", "")),
-            placeholder="+ 첨부파일명 입력 또는 파일 추가",
+            placeholder="+ 첨부파일명 직접 입력 또는 아래에서 로컬 파일 업로드",
             label_visibility="collapsed",
             key=f"dlg_att_{ev_id}",
         )
+        uploaded_files = st.file_uploader(
+            "로컬 첨부파일 업로드",
+            accept_multiple_files=True,
+            key=f"dlg_file_up_{ev_id}",
+            label_visibility="collapsed",
+            help="로컬 PC의 파일(PDF, 엑셀, 워드, 이미지 등)을 선택하거나 끌어다 놓으면 일정에 첨부·보관됩니다.",
+        )
+        cur_att_meta: List[Dict[str, Any]] = list(st.session_state.get(att_meta_key, []))
+        if uploaded_files:
+            att_dir = Path(__file__).resolve().parent.parent / "data" / "schedule_attachments" / str(ev_id)
+            try:
+                att_dir.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                att_dir = Path("/tmp") / "schedule_attachments" / str(ev_id)
+                att_dir.mkdir(parents=True, exist_ok=True)
+            existing_names = {str(m.get("name", "")) for m in cur_att_meta}
+            for uf in uploaded_files:
+                uf_name = str(getattr(uf, "name", "") or "").strip()
+                if not uf_name:
+                    continue
+                raw_bytes = uf.getvalue() if hasattr(uf, "getvalue") else b""
+                save_p = att_dir / uf_name
+                try:
+                    save_p.write_bytes(raw_bytes)
+                except Exception:
+                    pass
+                if uf_name not in existing_names:
+                    cur_att_meta.append({
+                        "name": uf_name,
+                        "size": len(raw_bytes),
+                        "path": str(save_p),
+                    })
+                    existing_names.add(uf_name)
+            st.session_state[att_meta_key] = cur_att_meta
+
+        for a_idx, a_info in enumerate(list(cur_att_meta)):
+            a_name = str(a_info.get("name", "첨부파일"))
+            a_path = Path(str(a_info.get("path", "")))
+            ac1, ac2, ac3 = st.columns([3.8, 1.2, 0.6], gap="small")
+            with ac1:
+                st.caption(f"📎 {a_name} ({int(a_info.get('size', 0)):,} bytes)")
+            with ac2:
+                if a_path.exists():
+                    try:
+                        st.download_button(
+                            "다운로드",
+                            data=a_path.read_bytes(),
+                            file_name=a_name,
+                            key=f"dlg_att_dl_{ev_id}_{a_idx}",
+                            width="stretch",
+                        )
+                    except Exception:
+                        pass
+            with ac3:
+                if st.button("✕", key=f"dlg_att_rm_{ev_id}_{a_idx}"):
+                    cur_att_meta.pop(a_idx)
+                    st.session_state[att_meta_key] = cur_att_meta
+                    st.rerun()
 
     st.divider()
 
@@ -2602,6 +2728,15 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
             all_subs_done = bool(updated_subs) and all(s.get("done") for s in updated_subs)
             is_done_final = True if (new_type == "DONE" or all_subs_done) else bool(target_ev.get("done", False))
 
+            saved_att_meta = list(st.session_state.get(att_meta_key, []))
+            uploaded_names_str = ", ".join(str(m.get("name", "")) for m in saved_att_meta if m.get("name"))
+            final_attach_str = in_attach.strip()
+            if uploaded_names_str:
+                if not final_attach_str:
+                    final_attach_str = uploaded_names_str
+                elif uploaded_names_str not in final_attach_str:
+                    final_attach_str = f"{final_attach_str}, {uploaded_names_str}"
+
             new_d_int = int(in_day)
             target_ev.update({
                 "title": final_title,
@@ -2616,7 +2751,8 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
                 "client": in_client.strip() or "내 스케줄",
                 "sub_tasks": updated_subs,
                 "desc": in_desc.strip(),
-                "attachment": in_attach.strip(),
+                "attachment": final_attach_str,
+                "attachments_meta": saved_att_meta,
                 "done": is_done_final,
                 "completed_on_ymd": [year, month, new_d_int] if is_done_final else None,
                 "has_detail": True,
@@ -2634,7 +2770,17 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
                 month_schedules.setdefault(new_d_int, []).append(target_ev)
 
             _save_user_schedules_to_disk(cstate)
+            # 반복 일정 선택 시 현재 월을 포함한 캐시를 즉시 재구축하여 달력에 바로 반영
+            disk_after_save = _load_raw_store_from_disk()
+            cstate["schedules_by_ym"][ym_key] = _build_merged_month_schedules(
+                year,
+                month,
+                today_d,
+                disk_after_save.get("user_events_by_ym", {}),
+                cstate.get("deleted_tax_ids", []),
+            )
             st.session_state.pop(subs_state_key, None)
+            st.session_state.pop(att_meta_key, None)
             cstate["selected_day"] = new_d_int
             cstate["active_detail_ev_id"] = None
             cstate["pending_detail_draft"] = None
@@ -2732,6 +2878,35 @@ def render_calendar_main() -> None:
 
     year = int(cstate["year"])
     month = int(cstate["month"])
+    max_d_cur = calendar.monthrange(year, month)[1]
+
+    # 달력 날짜 셀 클릭을 상단에서 선제 감지하여 루프 중간 st.rerun()이나 화면 끊김 없이 단일 패스로 즉시 반영
+    for _cand_d in range(1, max_d_cur + 1):
+        if st.session_state.get(f"cal_sel_d_{year}_{month}_{_cand_d}"):
+            now_ts = datetime.now().timestamp()
+            prev_d = cstate.get("_last_cal_click_day")
+            prev_ts = float(cstate.get("_last_cal_click_ts", 0.0))
+            cstate["selected_day"] = _cand_d
+            if prev_d == _cand_d and (now_ts - prev_ts) < 1.35:
+                cstate["_last_cal_click_day"] = None
+                cstate["_last_cal_click_ts"] = 0.0
+                cstate["pending_detail_draft"] = {
+                    "title": "",
+                    "time": "",
+                    "alarm": False,
+                    "show_on_cal": True,
+                }
+                cstate["active_detail_modal"] = {
+                    "year": year,
+                    "month": month,
+                    "day": _cand_d,
+                    "ev_id": f"dbl_{int(now_ts * 1000)}",
+                }
+            else:
+                cstate["_last_cal_click_day"] = _cand_d
+                cstate["_last_cal_click_ts"] = now_ts
+            break
+
     selected_day = int(cstate["selected_day"])
     ym_key = f"{year:04d}-{month:02d}"
     month_schedules = cstate["schedules_by_ym"].setdefault(
@@ -2756,12 +2931,14 @@ def render_calendar_main() -> None:
                 "alarm": False,
                 "show_on_cal": True,
             }
-            new_dbl_id = f"dbl_{int(datetime.now().timestamp() * 1000)}"
-            _open_schedule_detail_dialog(year, month, selected_day, new_dbl_id)
+            cstate["active_detail_modal"] = {
+                "year": year,
+                "month": month,
+                "day": selected_day,
+                "ev_id": f"dbl_{int(datetime.now().timestamp() * 1000)}",
+            }
 
     expired_180d_items = _find_expired_180d_schedules(cstate, today_d)
-    if cstate.pop("open_180d_modal_manual", False) or (expired_180d_items and not cstate.get("dismissed_180d_prompt", False)):
-        _open_expired_180d_cleanup_dialog()
 
     if expired_180d_items and cstate.get("dismissed_180d_prompt", False):
         b_info, b_act = st.columns([4.2, 1.2], gap="small")
@@ -2867,31 +3044,12 @@ def render_calendar_main() -> None:
                                 """),
                                 unsafe_allow_html=True,
                             )
-                            # 1회 클릭 시 날짜 선택 / 2회 연속 클릭(더블클릭) 시 즉시 상세일정 설정 모달 오픈!
-                            if st.button(
+                            # 1회 클릭 시 날짜 선택 / 2회 연속 클릭(더블클릭) 시 상세일정 설정 모달 오픈 (상단 선제 감지로 전체 그리드 렌더링 보장)
+                            st.button(
                                 " ",
                                 key=f"cal_sel_d_{year}_{month}_{day_num}",
                                 width="stretch",
-                            ):
-                                now_ts = datetime.now().timestamp()
-                                prev_d = cstate.get("_last_cal_click_day")
-                                prev_ts = float(cstate.get("_last_cal_click_ts", 0.0))
-                                cstate["selected_day"] = day_num
-                                if prev_d == day_num and (now_ts - prev_ts) < 1.35:
-                                    cstate["_last_cal_click_day"] = None
-                                    cstate["_last_cal_click_ts"] = 0.0
-                                    cstate["pending_detail_draft"] = {
-                                        "title": "",
-                                        "time": "",
-                                        "alarm": False,
-                                        "show_on_cal": True,
-                                    }
-                                    new_dbl_id = f"dbl_{int(now_ts * 1000)}"
-                                    _open_schedule_detail_dialog(year, month, day_num, new_dbl_id)
-                                else:
-                                    cstate["_last_cal_click_day"] = day_num
-                                    cstate["_last_cal_click_ts"] = now_ts
-                                    st.rerun()
+                            )
 
     with col_side:
         c_m_left, c_m_right = st.columns([1.35, 0.95], gap="small")
@@ -2926,8 +3084,12 @@ def render_calendar_main() -> None:
                         "alarm": False,
                         "show_on_cal": True,
                     }
-                    new_modal_id = f"m_{int(datetime.now().timestamp() * 1000)}"
-                    _open_schedule_detail_dialog(year, month, selected_day, new_modal_id)
+                    cstate["active_detail_modal"] = {
+                        "year": year,
+                        "month": month,
+                        "day": selected_day,
+                        "ev_id": f"m_{int(datetime.now().timestamp() * 1000)}",
+                    }
 
         sel_date_obj = date(year, month, min(selected_day, calendar.monthrange(year, month)[1]))
         is_sel_today = (sel_date_obj == today_d)
@@ -3074,7 +3236,25 @@ def render_calendar_main() -> None:
                         elif is_rollover:
                             status_tag_html = f"<span class='tds-rollover-pill'>{orig_m}/{orig_d} 미완료 이월</span>"
 
-                        has_dtl = bool(ev.get("has_detail") or subs)
+                        client_val = str(ev.get("client", "")).strip()
+                        client_badge_html = (
+                            f"<span class='tds-sub-progress-pill'>{_html_lib.escape(client_val)}</span>"
+                            if client_val and client_val != "내 스케줄"
+                            else ""
+                        )
+                        rep_val = str(ev.get("repeat", "반복 안함")).strip()
+                        rep_badge_html = (
+                            f"<span class='tds-sub-progress-pill'>🔁 {_html_lib.escape(rep_val)}</span>"
+                            if _is_repeating_schedule(ev)
+                            else ""
+                        )
+                        att_val = str(ev.get("attachment", "")).strip()
+                        att_badge_html = (
+                            f"<span class='tds-sub-progress-pill' title='{_html_lib.escape(att_val)}'>📎 {_html_lib.escape(att_val[:14] + ('…' if len(att_val) > 14 else ''))}</span>"
+                            if att_val
+                            else ""
+                        )
+                        has_dtl = bool(ev.get("has_detail") or subs or ev.get("desc") or att_val or client_badge_html)
                         dtl_circle_html = "<span class='tds-blue-circle-dtl'>상세</span>" if has_dtl else ""
 
                         bell_html = ""
@@ -3102,6 +3282,9 @@ def render_calendar_main() -> None:
                                     {chk_box_html}
                                     <div class="tds-todo-title-wrap">
                                         <span class="tds-todo-title-txt {'done' if is_done else ''}">{ev_title_esc}</span>
+                                        {client_badge_html}
+                                        {rep_badge_html}
+                                        {att_badge_html}
                                         {status_tag_html}
                                         {dtl_circle_html}
                                         {sub_badge_html}
@@ -3141,7 +3324,12 @@ def render_calendar_main() -> None:
                                         (int(dk) for dk, dlist in month_schedules.items() if any(str(x.get("id")) == ev_id_str for x in dlist)),
                                         selected_day,
                                     )
-                                    _open_schedule_detail_dialog(year, month, owner_day, ev_id_str)
+                                    cstate["active_detail_modal"] = {
+                                        "year": year,
+                                        "month": month,
+                                        "day": owner_day,
+                                        "ev_id": ev_id_str,
+                                    }
                             with h_del:
                                 if st.button(
                                     "삭제",
@@ -3215,10 +3403,26 @@ def render_calendar_main() -> None:
                             "alarm": bool(cstate.get("dock_alarm", False)),
                             "show_on_cal": bool(cstate.get("dock_cal", True)),
                         }
-                        new_id = f"dtl_{int(datetime.now().timestamp() * 1000)}"
-                        _open_schedule_detail_dialog(year, month, selected_day, new_id)
+                        cstate["active_detail_modal"] = {
+                            "year": year,
+                            "month": month,
+                            "day": selected_day,
+                            "ev_id": f"dtl_{int(datetime.now().timestamp() * 1000)}",
+                        }
 
     render_floating_kakao_todo_overlay()
+
+    # 모든 메인 달력 그리드(30/31일)와 우측 Today To Do 카드가 100% 렌더링된 후 최하단에서 단일 모달 오픈
+    active_modal = cstate.pop("active_detail_modal", None)
+    if isinstance(active_modal, dict) and active_modal.get("ev_id"):
+        _open_schedule_detail_dialog(
+            int(active_modal["year"]),
+            int(active_modal["month"]),
+            int(active_modal["day"]),
+            str(active_modal["ev_id"]),
+        )
+    elif cstate.pop("open_180d_modal_manual", False) or (expired_180d_items and not cstate.get("dismissed_180d_prompt", False)):
+        _open_expired_180d_cleanup_dialog()
 
 
 def render_floating_kakao_todo_overlay() -> None:
@@ -3386,17 +3590,18 @@ def render_floating_kakao_todo_overlay() -> None:
             function enforceOptionAIceBlueDialogSurface() {{
                 const anchor = parentDoc.getElementById("tds-dlg-iceblue-anchor") || parentDoc.querySelector(".gcal-tds-title-wrap");
                 if (!anchor) return;
-                const dlgRoot = anchor.closest('div[data-testid="stDialog"], div[data-testid="stModal"], div[data-baseweb="modal"]');
+                const dlgRoot = anchor.closest('div[data-testid="stDialog"], div[data-testid="stModal"], div[data-baseweb="modal"], dialog');
+                if (!dlgRoot) return;
                 let cur = anchor.parentElement;
                 let modalCard = null;
-                while (cur && cur !== parentDoc.body) {{
+                while (cur && cur !== dlgRoot && cur !== parentDoc.body) {{
                     const r = cur.getBoundingClientRect();
                     if (r.width >= 320 && r.width <= Math.min(920, parentWin.innerWidth * 0.90) && r.height >= 260) {{
                         modalCard = cur;
                     }}
                     cur = cur.parentElement;
                 }}
-                if (!modalCard && dlgRoot) {{
+                if (!modalCard) {{
                     modalCard = dlgRoot.querySelector('div[role="dialog"], [aria-label="dialog"]') || dlgRoot.querySelector('div > div');
                 }}
                 if (modalCard) {{
@@ -3408,7 +3613,7 @@ def render_floating_kakao_todo_overlay() -> None:
                     modalCard.style.setProperty("box-shadow", "0 22px 54px rgba(25, 31, 40, 0.18), 0 4px 16px rgba(49, 130, 246, 0.14)", "important");
 
                     let inner = anchor.parentElement;
-                    while (inner && inner !== modalCard) {{
+                    while (inner && inner !== modalCard && inner !== dlgRoot) {{
                         inner.style.setProperty("background", "transparent", "important");
                         inner.style.setProperty("background-color", "transparent", "important");
                         inner = inner.parentElement;
@@ -3424,12 +3629,6 @@ def render_floating_kakao_todo_overlay() -> None:
                         anc.style.setProperty("background", "transparent", "important");
                         anc.style.setProperty("background-color", "transparent", "important");
                         anc.style.setProperty("backdrop-filter", "none", "important");
-                        Array.from(anc.children).forEach(ch => {{
-                            if (ch !== modalCard && !ch.contains(modalCard)) {{
-                                ch.style.setProperty("background", "transparent", "important");
-                                ch.style.setProperty("background-color", "transparent", "important");
-                            }}
-                        }});
                         if (anc === dlgRoot) break;
                         anc = anc.parentElement;
                     }}
@@ -3480,8 +3679,8 @@ def render_floating_kakao_todo_overlay() -> None:
                     return;
                 }}
 
-                const calDayWrap = t.closest('[class*="st-key-cal_sel_d_"]');
-                if (calDayWrap) {{
+                const calDayCard = t.closest('.tds-cal-day-card');
+                if (calDayCard && !t.closest('[class*="st-key-cal_sel_d_"]')) {{
                     const dblOpenBtn = parentDoc.querySelector('.st-key-btn_cal_dbl_open_selected button');
                     if (dblOpenBtn) {{
                         dblOpenBtn.click();
@@ -4056,9 +4255,19 @@ def render_floating_kakao_todo_overlay() -> None:
                     docPreviewMap: {{}}
                 }};
             }} else {{
-                const prevLen = (parentWin._tdsKakaoState.todos || []).length;
-                if (TODOS_DATA.length >= prevLen) {{
-                    parentWin._tdsKakaoState.todos = TODOS_DATA;
+                const prevTodos = parentWin._tdsKakaoState.todos || [];
+                const prevMap = {{}};
+                prevTodos.forEach(item => {{
+                    if (item && item.id) prevMap[item.id] = item;
+                }});
+                if (TODOS_DATA.length >= prevTodos.length) {{
+                    parentWin._tdsKakaoState.todos = TODOS_DATA.map(srvItem => {{
+                        const locItem = srvItem && srvItem.id ? prevMap[srvItem.id] : null;
+                        if (locItem && (locItem._clientModified || locItem.status_code === "APPROVED")) {{
+                            return Object.assign({{}}, srvItem, locItem);
+                        }}
+                        return srvItem;
+                    }});
                 }}
                 if (!parentWin._tdsKakaoState.expandedMap) parentWin._tdsKakaoState.expandedMap = {{}};
                 if (!parentWin._tdsKakaoState.editingMap) parentWin._tdsKakaoState.editingMap = {{}};
@@ -4560,6 +4769,7 @@ def render_floating_kakao_todo_overlay() -> None:
                                 t.time_ago = "방금 일괄승인";
                                 t.approved_date_iso = SERVER_KST_ISO;
                                 t.checked = true;
+                                t._clientModified = true;
                             }}
                         }});
                         renderOverlay();
@@ -4611,6 +4821,7 @@ def render_floating_kakao_todo_overlay() -> None:
                                 target.workflow_steps.forEach(st => {{ st.done = true; }});
                             }}
                             target.ai_result = "✅ 지정 폴더 저장 및 에이전트AI 급여명세서 화면(임직원 8명) 자동 입력이 완료되었습니다!";
+                            target._clientModified = true;
                             stObj.bubbleDismissed = false;
                             stObj.bubbleIdx = 0;
                             renderOverlay();
@@ -4621,6 +4832,7 @@ def render_floating_kakao_todo_overlay() -> None:
                             target.time_ago = "방금 승인됨";
                             target.approved_date_iso = SERVER_KST_ISO;
                             target.checked = true;
+                            target._clientModified = true;
                             renderOverlay();
                         }} else if (act === "jump") {{
                             stObj.open = false;
@@ -4648,6 +4860,7 @@ def render_floating_kakao_todo_overlay() -> None:
                             if (ta) {{
                                 target.ai_result = ta.value;
                                 target.preview = ta.value;
+                                target._clientModified = true;
                                 if (resBox) resBox.textContent = ta.value;
                             }}
                             if (editWrap) editWrap.classList.remove("open");

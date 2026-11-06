@@ -3752,7 +3752,7 @@ with st.container(key=f"room_main_view_{effective_ws_id}_{selected_room}"):
                     <p class="toss-bento-sub">{selected_room} [{current_room_title}] — 아래 카드를 클릭하거나 입력창에 질문·문서를 올려주시면 즉시 검토를 시작합니다.</p>
                 </div>
                 <div class="toss-bento-grid">
-                    <div class="toss-bento-card">
+                    <div class="toss-bento-card" data-bento-idx="1" style="cursor:pointer;">
                         <div class="toss-bento-top">
                             <div class="toss-bento-icon">
                                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#3182F6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
@@ -3763,7 +3763,7 @@ with st.container(key=f"room_main_view_{effective_ws_id}_{selected_room}"):
                         <div class="b-ttl">통합고용세액공제 상시근로자 요건 검토</div>
                         <div class="b-desc">청년 등 상시근로자 증가 인원 산정, 사후관리 추징 배제 요건 및 2026년 귀속 개정사항 비교</div>
                     </div>
-                    <div class="toss-bento-card">
+                    <div class="toss-bento-card" data-bento-idx="2" style="cursor:pointer;">
                         <div class="toss-bento-top">
                             <div class="toss-bento-icon">
                                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#3182F6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
@@ -3774,7 +3774,7 @@ with st.container(key=f"room_main_view_{effective_ws_id}_{selected_room}"):
                         <div class="b-ttl">근로·사업·기타소득 원천징수 및 비과세 한도</div>
                         <div class="b-desc">식대·자가운전보조금 비과세 요건, 프리랜서 3.3% 원천징수 및 간이지급명세서 제출 기한 검토</div>
                     </div>
-                    <div class="toss-bento-card">
+                    <div class="toss-bento-card" data-bento-idx="3" style="cursor:pointer;">
                         <div class="toss-bento-top">
                             <div class="toss-bento-icon">
                                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#3182F6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="2" width="16" height="20" rx="2"/><path d="M9 22v-4h6v4"/><path d="M8 6h.01M12 6h.01M16 6h.01M8 10h.01M12 10h.01M16 10h.01"/></svg>
@@ -3785,7 +3785,7 @@ with st.container(key=f"room_main_view_{effective_ws_id}_{selected_room}"):
                         <div class="b-ttl">가지급금 인정이자 및 업무용승용차 손금불산입</div>
                         <div class="b-desc">특수관계인 대여금 가중평균차입이자율 적용, 임직원 전용보험 및 운행기록부 작성 기준 확인</div>
                     </div>
-                    <div class="toss-bento-card">
+                    <div class="toss-bento-card" data-bento-idx="4" style="cursor:pointer;">
                         <div class="toss-bento-top">
                             <div class="toss-bento-icon">
                                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#3182F6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18"/><path d="M5 7h14"/><path d="M5 7l-3 7a4 4 0 0 0 6 0z"/><path d="M19 7l-3 7a4 4 0 0 0 6 0z"/><path d="M8 21h8"/></svg>
@@ -3800,6 +3800,41 @@ with st.container(key=f"room_main_view_{effective_ws_id}_{selected_room}"):
             </div>
             """,
             unsafe_allow_html=True
+        )
+        _bento_prompts = [
+            (1, "통합고용세액공제 상시근로자 요건 검토", "조세특례제한법 제29조의8 통합고용세액공제의 청년 등 상시근로자 증가 인원 산정 요건, 사후관리 추징 요건 및 2026년 귀속 개정사항을 비교·검토해 줘."),
+            (2, "근로·사업·기타소득 원천징수 및 비과세 한도", "소득세법상 식대·자가운전보조금 등 비과세 근로소득 요건과 한도, 프리랜서 3.3% 사업소득 원천징수 및 간이지급명세서 제출 기한·가산세를 검토해 줘."),
+            (3, "가지급금 인정이자 및 업무용승용차 손금불산입", "법인세법상 특수관계인 가지급금 인정이자 계산(가중평균차입이자율·당좌대출이자율) 및 업무용승용차 임직원 전용보험·운행기록부 손금불산입 기준을 검토해 줘."),
+            (4, "가업승계 증여세 과세특례 및 1세대 1주택 비과세", "조세특례제한법상 가업승계 증여세 과세특례 요건·사후관리 기준과 소득세법상 1세대 1주택 비과세 및 다주택 중과 배제 요건을 검토해 줘."),
+        ]
+        _b_cols = st.columns(4, gap="small")
+        for _b_col, (_b_idx, _b_lbl, _b_q) in zip(_b_cols, _bento_prompts):
+            with _b_col:
+                if st.button(f"▶ {_b_lbl[:12]}…", key=f"btn_bento_start_{selected_room}_{_b_idx}", width="stretch", help=f"클릭 시 '{_b_lbl}' 검토를 즉시 시작합니다."):
+                    _trigger_agent_task(
+                        effective_ws_id=effective_ws_id,
+                        selected_room=selected_room,
+                        raw_prompt=_b_q,
+                        pro_toggle_on=pro_toggle_on,
+                        budget_exceeded=False,
+                        force_flash=False,
+                    )
+        st.components.v1.html(
+            f"""<script>
+            (function() {{
+                const doc = window.parent.document;
+                doc.querySelectorAll('.toss-bento-card[data-bento-idx]').forEach(card => {{
+                    if (card._bentoClickBound) return;
+                    card._bentoClickBound = true;
+                    card.addEventListener('click', function() {{
+                        const idx = this.getAttribute('data-bento-idx');
+                        const btn = doc.querySelector('[class*="st-key-btn_bento_start_"][class*="_' + idx + '"] button');
+                        if (btn) btn.click();
+                    }});
+                }});
+            }})();
+            </script>""",
+            height=0,
         )
 
     for idx, message in enumerate(current_messages):

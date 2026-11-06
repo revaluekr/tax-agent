@@ -1611,15 +1611,18 @@ def render_payroll_automated_sidebar() -> None:
             pstate["ei_stability_tier_manual"] = sel_tier if sel_tier != auto_tier else None
             pstate["ei_stability_tier"] = sel_tier
 
-        # [당월 검토보고]·[통합고용세액공제 계산 연동]은 급여명세서(근로소득) 화면에서만 표시 — 사업소득 화면에서는 숨김
-        if is_emp_mode:
-            if st.button("당월 검토보고", icon=":material/description:", width="stretch", key="btn_pay_monthly_report"):
+        # [당월 검토보고]는 급여명세서(_dlg_monthly_review_report_emp)와 사업소득(_dlg_monthly_review_report_free) 모두 지원
+        if st.button("당월 검토보고", icon=":material/description:", width="stretch", key="btn_pay_monthly_report"):
+            if is_emp_mode:
                 _dlg_monthly_review_report_emp()
-            _ai_kind = st.session_state.pop("pa_ai_saving_open", None)
-            if _ai_kind:
-                st.session_state["pa_ai_saving_kind"] = _ai_kind
-                _dlg_ai_tax_review()
+            else:
+                _dlg_monthly_review_report_free()
+        _ai_kind = st.session_state.pop("pa_ai_saving_open", None)
+        if _ai_kind:
+            st.session_state["pa_ai_saving_kind"] = _ai_kind
+            _dlg_ai_tax_review()
 
+        if is_emp_mode:
             if st.button(
                 "통합고용세액공제 계산 연동",
                 icon=":material/link:",

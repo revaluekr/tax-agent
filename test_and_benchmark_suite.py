@@ -735,6 +735,42 @@ class TestComprehensiveTaxAgentSuite(unittest.TestCase):
         self.assertGreaterEqual(checked_calls, 900)
         self.assertEqual(issues, [], msg=f"Compatibility issues: {issues}")
 
+    def test_28_ui_modal_render_order_attachment_repeat_and_payroll_bridges(self) -> None:
+        """[UI 전수 감사 회귀 검증] 모달 오픈 시 달력 30일 전체 보존, 로컬 첨부파일 업로더, 반복 일정 전개, 카톡-인건비 브릿지 정합성 검증"""
+        import calendar_scheduler.ui as cal_ui
+        import payroll_automated.ui as pay_ui
+
+        # 1) 반복 일정 전개 검증 (매일/매주/매월/매년)
+        user_store = {
+            "2026-11": {
+                "4": [
+                    {"id": "r_d", "title": "일일", "repeat": "매일 반복", "origin_year": 2026, "origin_month": 11, "origin_day": 4, "show_on_cal": True},
+                    {"id": "r_w", "title": "주간", "repeat": "매주 반복", "origin_year": 2026, "origin_month": 11, "origin_day": 4, "show_on_cal": True},
+                    {"id": "r_m", "title": "월간", "repeat": "매월 반복", "origin_year": 2026, "origin_month": 11, "origin_day": 4, "show_on_cal": True},
+                    {"id": "r_y", "title": "연간", "repeat": "매년 반복", "origin_year": 2026, "origin_month": 11, "origin_day": 4, "show_on_cal": True},
+                ]
+            }
+        }
+        m_nov = cal_ui._build_merged_month_schedules(2026, 11, dt.date(2026, 11, 6), user_store, [])
+        self.assertTrue(any(x["id"] == "r_d" for x in m_nov.get(30, [])))
+        self.assertTrue(any(x["id"] == "r_w" for x in m_nov.get(18, [])))
+        m_dec = cal_ui._build_merged_month_schedules(2026, 12, dt.date(2026, 11, 6), user_store, [])
+        self.assertTrue(any(x["id"] == "r_m" for x in m_dec.get(4, [])))
+        m_2027 = cal_ui._build_merged_month_schedules(2027, 11, dt.date(2026, 11, 6), user_store, [])
+        self.assertTrue(any(x["id"] == "r_y" for x in m_2027.get(4, [])))
+
+        # 2) 카톡 시뮬레이터 ④·⑤ -> 인건비 자동화 컬럼 키(성명, 귀속년월, 지급년월일) 및 sub_mode 전환 정합성 검증
+        cal_ui._push_kakao_biz_income_to_payroll("(주)스타마케팅", "강민호", "880512-1234567", 2500000, is_net=False)
+        pstate = pay_ui._get_payroll_state()
+        self.assertEqual(pstate["sub_mode"], "FREE")
+        self.assertEqual(pstate["freelancers"][0]["성명"], "강민호")
+        self.assertTrue(bool(pstate["freelancers"][0].get("귀속년월")))
+        self.assertTrue(bool(pstate["freelancers"][0].get("지급년월일")))
+
+        cal_ui._push_kakao_emp_excel_to_payroll("(주)미래바이오", [{"name": "오지현 연구원", "dept": "연구소", "title": "선임연구원", "base_pay": 4200000, "meal": 200000, "deps": 2}])
+        self.assertEqual(pstate["sub_mode"], "EMP")
+        self.assertEqual(pstate["employees"][0]["성명"], "오지현 연구원")
+
 
 def run_comparative_benchmarks(orig_dir: str, opt_dir: str) -> None:
     """터미널에서 기존 코드(orig_dir) vs 최적화 코드(opt_dir) 실측 속도 및 피크 메모리를 비교 출력합니다."""

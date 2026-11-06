@@ -452,7 +452,7 @@ def _dlg_add_employee():
             wp_opts.append(R.DEFAULT_WORKPLACE_NAME)
         wp_val = st.selectbox("사업장", options=wp_opts, index=0, key="dlg_add_emp_wp")
     else:
-        wp_val = R.DEFAULT_WORKPLACE_NAME
+        wp_val = _default_workplace_label(s)
 
     c1, c2 = st.columns(2)
     with c1:
