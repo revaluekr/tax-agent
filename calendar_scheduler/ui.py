@@ -481,6 +481,87 @@ def _shift_calendar_month(cstate: Dict[str, Any], delta: int) -> None:
     cstate["_sync_sb_from_cstate"] = True
 
 
+
+def _push_kakao_biz_income_to_payroll(company: str, name: str, rrn: str, gross_won: int, is_net: bool = False) -> None:
+    """카톡 백그라운드 자동화(사업소득 수신) → payroll_auto_state['freelancers'] 자동 반영"""
+    try:
+        from payroll_automated.ui import _get_payroll_state, _recalculate_all_freelancer_rows
+        pstate = _get_payroll_state()
+        if company and not pstate.get("corp_name"):
+            pstate["corp_name"] = company
+        ym_str = str(pstate.get("year_month", "2026-11"))
+        pay_dt_str = str(pstate.get("pay_date", f"{ym_str}-25"))
+        ym_digits = ym_str.replace("-", "")
+        pay_dt_digits = pay_dt_str.replace("-", "")
+        pstate["sub_mode"] = "FREE"
+        new_row = {
+            "코드": f"{len(pstate.get('freelancers', [])) + 1:04d}",
+            "성명": name,
+            "주민등록번호": rrn,
+            "_raw_rrn": rrn,
+            "내외국인": "내국인1",
+            "소득구분": "940909",
+            "귀속년월": ym_str,
+            "지급년월일": pay_dt_str,
+            "귀속연월": ym_digits,
+            "지급연월": pay_dt_digits[:6],
+            "지급일자": pay_dt_digits,
+            "입력기준": "세후역산" if is_net else "세전",
+            "_base_amount": int(gross_won),
+            "지급총액": int(gross_won),
+            "세율": 3,
+            "비고": f"카톡 자동입력 ({company})",
+        }
+        pstate.setdefault("freelancers", []).insert(0, new_row)
+        _recalculate_all_freelancer_rows(pstate)
+        pstate["grid_version"] = int(pstate.get("grid_version", 0)) + 1
+    except Exception:
+        pass
+
+
+def _push_kakao_emp_excel_to_payroll(company: str, employees_sample: List[Dict[str, Any]]) -> None:
+    """카톡 백그라운드 자동화(급여대장 엑셀파일 수신) → payroll_auto_state['employees'] 자동 반영"""
+    try:
+        from payroll_automated.ui import _get_payroll_state, _recalculate_all_employee_rows
+        pstate = _get_payroll_state()
+        if company:
+            pstate["corp_name"] = company
+        pstate["sub_mode"] = "EMP"
+        for emp_in in reversed(employees_sample):
+            emp_nm = emp_in.get("name", "임직원")
+            new_emp = {
+                "사원코드": f"{len(pstate.get('employees', [])) + 1:03d}",
+                "성명": emp_nm,
+                "사원명": emp_nm,
+                "부서": emp_in.get("dept", "관리부"),
+                "직급": emp_in.get("title", "사원"),
+                "입사일": emp_in.get("hire_date", "2024-01-01"),
+                "입력기준": "세전",
+                "보험적용구분": "요율(2순위)",
+                "기본급": int(emp_in.get("base_pay", 3200000)),
+                "상여": int(emp_in.get("bonus", 0)),
+                "식대": int(emp_in.get("meal", 200000)),
+                "자가운전보조금": 0,
+                "약정연장근로수당": 0,
+                "약정휴일근로수당": 0,
+                "연장근로수당": 0,
+                "휴일근로수당": 0,
+                "미사용연차수당": 0,
+                "결근공제": 0,
+                "조정금액": 0,
+                "부양가족수": int(emp_in.get("deps", 1)),
+                "자녀수": int(emp_in.get("children", 0)),
+                "학자금상환액": 0,
+                "소득세감면율": 0,
+                "사업장": company or "본점",
+            }
+            pstate.setdefault("employees", []).insert(0, new_emp)
+        _recalculate_all_employee_rows(pstate)
+        pstate["grid_version"] = int(pstate.get("grid_version", 0)) + 1
+    except Exception:
+        pass
+
+
 def _jump_to_target_mode(target_mode: str) -> None:
     """상세 모달 내부에서 업무 화면 바로가기 클릭 시 앱 모드 전환"""
     st.session_state["_sbx_cat_jump_seq"] = int(st.session_state.get("_sbx_cat_jump_seq", 0)) + 1
@@ -2050,6 +2131,15 @@ def _delete_sub_task_in_dialog(ev_id: str, del_idx: int) -> None:
         st.session_state[subs_key] = cur_list
 
 
+def _delete_att_in_dialog(ev_id: str, del_idx: int) -> None:
+    """상세 모달 내부에서 첨부파일의 [✕] 클릭 시 모달을 닫지 않고 해당 첨부파일만 삭제합니다."""
+    att_meta_key = f"dlg_att_meta_{ev_id}"
+    cur_list = list(st.session_state.get(att_meta_key, []))
+    if 0 <= del_idx < len(cur_list):
+        cur_list.pop(del_idx)
+        st.session_state[att_meta_key] = cur_list
+
+
 @st.dialog("📋 상세일정 설정", width="large")
 def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str) -> None:
     """화면 중앙 상세입력 모달 (시안 A: 토스 아이스 블루 틴트 #DCEBFF + 보더 #3182F6 + 순백색 #FFFFFF 입력칸)"""
@@ -2399,10 +2489,12 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
                     except Exception:
                         pass
             with ac3:
-                if st.button("✕", key=f"dlg_att_rm_{ev_id}_{a_idx}"):
-                    cur_att_meta.pop(a_idx)
-                    st.session_state[att_meta_key] = cur_att_meta
-                    st.rerun()
+                st.button(
+                    "✕",
+                    key=f"dlg_att_rm_{ev_id}_{a_idx}",
+                    on_click=_delete_att_in_dialog,
+                    args=(ev_id, a_idx),
+                )
 
     st.divider()
 

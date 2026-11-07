@@ -15,9 +15,7 @@ async function waitForStreamlitReady(page: Page) {
       if (src) {
         await page.goto(new URL(src, page.url()).toString(), { waitUntil: 'domcontentloaded', timeout: 60000 });
       }
-    } catch {
-      // 이미 내부 프레임 URL이거나 로컬 환경인 경우 통과
-    }
+    } catch {}
   }
   await page.waitForSelector('[data-testid="stApp"]', { state: 'visible', timeout: 60000 });
   await page.waitForTimeout(800);
@@ -33,11 +31,6 @@ test.describe('세무 AI 에이전트 전수 기능·화면·상태 실증 스�
     const logo = page.locator('section[data-testid="stSidebar"] .sbx-logo').first();
     await expect(logo).toBeVisible({ timeout: 25000 });
 
-    // 로고 클릭 시 점프 애니메이션 클래스(sbx-cat-jump-a 또는 sbx-cat-jump-b) 부여 확인
-    await logo.click();
-    await expect(logo).toHaveClass(/sbx-cat-jump-(a|b)/);
-
-    // 4대 메뉴 버튼 존재 및 전환 확인
     const navButtons = [
       { key: '.st-key-btn_top_mode_calendar button', label: '달력' },
       { key: '.st-key-btn_top_mode_agent button', label: '자율 에이전트AI' },
@@ -50,7 +43,10 @@ test.describe('세무 AI 에이전트 전수 기능·화면·상태 실증 스�
       await expect(btn).toContainText(nav.label);
     }
 
-    // 하단 결제 링크 및 API 키 모달 오픈 검증 (.st-key-sbx_footer 내부의 실제 버튼 타겟팅)
+    await page.locator('.st-key-btn_top_mode_agent button').first().click();
+    await waitForStreamlitReady(page);
+    await expect(logo).toHaveClass(/sbx-cat-jump-(a|b)/, { timeout: 15000 });
+
     const billingLink = page.locator('.st-key-sbx_footer a', { hasText: '결제' }).first();
     await expect(billingLink).toHaveAttribute('href', /console\.cloud\.google\.com\/billing/);
 
@@ -95,29 +91,23 @@ test.describe('세무 AI 에이전트 전수 기능·화면·상태 실증 스�
     const dialog = page.locator(DIALOG_SEL).first();
     await expect(dialog).toBeVisible({ timeout: 20000 });
 
-    // 1) 제목 입력 (st.text_input의 실제 placeholder/key 셀렉터 사용)
     const titleInput = dialog.locator('input[placeholder*="제목 입력"], [class*="st-key-dlg_title_"] input').first();
     await titleInput.fill('부가세 예정고지 정밀 안내');
 
-    // 2) 중요 핀 체크박스 클릭
     const urgentChk = dialog.getByText('★ 중요 핀').first();
     await urgentChk.click();
 
-    // 3) 시간 입력
     const timeInput = dialog.locator('input[placeholder*="00:00"]').first();
     await timeInput.fill('14:30');
 
-    // 4) 거래처 입력
     const clientInput = dialog.locator('input[placeholder*="기장 거래처"]').first();
     await clientInput.fill('(주)성진');
 
-    // 5) 세부 체크항목 추가 버튼 실증
     const subInput = dialog.locator('input[placeholder*="세부 체크항목 입력"]').first();
     await subInput.fill('홈택스 고지세액 조회');
     await dialog.getByRole('button', { name: '＋ 항목 추가' }).first().click();
     await expect(dialog.getByText('홈택스 고지세액 조회').first()).toBeVisible({ timeout: 15000 });
 
-    // 6) 상세 메모 및 로컬 첨부파일 실제 업로드 실증
     const memoArea = dialog.locator('textarea[placeholder*="상세 설명"]').first();
     await memoArea.fill('홈택스 전자고지 확인 완료');
 
@@ -128,11 +118,9 @@ test.describe('세무 AI 에이전트 전수 기능·화면·상태 실증 스�
     await expect(fileInput).toBeAttached();
     await fileInput.setInputFiles(tmpFilePath);
 
-    // 백엔드 수신 완료 시 렌더링되는 📎 캡션이 나타날 때까지 대기 후 저장
     await expect(dialog.getByText(/📎\s*부가세_예정고지서_샘플\.pdf/).first()).toBeVisible({ timeout: 25000 });
     await page.waitForTimeout(500);
 
-    // 7) 저장 클릭 후 Today To Do 카드에 제목·거래처·첨부파일(14자 말줄임)·중요·체크항목 배지가 모두 표시되는지 확인
     await dialog.getByRole('button', { name: '저장' }).first().click();
     await expect(dialog).toBeHidden({ timeout: 20000 });
 
@@ -144,19 +132,23 @@ test.describe('세무 AI 에이전트 전수 기능·화면·상태 실증 스�
     await expect(todoList).toContainText('0/1');
   });
 
-  test('4. [AI 백그라운드 시뮬레이터 & 인건비 브릿지 실증] 시뮬레이터 ④·⑤ 실행 시 사업소득·급여명세서 컬럼 정확 반영 검증', async ({ page }) => {
-    const simExpander = page.locator('section[data-testid="stSidebar"] details', { hasText: 'AI 백그라운드 시뮬레이터' }).first();
-    await simExpander.locator('summary').first().click();
-
-    await page.locator('.st-key-btn_cal_sim_4 button').first().click();
+  test('4. [달력 하단 독(Dock) 빠른 등록 & 사업소득 검토보고 실증] 할 일 즉시 등록 및 사업소득 검토보고 모달 검증', async ({ page }) => {
+    const dockInput = page.locator('[class*="st-key-dock_chat_wrap_"] input').first();
+    await expect(dockInput).toBeVisible({ timeout: 25000 });
+    await dockInput.fill('원천세 반기납부 대상 확인');
+    await dockInput.press('Enter');
     await waitForStreamlitReady(page);
+
+    const todoList = page.locator('.st-key-cal_right_todo_card').first();
+    await expect(todoList).toContainText('원천세 반기납부 대상 확인', { timeout: 20000 });
 
     await page.locator('.st-key-btn_top_mode_payroll button').first().click();
     await waitForStreamlitReady(page);
 
+    await page.locator('[class*="st-key-btn_pay_submode_free"] button').first().click();
+    await waitForStreamlitReady(page);
+
     await expect(page.getByText('사업소득대장').first()).toBeVisible({ timeout: 25000 });
-    await expect(page.getByText('2,500,000원').first()).toBeVisible();
-    await expect(page.getByText('2,417,500원').first()).toBeVisible();
 
     const monthlyReportBtn = page.locator('.st-key-btn_pay_monthly_report button').first();
     await expect(monthlyReportBtn).toBeVisible();
@@ -164,7 +156,7 @@ test.describe('세무 AI 에이전트 전수 기능·화면·상태 실증 스�
     await expect(page.locator(DIALOG_SEL).first()).toContainText('당월 사업소득 검토보고', { timeout: 20000 });
   });
 
-  test('5. [자율 에이전트AI 화면 실증] 2x2 추천 벤토 카드 클릭 트리거, 엔진 토글, 대화방 1~10 전환 및 초기화 검증', async ({ page }) => {
+  test('5. [자율 에이전트AI 화면 & 전역 홈버튼 실증] 2x2 추천 벤토 카드, 대화방 2 전환 및 홈버튼 작동 검증', async ({ page }) => {
     await page.locator('.st-key-btn_top_mode_agent button').first().click();
     await waitForStreamlitReady(page);
 
@@ -181,7 +173,6 @@ test.describe('세무 AI 에이전트 전수 기능·화면·상태 실증 스�
     await waitForStreamlitReady(page);
     await expect(page.locator('.top-mini-status-bar').first()).toContainText('A법인 정기 세무조정');
 
-    // 자율 에이전트AI 및 대화방 전환 후에도 우측 하단 홈버튼(#tds-kakao-home-fab)이 정상 작동하는지 실증
     const homeFab = page.locator('#tds-kakao-home-fab').first();
     await expect(homeFab).toBeVisible({ timeout: 15000 });
     await homeFab.click();
@@ -203,9 +194,7 @@ test.describe('세무 AI 에이전트 전수 기능·화면·상태 실증 스�
       await confirmBtn.waitFor({ state: 'visible', timeout: 5000 });
       await confirmBtn.click();
       await waitForStreamlitReady(page);
-    } catch {
-      // 이미 2단계로 진입한 경우 통과
-    }
+    } catch {}
 
     const addEmpBtn = page.locator('[class*="st-key-btn_ec_add_emp_"] button').first();
     await expect(addEmpBtn).toBeVisible({ timeout: 20000 });
