@@ -2,7 +2,7 @@
 """
 달력 스케줄러 + Today To Do (메인 할 일과 카톡 백그라운드 To-Do 완전 분리) +
 카톡 백그라운드 To-Do 블랙(딥 차콜) 컨셉 오버레이 + 시안 A 토스 아이스 블루(#DCEBFF) 상세입력 모달 +
-월별 실제 세무기한 자동 배치(시간 표기 제거) + 네이티브 이벤트 직결 (검은색 토큰 코드 노출 0%) (calendar_scheduler/ui.py)
+월별 실제 세무일정 자동 배치(시간 표기 제거) + 네이티브 이벤트 직결 (검은색 토큰 코드 노출 0%) (calendar_scheduler/ui.py)
 """
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ import ui_theme as _ui_theme
 _WEEKDAYS_SHORT = ("월", "화", "수", "목", "금", "토", "일")
 _WEEKDAYS_FULL = ("월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일")
 _SUN_FIRST_HEADERS = ("일", "월", "화", "수", "목", "금", "토")
-_STATE_SCHEMA_VERSION = "v27_clean_native_events_no_token_injection"
+_STATE_SCHEMA_VERSION = "v28_clean_native_events_no_simulator"
 
 
 def _html(s: str) -> str:
@@ -64,14 +64,14 @@ def _make_tax_ev(
     has_detail: bool = False,
     sub_tasks: List[Dict[str, Any]] | None = None,
 ) -> Dict[str, Any]:
-    """세무기한(빨간 배지) 기본 일정 딕셔너리 생성 헬퍼 (앞쪽 시간 표기 없음)"""
+    """세무일정(빨간 배지) 기본 일정 딕셔너리 생성 헬퍼 (앞쪽 시간 표기 없음)"""
     return {
         "id": ev_id,
         "type": "TAX",
         "time": "",
         "title": title,
         "client": client,
-        "category": "세무기한",
+        "category": "세무일정",
         "ai_status": "작업 완료, 승인요청중",
         "done": False,
         "alarm": False,
@@ -91,8 +91,8 @@ def _make_tax_ev(
 
 def _default_schedules_for_month(year: int, month: int, today_d: date) -> Dict[int, List[Dict[str, Any]]]:
     """
-    1월~12월 각 달의 실제 대한민국 세법상 정기 세무기한 일정을 정확한 날짜에 자동 배치합니다.
-    - 모든 세무기한(TAX) 일정은 시간 문자열을 비워('time': '') 달력 셀에 제목만 깔끔하게 표시합니다.
+    1월~12월 각 달의 실제 대한민국 세법상 정기 세무일정을 정확한 날짜에 자동 배치합니다.
+    - 모든 세무일정(TAX)은 시간 문자열을 비워('time': '') 달력 셀에 제목만 깔끔하게 표시합니다.
     """
     last_day = calendar.monthrange(year, month)[1]
     prev_m = 12 if month == 1 else (month - 1)
@@ -393,9 +393,10 @@ def push_kakao_background_todo(
 def _status_pill_cls(ev: Dict[str, Any]) -> tuple[str, str, str]:
     """일정 항목의 (점 색상 클래스, 태그 라벨, 태그 배경 클래스) 반환"""
     ev_type = str(ev.get("type", "")).upper()
+    cat_str = str(ev.get("category", ""))
     ai_st = str(ev.get("ai_status", ""))
-    if ev_type == "TAX" or "기한" in str(ev.get("category", "")):
-        return ("red", "세무기한", "red")
+    if ev_type == "TAX" or "기한" in cat_str or "세무일정" in cat_str:
+        return ("red", "세무일정", "red")
     if ev_type == "DONE" or ev.get("done") or "승인완료" in ai_st:
         return ("green", "승인완료", "green")
     return ("blue", "내 스케줄", "blue")
@@ -477,271 +478,6 @@ def _shift_calendar_month(cstate: Dict[str, Any], delta: int) -> None:
     last_d = calendar.monthrange(new_y, new_m)[1]
     cstate["selected_day"] = min(int(cstate.get("selected_day", 1)), last_d)
     cstate["_sync_sb_from_cstate"] = True
-
-
-def _push_kakao_biz_income_to_payroll(company: str, name: str, rrn: str, gross_won: int, is_net: bool = False) -> None:
-    """카톡 백그라운드 시뮬레이터(④ 사업소득 문자 수신) → payroll_auto_state['freelancers'] 자동 반영"""
-    try:
-        from payroll_automated.ui import _get_payroll_state, _recalculate_all_freelancer_rows
-        pstate = _get_payroll_state()
-        if company and not pstate.get("corp_name"):
-            pstate["corp_name"] = company
-        ym_str = str(pstate.get("year_month", "2026-11"))
-        pay_dt_str = str(pstate.get("pay_date", f"{ym_str}-25"))
-        ym_digits = ym_str.replace("-", "")
-        pay_dt_digits = pay_dt_str.replace("-", "")
-        pstate["sub_mode"] = "FREE"
-        new_row = {
-            "코드": f"{len(pstate.get('freelancers', [])) + 1:04d}",
-            "성명": name,
-            "주민등록번호": rrn,
-            "_raw_rrn": rrn,
-            "내외국인": "내국인1",
-            "소득구분": "940909",
-            "귀속년월": ym_str,
-            "지급년월일": pay_dt_str,
-            "귀속연월": ym_digits,
-            "지급연월": pay_dt_digits[:6],
-            "지급일자": pay_dt_digits,
-            "입력기준": "세후역산" if is_net else "세전",
-            "_base_amount": int(gross_won),
-            "지급총액": int(gross_won),
-            "세율": 3,
-            "비고": f"카톡 자동입력 ({company})",
-        }
-        pstate.setdefault("freelancers", []).insert(0, new_row)
-        _recalculate_all_freelancer_rows(pstate)
-        pstate["grid_version"] = int(pstate.get("grid_version", 0)) + 1
-    except Exception:
-        pass
-
-
-def _push_kakao_emp_excel_to_payroll(company: str, employees_sample: List[Dict[str, Any]]) -> None:
-    """카톡 백그라운드 시뮬레이터(⑤ 급여대장 엑셀파일 수신) → payroll_auto_state['employees'] 자동 반영"""
-    try:
-        from payroll_automated.ui import _get_payroll_state, _recalculate_all_employee_rows
-        pstate = _get_payroll_state()
-        if company:
-            pstate["corp_name"] = company
-        pstate["sub_mode"] = "EMP"
-        for emp_in in reversed(employees_sample):
-            emp_nm = emp_in.get("name", "임직원")
-            new_emp = {
-                "사원코드": f"{len(pstate.get('employees', [])) + 1:03d}",
-                "성명": emp_nm,
-                "사원명": emp_nm,
-                "부서": emp_in.get("dept", "관리부"),
-                "직급": emp_in.get("title", "사원"),
-                "입사일": emp_in.get("hire_date", "2024-01-01"),
-                "입력기준": "세전",
-                "보험적용구분": "요율(2순위)",
-                "기본급": int(emp_in.get("base_pay", 3200000)),
-                "상여": int(emp_in.get("bonus", 0)),
-                "식대": int(emp_in.get("meal", 200000)),
-                "자가운전보조금": 0,
-                "약정연장근로수당": 0,
-                "약정휴일근로수당": 0,
-                "연장근로수당": 0,
-                "휴일근로수당": 0,
-                "미사용연차수당": 0,
-                "결근공제": 0,
-                "조정금액": 0,
-                "부양가족수": int(emp_in.get("deps", 1)),
-                "자녀수": int(emp_in.get("children", 0)),
-                "학자금상환액": 0,
-                "소득세감면율": 0,
-                "사업장": company or "본점",
-            }
-            pstate.setdefault("employees", []).insert(0, new_emp)
-        _recalculate_all_employee_rows(pstate)
-        pstate["grid_version"] = int(pstate.get("grid_version", 0)) + 1
-    except Exception:
-        pass
-
-
-def _trigger_kakao_simulator(sim_no: int, cstate: Dict[str, Any]) -> str:
-    """사이드바의 'AI 백그라운드 시뮬레이터 (체험버튼 ①~⑤)' 실행 핸들러"""
-    today_d = get_kst_today()
-    today_iso = today_d.isoformat()
-    yr, mo = today_d.year, today_d.month
-
-    if sim_no == 1:
-        cstate["silent_read_count"] = int(cstate.get("silent_read_count", 0)) + 1
-        cstate["kakao_todos"].insert(0, {
-            "id": f"sim_{int(datetime.now().timestamp() * 1000)}",
-            "status_code": "APPROVED",
-            "status": "사용자 승인완료",
-            "category": "통상적 메시지 자동 닫기",
-            "client": "(주)우진상사",
-            "recipient": "범준",
-            "time_ago": "방금 자동처리",
-            "bubble_msg": "",
-            "title": "(주)우진상사 — \"네 확인했습니다 세무사님!\" (백그라운드 읽음 후 닫기 · 1 소거)",
-            "kakao_original": "[카톡 수신] 네 확인했습니다 세무사님!",
-            "workflow_steps": [
-                {"step": "① 카톡 메시지 수신 및 문맥 분석 (단순 확인 인사)", "done": True},
-                {"step": "② 별도 답변 불필요 판별 · 숫자 1 소거 후 자동 닫기", "done": True},
-            ],
-            "ai_result": "✅ 답변이 필요 없는 통상적 인사로 판별되어 알림 없이 카톡 숫자 1만 지우고 닫았습니다.",
-            "preview": "✅ 답변이 필요 없는 통상적 인사로 판별되어 알림 없이 카톡 숫자 1만 지우고 닫았습니다.",
-            "attachment": "자동 읽음 처리 로그 (1 소거 완료)",
-            "target_mode": "CALENDAR",
-            "action_label": "자동 종결됨",
-            "checked": True,
-            "created_date_iso": today_iso,
-            "approved_date_iso": today_iso,
-        })
-        _save_user_schedules_to_disk(cstate)
-        return "🔕 '(주)우진상사: 네 확인했습니다' → 답변 없이 백그라운드에서 숫자 1만 지우고 닫았어요!"
-
-    if sim_no == 2:
-        cstate["kakao_todos"].insert(0, {
-            "id": f"sim_{int(datetime.now().timestamp() * 1000)}",
-            "status_code": "READY",
-            "status": "작업 완료, 승인요청중",
-            "category": "요청 서류 준비 완료",
-            "client": "(주)갑",
-            "recipient": "범준",
-            "time_ago": "방금 전",
-            "bubble_msg": "범준님, (주)갑 회사로부터 요청받은 서류를 다운받아 보낼 준비가 끝났습니다",
-            "title": "(주)갑 — 지방세 세목별과세증명서 & 납세증명서 다운로드 완료",
-            "kakao_original": "[카톡 수신] 세무사님 (주)갑인데 은행 제출용 납세증명서랑 지방세 과세증명서 부탁드립니다!",
-            "workflow_steps": [
-                {"step": "① 카톡 증명서 발급 요청 수신 및 필요서류 목록 작성", "done": True},
-                {"step": "② 홈택스·위택스 증명서 자동 발급 및 전용 폴더 저장", "done": True},
-                {"step": "③ 사업자번호 일치 검증 완료 · 카톡 전송 승인 대기", "done": True},
-            ],
-            "ai_result": (
-                "📁 지정 폴더 저장: C:\\tax_automation\\거래처_데이터\\02_(주)갑\\4_발급서류_보관함\\(주)갑_증명서.pdf\n"
-                "🛡️ 사업자번호 일치 검증 통과 완료!"
-            ),
-            "preview": "📁 지정 폴더 저장 완료 및 사업자번호 일치 검증 통과 완료!",
-            "attachment": f"(주)갑_지방세과세증명_납세증명서_{today_d.strftime('%Y%m%d')}.pdf",
-            "target_mode": "CALENDAR",
-            "action_label": "서류 파일 복사 & 승인완료",
-            "checked": True,
-            "created_date_iso": today_iso,
-            "approved_date_iso": None,
-        })
-        cstate["bubble_visible"] = True
-        cstate["bubble_idx"] = 0
-        cstate["panel_open"] = False
-        _save_user_schedules_to_disk(cstate)
-        return "📄 우측 하단 네모 말풍선에 (주)갑 서류 준비 완료 알림이 떴어요!"
-
-    if sim_no == 3:
-        cstate["kakao_todos"].insert(0, {
-            "id": f"sim_{int(datetime.now().timestamp() * 1000)}",
-            "status_code": "READY",
-            "status": "작업 완료, 승인요청중",
-            "category": "세법 검토 카톡 완성",
-            "client": "(주)모",
-            "recipient": "범준",
-            "time_ago": "방금 전",
-            "bubble_msg": "범준님, (주)모 회사에 보낼 세법 검토 카톡이 완성되었습니다",
-            "title": "(주)모 — 거래처 경조사비(청첩장·부고) 법인비용 한도 문의 답변 완성",
-            "kakao_original": "[카톡 수신] 거래처 대표님 자녀 결혼식 축의금을 50만 원 보내려는데 전부 비용 인정되나요?",
-            "workflow_steps": [
-                {"step": "① 카톡 세법 질문 수신 및 쟁점(경조사비 한도) 파악", "done": True},
-                {"step": "② 법인세법 기업업무추진비(건당 20만 원 한도) 규정 검토", "done": True},
-                {"step": "③ 대표님 안내용 카톡 답장 메시지 작성 완료", "done": True},
-            ],
-            "ai_result": (
-                "안녕하세요 대표님, 거래처 경조사비 세법 기준 안내드립니다.\n"
-                "1. 거래처 경조사비는 건당 20만 원까지만 청첩장·부고장 등 증빙으로 기업업무추진비(접대비) 인정됩니다.\n"
-                "2. 건당 20만 원 초과 시 전액 비용 불산입되므로 20만 원 이내 지출이 유리합니다.\n"
-                "※ 법령 기준의 원론적 안내이며, 구체적 처리는 담당자 확인 후 안내드리겠습니다."
-            ),
-            "preview": "거래처 경조사비는 건당 20만 원까지만 청첩장·부고장 등 증빙으로 기업업무추진비(접대비) 인정됩니다.",
-            "attachment": f"(주)모_경조사비_세법검토안내_{today_d.strftime('%Y%m%d')}.md",
-            "target_mode": "AGENT",
-            "action_label": "카톡 답장 복사 & 승인완료",
-            "checked": True,
-            "created_date_iso": today_iso,
-            "approved_date_iso": None,
-        })
-        cstate["bubble_visible"] = True
-        cstate["bubble_idx"] = 0
-        cstate["panel_open"] = False
-        _save_user_schedules_to_disk(cstate)
-        return "⚖️ 우측 하단 네모 말풍선에 (주)모 세법 검토 완료 알림이 떴어요!"
-
-    if sim_no == 4:
-        _push_kakao_biz_income_to_payroll("(주)스타마케팅", "강민호", "880512-1******", 2500000, is_net=False)
-        cstate["kakao_todos"].insert(0, {
-            "id": f"sim_{int(datetime.now().timestamp() * 1000)}",
-            "status_code": "READY",
-            "status": "작업 완료, 승인요청중",
-            "category": "사업소득 자동 입력 완료",
-            "client": "(주)스타마케팅",
-            "recipient": "범준",
-            "time_ago": "방금 전",
-            "bubble_msg": "범준님, (주)스타마케팅 카톡 인건비를 사업소득 화면에 자동 작성했습니다",
-            "title": "(주)스타마케팅 — 프리랜서 강민호(세전 250만 원) 사업소득 자동 입력 완료",
-            "kakao_original": "[카톡 수신] 강민호 880512-1****** 이번 달 외주비 세전 250만 원 지급했습니다. 사업소득 신고 부탁드려요!",
-            "workflow_steps": [
-                {"step": "① 카톡 외주비 지급 내역(성명·지급액 250만 원) 인식", "done": True},
-                {"step": "② 사업소득 원천징수세액(3.3%) 및 차인지급액 계산", "done": True},
-                {"step": "③ [인건비 자동화 > 사업소득] 화면 자동 입력 완료", "done": True},
-            ],
-            "ai_result": (
-                "✅ 에이전트AI [사업소득] 화면에 자동 드래그&드롭 입력 완료!\n"
-                "• 세전 2,500,000원 / 소득세 75,000원 / 지방세 7,500원 / 차인지급액 2,417,500원"
-            ),
-            "preview": "✅ 에이전트AI [사업소득] 화면에 자동 드래그&드롭 입력 완료! (세전 2,500,000원 / 실지급 2,417,500원)",
-            "attachment": f"(주)스타마케팅_강민호_{yr}{mo:02d}_사업소득영수증.pdf",
-            "target_mode": "PAYROLL_BIZ",
-            "action_label": "사업소득 화면 확인 & 승인완료",
-            "checked": True,
-            "created_date_iso": today_iso,
-            "approved_date_iso": None,
-        })
-        cstate["bubble_visible"] = True
-        cstate["bubble_idx"] = 0
-        cstate["panel_open"] = False
-        _save_user_schedules_to_disk(cstate)
-        return "💼 카톡 인건비(강민호 250만 원)가 [인건비 자동화 > 사업소득] 화면에 자동 입력되었어요!"
-
-    if sim_no == 5:
-        _push_kakao_emp_excel_to_payroll(
-            "(주)미래바이오",
-            [
-                {"name": "오지현 연구원", "dept": "연구소", "title": "선임연구원", "base_pay": 4200000, "meal": 200000, "deps": 2},
-                {"name": "박준혁 주임", "dept": "영업부", "title": "주임", "base_pay": 3400000, "meal": 200000, "deps": 1},
-            ],
-        )
-        cstate["kakao_todos"].insert(0, {
-            "id": f"sim_{int(datetime.now().timestamp() * 1000)}",
-            "status_code": "READY",
-            "status": "작업 완료, 승인요청중",
-            "category": "급여대장 폴더저장 & 자동입력",
-            "client": "(주)미래바이오",
-            "recipient": "범준",
-            "time_ago": "방금 전",
-            "bubble_msg": "범준님, (주)미래바이오 급여대장 파일을 폴더에 저장하고 급여명세서에 입력했습니다",
-            "title": f"(주)미래바이오 — '{mo}월_급여대장_세전자료.xlsx' 폴더 저장 및 급여명세서 자동 작성 완료",
-            "kakao_original": f"[카톡 파일 수신] (주)미래바이오_{mo}월_급여대장_세전자료.xlsx",
-            "workflow_steps": [
-                {"step": "① 카톡 급여대장 엑셀 파일 수신 및 거래처 폴더 저장", "done": True},
-                {"step": "② 임직원 4대보험·갑근세·실수령액 자동 계산", "done": True},
-                {"step": "③ [인건비 자동화 > 급여명세서] 화면 자동 반영 완료", "done": True},
-            ],
-            "ai_result": "📁 지정 폴더 저장 완료 → 에이전트AI [급여명세서] 화면에 임직원 세전·4대보험·실수령액 자동 반영 완료!",
-            "preview": "📁 지정 폴더 저장 완료 → 에이전트AI [급여명세서] 화면에 자동 반영 완료!",
-            "attachment": f"(주)미래바이오_{yr}{mo:02d}_급여명세서.zip",
-            "target_mode": "PAYROLL_EMP",
-            "action_label": "급여명세서 확인 & 승인완료",
-            "checked": True,
-            "created_date_iso": today_iso,
-            "approved_date_iso": None,
-        })
-        cstate["bubble_visible"] = True
-        cstate["bubble_idx"] = 0
-        cstate["panel_open"] = False
-        _save_user_schedules_to_disk(cstate)
-        return "📊 급여대장 파일이 폴더에 저장되고 [인건비 자동화 > 급여명세서] 화면에 자동 입력되었어요!"
-
-    return "처리가 완료되었습니다."
 
 
 def _jump_to_target_mode(target_mode: str) -> None:
@@ -994,7 +730,8 @@ div[data-testid="InputInstructions"],
 .tds-soft-arrow-btn:active { transform: translateY(0px) scale(0.96); }
 
 /* 숨김 트리거 버튼 래퍼 */
-[data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-cal_hidden_month_nav_wrap {
+[data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-cal_hidden_month_nav_wrap,
+[data-testid="stApp"] [data-testid="stMainBlockContainer"] .st-key-kakao_hidden_sync_wrap {
     position: fixed !important;
     left: -9999px !important;
     top: -9999px !important;
@@ -1725,7 +1462,7 @@ def _is_repeating_schedule(ev: Dict[str, Any]) -> bool:
 
 
 def _is_statutory_tax_schedule(ev: Dict[str, Any]) -> bool:
-    """코드에서 매월 자동 배치하는 기본 법정 세무기한 일정인지 판별합니다."""
+    """코드에서 매월 자동 배치하는 기본 법정 세무일정인지 판별합니다."""
     ev_id = str(ev.get("id", ""))
     ev_type = str(ev.get("type", "")).upper()
     return (ev_id.startswith("sch_") and not ev.get("_user_modified")) or (
@@ -1817,7 +1554,7 @@ def _build_merged_month_schedules(
     user_events_by_ym: Dict[str, Any],
     deleted_tax_ids: List[str],
 ) -> Dict[int, List[Dict[str, Any]]]:
-    """1~12월 기본 법정 세무기한 위에 외부 파일에 보관된 사용자 스케줄/To-Do를 병합합니다."""
+    """1~12월 기본 법정 세무일정 위에 외부 파일에 보관된 사용자 스케줄/To-Do를 병합합니다."""
     ym_key = f"{year:04d}-{month:02d}"
     base = _default_schedules_for_month(year, month, today_d)
     del_set = set(str(x) for x in (deleted_tax_ids or []))
@@ -2091,7 +1828,7 @@ def _open_expired_180d_cleanup_dialog() -> None:
                 등록한 지 180일이 지난 스케줄이 <span style="color:#3182F6;">{len(expired_list)}건</span> 있습니다. 삭제할까요?
             </div>
             <div style="font-size:0.80rem;font-weight:600;color:#4E5968;line-height:1.5;">
-                • <b>반복적인 스케줄(매일·매주·매월·매년 반복)</b>과 법정 세무기한은 삭제 대상에서 <b>자동 제외</b>되었습니다.<br>
+                • <b>반복적인 스케줄(매일·매주·매월·매년 반복)</b>과 법정 세무일정은 삭제 대상에서 <b>자동 제외</b>되었습니다.<br>
                 • 아래 목록에서 정리할 지난 스케줄을 확인하신 뒤 직접 삭제 버튼을 눌러주세요.
             </div>
         </div>
@@ -2486,7 +2223,7 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
 
     c_cat, c_urg = st.columns([3.2, 1.2], gap="small")
     cur_type = str(target_ev.get("type", "MY")).upper()
-    cat_opts = ["🔵 내 스케줄", "🔴 세무기한", "🟢 승인완료"]
+    cat_opts = ["🔵 내 스케줄", "🔴 세무일정", "🟢 승인완료"]
     cat_idx = 1 if cur_type == "TAX" else (2 if cur_type == "DONE" else 0)
     with c_cat:
         sel_cat_lbl = st.radio(
@@ -2546,7 +2283,7 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
         )
     with r1_sub2:
         in_show_cal = st.checkbox(
-            "● 오늘자 달력에 표시됨",
+            "달력에 표시",
             value=bool(target_ev.get("show_on_cal", False)),
             key=f"dlg_showcal_{ev_id}",
         )
@@ -2722,7 +2459,7 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
                 updated_subs.append({"title": leftover_sub, "done": False})
 
             final_title = _clean_any_legacy_token(in_title.strip()) or "세무 상세 일정"
-            new_type = "TAX" if "세무기한" in sel_cat_lbl else ("DONE" if "승인완료" in sel_cat_lbl else "MY")
+            new_type = "TAX" if ("세무일정" in sel_cat_lbl or "세무기한" in sel_cat_lbl) else ("DONE" if "승인완료" in sel_cat_lbl else "MY")
             norm_t = "" if new_type == "TAX" else _normalize_time_str(in_time)
 
             all_subs_done = bool(updated_subs) and all(s.get("done") for s in updated_subs)
@@ -2741,7 +2478,7 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
             target_ev.update({
                 "title": final_title,
                 "type": "DONE" if is_done_final else new_type,
-                "category": "세무기한" if new_type == "TAX" else ("승인완료" if is_done_final else "내 스케줄"),
+                "category": "세무일정" if new_type == "TAX" else ("승인완료" if is_done_final else "내 스케줄"),
                 "time": norm_t,
                 "repeat": in_repeat,
                 "alarm": bool(in_alarm),
@@ -2793,7 +2530,7 @@ def _open_schedule_detail_dialog(year: int, month: int, day_num: int, ev_id: str
 
 
 def render_calendar_sidebar() -> None:
-    """좌측 사이드바 ('달력' 모드 전용 제어판)"""
+    """좌측 사이드바 ('달력' 모드 전용 제어판 — 가상 시연용 시뮬레이터 샘플 버튼 완전 제거)"""
     cstate = _init_calendar_state()
     today_d = get_kst_today()
     wd_str = _WEEKDAYS_SHORT[today_d.weekday()]
@@ -2840,21 +2577,6 @@ def render_calendar_sidebar() -> None:
             cstate["selected_day"] = today_d.day
             cstate["_sync_sb_from_cstate"] = True
             st.rerun()
-
-    with st.expander("⚡ AI 백그라운드 시뮬레이터", expanded=False):
-        st.caption("버튼을 누르면 우측 하단 **홈버튼**과 **네모 말풍선**이 반응합니다.")
-        sim_buttons = [
-            (1, "💬 ① '네 확인했습니다' 수신 · 무응답 1소거"),
-            (2, "📄 ② (주)갑 서류요청 카톡 · 다운+말풍선"),
-            (3, "⚖️ ③ (주)모 세법질문 카톡 · 초안+말풍선"),
-            (4, "💼 ④ 카톡 사업소득 문자 수신 · 자동입력"),
-            (5, "📊 ⑤ 급여대장 엑셀파일 수신 · 폴더+급여"),
-        ]
-        for s_no, s_lbl in sim_buttons:
-            if st.button(s_lbl, width="stretch", key=f"btn_cal_sim_{s_no}"):
-                toast_msg = _trigger_kakao_simulator(s_no, cstate)
-                st.toast(toast_msg)
-                st.rerun()
 
     with st.container(border=True):
         st.markdown(
@@ -3044,7 +2766,7 @@ def render_calendar_main() -> None:
                                 """),
                                 unsafe_allow_html=True,
                             )
-                            # 1회 클릭 시 날짜 선택 / 2회 연속 클릭(더블클릭) 시 상세일정 설정 모달 오픈 (상단 선제 감지로 전체 그리드 렌더링 보장)
+                            # 1회 클릭 시 날짜 선택 / 2회 연속 클릭(더블클릭) 시 상세일정 설정 모달 오픈
                             st.button(
                                 " ",
                                 key=f"cal_sel_d_{year}_{month}_{day_num}",
@@ -3100,7 +2822,7 @@ def render_calendar_main() -> None:
 
         for prev_d in sorted([int(k) for k in month_schedules.keys() if int(k) < selected_day]):
             for ev_cand in month_schedules.get(prev_d, []):
-                is_tax_ev = str(ev_cand.get("type", "")).upper() == "TAX" or ev_cand.get("category") == "세무기한"
+                is_tax_ev = str(ev_cand.get("type", "")).upper() == "TAX" or ev_cand.get("category") in ("세무기한", "세무일정")
                 if is_tax_ev:
                     continue
                 ev_cand.setdefault("origin_year", year)
@@ -3310,7 +3032,7 @@ def render_calendar_main() -> None:
                                 ):
                                     ev["done"] = not is_done
                                     ev["completed_on_ymd"] = [year, month, selected_day] if ev["done"] else None
-                                    ev["type"] = "DONE" if ev["done"] else ("TAX" if ev.get("category") == "세무기한" else "MY")
+                                    ev["type"] = "DONE" if ev["done"] else ("TAX" if ev.get("category") in ("세무기한", "세무일정") else "MY")
                                     ev["_user_modified"] = True
                                     _save_user_schedules_to_disk(cstate)
                                     st.rerun()
@@ -3429,15 +3151,55 @@ def render_floating_kakao_todo_overlay() -> None:
     """
     1) 상세일정 설정 모달: 시안 A 토스 아이스 블루(#DCEBFF) + 보더(#3182F6) + 순백색(#FFFFFF) 입력칸 강제 보장
     2) 입력칸에 어떠한 내부 코드 문자열도 주입하지 않고 순수 Streamlit 버튼과 연동
-    3) AI 백그라운드 To-Do 블랙 패널: 홈버튼 퍼짐/감싸기 모션 + 파란 동그라미 (상세) 1회 클릭 아래 확장
+    3) AI 백그라운드 To-Do 블랙 패널: 홈버튼 퍼짐/감싸기 모션 + 파란 동그라미 (상세) 1회 클릭 아래 확장 + 우측 상단 ✕ 개별 삭제
     """
     cstate = _init_calendar_state()
+    todos = cstate.get("kakao_todos", [])
+    kst_today_iso = get_kst_today().isoformat()
+
+    # 카톡 백그라운드 To-Do 항목 삭제 및 승인 상태를 디스크에 영구 반영하기 위한 숨김 네이티브 버튼 래퍼
+    with st.container(key="kakao_hidden_sync_wrap"):
+        if st.button("KT_APPROVE_ALL", key="btn_kt_approve_all"):
+            for kt in cstate.get("kakao_todos", []):
+                st_c = str(kt.get("status_code", "")).upper()
+                if st_c == "READY" or "승인요청" in str(kt.get("status", "")):
+                    kt["status_code"] = "APPROVED"
+                    kt["status"] = "사용자 승인완료"
+                    kt["time_ago"] = "방금 일괄승인"
+                    kt["approved_date_iso"] = kst_today_iso
+                    kt["checked"] = True
+            cstate["panel_open"] = True
+            _save_user_schedules_to_disk(cstate)
+            st.rerun()
+
+        for kt_item in list(todos):
+            kt_id = str(kt_item.get("id", ""))
+            if not kt_id:
+                continue
+            if st.button(f"KT_DEL_{kt_id}", key=f"btn_kt_del_{kt_id}"):
+                cstate["kakao_todos"] = [
+                    x for x in cstate.get("kakao_todos", []) if str(x.get("id", "")) != kt_id
+                ]
+                cstate["panel_open"] = True
+                _save_user_schedules_to_disk(cstate)
+                st.rerun()
+            if st.button(f"KT_APP_{kt_id}", key=f"btn_kt_app_{kt_id}"):
+                for x in cstate.get("kakao_todos", []):
+                    if str(x.get("id", "")) == kt_id:
+                        x["status_code"] = "APPROVED"
+                        x["status"] = "사용자 승인완료"
+                        x["time_ago"] = "방금 승인됨"
+                        x["approved_date_iso"] = kst_today_iso
+                        x["checked"] = True
+                cstate["panel_open"] = True
+                _save_user_schedules_to_disk(cstate)
+                st.rerun()
+
     todos = cstate.get("kakao_todos", [])
     panel_open_init = bool(cstate.get("panel_open", False))
     silent_cnt = int(cstate.get("silent_read_count", 0))
     alarm_on_js = "true" if cstate.get("dock_alarm", False) else "false"
     cal_on_js = "true" if cstate.get("dock_cal", False) else "false"
-    kst_today_iso = get_kst_today().isoformat()
     user_nm = str(st.session_state.get("current_workspace") or "범준").strip() or "범준"
     if user_nm.startswith("익명"):
         user_nm = "범준"
@@ -3485,7 +3247,7 @@ def render_floating_kakao_todo_overlay() -> None:
                         22%  {{ transform: translateY(4px) scaleX(1.18) scaleY(0.76); }}
                         52%  {{ transform: translateY(-21px) scaleX(0.90) scaleY(1.12); }}
                         76%  {{ transform: translateY(2px) scaleX(1.09) scaleY(0.90); }}
-                        88%  {{ transform: translateY(-4px) scaleX(0.97) scaleY(1.03); }}
+                        88%  {{ transform: translateY(-4px) scaleX(1.03) scaleY(1.03); }}
                         100% {{ transform: translateY(0px) scaleX(1) scaleY(1); }}
                     }}
                     [data-testid="stApp"] section[data-testid="stSidebar"] .sbx-brand {{
@@ -3930,959 +3692,3 @@ def render_floating_kakao_todo_overlay() -> None:
                     cursor: pointer;
                     transition: background 0.15s ease;
                     box-shadow: 0 4px 12px rgba(49, 130, 246, 0.35);
-                }}
-                .tds-kp-approve-all-btn:hover {{ background: #1B64DA; }}
-                .tds-kp-close-btn {{
-                    width: 36px;
-                    height: 36px;
-                    border-radius: 10px;
-                    background: #1E242C;
-                    border: 1px solid #2D3540;
-                    color: #9CA3AF;
-                    font-weight: 700;
-                    cursor: pointer;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                }}
-                .tds-kp-close-btn:hover {{ background: #2D3540; color: #FFFFFF; }}
-
-                .tds-kp-tabs-bar {{
-                    background: #121417;
-                    border-bottom: 1px solid #232A34;
-                    padding: 11px 24px;
-                    display: flex;
-                    flex-wrap: wrap;
-                    align-items: center;
-                    justify-content: space-between;
-                    gap: 8px;
-                    flex-shrink: 0;
-                }}
-                .tds-kp-tabs-l {{
-                    display: flex;
-                    align-items: center;
-                    gap: 8px;
-                    flex-wrap: wrap;
-                }}
-                .tds-kp-tab {{
-                    padding: 6px 14px;
-                    border-radius: 999px;
-                    font-size: 0.76rem;
-                    font-weight: 800;
-                    cursor: pointer;
-                    font-variant-numeric: tabular-nums;
-                }}
-                .tds-kp-tab.all {{ background: #1E242C; color: #E5E7EB; border: 1px solid #374151; }}
-                .tds-kp-tab.working {{ background: #2E2111; color: #F59E0B; border: 1px solid #4D3516; }}
-                .tds-kp-tab.ready {{ background: #31151B; color: #F87171; border: 1px solid #521F28; }}
-                .tds-kp-tab.approved {{ background: #0F2922; color: #34D399; border: 1px solid #164438; }}
-                .tds-kp-tab.active-ring {{ outline: 2px solid #3B82F6; outline-offset: 1px; }}
-                .tds-kp-silent-info {{ font-size: 0.73rem; color: #8B95A1; font-weight: 700; }}
-                .tds-kp-silent-info b {{ color: #60A5FA; }}
-
-                .tds-kp-body {{
-                    flex: 1;
-                    overflow-y: auto;
-                    padding: 16px 24px;
-                    background: #121417;
-                    display: flex;
-                    flex-direction: column;
-                    gap: 10px;
-                }}
-                .tds-kp-card {{
-                    background: #1A1F26;
-                    border-radius: 16px;
-                    border: 1px solid #2A313C;
-                    padding: 12px 16px;
-                    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
-                    transition: border-color 0.22s ease, box-shadow 0.22s ease, background 0.22s ease;
-                }}
-                .tds-kp-card:hover {{ border-color: #3B82F6; }}
-                .tds-kp-card.expanded {{
-                    background: #1D232C;
-                    border: 1.5px solid #3182F6;
-                    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.50);
-                    padding: 14px 18px 18px 18px;
-                }}
-                .tds-kp-summary-row {{
-                    display: flex;
-                    align-items: center;
-                    justify-content: space-between;
-                    gap: 12px;
-                    min-height: 36px;
-                    cursor: pointer;
-                    user-select: none;
-                }}
-                .tds-kp-sum-left {{
-                    display: flex;
-                    align-items: center;
-                    gap: 12px;
-                    min-width: 0;
-                    flex: 1;
-                }}
-                .tds-kp-st-badge {{
-                    display: inline-flex;
-                    align-items: center;
-                    gap: 6px;
-                    padding: 5px 11px;
-                    border-radius: 999px;
-                    font-size: 0.73rem;
-                    font-weight: 800;
-                    white-space: nowrap;
-                    flex-shrink: 0;
-                }}
-                .tds-kp-st-badge.working {{ background: #2E2111; color: #F59E0B; border: 1px solid #4D3516; }}
-                .tds-kp-st-badge.ready {{ background: #31151B; color: #F87171; border: 1px solid #521F28; }}
-                .tds-kp-st-badge.approved {{ background: #0F2922; color: #34D399; border: 1px solid #164438; }}
-                .tds-kp-mini-prog {{
-                    width: 28px;
-                    height: 5px;
-                    border-radius: 999px;
-                    background: rgba(245, 158, 11, 0.22);
-                    overflow: hidden;
-                    display: inline-block;
-                }}
-                .tds-kp-mini-prog-fill {{ height: 100%; background: #F59E0B; display: block; }}
-                .tds-kp-sum-title-wrap {{
-                    display: flex;
-                    align-items: center;
-                    gap: 8px;
-                    min-width: 0;
-                    flex: 1;
-                }}
-                .tds-kp-sum-title {{
-                    font-size: 0.92rem;
-                    font-weight: 800;
-                    color: #FFFFFF;
-                    white-space: nowrap;
-                    overflow: hidden;
-                    text-overflow: ellipsis;
-                }}
-                .tds-kp-blue-dtl-circle {{
-                    width: 32px;
-                    height: 32px;
-                    min-width: 32px;
-                    min-height: 32px;
-                    border-radius: 50%;
-                    background: #3182F6;
-                    border: 1.5px solid #60A5FA;
-                    color: #FFFFFF;
-                    font-size: 0.68rem;
-                    font-weight: 800;
-                    display: inline-flex;
-                    align-items: center;
-                    justify-content: center;
-                    flex-shrink: 0;
-                    cursor: pointer;
-                    padding: 0;
-                    box-shadow: 0 3px 10px rgba(49, 130, 246, 0.38);
-                    transition: transform 0.16s ease, background 0.16s ease;
-                }}
-                .tds-kp-blue-dtl-circle:hover {{ background: #1B64DA; transform: scale(1.08); }}
-                .tds-kp-sum-right {{ display: flex; align-items: center; gap: 6px; flex-shrink: 0; }}
-                .tds-kp-row-approve-btn {{
-                    min-width: 72px;
-                    height: 34px;
-                    padding: 0 14px;
-                    border-radius: 9px;
-                    font-size: 0.78rem;
-                    font-weight: 800;
-                    cursor: pointer;
-                    display: inline-flex;
-                    align-items: center;
-                    justify-content: center;
-                }}
-                .tds-kp-row-approve-btn.ready {{ background: #3182F6; color: #FFFFFF; border: 1px solid #3B82F6; }}
-                .tds-kp-row-approve-btn.working {{ background: #261D11; color: #FBBF24; border: 1px solid #573B16; }}
-                .tds-kp-row-approve-btn.approved {{ background: #122620; color: #34D399; border: 1px solid #1C4236; cursor: default; }}
-
-                .tds-kp-expand-drawer {{
-                    max-height: 0;
-                    opacity: 0;
-                    overflow: hidden;
-                    transform: translateY(-6px);
-                    transition:
-                        max-height 0.42s cubic-bezier(0.22, 1, 0.36, 1),
-                        opacity 0.28s ease,
-                        transform 0.32s cubic-bezier(0.22, 1, 0.36, 1),
-                        margin-top 0.28s ease,
-                        padding-top 0.28s ease;
-                }}
-                .tds-kp-card.expanded .tds-kp-expand-drawer {{
-                    max-height: 760px;
-                    opacity: 1;
-                    transform: translateY(0);
-                    margin-top: 12px;
-                    padding-top: 14px;
-                    border-top: 1px solid #2A3342;
-                }}
-                .tds-kp-exp-meta {{ display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }}
-                .tds-kp-exp-meta-l {{ display: flex; align-items: center; gap: 8px; }}
-                .tds-kp-cat-pill {{ font-size: 0.72rem; font-weight: 700; color: #D1D5DB; background: #252C37; border: 1px solid #323B48; padding: 3px 10px; border-radius: 999px; }}
-                .tds-kp-time {{ font-size: 0.73rem; color: #8B95A1; font-weight: 600; }}
-                .tds-kp-company {{ font-size: 0.80rem; font-weight: 800; color: #60A5FA; }}
-                .tds-kp-kakao-orig {{ font-size: 0.78rem; color: #CBD5E1; background: #13171D; border: 1px solid #252C37; padding: 10px 14px; border-radius: 12px; margin-bottom: 10px; font-weight: 600; }}
-                .tds-kp-steps-box {{ background: #151A22; border: 1px solid #263040; border-radius: 12px; padding: 10px 14px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 5px; }}
-                .tds-kp-step-item {{ display: flex; align-items: center; gap: 8px; font-size: 0.76rem; font-weight: 700; color: #E2E8F0; }}
-                .tds-kp-step-item.pending {{ color: #FBBF24; }}
-                .tds-kp-step-icon-done {{ color: #34D399; font-weight: 900; }}
-                .tds-kp-step-icon-wait {{ color: #F59E0B; font-weight: 900; }}
-                .tds-kp-ai-res {{ font-size: 0.80rem; color: #E2E8F0; background: #152238; border: 1px solid #1E3A5F; padding: 11px 14px; border-radius: 12px; white-space: pre-line; line-height: 1.55; margin-bottom: 10px; font-weight: 600; }}
-                .tds-kp-edit-wrap {{ margin-bottom: 10px; display: none; }}
-                .tds-kp-edit-wrap.open {{ display: block; }}
-                .tds-kp-edit-textarea {{ width: 100%; min-height: 88px; box-sizing: border-box; background: #0F1724; color: #F8FAFC; border: 1.5px solid #3B82F6; border-radius: 12px; padding: 10px 12px; font-family: inherit; font-size: 0.80rem; font-weight: 600; }}
-                .tds-kp-edit-foot {{ display: flex; justify-content: flex-end; gap: 6px; margin-top: 6px; }}
-                .tds-kp-edit-save-btn {{ padding: 5px 12px; border-radius: 8px; background: #3182F6; color: #FFFFFF; border: none; font-size: 0.73rem; font-weight: 800; cursor: pointer; }}
-                .tds-kp-edit-cancel-btn {{ padding: 5px 10px; border-radius: 8px; background: #252C37; color: #CBD5E1; border: 1px solid #374151; font-size: 0.73rem; font-weight: 700; cursor: pointer; }}
-                .tds-kp-attach-bar {{ display: flex; align-items: center; margin-bottom: 12px; }}
-                .tds-kp-attach-chip {{ display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 10px; background: #172334; border: 1px solid #264063; color: #93C5FD; font-size: 0.75rem; font-weight: 700; cursor: pointer; }}
-                .tds-kp-doc-preview {{ display: none; background: #11161D; border: 1px dashed #334155; border-radius: 10px; padding: 10px 14px; margin-bottom: 12px; font-size: 0.75rem; color: #94A3B8; line-height: 1.5; }}
-                .tds-kp-doc-preview.open {{ display: block; }}
-                .tds-kp-actions {{ display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }}
-                .tds-kp-btn-edit {{ padding: 8px 13px; border-radius: 10px; background: #1E2631; color: #93C5FD; border: 1px solid #2E3C4E; font-size: 0.75rem; font-weight: 700; cursor: pointer; }}
-                .tds-kp-btn-jump {{ padding: 8px 14px; border-radius: 10px; background: #252C37; color: #E5E7EB; border: 1px solid #374151; font-size: 0.76rem; font-weight: 700; cursor: pointer; }}
-                .tds-kp-btn-approve {{ padding: 8px 16px; border-radius: 10px; background: #3182F6; color: #FFFFFF; border: 1px solid #3B82F6; font-size: 0.78rem; font-weight: 800; cursor: pointer; }}
-                .tds-kp-btn-finish {{ padding: 8px 16px; border-radius: 10px; background: #B45309; color: #FFFFFF; border: 1px solid #D97706; font-size: 0.78rem; font-weight: 800; cursor: pointer; }}
-                .tds-kp-done-txt {{ font-size: 0.76rem; font-weight: 800; color: #34D399; }}
-                .tds-kp-footer {{ background: #121417; border-top: 1px solid #232A34; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; font-size: 0.76rem; color: #8B95A1; flex-shrink: 0; }}
-                .tds-kp-min-btn {{ padding: 7px 14px; border-radius: 10px; background: #1E242C; border: 1px solid #2D3540; font-weight: 700; color: #E5E7EB; cursor: pointer; }}
-
-                #tds-kakao-square-bubble {{
-                    background: #FFFFFF;
-                    border: 2px solid #3182F6;
-                    border-radius: 6px;
-                    box-shadow: 0 6px 18px rgba(49, 130, 246, 0.10);
-                    animation: squareBubblePop 0.28s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-                    margin-bottom: 14px;
-                    width: 350px;
-                    max-width: 90vw;
-                    padding: 16px;
-                    position: relative;
-                    cursor: pointer;
-                }}
-                #tds-kakao-square-bubble.hidden {{ display: none !important; }}
-                .tds-sb-top {{ display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }}
-                .tds-sb-badge {{ display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 0.68rem; font-weight: 800; background: #E8F3FF; color: #3182F6; }}
-                .tds-sb-dismiss {{ background: transparent; border: none; color: #8B95A1; font-size: 0.75rem; font-weight: 700; cursor: pointer; }}
-                .tds-sb-msg {{ font-size: 0.86rem; font-weight: 800; color: #191F28; line-height: 1.38; margin: 0; }}
-                .tds-sb-foot {{ display: flex; align-items: center; justify-content: space-between; margin-top: 12px; padding-top: 10px; border-top: 1px solid #F2F4F6; }}
-                .tds-sb-time {{ font-size: 0.70rem; color: #8B95A1; font-weight: 600; }}
-                .tds-sb-btns {{ display: flex; align-items: center; gap: 6px; }}
-                .tds-sb-btn-next {{ padding: 4px 10px; border-radius: 6px; background: #F2F4F6; border: none; color: #191F28; font-size: 0.72rem; font-weight: 700; cursor: pointer; }}
-                .tds-sb-btn-open {{ padding: 4px 12px; border-radius: 6px; background: #3182F6; border: none; color: #FFFFFF; font-size: 0.72rem; font-weight: 800; cursor: pointer; }}
-                .tds-sb-tail {{ width: 14px; height: 14px; background: #FFFFFF; border-right: 2px solid #3182F6; border-bottom: 2px solid #3182F6; transform: rotate(45deg); position: absolute; bottom: -8px; right: 28px; }}
-
-                #tds-kakao-home-fab {{
-                    animation: tossPulseRing 2.2s infinite;
-                    position: relative;
-                    width: 66px;
-                    height: 66px;
-                    border-radius: 22px;
-                    background: #3898FF;
-                    border: none;
-                    color: #FFFFFF;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    cursor: grab;
-                    transition: transform 0.2s ease, background 0.2s ease;
-                    touch-action: none;
-                }}
-                #tds-kakao-home-fab:hover {{ background: #3182F6; transform: scale(1.05); }}
-                #tds-kakao-home-fab.dragging {{ cursor: grabbing !important; transform: scale(1.08) !important; transition: none !important; }}
-                .cute-face-svg {{ animation: cuteWinkBounce 2.8s ease-in-out infinite; pointer-events: none; }}
-                #tds-kakao-fab-badge {{
-                    position: absolute;
-                    top: -6px;
-                    right: -6px;
-                    min-width: 24px;
-                    height: 24px;
-                    padding: 0 6px;
-                    border-radius: 999px;
-                    background: #F04452;
-                    border: 2px solid #FFFFFF;
-                    color: #FFFFFF;
-                    font-size: 0.74rem;
-                    font-weight: 800;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    box-shadow: 0 2px 6px rgba(240, 68, 82, 0.4);
-                    z-index: 10;
-                    pointer-events: none;
-                }}
-            `;
-
-            const isFreshEntry = !parentDoc.getElementById("tds-kakao-floating-root");
-            let rootEl = parentDoc.getElementById("tds-kakao-floating-root");
-            if (!rootEl) {{
-                rootEl = parentDoc.createElement("div");
-                rootEl.id = "tds-kakao-floating-root";
-                parentDoc.body.appendChild(rootEl);
-            }}
-
-            const FAB_ICON_CLOSED_SVG = `
-                <svg class="cute-face-svg" width="46" height="46" viewBox="0 0 32 32" fill="none">
-                    <circle cx="16" cy="16" r="12.5" stroke="#FFFFFF" stroke-width="2.9" stroke-linecap="round" stroke-linejoin="round" />
-                    <line x1="11.8" y1="13.2" x2="11.8" y2="18.5" stroke="#FFFFFF" stroke-width="3.0" stroke-linecap="round" />
-                    <line x1="20.2" y1="13.2" x2="20.2" y2="18.5" stroke="#FFFFFF" stroke-width="3.0" stroke-linecap="round" />
-                </svg>
-            `;
-            const FAB_ICON_OPEN_SVG = `
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" style="pointer-events:none;">
-                    <path d="M6 9L12 15L18 9" stroke="#FFFFFF" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" />
-                </svg>
-            `;
-            const HEADER_CHAR_SVG = `
-                <svg class="cute-face-svg" width="34" height="34" viewBox="0 0 32 32" fill="none">
-                    <circle cx="16" cy="16" r="12.5" stroke="#FFFFFF" stroke-width="2.9" stroke-linecap="round" stroke-linejoin="round" />
-                    <line x1="11.8" y1="13.2" x2="11.8" y2="18.5" stroke="#FFFFFF" stroke-width="3.0" stroke-linecap="round" />
-                    <line x1="20.2" y1="13.2" x2="20.2" y2="18.5" stroke="#FFFFFF" stroke-width="3.0" stroke-linecap="round" />
-                </svg>
-            `;
-
-            if (!parentWin._tdsKakaoState) {{
-                parentWin._tdsKakaoState = {{
-                    open: INIT_OPEN,
-                    filter: "ALL",
-                    bubbleIdx: 0,
-                    bubbleDismissed: false,
-                    todos: TODOS_DATA,
-                    customPos: null,
-                    serverKstIso: SERVER_KST_ISO,
-                    expandedMap: {{}},
-                    editingMap: {{}},
-                    docPreviewMap: {{}}
-                }};
-            }} else {{
-                const prevTodos = parentWin._tdsKakaoState.todos || [];
-                const prevLen = prevTodos.length;
-                const prevMap = {{}};
-                prevTodos.forEach(item => {{
-                    if (item && item.id) prevMap[item.id] = item;
-                }});
-                if (TODOS_DATA.length >= prevTodos.length) {{
-                    parentWin._tdsKakaoState.todos = TODOS_DATA.map(srvItem => {{
-                        const locItem = srvItem && srvItem.id ? prevMap[srvItem.id] : null;
-                        if (locItem && (locItem._clientModified || locItem.status_code === "APPROVED")) {{
-                            return Object.assign({{}}, srvItem, locItem);
-                        }}
-                        return srvItem;
-                    }});
-                }}
-                if (!parentWin._tdsKakaoState.expandedMap) parentWin._tdsKakaoState.expandedMap = {{}};
-                if (!parentWin._tdsKakaoState.editingMap) parentWin._tdsKakaoState.editingMap = {{}};
-                if (!parentWin._tdsKakaoState.docPreviewMap) parentWin._tdsKakaoState.docPreviewMap = {{}};
-                if (TODOS_DATA.length > prevLen) {{
-                    parentWin._tdsKakaoState.bubbleDismissed = false;
-                    parentWin._tdsKakaoState.bubbleIdx = 0;
-                }}
-                parentWin._tdsKakaoState.serverKstIso = SERVER_KST_ISO;
-                if (INIT_OPEN !== parentWin._tdsKakaoState._lastServerOpen) {{
-                    parentWin._tdsKakaoState.open = INIT_OPEN;
-                    parentWin._tdsKakaoState._lastServerOpen = INIT_OPEN;
-                }}
-                if (isFreshEntry) {{
-                    parentWin._tdsKakaoState.customPos = null;
-                }}
-            }}
-
-            function applyFloatingPosition() {{
-                const stObj = parentWin._tdsKakaoState;
-                if (stObj && stObj.customPos) {{
-                    rootEl.style.left = stObj.customPos.left + "px";
-                    rootEl.style.top = stObj.customPos.top + "px";
-                    rootEl.style.right = "auto";
-                    rootEl.style.bottom = "auto";
-                }} else {{
-                    rootEl.style.left = "auto";
-                    rootEl.style.top = "auto";
-                    rootEl.style.right = "18px";
-                    rootEl.style.bottom = "52px";
-                }}
-            }}
-
-            parentWin._tdsActiveCalFrame = frameEl;
-            parentWin._tdsCalCleanupTimer = parentWin.setInterval(function() {{
-                const activeFr = parentWin._tdsActiveCalFrame;
-                if (!activeFr || !parentDoc.body.contains(activeFr)) {{
-                    parentWin.clearInterval(parentWin._tdsCalCleanupTimer);
-                    parentWin._tdsCalCleanupTimer = null;
-                    return;
-                }}
-                bindDockInputsAndButtons();
-                try {{
-                    const kstNow = new Date(new Date().toLocaleString("en-US", {{ timeZone: "Asia/Seoul" }}));
-                    const y = kstNow.getFullYear();
-                    const m = String(kstNow.getMonth() + 1).padStart(2, "0");
-                    const d = String(kstNow.getDate()).padStart(2, "0");
-                    const hh = String(kstNow.getHours()).padStart(2, "0");
-                    const mm = String(kstNow.getMinutes()).padStart(2, "0");
-                    const curIso = `${{y}}-${{m}}-${{d}}`;
-                    const curHm = `${{hh}}:${{mm}}`;
-
-                    parentDoc.querySelectorAll(".tds-bell-pure[data-alarm-time]").forEach(bellEl => {{
-                        const alarmHm = bellEl.getAttribute("data-alarm-time") || "";
-                        if (!alarmHm || curHm >= alarmHm) {{
-                            bellEl.classList.add("sparkle");
-                        }}
-                    }});
-
-                    if (parentWin._tdsKakaoState && parentWin._tdsKakaoState.serverKstIso && curIso !== parentWin._tdsKakaoState.serverKstIso) {{
-                        parentWin._tdsKakaoState.serverKstIso = curIso;
-                        const todayBtn = Array.from(parentDoc.querySelectorAll('section[data-testid="stSidebar"] button'))
-                            .find(b => (b.textContent || "").indexOf("오늘 날짜로 즉시 이동") >= 0);
-                        if (todayBtn) todayBtn.click();
-                    }}
-                }} catch (err) {{}}
-            }}, 350);
-
-            function escHtml(v) {{
-                return String(v == null ? "" : v)
-                    .replace(/&/g, "&amp;")
-                    .replace(/</g, "&lt;")
-                    .replace(/>/g, "&gt;")
-                    .replace(/"/g, "&quot;")
-                    .replace(/'/g, "&#39;");
-            }}
-
-            function getStatusCode(item) {{
-                if (item.status_code) return item.status_code;
-                const s = String(item.status || "");
-                if (s.indexOf("작업중") >= 0) return "WORKING";
-                if (s.indexOf("승인요청") >= 0) return "READY";
-                return "APPROVED";
-            }}
-
-            function copyTextSafe(text) {{
-                try {{
-                    const ta = parentDoc.createElement("textarea");
-                    ta.value = text;
-                    ta.style.position = "fixed";
-                    ta.style.opacity = "0";
-                    parentDoc.body.appendChild(ta);
-                    ta.select();
-                    parentDoc.execCommand("copy");
-                    parentDoc.body.removeChild(ta);
-                }} catch (e) {{}}
-            }}
-
-            function triggerSidebarMode(targetMode) {{
-                const btns = Array.from(parentDoc.querySelectorAll('section[data-testid="stSidebar"] button'));
-                let keyword = "달력";
-                if (targetMode === "AGENT") keyword = "자율 에이전트AI";
-                else if (targetMode === "PAYROLL_BIZ" || targetMode === "PAYROLL_EMP") keyword = "인건비 자동화";
-                const found = btns.find(b => (b.textContent || "").indexOf(keyword) >= 0);
-                if (found) found.click();
-            }}
-
-            function bindFabDrag(fabBtn) {{
-                if (!fabBtn) return;
-                let isPointerDown = false;
-                let hasDragged = false;
-                let startX = 0;
-                let startY = 0;
-                let origLeft = 0;
-                let origTop = 0;
-                const DRAG_THRESHOLD = 5;
-
-                fabBtn.addEventListener("mousedown", function(e) {{
-                    if (e.button !== 0) return;
-                    isPointerDown = true;
-                    hasDragged = false;
-                    startX = e.clientX;
-                    startY = e.clientY;
-                    const rect = rootEl.getBoundingClientRect();
-                    origLeft = rect.left;
-                    origTop = rect.top;
-                    e.preventDefault();
-                }});
-
-                if (parentWin._tdsFabMouseMoveHandler) {{
-                    parentWin.removeEventListener("mousemove", parentWin._tdsFabMouseMoveHandler);
-                }}
-                if (parentWin._tdsFabMouseUpHandler) {{
-                    parentWin.removeEventListener("mouseup", parentWin._tdsFabMouseUpHandler);
-                }}
-
-                parentWin._tdsFabMouseMoveHandler = function(e) {{
-                    if (!isPointerDown) return;
-                    const dx = e.clientX - startX;
-                    const dy = e.clientY - startY;
-                    if (!hasDragged && Math.hypot(dx, dy) > DRAG_THRESHOLD) {{
-                        hasDragged = true;
-                        fabBtn.classList.add("dragging");
-                    }}
-                    if (hasDragged) {{
-                        const rootRect = rootEl.getBoundingClientRect();
-                        const maxLeft = parentWin.innerWidth - rootRect.width - 10;
-                        const maxTop = parentWin.innerHeight - rootRect.height - 10;
-                        const nextLeft = Math.max(10, Math.min(maxLeft, origLeft + dx));
-                        const nextTop = Math.max(10, Math.min(maxTop, origTop + dy));
-                        rootEl.style.left = nextLeft + "px";
-                        rootEl.style.top = nextTop + "px";
-                        rootEl.style.right = "auto";
-                        rootEl.style.bottom = "auto";
-                        parentWin._tdsKakaoState.customPos = {{ left: nextLeft, top: nextTop }};
-                    }}
-                }};
-
-                parentWin._tdsFabMouseUpHandler = function(e) {{
-                    if (!isPointerDown) return;
-                    isPointerDown = false;
-                    fabBtn.classList.remove("dragging");
-                    if (!hasDragged) {{
-                        setPanelOpenAnimated(!parentWin._tdsKakaoState.open);
-                    }}
-                    hasDragged = false;
-                }};
-
-                parentWin.addEventListener("mousemove", parentWin._tdsFabMouseMoveHandler);
-                parentWin.addEventListener("mouseup", parentWin._tdsFabMouseUpHandler);
-
-                fabBtn.onclick = function(e) {{
-                    if (hasDragged) return;
-                    if (e && e.detail === 0) {{
-                        setPanelOpenAnimated(!parentWin._tdsKakaoState.open);
-                    }}
-                }};
-            }}
-
-            function updatePanelTransformOriginToFab() {{
-                const panelEl = parentDoc.getElementById("tds-kakao-todo-panel");
-                const fabEl = parentDoc.getElementById("tds-kakao-home-fab");
-                if (!panelEl || !fabEl) return;
-                const pRect = panelEl.getBoundingClientRect();
-                const fRect = fabEl.getBoundingClientRect();
-                if (pRect.width > 10 && fRect.width > 10) {{
-                    const originX = (panelEl.offsetWidth || 820) - 31;
-                    const originY = (panelEl.offsetHeight || 620) + 43;
-                    panelEl.style.transformOrigin = `${{originX}}px ${{originY}}px`;
-                }}
-            }}
-
-            function setPanelOpenAnimated(nextOpen) {{
-                const stObj = parentWin._tdsKakaoState;
-                if (!stObj) return;
-                stObj.open = !!nextOpen;
-
-                const panelEl = parentDoc.getElementById("tds-kakao-todo-panel");
-                const backdropEl = parentDoc.getElementById("tds-kakao-backdrop");
-                const sbBubble = parentDoc.getElementById("tds-kakao-square-bubble");
-                const fabBtn = parentDoc.getElementById("tds-kakao-home-fab");
-
-                if (!panelEl || !backdropEl) {{
-                    renderOverlay();
-                    return;
-                }}
-
-                updatePanelTransformOriginToFab();
-
-                if (stObj.open) {{
-                    panelEl.classList.add("open");
-                    backdropEl.classList.add("open");
-                    if (sbBubble) sbBubble.classList.add("hidden");
-                }} else {{
-                    panelEl.classList.remove("open");
-                    backdropEl.classList.remove("open");
-                    const allTodos = (stObj.todos || []).filter(t => String(t.id || "").indexOf("todo_alarm_") !== 0 && t.client !== "Today To Do");
-                    const readyCnt = allTodos.filter(t => getStatusCode(t) === "READY").length;
-                    if (sbBubble && readyCnt > 0 && !stObj.bubbleDismissed) {{
-                        sbBubble.classList.remove("hidden");
-                    }}
-                }}
-
-                if (fabBtn) {{
-                    const allTodos = (stObj.todos || []).filter(t => String(t.id || "").indexOf("todo_alarm_") !== 0 && t.client !== "Today To Do");
-                    const totalAttention = allTodos.filter(t => getStatusCode(t) === "READY" || getStatusCode(t) === "WORKING").length;
-                    fabBtn.innerHTML = `
-                        ${{totalAttention > 0 ? `<span id="tds-kakao-fab-badge">${{totalAttention}}</span>` : ''}}
-                        ${{stObj.open ? FAB_ICON_OPEN_SVG : FAB_ICON_CLOSED_SVG}}
-                    `;
-                }}
-            }}
-
-            function toggleCardExpandWithAnimation(cardEl, itemId) {{
-                if (!cardEl || !itemId) return;
-                const stObj = parentWin._tdsKakaoState;
-                const isNowExp = !cardEl.classList.contains("expanded");
-                if (isNowExp) {{
-                    cardEl.classList.add("expanded");
-                    stObj.expandedMap[itemId] = true;
-                }} else {{
-                    cardEl.classList.remove("expanded");
-                    delete stObj.expandedMap[itemId];
-                }}
-            }}
-
-            function renderOverlay() {{
-                const stObj = parentWin._tdsKakaoState;
-                const allTodos = (stObj.todos || []).filter(t => String(t.id || "").indexOf("todo_alarm_") !== 0 && t.client !== "Today To Do");
-                const workingList = allTodos.filter(t => getStatusCode(t) === "WORKING");
-                const readyList = allTodos.filter(t => getStatusCode(t) === "READY");
-                const approvedList = allTodos.filter(t => getStatusCode(t) === "APPROVED");
-                const totalAttention = readyList.length + workingList.length;
-
-                const filtered = allTodos.filter(t => {{
-                    if (stObj.filter === "ALL") return true;
-                    return getStatusCode(t) === stObj.filter;
-                }});
-
-                const cardsHtml = filtered.length === 0
-                    ? `<div style="padding:56px 24px;text-align:center;color:#8B95A1;font-weight:700;line-height:1.6;">
-                        <div style="font-size:0.95rem;color:#E2E8F0;font-weight:800;margin-bottom:6px;">현재 대기 중인 AI 카톡 백그라운드 작업이 없습니다</div>
-                        <div style="font-size:0.78rem;color:#6B7684;">실시간 카카오톡이 수신되면 AI가 백그라운드에서 작업을 마친 뒤 이곳과 홈버튼 말풍선으로 알려드립니다.</div>
-                       </div>`
-                    : filtered.map(item => {{
-                        const sCode = getStatusCode(item);
-                        const steps = Array.isArray(item.workflow_steps) ? item.workflow_steps : [];
-                        const doneStepCnt = steps.filter(s => !!s.done).length;
-                        const totalStepCnt = Math.max(1, steps.length);
-                        const stepPct = Math.round((doneStepCnt / totalStepCnt) * 100);
-                        const isExpanded = !!stObj.expandedMap[item.id];
-                        const isEditing = !!stObj.editingMap[item.id];
-                        const isDocOpen = !!stObj.docPreviewMap[item.id];
-
-                        let stBadgeHtml = "";
-                        let rightSummaryBtnHtml = "";
-                        let expActBtnsHtml = "";
-
-                        if (sCode === "WORKING") {{
-                            stBadgeHtml = `
-                                <span class="tds-kp-st-badge working">
-                                    <span>● AI작업중 (${{doneStepCnt}}/${{totalStepCnt}})</span>
-                                    <span class="tds-kp-mini-prog"><span class="tds-kp-mini-prog-fill" style="width:${{stepPct}}%"></span></span>
-                                </span>
-                            `;
-                            rightSummaryBtnHtml = `<button class="tds-kp-row-approve-btn working" data-act="finish" data-id="${{escHtml(item.id)}}">작업중...</button>`;
-                            expActBtnsHtml = `<button class="tds-kp-btn-finish" data-act="finish" data-id="${{escHtml(item.id)}}">작업 즉시 완료시키기 (시연)</button>`;
-                        }} else if (sCode === "READY") {{
-                            stBadgeHtml = `<span class="tds-kp-st-badge ready">● 승인요청</span>`;
-                            rightSummaryBtnHtml = `<button class="tds-kp-row-approve-btn ready" data-act="approve" data-id="${{escHtml(item.id)}}">승인</button>`;
-                            expActBtnsHtml = `
-                                <button class="tds-kp-btn-edit" data-act="toggle_edit" data-id="${{escHtml(item.id)}}">✏️ 답장 문구 직접 수정</button>
-                                <button class="tds-kp-btn-jump" data-act="jump" data-id="${{escHtml(item.id)}}">뒤쪽 작업화면에 띄우기</button>
-                                <button class="tds-kp-btn-approve" data-act="approve" data-id="${{escHtml(item.id)}}">${{escHtml(item.action_label || "카톡 답장 복사 & 승인완료")}}</button>
-                            `;
-                        }} else {{
-                            stBadgeHtml = `<span class="tds-kp-st-badge approved">✓ 승인완료</span>`;
-                            rightSummaryBtnHtml = `<button class="tds-kp-row-approve-btn approved" disabled>승인됨 ✓</button>`;
-                            expActBtnsHtml = `<span class="tds-kp-done-txt">✓ 사용자 승인 및 처리가 완료된 항목입니다</span>`;
-                        }}
-
-                        const origTxt = item.kakao_original || `[카톡 수신] ${{item.title}}`;
-                        const aiTxt = item.ai_result || item.preview || "";
-                        const attachName = item.attachment || `${{item.client || "거래처"}}_검토자료.pdf`;
-                        const stepsHtml = steps.length > 0
-                            ? `<div class="tds-kp-steps-box">` + steps.map(st => {{
-                                const isDone = !!st.done;
-                                return `<div class="tds-kp-step-item ${{isDone ? '' : 'pending'}}">
-                                    <span class="${{isDone ? 'tds-kp-step-icon-done' : 'tds-kp-step-icon-wait'}}">${{isDone ? '✓' : '⏳'}}</span>
-                                    <span>${{escHtml(st.step || "")}}</span>
-                                </div>`;
-                            }}).join("") + `</div>`
-                            : "";
-
-                        return `
-                            <div class="tds-kp-card ${{isExpanded ? 'expanded' : ''}}" data-card-id="${{escHtml(item.id)}}">
-                                <div class="tds-kp-summary-row" data-summary-id="${{escHtml(item.id)}}" title="클릭하면 AI 체크리스트와 카톡 답장 상세가 아래로 펼쳐집니다">
-                                    <div class="tds-kp-sum-left">
-                                        ${{stBadgeHtml}}
-                                        <div class="tds-kp-sum-title-wrap">
-                                            <span class="tds-kp-sum-title">${{escHtml(item.title)}}</span>
-                                            <button type="button" class="tds-kp-blue-dtl-circle" data-dtl-toggle="${{escHtml(item.id)}}" title="클릭하여 상세 열기/닫기">상세</button>
-                                        </div>
-                                    </div>
-                                    <div class="tds-kp-sum-right">
-                                        ${{rightSummaryBtnHtml}}
-                                    </div>
-                                </div>
-
-                                <div class="tds-kp-expand-drawer">
-                                    <div class="tds-kp-exp-meta">
-                                        <div class="tds-kp-exp-meta-l">
-                                            <span class="tds-kp-cat-pill">${{escHtml(item.category || "카톡 자동화")}}</span>
-                                            <span class="tds-kp-time">${{escHtml(item.time_ago || "")}}</span>
-                                        </div>
-                                        <span class="tds-kp-company">${{escHtml(item.client || "")}}</span>
-                                    </div>
-                                    <div class="tds-kp-kakao-orig">${{escHtml(origTxt)}}</div>
-                                    ${{stepsHtml}}
-                                    <div class="tds-kp-ai-res" id="tds-kp-res-box-${{escHtml(item.id)}}">${{escHtml(aiTxt)}}</div>
-
-                                    <div class="tds-kp-edit-wrap ${{isEditing ? 'open' : ''}}" id="tds-kp-edit-wrap-${{escHtml(item.id)}}">
-                                        <textarea class="tds-kp-edit-textarea" id="tds-kp-edit-ta-${{escHtml(item.id)}}">${{escHtml(aiTxt)}}</textarea>
-                                        <div class="tds-kp-edit-foot">
-                                            <button class="tds-kp-edit-cancel-btn" data-act="cancel_edit" data-id="${{escHtml(item.id)}}">취소</button>
-                                            <button class="tds-kp-edit-save-btn" data-act="save_edit" data-id="${{escHtml(item.id)}}">문구 적용하기</button>
-                                        </div>
-                                    </div>
-
-                                    <div class="tds-kp-attach-bar">
-                                        <button class="tds-kp-attach-chip" data-act="toggle_doc" data-id="${{escHtml(item.id)}}">
-                                            📄 ${{escHtml(attachName)}} 미리보기 ${{isDocOpen ? '▴' : '▾'}}
-                                        </button>
-                                    </div>
-                                    <div class="tds-kp-doc-preview ${{isDocOpen ? 'open' : ''}}" id="tds-kp-doc-prev-${{escHtml(item.id)}}">
-                                        <div style="color:#60A5FA;font-weight:800;margin-bottom:4px;">🛡️ AI 생성·발급 서류 무결성 검증 요약</div>
-                                        <div>• 파일명: <b style="color:#E2E8F0;">${{escHtml(attachName)}}</b></div>
-                                        <div>• 대상 거래처: <b style="color:#E2E8F0;">${{escHtml(item.client || "지정 거래처")}}</b> (사업자등록번호 및 귀속연월 대조 일치 완료)</div>
-                                        <div>• 상태: 카톡 답장 복사 및 승인 시 해당 서류 폴더 경로가 클립보드에 함께 준비됩니다.</div>
-                                    </div>
-
-                                    <div class="tds-kp-actions">${{expActBtnsHtml}}</div>
-                                </div>
-                            </div>
-                        `;
-                    }}).join("");
-
-                let showBubble = (readyList.length > 0 && !stObj.open && !stObj.bubbleDismissed);
-                if (stObj.bubbleIdx >= readyList.length) stObj.bubbleIdx = 0;
-                const bItem = readyList[stObj.bubbleIdx] || {{}};
-                const bCat = bItem.category ? `${{bItem.category}} (${{stObj.bubbleIdx + 1}}/${{readyList.length}})` : "카톡 백그라운드 알림";
-                const bMsg = bItem.bubble_msg || `${{CURRENT_USER}}님, (주)모 회사에 보낼 세법 검토 카톡이 완성되었습니다`;
-                const bTime = `${{bItem.time_ago || "방금 전"}}`;
-
-                rootEl.innerHTML = `
-                    <div id="tds-kakao-backdrop" class="${{stObj.open ? 'open' : ''}}"></div>
-                    <div id="tds-kakao-todo-panel" class="${{stObj.open ? 'open' : ''}}">
-                        <div class="tds-kp-header">
-                            <div class="tds-kp-hdr-l">
-                                <div class="tds-kp-char-circle">${{HEADER_CHAR_SVG}}</div>
-                                <div>
-                                    <div class="tds-kp-title-row">
-                                        <span class="tds-kp-title">카톡 백그라운드 To-Do</span>
-                                        <span class="tds-kp-pill-60">AI 카톡 자동화</span>
-                                    </div>
-                                    <div class="tds-kp-sub">파란 동그라미 [상세] 버튼을 한 번 클릭하면 AI 체크리스트와 예상 카톡 답장이 아래로 펼쳐집니다</div>
-                                </div>
-                            </div>
-                            <div class="tds-kp-hdr-r">
-                                <button class="tds-kp-approve-all-btn" id="tds-kp-approve-all">승인요청 건 모두 승인하기</button>
-                                <button class="tds-kp-close-btn" id="tds-kp-close">✕</button>
-                            </div>
-                        </div>
-
-                        <div class="tds-kp-tabs-bar">
-                            <div class="tds-kp-tabs-l">
-                                <button class="tds-kp-tab all ${{stObj.filter === 'ALL' ? 'active-ring' : ''}}" data-filter="ALL">전체 ${{allTodos.length}}</button>
-                                <button class="tds-kp-tab working ${{stObj.filter === 'WORKING' ? 'active-ring' : ''}}" data-filter="WORKING">AI작업중 ${{workingList.length}}</button>
-                                <button class="tds-kp-tab ready ${{stObj.filter === 'READY' ? 'active-ring' : ''}}" data-filter="READY">승인요청 ${{readyList.length}}</button>
-                                <button class="tds-kp-tab approved ${{stObj.filter === 'APPROVED' ? 'active-ring' : ''}}" data-filter="APPROVED">승인완료 ${{approvedList.length}}</button>
-                            </div>
-                            <div class="tds-kp-silent-info">통상적 인사 자동 닫기(1소거): <b>${{SILENT_CNT}}건</b></div>
-                        </div>
-
-                        <div class="tds-kp-body">${{cardsHtml}}</div>
-
-                        <div class="tds-kp-footer">
-                            <span>💡 파란 동그라미 [상세] 버튼을 클릭하면 AI 작업단계와 예상 카톡 답장을 상세 확인·수정할 수 있습니다</span>
-                            <button class="tds-kp-min-btn" id="tds-kp-minimize">홈버튼으로 접기 ↘</button>
-                        </div>
-                    </div>
-
-                    <div id="tds-kakao-square-bubble" class="${{showBubble ? '' : 'hidden'}}" title="더블클릭하면 전체 체크리스트 화면이 열립니다">
-                        <div class="tds-sb-top">
-                            <span class="tds-sb-badge">${{escHtml(bCat)}}</span>
-                            <button class="tds-sb-dismiss" id="tds-sb-dismiss">✕</button>
-                        </div>
-                        <p class="tds-sb-msg">${{escHtml(bMsg)}}</p>
-                        <div class="tds-sb-foot">
-                            <span class="tds-sb-time">${{escHtml(bTime)}}</span>
-                            <div class="tds-sb-btns">
-                                <button class="tds-sb-btn-next" id="tds-sb-next">다음 ▸</button>
-                                <button class="tds-sb-btn-open" id="tds-sb-open">체크리스트 열기</button>
-                            </div>
-                        </div>
-                        <div class="tds-sb-tail"></div>
-                    </div>
-
-                    <button id="tds-kakao-home-fab" aria-label="홈버튼 열기">
-                        ${{totalAttention > 0 ? `<span id="tds-kakao-fab-badge">${{totalAttention}}</span>` : ''}}
-                        ${{stObj.open ? FAB_ICON_OPEN_SVG : FAB_ICON_CLOSED_SVG}}
-                    </button>
-                `;
-
-                applyFloatingPosition();
-                updatePanelTransformOriginToFab();
-
-                const fabBtn = parentDoc.getElementById("tds-kakao-home-fab");
-                const closeBtn = parentDoc.getElementById("tds-kp-close");
-                const minBtn = parentDoc.getElementById("tds-kp-minimize");
-                const backdropEl = parentDoc.getElementById("tds-kakao-backdrop");
-                const approveAllBtn = parentDoc.getElementById("tds-kp-approve-all");
-                const sbBubble = parentDoc.getElementById("tds-kakao-square-bubble");
-                const sbDismiss = parentDoc.getElementById("tds-sb-dismiss");
-                const sbNext = parentDoc.getElementById("tds-sb-next");
-                const sbOpen = parentDoc.getElementById("tds-sb-open");
-
-                bindFabDrag(fabBtn);
-
-                if (closeBtn) closeBtn.onclick = function() {{ setPanelOpenAnimated(false); }};
-                if (minBtn) minBtn.onclick = function() {{ setPanelOpenAnimated(false); }};
-                if (backdropEl) backdropEl.onclick = function() {{ setPanelOpenAnimated(false); }};
-
-                if (sbBubble) {{
-                    sbBubble.ondblclick = function(e) {{
-                        if (e.target && e.target.closest && (e.target.closest("#tds-sb-dismiss") || e.target.closest("#tds-sb-next"))) return;
-                        e.preventDefault();
-                        e.stopPropagation();
-                        setPanelOpenAnimated(true);
-                    }};
-                    sbBubble.onclick = function(e) {{
-                        if (e.target && e.target.closest && (e.target.closest("#tds-sb-dismiss") || e.target.closest("#tds-sb-next") || e.target.closest("#tds-sb-open"))) return;
-                        const nowMs = Date.now();
-                        const prevTs = stObj._lastBubbleClickTs || 0;
-                        stObj._lastBubbleClickTs = nowMs;
-                        if ((nowMs - prevTs) < 450) {{
-                            stObj._lastBubbleClickTs = 0;
-                            setPanelOpenAnimated(true);
-                        }}
-                    }};
-                }}
-
-                if (sbDismiss) {{
-                    sbDismiss.onclick = function(e) {{
-                        e.stopPropagation();
-                        stObj.bubbleDismissed = true;
-                        renderOverlay();
-                    }};
-                }}
-                if (sbNext) {{
-                    sbNext.onclick = function(e) {{
-                        e.stopPropagation();
-                        stObj.bubbleIdx = stObj.bubbleIdx + 1;
-                        renderOverlay();
-                    }};
-                }}
-                if (sbOpen) {{
-                    sbOpen.onclick = function(e) {{
-                        e.stopPropagation();
-                        setPanelOpenAnimated(true);
-                    }};
-                }}
-
-                if (approveAllBtn) {{
-                    approveAllBtn.onclick = function() {{
-                        allTodos.forEach(t => {{
-                            if (getStatusCode(t) === "READY") {{
-                                t.status_code = "APPROVED";
-                                t.status = "사용자 승인완료";
-                                t.time_ago = "방금 일괄승인";
-                                t.approved_date_iso = SERVER_KST_ISO;
-                                t.checked = true;
-                                t._clientModified = true;
-                            }}
-                        }});
-                        renderOverlay();
-                    }};
-                }}
-
-                rootEl.querySelectorAll(".tds-kp-tab").forEach(btn => {{
-                    btn.onclick = function() {{
-                        stObj.filter = this.getAttribute("data-filter") || "ALL";
-                        renderOverlay();
-                    }};
-                }});
-
-                rootEl.querySelectorAll("button[data-dtl-toggle]").forEach(dtlBtn => {{
-                    dtlBtn.onclick = function(e) {{
-                        e.preventDefault();
-                        e.stopPropagation();
-                        const itemId = this.getAttribute("data-dtl-toggle");
-                        const cardEl = this.closest(".tds-kp-card");
-                        toggleCardExpandWithAnimation(cardEl, itemId);
-                    }};
-                }});
-
-                rootEl.querySelectorAll(".tds-kp-summary-row").forEach(sumRow => {{
-                    const itemId = sumRow.getAttribute("data-summary-id");
-                    const cardEl = sumRow.closest(".tds-kp-card");
-
-                    sumRow.onclick = function(e) {{
-                        if (e.target && e.target.closest && e.target.closest("button[data-act]")) return;
-                        e.preventDefault();
-                        e.stopPropagation();
-                        toggleCardExpandWithAnimation(cardEl, itemId);
-                    }};
-                }});
-
-                rootEl.querySelectorAll("button[data-act]").forEach(btn => {{
-                    btn.onclick = function(e) {{
-                        e.stopPropagation();
-                        const act = this.getAttribute("data-act");
-                        const tid = this.getAttribute("data-id");
-                        const target = allTodos.find(x => x.id === tid);
-                        if (!target) return;
-
-                        if (act === "finish") {{
-                            target.status_code = "READY";
-                            target.status = "작업 완료, 승인요청중";
-                            target.time_ago = "방금 완료됨";
-                            if (Array.isArray(target.workflow_steps)) {{
-                                target.workflow_steps.forEach(st => {{ st.done = true; }});
-                            }}
-                            target.ai_result = "✅ 지정 폴더 저장 및 에이전트AI 급여명세서 화면(임직원 8명) 자동 입력이 완료되었습니다!";
-                            target._clientModified = true;
-                            stObj.bubbleDismissed = false;
-                            stObj.bubbleIdx = 0;
-                            renderOverlay();
-                        }} else if (act === "approve") {{
-                            copyTextSafe(target.ai_result || target.preview || "");
-                            target.status_code = "APPROVED";
-                            target.status = "사용자 승인완료";
-                            target.time_ago = "방금 승인됨";
-                            target.approved_date_iso = SERVER_KST_ISO;
-                            target.checked = true;
-                            target._clientModified = true;
-                            renderOverlay();
-                        }} else if (act === "jump") {{
-                            stObj.open = false;
-                            renderOverlay();
-                            triggerSidebarMode(target.target_mode || "CALENDAR");
-                        }} else if (act === "toggle_edit") {{
-                            const editWrap = parentDoc.getElementById(`tds-kp-edit-wrap-${{tid}}`);
-                            if (editWrap) {{
-                                const nowOpen = !editWrap.classList.contains("open");
-                                editWrap.classList.toggle("open", nowOpen);
-                                stObj.editingMap[tid] = nowOpen;
-                                if (nowOpen) {{
-                                    const ta = parentDoc.getElementById(`tds-kp-edit-ta-${{tid}}`);
-                                    if (ta) ta.focus();
-                                }}
-                            }}
-                        }} else if (act === "cancel_edit") {{
-                            const editWrap = parentDoc.getElementById(`tds-kp-edit-wrap-${{tid}}`);
-                            if (editWrap) editWrap.classList.remove("open");
-                            delete stObj.editingMap[tid];
-                        }} else if (act === "save_edit") {{
-                            const ta = parentDoc.getElementById(`tds-kp-edit-ta-${{tid}}`);
-                            const resBox = parentDoc.getElementById(`tds-kp-res-box-${{tid}}`);
-                            const editWrap = parentDoc.getElementById(`tds-kp-edit-wrap-${{tid}}`);
-                            if (ta) {{
-                                target.ai_result = ta.value;
-                                target.preview = ta.value;
-                                target._clientModified = true;
-                                if (resBox) resBox.textContent = ta.value;
-                            }}
-                            if (editWrap) editWrap.classList.remove("open");
-                            delete stObj.editingMap[tid];
-                        }} else if (act === "toggle_doc") {{
-                            const docBox = parentDoc.getElementById(`tds-kp-doc-prev-${{tid}}`);
-                            if (docBox) {{
-                                const nowOpen = !docBox.classList.contains("open");
-                                docBox.classList.toggle("open", nowOpen);
-                                stObj.docPreviewMap[tid] = nowOpen;
-                                this.innerHTML = `📄 ${{escHtml(target.attachment || "검토자료.pdf")}} 미리보기 ${{nowOpen ? '▴' : '▾'}}`;
-                            }}
-                        }}
-                    }};
-                }});
-            }}
-
-            renderOverlay();
-        }})();
-        </script>
-        """,
-        height=0,
-    )
