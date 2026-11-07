@@ -2559,7 +2559,7 @@ def render_calendar_sidebar() -> None:
             """),
             unsafe_allow_html=True,
         )
-        def render_calendar_main() -> None:
+def render_calendar_main() -> None:
     """메인 화면: 좌측 풀사이즈 달력 + 우측 Today To Do (검은색 코드 노출 없이 순정 Streamlit 이벤트 직결)"""
     cstate = _init_calendar_state()
     cstate["dock_dtl"] = False
